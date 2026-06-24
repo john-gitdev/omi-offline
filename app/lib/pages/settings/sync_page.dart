@@ -198,9 +198,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     });
 
     try {
+      if (!mounted) return;
       final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
       if (!deviceProvider.isConnected) {
-        if (!mounted) return;
         setState(() => _statusMessage = 'Connecting to device...');
         await deviceProvider.scanAndConnectToDevice();
         if (!mounted) return;
@@ -617,12 +617,12 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       appBar: AppBar(
         backgroundColor: const Color(0xFF0D0D0D),
         elevation: 0,
-        title: Row(
+        title: const Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const FaIcon(FontAwesomeIcons.triangleExclamation, size: 14, color: Colors.amber),
-            const SizedBox(width: 8),
-            const Text('Debug Tools', style: TextStyle(color: Colors.amber)),
+            FaIcon(FontAwesomeIcons.triangleExclamation, size: 14, color: Colors.amber),
+            SizedBox(width: 8),
+            Text('Debug Tools', style: TextStyle(color: Colors.amber)),
           ],
         ),
         centerTitle: true,
@@ -658,7 +658,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                     await WakelockPlus.toggle(enable: val);
                     setState(() {});
                   },
-                  activeColor: Colors.deepPurpleAccent,
+                  activeThumbColor: Colors.deepPurpleAccent,
                   contentPadding: EdgeInsets.zero,
                 ),
               ),
@@ -687,7 +687,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                     }
                     setState(() {});
                   },
-                  activeColor: Colors.deepPurpleAccent,
+                  activeThumbColor: Colors.deepPurpleAccent,
                   contentPadding: EdgeInsets.zero,
                 ),
               ),
@@ -718,7 +718,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                           // a `text` argument is shared as a SEPARATE item alongside the
                           // file, so iOS upload/save targets materialize a second phantom
                           // file containing the label string.
-                          await Share.shareXFiles([xFile], subject: shareName);
+                          await SharePlus.instance.share(ShareParams(files: [xFile], subject: shareName));
                         },
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.amber,
@@ -771,7 +771,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                     }
                     setState(() {});
                   },
-                  activeColor: Colors.deepPurpleAccent,
+                  activeThumbColor: Colors.deepPurpleAccent,
                   contentPadding: EdgeInsets.zero,
                 ),
               ),
@@ -953,7 +953,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
             value: on,
             onChanged: _onAdjustmentModeToggled,
-            activeColor: Colors.deepPurpleAccent,
+            activeThumbColor: Colors.deepPurpleAccent,
             contentPadding: EdgeInsets.zero,
           ),
           if (on) ...[
