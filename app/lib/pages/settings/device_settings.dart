@@ -482,9 +482,9 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
+                        const Text(
                           'LED Brightness',
-                          style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
+                          style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
                         ),
                         Text(
                           '${_dimRatio.round()}%',
@@ -498,7 +498,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         activeTrackColor: Colors.white,
                         inactiveTrackColor: Colors.grey.shade800,
                         thumbColor: Colors.white,
-                        overlayColor: Colors.white.withOpacity(0.1),
+                        overlayColor: Colors.white.withValues(alpha: 0.1),
                         thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 12, elevation: 2),
                         overlayShape: const RoundSliderOverlayShape(overlayRadius: 24),
                         trackHeight: 6,
@@ -588,9 +588,9 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
+                        const Text(
                           'Mic Gain',
-                          style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
+                          style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
                         ),
                         Text(
                           getGainLabel(currentLevel),
@@ -606,7 +606,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         activeTrackColor: Colors.white,
                         inactiveTrackColor: Colors.grey.shade800,
                         thumbColor: Colors.white,
-                        overlayColor: Colors.white.withOpacity(0.1),
+                        overlayColor: Colors.white.withValues(alpha: 0.1),
                         thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 12, elevation: 2),
                         overlayShape: const RoundSliderOverlayShape(overlayRadius: 24),
                         trackHeight: 6,
@@ -682,7 +682,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   Widget _buildPresetButton(String label, int level, int currentLevel, VoidCallback onTap) {
     final isSelected = level == currentLevel;
     return Material(
-      color: isSelected ? Colors.white.withOpacity(0.1) : const Color(0xFF2A2A2E),
+      color: isSelected ? Colors.white.withValues(alpha: 0.1) : const Color(0xFF2A2A2E),
       borderRadius: BorderRadius.circular(10),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
@@ -690,7 +690,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 10),
           decoration: BoxDecoration(
-            border: Border.all(color: isSelected ? Colors.white.withOpacity(0.5) : Colors.transparent, width: 1),
+            border: Border.all(color: isSelected ? Colors.white.withValues(alpha: 0.5) : Colors.transparent, width: 1),
             borderRadius: BorderRadius.circular(10),
           ),
           child: Center(
@@ -768,7 +768,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         activeTrackColor: Colors.white,
                         inactiveTrackColor: Colors.grey.shade800,
                         thumbColor: Colors.white,
-                        overlayColor: Colors.white.withOpacity(0.1),
+                        overlayColor: Colors.white.withValues(alpha: 0.1),
                         thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 12, elevation: 2),
                         overlayShape: const RoundSliderOverlayShape(overlayRadius: 24),
                         trackHeight: 6,
@@ -927,19 +927,19 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                     ).showSnackBar(const SnackBar(content: Text('Your Omi has been unpaired')));
                   }
                 },
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 18),
                   child: Row(
                     children: [
-                      const SizedBox(
+                      SizedBox(
                         width: 24,
                         height: 24,
                         child: FaIcon(FontAwesomeIcons.linkSlash, color: Colors.redAccent, size: 20),
                       ),
-                      const SizedBox(width: 16),
+                      SizedBox(width: 16),
                       Text(
                         'Unpair Device',
-                        style: const TextStyle(color: Colors.redAccent, fontSize: 17, fontWeight: FontWeight.w400),
+                        style: TextStyle(color: Colors.redAccent, fontSize: 17, fontWeight: FontWeight.w400),
                       ),
                     ],
                   ),
@@ -1048,9 +1048,9 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               onPressed: () => Navigator.of(context).pop(),
               tooltip: 'Back',
             ),
-            title: Text(
+            title: const Text(
               'Device Settings',
-              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
+              style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
             ),
             centerTitle: true,
           ),
