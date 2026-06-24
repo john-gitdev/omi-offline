@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
+import 'package:omi/backend/preferences.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/services.dart';
 
@@ -19,7 +20,19 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
   _ConfigStatus _status = _ConfigStatus.loading;
   List<int> _config = [0, 0, 2, 1, 3, 0];
 
-  final List<String> _actions = ['None', 'Mute', 'Marker', 'Toggle LED'];
+  // Manual mode is the default capture mode. In it the firmware ignores the Mute
+  // action and the Marker action instead toggles recording on/off — so the labels
+  // are tailored to the active mode. Read once: the page is pushed fresh each time.
+  final bool _manualMode = SharedPreferencesUtil().manualMode;
+
+  // Labels are index-addressed to match the firmware's config bytes
+  // (0=None, 1=Mute, 2=Marker, 3=Toggle LED); only the mode-sensitive labels change.
+  List<String> get _actions => [
+        'None',
+        _manualMode ? 'Mute - Disabled' : 'Mute',
+        _manualMode ? 'Start/Stop Recording' : 'Marker',
+        'Toggle LED',
+      ];
 
   bool get _editable => _status == _ConfigStatus.ready;
 
