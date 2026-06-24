@@ -168,9 +168,7 @@ class DeviceService implements IDeviceService {
       _connection = null;
     }
 
-    if (_connection == null) {
-      _connection = DeviceConnectionFactory.create(device, requiresBond: requiresBond);
-    }
+    _connection ??= DeviceConnectionFactory.create(device, requiresBond: requiresBond);
 
     if (_connection != null) {
       try {
@@ -333,7 +331,7 @@ class DeviceService implements IDeviceService {
         } catch (e) {
           Logger.debug("DeviceService: Failed to send unpair command to Omi: $e");
         }
-        
+
         try {
           await disconnectDevice(isManual: true);
         } catch (e) {
@@ -350,7 +348,7 @@ class DeviceService implements IDeviceService {
     }
 
     _devices.removeWhere((d) => d.id == deviceId);
-    
+
     try {
       await BleHostApi().removeBond(deviceId);
     } catch (e) {
