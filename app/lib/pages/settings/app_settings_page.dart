@@ -27,6 +27,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
   late bool _uploadOnWifiOnly;
   late int _filterMinDurationSeconds;
   late bool _companionDeviceEnabled;
+  late bool _showDebugMenu;
 
   static const List<int> _kShortRecordingOptions = [0, 10, 30, 60, 120, 300, 600, 1800];
 
@@ -42,6 +43,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
     _uploadOnWifiOnly = SharedPreferencesUtil().uploadOnWifiOnly;
     _filterMinDurationSeconds = SharedPreferencesUtil().filterMinDurationSeconds;
     _companionDeviceEnabled = SharedPreferencesUtil().companionDeviceEnabled;
+    _showDebugMenu = SharedPreferencesUtil().showDebugMenu;
   }
 
   void _markDirty() {
@@ -148,6 +150,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
     prefs.keepRecordingsDays = _keepRecordingsDays;
     prefs.uploadOnWifiOnly = _uploadOnWifiOnly;
     prefs.filterMinDurationSeconds = _filterMinDurationSeconds;
+    prefs.showDebugMenu = _showDebugMenu;
 
     if (mounted) setState(() => _isDirty = false);
   }
@@ -584,6 +587,35 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                   ),
                 ),
               ],
+
+              // Debug Menu — shows/hides the "Debug Tools" entry in the settings
+              // drawer. Default off, so debug tooling stays out of the way until
+              // explicitly enabled here.
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Debug Menu',
+                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                  subtitle: Text(
+                    _showDebugMenu
+                        ? 'The "Debug Tools" entry is shown in Settings.'
+                        : 'Off — the "Debug Tools" entry is hidden from Settings.',
+                    style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                  ),
+                  value: _showDebugMenu,
+                  onChanged: (value) {
+                    setState(() => _showDebugMenu = value);
+                    _markDirty();
+                  },
+                  activeColor: Colors.deepPurpleAccent,
+                ),
+              ),
               const SizedBox(height: 24),
             ],
           ),
