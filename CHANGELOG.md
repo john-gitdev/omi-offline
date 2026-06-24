@@ -6,6 +6,7 @@ Patch releases are rolled up into their minor version. Each section reflects the
 
 ### 0.26
 
+- **Change: Button action labels now reflect the recording mode.** On the Button Configuration screen, the assignable actions are labeled to match how the device actually behaves in the active mode. In manual mode (the default), "Marker" reads as "Start/Stop Recording" — the mapped gesture starts a recording and the next trigger stops it — and "Mute" reads as "Mute - Disabled", since the device ignores mute while recording is under manual control. In automatic mode the labels stay "Marker" and "Mute". Only the labels changed; what each gesture does on the device is unchanged.
 - **New: Re-pair guidance after a firmware update.** The "Firmware updated!" screen now shows a "Trouble reconnecting?" note, since an update can reset the device's Bluetooth pairing and leave the phone holding a stale key. If the Omi won't reconnect, it walks you through clearing the old pairing on both sides — 5-tap-and-hold (10 s) on the device, and Forget/Unpair on the phone (with iOS- and Android-specific steps). It's phrased conditionally, so it only matters if a reconnect actually fails.
 
 ### 0.25
