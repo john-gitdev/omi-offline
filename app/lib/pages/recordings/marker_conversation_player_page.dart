@@ -78,11 +78,12 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
 
   Future<void> _loadWaveform(File seg) async {
     final bars = _readMetaWaveform(seg);
-    if (mounted)
+    if (mounted) {
       setState(() {
         _waveform = bars;
         _loadingWaveform = false;
       });
+    }
   }
 
   List<double> _readMetaWaveform(File seg) {
@@ -385,7 +386,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        FaIcon(FontAwesomeIcons.solidBookmark, color: Colors.amber, size: 32),
+                        const FaIcon(FontAwesomeIcons.solidBookmark, color: Colors.amber, size: 32),
                         const SizedBox(height: 16),
                         Text(
                           'Marker recorded at ${widget.markerConversation.markerTimeLabel}',
