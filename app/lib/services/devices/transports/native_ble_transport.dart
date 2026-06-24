@@ -35,12 +35,6 @@ class NativeBleTransport extends DeviceTransport {
 
   Completer<List<BleService>>? _deviceReadyCompleter;
 
-  /// Completes when the GATT physical link is up (before service discovery).
-  Completer<void>? _gattConnectedCompleter;
-
-  @override
-  Future<void>? get gattConnectFuture => _gattConnectedCompleter?.future;
-
   DeviceTransportState _state = DeviceTransportState.disconnected;
   DateTime? _lastConnectedAt;
 
@@ -79,9 +73,6 @@ class NativeBleTransport extends DeviceTransport {
     // Add a catchError to the future to prevent unhandled exceptions if the completer
     // is failed before someone is actively awaiting it (or if multiple people await it).
     _deviceReadyCompleter!.future.catchError((_) => <BleService>[]);
-
-    _gattConnectedCompleter = Completer<void>();
-    _gattConnectedCompleter!.future.catchError((_) {});
 
     try {
       await _hostApi.manageDevice(_peripheralUuid, requiresBond);
@@ -148,10 +139,6 @@ class NativeBleTransport extends DeviceTransport {
     _services = [];
 
     // Fail any pending completers
-    if (_gattConnectedCompleter != null && !_gattConnectedCompleter!.isCompleted) {
-      _gattConnectedCompleter!.completeError(Exception('Disconnected'));
-    }
-    _gattConnectedCompleter = null;
     if (_deviceReadyCompleter != null && !_deviceReadyCompleter!.isCompleted) {
       _deviceReadyCompleter!.completeError(Exception('Disconnected'));
       _deviceReadyCompleter = null;
@@ -319,16 +306,10 @@ class NativeBleTransport extends DeviceTransport {
   final Set<String> _activeSubscriptionKeys = {};
 
   void _handleConnectionState(bool connected, String? error) {
-    if (connected) {
-      // Physical BLE connection established.
-      // We don't update state to .connected yet; we wait for _handleDeviceReady
-      // to confirm services are discovered and the device is fully usable.
-      Logger.debug('[NativeBleTransport] $_peripheralUuid: GATT physical connected — waiting for services+MTU');
-      if (_gattConnectedCompleter != null && !_gattConnectedCompleter!.isCompleted) {
-        _gattConnectedCompleter!.complete();
-      }
-      return;
-    }
+    // Native no longer emits a separate "physical connected" event — a successful
+    // connection is signalled via _handleDeviceReady. This callback now only
+    // carries disconnects; ignore any stray connected==true.
+    if (connected) return;
 
     // Ignore transient GATT status errors during connection phase to allow native retry to work.
     final bool isConnecting = _deviceReadyCompleter != null && !_deviceReadyCompleter!.isCompleted;
@@ -339,11 +320,6 @@ class NativeBleTransport extends DeviceTransport {
     }
     Logger.debug(
         '[NativeBleTransport] $_peripheralUuid: disconnected (error=$error isConnecting=$isConnecting state=$_state)');
-
-    if (_gattConnectedCompleter != null && !_gattConnectedCompleter!.isCompleted) {
-      _gattConnectedCompleter!.completeError(error ?? 'disconnected');
-    }
-    _gattConnectedCompleter = null;
 
     // Remember active subscriptions before closing streams
     _activeSubscriptionKeys.clear();

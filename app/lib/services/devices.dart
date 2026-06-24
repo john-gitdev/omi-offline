@@ -34,10 +34,6 @@ abstract class IDeviceService {
   /// Fully tear down connection + transport for a device being forgotten/unpaired.
   Future<void> forgetDevice(String deviceId);
 
-  /// Returns the GATT physical-connect future for the current connection if it
-  /// matches [deviceId], null otherwise. See [DeviceTransport.gattConnectFuture].
-  Future<void>? getGattConnectFuture(String deviceId);
-
   Future<bool> hasCompanionDeviceAssociation();
   Future<String> requestCompanionDeviceAssociation(String deviceId);
 }
@@ -311,12 +307,6 @@ class DeviceService implements IDeviceService {
       await _connection?.disconnect(isManual: isManual);
       _connection = null;
     }
-  }
-
-  @override
-  Future<void>? getGattConnectFuture(String deviceId) {
-    if (_connection?.device.id != deviceId) return null;
-    return _connection!.gattConnectFuture;
   }
 
   @override
