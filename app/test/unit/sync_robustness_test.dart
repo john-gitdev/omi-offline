@@ -180,7 +180,9 @@ class MockDeviceConnection implements DeviceConnection {
   @override
   DeviceConnectionState get status => DeviceConnectionState.connected;
   @override
-  Future<void> connect({void Function(String deviceId, DeviceConnectionState state)? onConnectionStateChanged, bool requiresBond = false}) async {}
+  Future<void> connect(
+      {void Function(String deviceId, DeviceConnectionState state)? onConnectionStateChanged,
+      bool requiresBond = false}) async {}
   @override
   Future<void> disconnect({bool isManual = true}) async {}
   @override
@@ -208,13 +210,21 @@ class MockDeviceConnection implements DeviceConnection {
   @override
   Future<int?> getMicGain() async => null;
   @override
-  Future<StreamSubscription<List<int>>?> getBleBatteryLevelListener({void Function(int)? onBatteryLevelChange, void Function(bool)? onChargingStateChange}) async => null;
+  Future<StreamSubscription<List<int>>?> getBleBatteryLevelListener(
+          {void Function(int)? onBatteryLevelChange, void Function(bool)? onChargingStateChange}) async =>
+      null;
   @override
-  Future<StreamSubscription<List<int>>?> getBleButtonListener({required void Function(List<int>) onButtonReceived}) async => null;
+  Future<StreamSubscription<List<int>>?> getBleButtonListener(
+          {required void Function(List<int>) onButtonReceived}) async =>
+      null;
   @override
   Future<List<int>> getStorageList() async => [];
   @override
-  Future<StreamSubscription<List<int>>?> getBleStorageBytesListener({required void Function(List<int>) onStorageBytesReceived, Function? onError, void Function()? onDone}) async => null;
+  Future<StreamSubscription<List<int>>?> getBleStorageBytesListener(
+          {required void Function(List<int>) onStorageBytesReceived,
+          Function? onError,
+          void Function()? onDone}) async =>
+      null;
 
   @override
   Future<BtDevice> performGetDeviceInfo(DeviceConnection? connection) => throw UnimplementedError();
@@ -225,17 +235,22 @@ class MockDeviceConnection implements DeviceConnection {
   @override
   Future<bool> performRetrieveChargingState() => throw UnimplementedError();
   @override
-  Future<StreamSubscription<List<int>>?> performGetBleBatteryLevelListener({void Function(int)? onBatteryLevelChange, void Function(bool)? onChargingStateChange}) => throw UnimplementedError();
+  Future<StreamSubscription<List<int>>?> performGetBleBatteryLevelListener(
+          {void Function(int)? onBatteryLevelChange, void Function(bool)? onChargingStateChange}) =>
+      throw UnimplementedError();
   @override
   Future<List<int>> performGetButtonState() => throw UnimplementedError();
   @override
   Future<BleAudioCodec> performGetAudioCodec() => throw UnimplementedError();
   @override
-  Future<StreamSubscription<List<int>>?> performGetBleButtonListener({required void Function(List<int>) onButtonReceived}) => throw UnimplementedError();
+  Future<StreamSubscription<List<int>>?> performGetBleButtonListener(
+          {required void Function(List<int>) onButtonReceived}) =>
+      throw UnimplementedError();
   @override
   Future<List<int>> performGetStorageList() => throw UnimplementedError();
   @override
-  Future<bool> performWriteToStorage(int numFile, int command, int offset, {int? timestamp}) => throw UnimplementedError();
+  Future<bool> performWriteToStorage(int numFile, int command, int offset, {int? timestamp}) =>
+      throw UnimplementedError();
   @override
   Future<int> performGetFeatures() => throw UnimplementedError();
   @override
@@ -297,10 +312,12 @@ void main() {
   setUp(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
-      const MethodChannel('disk_space_2'), (call) async => 1000.0,
+      const MethodChannel('disk_space_2'),
+      (call) async => 1000.0,
     );
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
-      const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'), (call) async => null,
+      const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
+      (call) async => null,
     );
     tempDir = Directory.systemTemp.createTempSync('sync_test');
     mockPathProvider = MockPathProvider()..tempPath = tempDir.path;
@@ -330,13 +347,20 @@ void main() {
     late SDCardWalSyncImpl sync;
 
     Future<void> pump([int count = 5]) async {
-      for (int i = 0; i < count; i++) await Future.delayed(Duration.zero);
+      for (int i = 0; i < count; i++) {
+        await Future.delayed(Duration.zero);
+      }
     }
 
     Wal makeWal({int totalBytes = 10, int walOffset = 0}) => Wal(
-          codec: BleAudioCodec.opus, channel: 1, device: 'test-device',
-          fileNum: 1, walOffset: walOffset, storageTotalBytes: totalBytes,
-          timerStart: 0, storage: WalStorage.sdcard,
+          codec: BleAudioCodec.opus,
+          channel: 1,
+          device: 'test-device',
+          fileNum: 1,
+          walOffset: walOffset,
+          storageTotalBytes: totalBytes,
+          timerStart: 0,
+          storage: WalStorage.sdcard,
         );
 
     setUp(() async {
@@ -477,7 +501,7 @@ void main() {
 
       mockConn.add(ackPacket(0x00));
       await pump();
-      
+
       // Send 260,000 bytes (crosses the 252,000 boundary)
       mockConn.add(dataPacket(0, List.filled(260000, 0xBB)));
       await pump();
@@ -496,17 +520,17 @@ void main() {
       final syncFuture2 = sync.syncAll();
       await mockConn.waitForWrite(2);
       await pump(10);
-      
+
       expect(globalWriteCount, equals(1));
       expect(globalRequestedOffset, equals(260000));
-      
+
       sync.cancelSync();
       await syncFuture2;
     });
 
     test('Crash Recovery (Adjustment Mode Copying): resumes from last segment boundary', () async {
       SharedPreferencesUtil().adjustmentMode = true;
-      
+
       globalCurrentFileNum = -1;
       globalWriteCount = 0;
       globalRequestedOffset = 0;
@@ -524,7 +548,7 @@ void main() {
 
       mockConn.add(ackPacket(0x00));
       await pump();
-      
+
       // Send 260,000 bytes (crosses the 252,000 boundary)
       mockConn.add(dataPacket(0, List.filled(260000, 0xCC)));
       await pump();
@@ -543,10 +567,10 @@ void main() {
       final syncFuture2 = sync.syncAll();
       await mockConn.waitForWrite(2);
       await pump(10);
-      
+
       expect(globalWriteCount, equals(1));
       expect(globalRequestedOffset, equals(260000));
-      
+
       // Let second sync finish properly (send remaining 40,000 bytes)
       mockConn.add(ackPacket(0x00));
       await pump();
@@ -554,14 +578,14 @@ void main() {
       await pump();
       mockConn.add(eotPacket());
       await pump();
-      
+
       await syncFuture2;
 
       // Verify the adjustment mode file exists and has size
       final dir = Directory(p.join(tempDir.path, 'adjustment_mode_segments'));
       final files = dir.listSync(recursive: true).whereType<File>().toList();
       expect(files.length, greaterThanOrEqualTo(1));
-      
+
       SharedPreferencesUtil().adjustmentMode = false;
     });
   });
