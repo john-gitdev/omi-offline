@@ -332,7 +332,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                     setState(() => _uploadOnWifiOnly = value);
                     _markDirty();
                   },
-                  activeColor: Colors.deepPurpleAccent,
+                  activeThumbColor: Colors.deepPurpleAccent,
                 ),
               ),
               const SizedBox(height: 16),
@@ -445,7 +445,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                           label: const Text('Clean Up Short Recordings'),
                           style: OutlinedButton.styleFrom(
                             foregroundColor: Colors.redAccent,
-                            side: BorderSide(color: Colors.redAccent.withOpacity(0.5)),
+                            side: BorderSide(color: Colors.redAccent.withValues(alpha: 0.5)),
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                             padding: const EdgeInsets.symmetric(vertical: 12),
                           ),
@@ -554,7 +554,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                     setState(() => _use24HourTime = value);
                     _markDirty();
                   },
-                  activeColor: Colors.deepPurpleAccent,
+                  activeThumbColor: Colors.deepPurpleAccent,
                 ),
               ),
 
@@ -583,7 +583,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                     ),
                     value: _companionDeviceEnabled,
                     onChanged: (value) => _setCompanionDevicePairing(value),
-                    activeColor: Colors.deepPurpleAccent,
+                    activeThumbColor: Colors.deepPurpleAccent,
                   ),
                 ),
               ],
@@ -613,7 +613,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                     setState(() => _showDebugMenu = value);
                     _markDirty();
                   },
-                  activeColor: Colors.deepPurpleAccent,
+                  activeThumbColor: Colors.deepPurpleAccent,
                 ),
               ),
               const SizedBox(height: 24),
