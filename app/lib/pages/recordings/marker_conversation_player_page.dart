@@ -345,7 +345,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                 if (confirm == true) {
                   await _player.stop();
                   await RecordingsManager.deleteMarkerConversation(widget.markerConversation);
-                  if (mounted) {
+                  if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(content: Text('Deleted Marker at ${widget.markerConversation.markerTimeLabel}')),
                     );
