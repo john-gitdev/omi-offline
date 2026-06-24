@@ -1,5 +1,3 @@
 {
-  "enabledPlugins": {
-    "antigravity@antigravity-for-claude-code": true
-  }
+  "enabledPlugins": {}
 }
