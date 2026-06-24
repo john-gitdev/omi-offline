@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:omi/backend/preferences.dart';
 import 'package:omi/pages/recordings/recordings_controller.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -326,9 +327,9 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                           color: Color(0xFF8E8E93),
                           size: 20,
                         ),
-                        onTap: () {
+                        onTap: () async {
                           final controller = Provider.of<RecordingsController>(context, listen: false);
-                          Navigator.of(context).push(
+                          await Navigator.of(context).push(
                             MaterialPageRoute(
                               builder: (context) => ChangeNotifierProvider.value(
                                 value: controller,
@@ -336,6 +337,10 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                               ),
                             ),
                           );
+                          // Reflect a Debug Menu toggle made on the App Settings page:
+                          // this drawer stays mounted underneath, so rebuild it so the
+                          // Debug Tools item appears/disappears on return.
+                          if (mounted) setState(() {});
                         },
                       ),
                       const Divider(height: 1, color: Color(0xFF3C3C43)),
@@ -361,22 +366,24 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                           }
                         },
                       ),
-                      const Divider(height: 1, color: Color(0xFF3C3C43)),
-                      _buildSettingsItem(
-                        title: 'Debug Tools',
-                        icon: const FaIcon(
-                          FontAwesomeIcons.bug,
-                          color: Color(0xFF8E8E93),
-                          size: 20,
+                      if (SharedPreferencesUtil().showDebugMenu) ...[
+                        const Divider(height: 1, color: Color(0xFF3C3C43)),
+                        _buildSettingsItem(
+                          title: 'Debug Tools',
+                          icon: const FaIcon(
+                            FontAwesomeIcons.bug,
+                            color: Color(0xFF8E8E93),
+                            size: 20,
+                          ),
+                          onTap: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (context) => const SyncPage(),
+                              ),
+                            );
+                          },
                         ),
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (context) => const SyncPage(),
-                            ),
-                          );
-                        },
-                      ),
+                      ],
                     ],
                   ),
                   const SizedBox(height: 32),
