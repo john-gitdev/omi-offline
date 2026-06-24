@@ -17,13 +17,32 @@ allprojects {
     }
 }
 
-// Plugins that still pin Java 8 (audio_session, just_audio, disk_space_2,
-// flutter_secure_storage, opus_flutter_android) make javac print the
-// "source/target value 8 is obsolete" warnings. We can't edit those plugins,
-// so silence the obsolete-options notice across all subprojects.
+// Several bundled plugins still pin Java 8 (audio_session, just_audio,
+// disk_space_2, flutter_secure_storage, opus_flutter_android), which makes the
+// JDK-21 javac warn that source/target 8 is obsolete. Move every Android
+// subproject onto a single modern target (17) instead of just hiding the
+// notice. :app is excluded — it manages its own Java/Kotlin 21 and must not be
+// downgraded. Java and Kotlin must move together or AGP raises "Inconsistent
+// JVM-target compatibility" (e.g. disk_space_2 at Kotlin 1.8, mcumgr_flutter
+// at Kotlin 11).
 subprojects {
-    tasks.withType(JavaCompile).configureEach {
-        options.compilerArgs << '-Xlint:-options'
+    if (project.path == ':app') {
+        return
+    }
+    afterEvaluate { project ->
+        if (project.hasProperty('android')) {
+            project.android {
+                compileOptions {
+                    sourceCompatibility JavaVersion.VERSION_17
+                    targetCompatibility JavaVersion.VERSION_17
+                }
+            }
+        }
+    }
+    tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        }
     }
 }
 
