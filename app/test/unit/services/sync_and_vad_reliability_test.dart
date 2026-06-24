@@ -1,10 +1,8 @@
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:omi/services/vad_audio_processor.dart';
 import 'package:omi/services/recordings_manager.dart';
-import 'package:omi/services/frame_ref.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import 'package:flutter/services.dart';
@@ -35,7 +33,8 @@ void main() {
 
     // Mock FlutterSecureStorage platform channel
     const MethodChannel secureStorageChannel = MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(secureStorageChannel, (call) async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(secureStorageChannel,
+        (call) async {
       if (call.method == 'read') return null;
       if (call.method == 'write') return null;
       if (call.method == 'delete') return null;
@@ -64,15 +63,15 @@ void main() {
 
   group('RecordingsManager.coveredBinPaths', () {
     test('identifies fully covered bin files', () async {
-      final dateStr = '2026-06-02';
+      const dateStr = '2026-06-02';
       final recordingsDir = Directory(p.join(tempDir.path, 'recordings', dateStr))..createSync(recursive: true);
       final rawDir = Directory(p.join(tempDir.path, 'raw_segments', '1780358400'))..createSync(recursive: true);
 
       // 1. Create a mock recording spanning [00:00:00, 00:10:00] (600s)
       // 1780358400000 = 2026-06-02 00:00:00 UTC
-      final startMs = 1780358400000;
+      const startMs = 1780358400000;
       final wavFile = File(p.join(recordingsDir.path, 'recording_$startMs.wav'))..writeAsBytesSync(Uint8List(44));
-      
+
       // Create .meta sidecar with duration
       final metaFile = File(p.join(recordingsDir.path, 'recording_$startMs.meta'));
       final metaData = ByteData(8);
@@ -81,16 +80,19 @@ void main() {
 
       // 2. Create raw bin files
       // B1: Fully covered (00:01:00 to 00:02:00 UTC)
-      final b1Ts = 1780358400 + 60;
-      final b1File = File(p.join(rawDir.path, '${b1Ts}_0.bin'))..writeAsBytesSync(Uint8List(36 + (4.05 * 60000).ceil()));
+      const b1Ts = 1780358400 + 60;
+      final b1File = File(p.join(rawDir.path, '${b1Ts}_0.bin'))
+        ..writeAsBytesSync(Uint8List(36 + (4.05 * 60000).ceil()));
 
       // B2: Not covered (Starts 11 minutes before)
-      final b2Ts = 1780358400 - 660;
-      final b2File = File(p.join(rawDir.path, '${b2Ts}_0.bin'))..writeAsBytesSync(Uint8List(36 + (4.05 * 60000).ceil()));
+      const b2Ts = 1780358400 - 660;
+      final b2File = File(p.join(rawDir.path, '${b2Ts}_0.bin'))
+        ..writeAsBytesSync(Uint8List(36 + (4.05 * 60000).ceil()));
 
       // B3: Not covered (Ends after recording ends)
-      final b3Ts = 1780358400 + 580;
-      final b3File = File(p.join(rawDir.path, '${b3Ts}_0.bin'))..writeAsBytesSync(Uint8List(36 + (4.05 * 60000).ceil()));
+      const b3Ts = 1780358400 + 580;
+      final b3File = File(p.join(rawDir.path, '${b3Ts}_0.bin'))
+        ..writeAsBytesSync(Uint8List(36 + (4.05 * 60000).ceil()));
 
       final covered = await RecordingsManager.coveredBinPaths([b1File, b2File, b3File]);
 
@@ -102,7 +104,7 @@ void main() {
 
   group('VadAudioProcessor Checkpointing', () {
     test('serialize and restore state captures complex fields', () async {
-      final settings = ProcessingSettings(
+      const settings = ProcessingSettings(
         vadEnabled: true,
         speechThreshold: 0.5,
         silenceDurationToSplitMs: 120000,
@@ -113,10 +115,10 @@ void main() {
         audioSaveFormat: 'wav',
         omiEnabled: false,
       );
-      
+
       final processor = VadAudioProcessor.fromSettings(settings: settings, outputDir: tempDir.path);
-      final binFile = File(p.join(tempDir.path, 'test.bin'))..writeAsBytesSync([0,0,0,0]);
-      
+      final binFile = File(p.join(tempDir.path, 'test.bin'))..writeAsBytesSync([0, 0, 0, 0]);
+
       final mockState = {
         'refs': [
           {'t': 'f', 'p': binFile.path, 'o': 10, 'l': 4},
@@ -136,7 +138,9 @@ void main() {
         'fbm': true,
         'mpu': 777,
         'sep': true,
-        'pm': [{'ms': 888, 'o': 999}],
+        'pm': [
+          {'ms': 888, 'o': 999}
+        ],
         'vs': List.filled(256, 0.5),
         'vc': List.filled(64, 0.1),
         'pb': [0.1, 0.2, 0.3],
@@ -144,7 +148,7 @@ void main() {
       };
 
       await processor.restoreState(mockState);
-      
+
       final serialized = await processor.serializeState();
       expect(serialized, isNotNull);
       expect(serialized!['sfc'], 123);
@@ -152,7 +156,7 @@ void main() {
       expect(serialized['pbl'], 3);
       expect(serialized['idt'], true);
       expect(serialized['refs'].length, 2);
-      
+
       final pb = serialized['pb'] as List;
       expect(pb[0], closeTo(0.1, 0.00001));
       expect(pb[1], closeTo(0.2, 0.00001));
@@ -162,7 +166,7 @@ void main() {
 
   group('VadAudioProcessor Header Parsing', () {
     test('parses 0xFFFFFFFB header and bridges UTC time', () async {
-      final settings = ProcessingSettings(
+      const settings = ProcessingSettings(
         vadEnabled: true,
         speechThreshold: 0.5,
         silenceDurationToSplitMs: 120000,
@@ -176,10 +180,10 @@ void main() {
       final processor = VadAudioProcessor.fromSettings(settings: settings, outputDir: tempDir.path);
 
       // Create a bin file with a valid header
-      final utcStartMs = 1780358400000; // 2026-06-02 00:00:00 UTC
-      final uptimeStartMs = 100000;
-      final imuTicks = 5000;
-      final sessionId = 123;
+      const utcStartMs = 1780358400000; // 2026-06-02 00:00:00 UTC
+      const uptimeStartMs = 100000;
+      const imuTicks = 5000;
+      const sessionId = 123;
 
       final binFile = File(p.join(tempDir.path, 'header_test.bin'));
       final builder = BytesBuilder();
@@ -201,7 +205,7 @@ void main() {
       await binFile.writeAsBytes(builder.toBytes());
 
       await processor.processSegmentFile(binFile, DateTime.now());
-      
+
       // In private state, _recordingStartTime should match utcStartMs
       // We can verify this via serializeState
       final state = await processor.serializeState();
@@ -212,7 +216,7 @@ void main() {
     });
 
     test('handles 0xFFFFFFFD VAD resume marker', () async {
-      final settings = ProcessingSettings(
+      const settings = ProcessingSettings(
         vadEnabled: false, // AAD mode to treat frames as speech
         speechThreshold: 0.5,
         silenceDurationToSplitMs: 120000,
@@ -227,9 +231,9 @@ void main() {
 
       final binFile = File(p.join(tempDir.path, 'resume_test.bin'));
       final builder = BytesBuilder();
-      
+
       // 1. Add Header to establish baseline
-      final utcStartMs = 1780358400000;
+      const utcStartMs = 1780358400000;
       final headerData = ByteData(36);
       headerData.setUint32(0, 0xFFFFFFFB, Endian.little);
       headerData.setUint32(4, 28, Endian.little);
@@ -245,10 +249,10 @@ void main() {
       builder.add([0, 1, 2, 3]);
 
       // 3. Resume Marker (10s later)
-      // Frame 1 ends at utcStartMs + 20ms. 
+      // Frame 1 ends at utcStartMs + 20ms.
       // We want a 10s gap, so resume at utcStartMs + 10020ms.
-      final resumeUtc = (utcStartMs ~/ 1000) + 10;
-      final resumeUptime = 100000 + 10020;
+      const resumeUtc = (utcStartMs ~/ 1000) + 10;
+      const resumeUptime = 100000 + 10020;
       final marker = ByteData(20);
       marker.setUint32(0, 0xFFFFFFFD, Endian.little);
       marker.setUint32(4, resumeUtc, Endian.little); // seconds
@@ -261,10 +265,10 @@ void main() {
 
       await binFile.writeAsBytes(builder.toBytes());
       await processor.processSegmentFile(binFile, DateTime.now());
-      
+
       final state = await processor.serializeState();
       final refs = state!['refs'] as List;
-      
+
       // The gap calculation in VadAudioProcessor:
       // lastFrameEndTime = utcStartMs + 20ms
       // newResumeTime = resumeUtc * 1000 = utcStartMs + 10000ms
