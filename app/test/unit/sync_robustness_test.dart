@@ -71,9 +71,6 @@ class MockDeviceConnection implements DeviceConnection {
   void add(List<int> packet) => _controller.add(packet);
   Future<void> close() async => await _controller.close();
 
-  @override
-  Future<void>? get gattConnectFuture => null;
-
   /// Resolves once [writeToStorage] has been called at least [atLeast] times.
   Future<void> waitForWrite(int atLeast) {
     if (_writesDone >= atLeast) return Future.value();

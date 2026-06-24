@@ -6,11 +6,9 @@ import 'package:omi/utils/logger.dart';
 /// Callback signature for characteristic value updates.
 typedef CharacteristicValueCallback = void Function(String serviceUuid, String characteristicUuid, Uint8List value);
 
-/// Callback signature for connection state changes.
+/// Callback signature for connection state changes (disconnect only; native
+/// signals successful connection via [DeviceReadyCallback]).
 typedef ConnectionStateCallback = void Function(bool connected, String? error);
-
-/// Callback signature for service discovery.
-typedef ServicesDiscoveredCallback = void Function(List<BleService> services);
 
 /// Callback signature for when a device is connected, discovered, and MTU is negotiated.
 typedef DeviceReadyCallback = void Function(List<BleService> services);
@@ -24,7 +22,6 @@ class BleBridge implements BleFlutterApi {
 
   final Map<String, CharacteristicValueCallback> _characteristicCallbacks = {};
   final Map<String, ConnectionStateCallback> _connectionCallbacks = {};
-  final Map<String, ServicesDiscoveredCallback> _servicesCallbacks = {};
   final Map<String, DeviceReadyCallback> _deviceReadyCallbacks = {};
 
   void Function(String state)? bluetoothStateChangedCallback;
@@ -36,13 +33,11 @@ class BleBridge implements BleFlutterApi {
     required String peripheralUuid,
     CharacteristicValueCallback? onCharacteristicValue,
     ConnectionStateCallback? onConnectionState,
-    ServicesDiscoveredCallback? onServicesDiscovered,
     DeviceReadyCallback? onDeviceReady,
   }) {
     final key = peripheralUuid.toUpperCase();
     if (onCharacteristicValue != null) _characteristicCallbacks[key] = onCharacteristicValue;
     if (onConnectionState != null) _connectionCallbacks[key] = onConnectionState;
-    if (onServicesDiscovered != null) _servicesCallbacks[key] = onServicesDiscovered;
     if (onDeviceReady != null) _deviceReadyCallbacks[key] = onDeviceReady;
   }
 
@@ -50,7 +45,6 @@ class BleBridge implements BleFlutterApi {
     final key = peripheralUuid.toUpperCase();
     _characteristicCallbacks.remove(key);
     _connectionCallbacks.remove(key);
-    _servicesCallbacks.remove(key);
     _deviceReadyCallbacks.remove(key);
   }
 
@@ -65,21 +59,9 @@ class BleBridge implements BleFlutterApi {
   }
 
   @override
-  void onPeripheralConnected(String peripheralUuid) {
-    final key = peripheralUuid.toUpperCase();
-    _connectionCallbacks[key]?.call(true, null);
-  }
-
-  @override
   void onPeripheralDisconnected(String peripheralUuid, String? error) {
     final key = peripheralUuid.toUpperCase();
     _connectionCallbacks[key]?.call(false, error);
-  }
-
-  @override
-  void onServicesDiscovered(String peripheralUuid, List<BleService> services) {
-    final key = peripheralUuid.toUpperCase();
-    _servicesCallbacks[key]?.call(services);
   }
 
   @override

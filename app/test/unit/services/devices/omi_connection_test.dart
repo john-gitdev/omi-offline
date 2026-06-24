@@ -5,9 +5,6 @@ import 'package:omi/services/devices/omi_connection.dart';
 import 'package:omi/services/devices/transports/device_transport.dart';
 
 class MockDeviceTransport implements DeviceTransport {
-  @override
-  Future<void>? get gattConnectFuture => null;
-
   bool throwOnModel = false;
   bool throwOnFw = false;
   bool throwOnHw = false;

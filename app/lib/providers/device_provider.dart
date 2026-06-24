@@ -543,41 +543,37 @@ class DeviceProvider extends ChangeNotifier
     Logger.debug('[BLE] _scanConnectDevice: starting connect to $pairedDeviceId');
 
     // Kick off native connect. This holds the Dart mutex internally until the
-    // device is fully ready (services + MTU). We don't await it here — instead
-    // we race the GATT physical-connect signal against a 5s probe timeout to
-    // decide whether a BLE scan is needed in parallel.
+    // device is fully ready (services + MTU). We don't await it to completion
+    // yet — first race it against a short probe so a BLE scan can start in
+    // parallel when the connect is slow. (connectFuture is listened to twice;
+    // Future.timeout keeps an error handler on the source across the probe, so a
+    // late rejection is never unhandled.)
     final connectFuture = ServiceManager.instance().device.ensureConnection(pairedDeviceId, force: true);
 
-    // Wait up to 5s for the GATT physical link to come up (radio ↔ firmware,
-    // before service discovery). If it fires, the device IS reachable — just
-    // a slow pipeline. If it doesn't fire in 5s the device is probably asleep
-    // or out of range: start a BLE scan in parallel so the radio is actively
-    // looking while native retries in the background.
-    // The BLE scan portion of discover() doesn't need the Dart mutex and runs
-    // concurrently; only discover's final ensureConnection blocks on the mutex.
-    final gattFuture = ServiceManager.instance().device.getGattConnectFuture(pairedDeviceId);
-    bool gattConnected = false;
-    if (gattFuture != null) {
-      try {
-        await gattFuture.timeout(const Duration(seconds: 5));
-        gattConnected = true;
-        Logger.debug(
-            '[BLE] _scanConnectDevice: GATT link up at ${DateTime.now().difference(t0).inMilliseconds}ms — device in range, waiting for pipeline');
-      } catch (_) {
-        Logger.debug('[BLE] _scanConnectDevice: no GATT in 5s — starting BLE scan in parallel');
-      }
-    } else {
-      gattConnected = isConnected;
+    // Probe: native consolidated connect + service discovery into a single
+    // device-ready event, so connectFuture is the only "connected" signal to
+    // race. If it completes within 5s the device was in range — skip the
+    // redundant scan; otherwise start a BLE scan in parallel while native keeps
+    // retrying. The scan portion of discover() doesn't need the Dart mutex and
+    // runs concurrently; only discover's final ensureConnection blocks on it.
+    bool ready = false;
+    try {
+      await connectFuture.timeout(const Duration(seconds: 5));
+      ready = true;
+      Logger.debug(
+          '[BLE] _scanConnectDevice: ready within probe at ${DateTime.now().difference(t0).inMilliseconds}ms — skipping scan');
+    } catch (_) {
+      Logger.debug('[BLE] _scanConnectDevice: not ready in 5s — starting BLE scan in parallel');
     }
-
-    if (!gattConnected) {
+    if (!ready && !isConnected) {
       unawaited(ServiceManager.instance().device.discover(timeout: 10));
     }
 
-    // Wait for device fully ready (services + MTU). 25s outer timeout prevents
-    // parking forever; the underlying Dart completer has its own 30s backstop.
+    // Wait for the device to be fully ready (services + MTU). 25s here on top of
+    // the 5s probe preserves the original ~30s budget; the underlying Dart
+    // completer has its own 30s backstop.
     try {
-      await connectFuture.timeout(const Duration(seconds: 25));
+      if (!ready) await connectFuture.timeout(const Duration(seconds: 25));
       final elapsed = DateTime.now().difference(t0).inMilliseconds;
       Logger.debug('[BLE] _scanConnectDevice: device ready after ${elapsed}ms');
       device = await _getConnectedDevice();

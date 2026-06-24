@@ -69,9 +69,6 @@ abstract class DeviceConnection {
     return _connectionState == DeviceConnectionState.connected;
   }
 
-  /// See [DeviceTransport.gattConnectFuture].
-  Future<void>? get gattConnectFuture => transport.gattConnectFuture;
-
   Future<int> retrieveBatteryLevel() async {
     if (await isConnected()) return performRetrieveBatteryLevel();
     return -1;

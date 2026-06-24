@@ -18,11 +18,6 @@ abstract class DeviceTransport {
 
   Stream<DeviceTransportState> get connectionStateStream;
 
-  /// A Future that completes when the GATT physical link is established (before
-  /// service discovery). Null when not actively connecting. Non-BLE transports
-  /// return null (default).
-  Future<void>? get gattConnectFuture => null;
-
   Future<void> dispose();
 }
 
