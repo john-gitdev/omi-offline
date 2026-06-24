@@ -17,6 +17,16 @@ allprojects {
     }
 }
 
+// Plugins that still pin Java 8 (audio_session, just_audio, disk_space_2,
+// flutter_secure_storage, opus_flutter_android) make javac print the
+// "source/target value 8 is obsolete" warnings. We can't edit those plugins,
+// so silence the obsolete-options notice across all subprojects.
+subprojects {
+    tasks.withType(JavaCompile).configureEach {
+        options.compilerArgs << '-Xlint:-options'
+    }
+}
+
 rootProject.buildDir = '../build'
 subprojects {
     project.buildDir = "${rootProject.buildDir}/${project.name}"
