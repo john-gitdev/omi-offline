@@ -479,6 +479,9 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
           // Update button
           GestureDetector(
             onTap: () async {
+              // Capture the provider before the confirm-dialog await so it isn't
+              // referenced via `context` across an async gap.
+              final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
               var targetVersion = latestFirmwareDetails['version']?.toString() ?? '';
               if (targetVersion.startsWith('3.0.17')) {
                 var confirmed = await showDialog<bool>(
@@ -496,7 +499,6 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
                 if (confirmed != true) return;
               }
 
-              final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
               deviceProvider.setFirmwareUpdateInProgress(true);
 
               if (widget.localZipPath != null) {
