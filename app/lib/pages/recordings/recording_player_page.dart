@@ -284,7 +284,7 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
               if (confirm == true) {
                 await _player.stop();
                 await RecordingsManager.deleteConversation(widget.conversation);
-                if (mounted) {
+                if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(content: Text('Deleted conversation from ${widget.conversation.timeRangeLabel}')),
                   );
