@@ -1071,9 +1071,6 @@ class RecordingsManager {
           }
 
           if (success) {
-            final finalGap = audioToStitch.path.contains('_draft.')
-                ? 0
-                : (allEvents.firstWhere((e) => e.audio == audioToStitch).timestamp - lastEndTs);
             final int nextTs = allEvents.firstWhere((e) => e.audio == audioToStitch).timestamp;
 
             // Re-read meta since it may have been updated by _stitchDiscard
@@ -1203,7 +1200,7 @@ class RecordingsManager {
               final opus = Uint8List.sublistView(bytes, offset + 4, offset + 4 + frameLen);
               try {
                 final pcm = decoder.decode(input: opus);
-                if (pcm != null) await sink.writeFrom(pcm.buffer.asUint8List());
+                await sink.writeFrom(pcm.buffer.asUint8List());
               } catch (_) {}
               offset += 4 + ((frameLen + 3) & ~3);
             }
@@ -1925,7 +1922,7 @@ class RecordingsManager {
                     try {
                       await _writeJsonAtomic(edlFile, json);
                       Logger.debug(
-                          'RecordingsManager: Migrated EDL ${edlFile.path.split('/').last} cropEndMs ${originalOnDisk}→$encodedMs');
+                          'RecordingsManager: Migrated EDL ${edlFile.path.split('/').last} cropEndMs $originalOnDisk→$encodedMs');
                     } catch (e) {
                       Logger.error('RecordingsManager: cropEnd migration write failed: $e');
                     }
@@ -2619,8 +2616,9 @@ class RecordingsManager {
     final covered = <String>{};
     for (final bin in candidates) {
       final folderName = p.basename(bin.parent.path);
-      if (folderName.startsWith('session_') || folderName.startsWith('unknown_') || folderName.startsWith('.'))
+      if (folderName.startsWith('session_') || folderName.startsWith('unknown_') || folderName.startsWith('.')) {
         continue;
+      }
       final binName = p.basename(bin.path);
       final parts = binName.split('.').first.split('_');
       if (parts.isEmpty) continue;
