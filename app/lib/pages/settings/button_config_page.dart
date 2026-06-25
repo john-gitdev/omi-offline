@@ -20,6 +20,14 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
   _ConfigStatus _status = _ConfigStatus.loading;
   List<int> _config = [0, 0, 2, 1, 3, 0];
 
+  // Per-slot vibration pattern (0=Off, 1=Single, 2=Double, 3=Triple), same slot
+  // order as _config. Only surfaced when the device reports the haptic-config
+  // characteristic — older firmware returns null and we hide the selector.
+  List<int> _hapticConfig = [0, 0, 0, 0, 0, 0];
+  bool _hapticSupported = false;
+
+  static const List<String> _vibrationPatterns = ['Off', 'Single', 'Double', 'Triple'];
+
   // Manual mode is the default capture mode. In it the firmware ignores the Mute
   // action and the Marker action instead toggles recording on/off — so the labels
   // are tailored to the active mode. Read once: the page is pushed fresh each time.
@@ -56,9 +64,18 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
       }
       final config = await connection.getButtonConfig();
       if (config != null && config.length == 6) {
+        // Best-effort: older firmware lacks this characteristic and returns null,
+        // in which case we simply don't offer vibration patterns.
+        final haptic = await connection.getHapticConfig();
         if (mounted) {
           setState(() {
             _config = config;
+            if (haptic != null && haptic.length == 6) {
+              _hapticConfig = haptic;
+              _hapticSupported = true;
+            } else {
+              _hapticSupported = false;
+            }
             _status = _ConfigStatus.ready;
           });
         }
@@ -103,33 +120,115 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
     );
   }
 
+  Future<void> _updateHapticConfig(int index, int pattern) async {
+    final previous = _hapticConfig[index];
+    setState(() {
+      _hapticConfig[index] = pattern;
+    });
+
+    final pairedDevice = context.read<DeviceProvider>().pairedDevice;
+    if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
+      try {
+        final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
+        if (connection != null) {
+          await connection.setHapticConfig(_hapticConfig);
+          return;
+        }
+      } catch (_) {
+        // Fall through to revert + notify below.
+      }
+    }
+
+    // Couldn't reach the device — revert the optimistic change so the UI keeps
+    // reflecting what's actually on the firmware, and tell the user why.
+    if (!mounted) return;
+    setState(() {
+      _hapticConfig[index] = previous;
+      _status = _ConfigStatus.noDevice;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Device not connected — change not saved.')),
+    );
+  }
+
   Widget _buildConfigItem(String label, int index) {
     int currentVal = _config[index];
     if (currentVal >= _actions.length) currentVal = 0;
 
+    // Only offer a vibration pattern when this slot has an action assigned and
+    // the firmware supports the haptic-config characteristic.
+    final bool showHaptic = _hapticSupported && currentVal != 0;
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(label, style: const TextStyle(color: Colors.white, fontSize: 16)),
+              DropdownButton<int>(
+                value: currentVal,
+                dropdownColor: const Color(0xFF2C2C2E),
+                style: const TextStyle(color: Colors.white, fontSize: 16),
+                disabledHint: Text(_actions[currentVal], style: const TextStyle(color: Colors.white38, fontSize: 16)),
+                underline: Container(),
+                onChanged: _editable
+                    ? (int? newValue) {
+                        if (newValue != null) {
+                          _updateConfig(index, newValue);
+                        }
+                      }
+                    : null,
+                items: List.generate(_actions.length, (i) {
+                  return DropdownMenuItem<int>(
+                    value: i,
+                    child: Text(_actions[i]),
+                  );
+                }),
+              ),
+            ],
+          ),
+        ),
+        if (showHaptic) _buildHapticItem(index),
+      ],
+    );
+  }
+
+  Widget _buildHapticItem(int index) {
+    int currentVal = _hapticConfig[index];
+    if (currentVal >= _vibrationPatterns.length) currentVal = 0;
+
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+      padding: const EdgeInsets.only(left: 32.0, right: 16.0, bottom: 8.0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label, style: const TextStyle(color: Colors.white, fontSize: 16)),
+          const Row(
+            children: [
+              Icon(Icons.vibration, color: Colors.white38, size: 16),
+              SizedBox(width: 8),
+              Text('Vibration', style: TextStyle(color: Colors.white54, fontSize: 14)),
+            ],
+          ),
           DropdownButton<int>(
             value: currentVal,
             dropdownColor: const Color(0xFF2C2C2E),
-            style: const TextStyle(color: Colors.white, fontSize: 16),
-            disabledHint: Text(_actions[currentVal], style: const TextStyle(color: Colors.white38, fontSize: 16)),
+            style: const TextStyle(color: Colors.white70, fontSize: 14),
+            disabledHint:
+                Text(_vibrationPatterns[currentVal], style: const TextStyle(color: Colors.white38, fontSize: 14)),
             underline: Container(),
             onChanged: _editable
                 ? (int? newValue) {
                     if (newValue != null) {
-                      _updateConfig(index, newValue);
+                      _updateHapticConfig(index, newValue);
                     }
                   }
                 : null,
-            items: List.generate(_actions.length, (i) {
+            items: List.generate(_vibrationPatterns.length, (i) {
               return DropdownMenuItem<int>(
                 value: i,
-                child: Text(_actions[i]),
+                child: Text(_vibrationPatterns[i]),
               );
             }),
           ),
@@ -189,7 +288,8 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 16.0),
                   child: Text(
-                    'Customize what actions are triggered by different button presses.',
+                    'Customize what actions are triggered by different button presses, '
+                    'and how the device vibrates to confirm them.',
                     style: TextStyle(color: Colors.white70, fontSize: 14),
                   ),
                 ),
