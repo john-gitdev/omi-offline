@@ -149,12 +149,18 @@ static void execute_button_action(uint8_t taps, bool is_hold)
 
     LOG_INF("Action triggered: taps=%d, hold=%d -> action=%d", taps, is_hold, action);
 
+    // Tracks whether the action actually took effect, so haptic feedback fires
+    // only when something happened (e.g. a mute tap is a no-op in manual mode).
+    // __maybe_unused: only read under CONFIG_OMI_ENABLE_HAPTIC below.
+    bool __maybe_unused acted = false;
+
     switch (action) {
     case BUTTON_ACTION_MUTE:
-        mute_apply(!is_muted);
+        acted = mute_apply(!is_muted);
         break;
     case BUTTON_ACTION_MARKER:
         if (!is_muted) {
+            acted = true;
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
             uint16_t thr = aad_get_threshold();
             bool in_manual = (thr == 32769 || thr == 65535);
@@ -212,11 +218,23 @@ static void execute_button_action(uint8_t taps, bool is_hold)
     case BUTTON_ACTION_TOGGLE_LED:
         is_led_enabled = !is_led_enabled;
         LOG_INF("LED toggled %s", is_led_enabled ? "ON" : "OFF");
+        acted = true;
         break;
     case BUTTON_ACTION_NONE:
     default:
         break;
     }
+
+#ifdef CONFIG_OMI_ENABLE_HAPTIC
+    // Buzz the configured vibration pattern for this slot, but only when the
+    // action actually did something. play_haptic_pattern(0) is a no-op, so
+    // off-slots stay silent regardless.
+    if (acted) {
+        uint8_t haptic_cfg[6];
+        app_settings_get_haptic_config(haptic_cfg);
+        play_haptic_pattern(haptic_cfg[index]);
+    }
+#endif
 }
 
 void check_button_level(struct k_work *work_item)
