@@ -6,6 +6,7 @@ Patch releases are rolled up into their minor version. Each section reflects the
 
 ### 0.26
 
+- **New: Customizable vibration feedback for button actions.** The Button Configuration screen now lets you choose how the device buzzes to confirm each gesture — Off, Single, Double, or Triple — shown right beneath any tap slot that has an action assigned. A slot set to "None" has no vibration option. The buzz fires only when the action actually does something, so (for example) a mute tap the device ignores in manual mode stays silent. Every gesture defaults to Off. Requires updated firmware; on older firmware the vibration options simply don't appear.
 - **New: "Debug Menu" toggle hides the Debug Tools entry.** App Settings has a new "Debug Menu" switch at the bottom, off by default. While it's off, the "Debug Tools" entry no longer appears in the Settings drawer; turn it on to bring it back. (Heads up: because it defaults off, the Debug Tools entry will be hidden until you enable this.)
 - **Fix: "File Count" in Device Settings no longer undercounts by one.** The count was subtracting one extra file on top of the firmware already excluding the in-progress recording, so it read one low (and showed "0" when one closed file was waiting). It now matches the number of closed, syncable files on the device.
 - **New: "Process Omi Segments" button in Debug Tools.** Debug Tools now has a normal (non-forcing) process action alongside "Force Process Omi", so the page is a self-contained sync→process harness. It runs the same pass that fires automatically after a real sync — decode + voice detection, skipping already-processed audio, and leaving the in-progress recording open until it ends naturally — whereas "Force Process Omi" also finalizes that in-progress recording immediately.
@@ -173,6 +174,7 @@ Patch releases are rolled up into their minor version. Each section reflects the
 
 ### oo-2.4
 
+- **Button actions can now play a vibration pattern.** A new per-gesture haptic setting lets each button action confirm itself with a short buzz — single, double, or triple (100 ms pulses, 100 ms gaps) — configurable from the app over a new BLE characteristic (`23ba7928`, in the existing button-config service). The motor driver was reworked into a single non-blocking pulse-train sequencer that owns the motor end-to-end, so a button pattern can't collide with the existing power-off / unpair / boot buzzes. The buzz fires only when the action takes effect (a manual-mode mute no-op stays silent). Defaults to off for every gesture.
 - **Manual-mode recording now survives a reboot.** When you start or stop recording with the device button in manual mode, that state is now saved to flash. Previously it was only held in memory, so if the device rebooted (e.g. the battery drained) while you were recording, it came back up in standby and silently stopped — and a deliberate stop could likewise be forgotten. Now a button start resumes recording after a reboot, and a button stop stays stopped. (Auto mode and mute are unaffected — mute is intentionally cleared by a reboot.)
 
 ### oo-2.3
