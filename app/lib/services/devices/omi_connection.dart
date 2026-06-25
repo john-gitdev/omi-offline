@@ -24,6 +24,8 @@ class OmiDeviceConnection extends DeviceConnection {
 
   static const String buttonConfigServiceUuid = '23ba7926-0000-1000-7450-346eac492e92';
   static const String buttonConfigCharacteristicUuid = '23ba7927-0000-1000-7450-346eac492e92';
+  // Haptic (vibration pattern) config shares the button-config service.
+  static const String hapticConfigCharacteristicUuid = '23ba7928-0000-1000-7450-346eac492e92';
 
   static const String featuresServiceUuid = '19b10020-e8f2-537e-4f6c-d104768a1214';
   static const String featuresCharacteristicUuid = '19b10021-e8f2-537e-4f6c-d104768a1214';
@@ -497,6 +499,22 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<void> performSetButtonConfig(List<int> config) async {
     try {
       await transport.writeCharacteristic(buttonConfigServiceUuid, buttonConfigCharacteristicUuid, config);
+    } catch (_) {}
+  }
+
+  @override
+  Future<List<int>?> performGetHapticConfig() async {
+    try {
+      final data = await transport.readCharacteristic(buttonConfigServiceUuid, hapticConfigCharacteristicUuid);
+      if (data.length == 6) return data;
+    } catch (_) {}
+    return null;
+  }
+
+  @override
+  Future<void> performSetHapticConfig(List<int> config) async {
+    try {
+      await transport.writeCharacteristic(buttonConfigServiceUuid, hapticConfigCharacteristicUuid, config);
     } catch (_) {}
   }
 
