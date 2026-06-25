@@ -75,7 +75,10 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
             Log.w(TAG, "doWork: could not promote foreground service: $e")
         }
 
-        val flutterApi = OmiBleManager.instance.flutterApi
+        // Gate on isFlutterAlive: after an OS-reclaim Activity destroy, flutterApi
+        // dangles at a dead dartExecutor messenger (cleanUpFlutterEngine nulls it,
+        // but guard regardless), so posting would silently no-op. Treat as not-running.
+        val flutterApi = if (OmiBleManager.isFlutterAlive) OmiBleManager.instance.flutterApi else null
 
         return if (flutterApi != null) {
             // Flutter engine is alive — deliver the sync request to Dart and let
