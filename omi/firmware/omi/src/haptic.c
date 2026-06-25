@@ -81,7 +81,7 @@ static void haptic_work_handler(struct k_work *work)
 
 static void cab_play_work_handler(struct k_work *work)
 {
-    play_haptic_milli((uint32_t)atomic_get(&cab_play_ms));
+    play_haptic_milli((uint32_t) atomic_get(&cab_play_ms));
 }
 
 /* Start (or restart) a pulse train. The pin is driven high synchronously so
@@ -180,7 +180,7 @@ static ssize_t haptic_write_handler(struct bt_conn *conn,
         return len;
     }
 
-    atomic_set(&cab_play_ms, (atomic_val_t)ms);
+    atomic_set(&cab_play_ms, (atomic_val_t) ms);
     k_work_submit(&cab_play_work);
 
     return len;
@@ -212,7 +212,7 @@ int haptic_init(void)
 void play_haptic_milli(uint32_t duration)
 {
     // A single pulse is just a one-pulse train with no gap.
-    uint16_t ms = (duration > MAX_HAPTIC_DURATION) ? MAX_HAPTIC_DURATION : (uint16_t)duration;
+    uint16_t ms = (duration > MAX_HAPTIC_DURATION) ? MAX_HAPTIC_DURATION : (uint16_t) duration;
     haptic_start(1, ms, 0);
 }
 
