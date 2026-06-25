@@ -14,27 +14,27 @@
 #include <zephyr/dt-bindings/gpio/nordic-nrf-gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/settings/settings.h>
 #include <zephyr/random/random.h>
+#include <zephyr/settings/settings.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/ring_buffer.h>
-#include "speaker.h"
 
 #include "accel.h"
 #include "button.h"
 #include "config.h"
 #include "features.h"
 #include "haptic.h"
-#include "mic.h"
 #include "lib/battery/battery.h"
+#include "mic.h"
+#include "speaker.h"
 #ifdef CONFIG_OMI_ENABLE_MONITOR
 #include "monitor.h"
 #endif
 #include "codec.h"
+#include "rtc.h"
 #include "sd_card.h"
 #include "settings.h"
 #include "storage.h"
-#include "rtc.h"
 
 LOG_MODULE_REGISTER(transport, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -212,7 +212,7 @@ static ssize_t time_sync_write_handler(struct bt_conn *conn,
 
     LOG_INF("Time sync received: %u seconds", epoch_s);
 
-    int err = rtc_set_utc_time((uint64_t)epoch_s);
+    int err = rtc_set_utc_time((uint64_t) epoch_s);
     if (err) {
         LOG_ERR("Failed to set RTC time: %d", err);
         return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
@@ -222,11 +222,8 @@ static ssize_t time_sync_write_handler(struct bt_conn *conn,
     return len;
 }
 
-static ssize_t time_sync_read_handler(struct bt_conn *conn,
-                                      const struct bt_gatt_attr *attr,
-                                      void *buf,
-                                      uint16_t len,
-                                      uint16_t offset)
+static ssize_t
+time_sync_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf, uint16_t len, uint16_t offset)
 {
     uint32_t epoch_s = get_utc_time();
     LOG_INF("Time sync read: %u seconds", epoch_s);
@@ -258,12 +255,12 @@ static struct bt_gatt_service time_sync_service = BT_GATT_SERVICE(time_sync_serv
 #ifdef CONFIG_OMI_ENABLE_BATTERY
 static void battery_detail_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 static ssize_t battery_detail_read_handler(struct bt_conn *conn,
-                                          const struct bt_gatt_attr *attr,
-                                          void *buf,
-                                          uint16_t len,
-                                          uint16_t offset)
+                                           const struct bt_gatt_attr *attr,
+                                           void *buf,
+                                           uint16_t len,
+                                           uint16_t offset)
 {
-    uint8_t value = (uint8_t)is_charging;
+    uint8_t value = (uint8_t) is_charging;
 
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &value, sizeof(value));
 }
@@ -312,7 +309,7 @@ static uint8_t last_failed_adv_slow = 0;      /* 1 if the most recent failure wa
 #define CONN_FAIL_PERSIST_DELAY_MS 10000
 static void conn_fail_persist_work_handler(struct k_work *work)
 {
-    app_settings_save_conn_fail((uint32_t)atomic_get(&failed_conn_count), last_failed_adv_slow);
+    app_settings_save_conn_fail((uint32_t) atomic_get(&failed_conn_count), last_failed_adv_slow);
 }
 static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_handler);
 
@@ -344,53 +341,63 @@ static struct bt_uuid_128 diagnostics_characteristic_uuid =
 static struct bt_uuid_128 diagnostics_drops_characteristic_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10062, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 
-static ssize_t diagnostics_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                                        void *buf, uint16_t len, uint16_t offset)
+static ssize_t diagnostics_read_handler(struct bt_conn *conn,
+                                        const struct bt_gatt_attr *attr,
+                                        void *buf,
+                                        uint16_t len,
+                                        uint16_t offset)
 {
-    uint32_t cause   = app_settings_get_last_reset_cause();
-    uint32_t uptime_s = (uint32_t)(app_settings_get_crash_session_uptime() / 1000);
+    uint32_t cause = app_settings_get_last_reset_cause();
+    uint32_t uptime_s = (uint32_t) (app_settings_get_crash_session_uptime() / 1000);
     uint8_t payload[8] = {
-        (uint8_t)(cause),        (uint8_t)(cause >> 8),
-        (uint8_t)(cause >> 16),  (uint8_t)(cause >> 24),
-        (uint8_t)(uptime_s),     (uint8_t)(uptime_s >> 8),
-        (uint8_t)(uptime_s >> 16),(uint8_t)(uptime_s >> 24),
+        (uint8_t) (cause),
+        (uint8_t) (cause >> 8),
+        (uint8_t) (cause >> 16),
+        (uint8_t) (cause >> 24),
+        (uint8_t) (uptime_s),
+        (uint8_t) (uptime_s >> 8),
+        (uint8_t) (uptime_s >> 16),
+        (uint8_t) (uptime_s >> 24),
     };
     return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
 }
 
 static inline void pack_u32_le(uint8_t *dst, uint32_t v)
 {
-    dst[0] = (uint8_t)(v);
-    dst[1] = (uint8_t)(v >> 8);
-    dst[2] = (uint8_t)(v >> 16);
-    dst[3] = (uint8_t)(v >> 24);
+    dst[0] = (uint8_t) (v);
+    dst[1] = (uint8_t) (v >> 8);
+    dst[2] = (uint8_t) (v >> 16);
+    dst[3] = (uint8_t) (v >> 24);
 }
 
-static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                                              void *buf, uint16_t len, uint16_t offset)
+static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
+                                              const struct bt_gatt_attr *attr,
+                                              void *buf,
+                                              uint16_t len,
+                                              uint16_t offset)
 {
-    uint32_t block_drops    = (uint32_t)atomic_get(&storage_block_drops);
-    uint32_t last_drop_ms   = (uint32_t)atomic_get(&last_storage_drop_uptime_ms);
+    uint32_t block_drops = (uint32_t) atomic_get(&storage_block_drops);
+    uint32_t last_drop_ms = (uint32_t) atomic_get(&last_storage_drop_uptime_ms);
     uint32_t sd_stream_drops = sd_get_stream_dropped_frames();
-    uint32_t sd_boot_drops   = sd_get_boot_dropped_frames();
-    uint32_t now_ms         = (uint32_t)k_uptime_get();
-    uint32_t conn_fails     = (uint32_t)atomic_get(&failed_conn_count);
-    uint32_t codec_drops    = codec_get_dropped_frames();
-    uint32_t msgq_peak      = sd_get_msgq_peak_depth();
-    uint32_t fair_acts      = sd_get_write_fair_activations();
+    uint32_t sd_boot_drops = sd_get_boot_dropped_frames();
+    uint32_t now_ms = (uint32_t) k_uptime_get();
+    uint32_t conn_fails = (uint32_t) atomic_get(&failed_conn_count);
+    uint32_t codec_drops = codec_get_dropped_frames();
+    uint32_t msgq_peak = sd_get_msgq_peak_depth();
+    uint32_t fair_acts = sd_get_write_fair_activations();
 
     /* 40 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
      * codec_drops + sd_msgq peak depth + write-fairness activations. Each field
      * is appended at the end so older app builds (which read only the first
      * 20 / 28 / 32 bytes) keep working unchanged. */
     uint8_t payload[40];
-    pack_u32_le(payload + 0,  block_drops);
-    pack_u32_le(payload + 4,  last_drop_ms);
-    pack_u32_le(payload + 8,  sd_stream_drops);
+    pack_u32_le(payload + 0, block_drops);
+    pack_u32_le(payload + 4, last_drop_ms);
+    pack_u32_le(payload + 8, sd_stream_drops);
     pack_u32_le(payload + 12, sd_boot_drops);
     pack_u32_le(payload + 16, now_ms);
     pack_u32_le(payload + 20, conn_fails);
-    pack_u32_le(payload + 24, (uint32_t)last_failed_adv_slow);
+    pack_u32_le(payload + 24, (uint32_t) last_failed_adv_slow);
     pack_u32_le(payload + 28, codec_drops);
     pack_u32_le(payload + 32, msgq_peak);
     pack_u32_le(payload + 36, fair_acts);
@@ -432,22 +439,29 @@ static struct bt_uuid_128 button_config_characteristic_uuid =
 static struct bt_uuid_128 haptic_config_characteristic_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x23BA7928, 0x0000, 0x1000, 0x7450, 0x346EAC492E92));
 
-static ssize_t button_config_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                                          void *buf, uint16_t len, uint16_t offset)
+static ssize_t button_config_read_handler(struct bt_conn *conn,
+                                          const struct bt_gatt_attr *attr,
+                                          void *buf,
+                                          uint16_t len,
+                                          uint16_t offset)
 {
     uint8_t config[6];
     app_settings_get_button_config(config);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, config, sizeof(config));
 }
 
-static ssize_t button_config_write_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                                           const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+static ssize_t button_config_write_handler(struct bt_conn *conn,
+                                           const struct bt_gatt_attr *attr,
+                                           const void *buf,
+                                           uint16_t len,
+                                           uint16_t offset,
+                                           uint8_t flags)
 {
     if (len != 6) {
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
     }
     // Reject out-of-range actions so we never persist a config the FSM can't map.
-    const uint8_t *cfg = (const uint8_t *)buf;
+    const uint8_t *cfg = (const uint8_t *) buf;
     for (int i = 0; i < 6; i++) {
         if (cfg[i] > BUTTON_ACTION_TOGGLE_LED) {
             return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
@@ -457,22 +471,29 @@ static ssize_t button_config_write_handler(struct bt_conn *conn, const struct bt
     return len;
 }
 
-static ssize_t haptic_config_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                                          void *buf, uint16_t len, uint16_t offset)
+static ssize_t haptic_config_read_handler(struct bt_conn *conn,
+                                          const struct bt_gatt_attr *attr,
+                                          void *buf,
+                                          uint16_t len,
+                                          uint16_t offset)
 {
     uint8_t config[6];
     app_settings_get_haptic_config(config);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, config, sizeof(config));
 }
 
-static ssize_t haptic_config_write_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                                           const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+static ssize_t haptic_config_write_handler(struct bt_conn *conn,
+                                           const struct bt_gatt_attr *attr,
+                                           const void *buf,
+                                           uint16_t len,
+                                           uint16_t offset,
+                                           uint8_t flags)
 {
     if (len != 6) {
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
     }
     // Reject out-of-range patterns (0=Off, 1=Single, 2=Double, 3=Triple).
-    const uint8_t *cfg = (const uint8_t *)buf;
+    const uint8_t *cfg = (const uint8_t *) buf;
     for (int i = 0; i < 6; i++) {
         if (cfg[i] > 3) {
             return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
@@ -493,12 +514,7 @@ static void button_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 
 static struct bt_gatt_attr button_service_attr[] = {
     BT_GATT_PRIMARY_SERVICE(&button_service_uuid),
-    BT_GATT_CHARACTERISTIC(&button_characteristic_uuid.uuid,
-                           BT_GATT_CHRC_NOTIFY,
-                           BT_GATT_PERM_NONE,
-                           NULL,
-                           NULL,
-                           NULL),
+    BT_GATT_CHARACTERISTIC(&button_characteristic_uuid.uuid, BT_GATT_CHRC_NOTIFY, BT_GATT_PERM_NONE, NULL, NULL, NULL),
     BT_GATT_CCC(button_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 };
 
@@ -556,16 +572,20 @@ static void mute_pack_payload(uint8_t *payload)
     pack_u32_le(payload + 5, since_uptime_ms);
 }
 
-static ssize_t mute_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                                 void *buf, uint16_t len, uint16_t offset)
+static ssize_t
+mute_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf, uint16_t len, uint16_t offset)
 {
     uint8_t payload[9];
     mute_pack_payload(payload);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
 }
 
-static ssize_t mute_write_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                                  const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+static ssize_t mute_write_handler(struct bt_conn *conn,
+                                  const struct bt_gatt_attr *attr,
+                                  const void *buf,
+                                  uint16_t len,
+                                  uint16_t offset,
+                                  uint8_t flags)
 {
     ARG_UNUSED(conn);
     ARG_UNUSED(attr);
@@ -576,7 +596,7 @@ static ssize_t mute_write_handler(struct bt_conn *conn, const struct bt_gatt_att
     if (len < 1) {
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
     }
-    mute_apply(((const uint8_t *)buf)[0] != 0);
+    mute_apply(((const uint8_t *) buf)[0] != 0);
     return len;
 }
 
@@ -812,16 +832,16 @@ static void exchange_func(struct bt_conn *conn, uint8_t att_err, struct bt_gatt_
 //
 
 #ifdef CONFIG_OMI_ENABLE_BATTERY
-#define BATTERY_REFRESH_INTERVAL_CONNECTED    60000  // 60 seconds while connected
+#define BATTERY_REFRESH_INTERVAL_CONNECTED 60000     // 60 seconds while connected
 #define BATTERY_REFRESH_INTERVAL_DISCONNECTED 300000 // 5 minutes while offline
-#define CONFIG_OMI_BATTERY_CRITICAL_MV        3500  // mV
+#define CONFIG_OMI_BATTERY_CRITICAL_MV 3500          // mV
 /* Below this percentage the 150mAh cell's internal resistance rises sharply, so
  * a brownout mid-write is more likely. We flush once here so everything captured
  * so far is durable, but recording CONTINUES — a recorder should capture to the
  * critical-voltage shutdown, not stop at 15%. littlefs is power-loss resilient,
  * so a brownout costs at most the last unsynced frames; the clean shutdown still
  * happens at CONFIG_OMI_BATTERY_CRITICAL_MV. */
-#define BATTERY_LOW_SD_FLUSH_THRESHOLD        15    // %
+#define BATTERY_LOW_SD_FLUSH_THRESHOLD 15 // %
 uint8_t battery_percentage = 100;
 bool battery_ready = false;
 static bool sd_flushed_for_low_battery = false;
@@ -839,7 +859,8 @@ void broadcast_battery_level(struct k_work *work_item)
         battery_ready = true;
         LOG_PRINTK("Battery at %d mV (capacity %d%%)\n", battery_millivolt, battery_percentage);
 
-        int err = bt_bas_set_battery_level(battery_percentage);        if (err) {
+        int err = bt_bas_set_battery_level(battery_percentage);
+        if (err) {
             LOG_ERR("Error updating battery level: %d", err);
         }
 
@@ -853,7 +874,7 @@ void broadcast_battery_level(struct k_work *work_item)
         bool syncing = false;
 #endif
         if (conn != NULL && !syncing) {
-            uint8_t is_charging_byte = (uint8_t)is_charging;
+            uint8_t is_charging_byte = (uint8_t) is_charging;
             bt_gatt_notify(NULL, &battery_detail_service_attr[2], &is_charging_byte, 1);
         }
         put_current_connection(conn);
@@ -862,14 +883,11 @@ void broadcast_battery_level(struct k_work *work_item)
          * captured so far is durable before the high-internal-resistance region.
          * Recording is NOT paused — it continues until the critical-voltage clean
          * shutdown below. Re-arms if the battery recovers above the threshold. */
-        if (!is_charging && battery_percentage <= BATTERY_LOW_SD_FLUSH_THRESHOLD &&
-            !sd_flushed_for_low_battery) {
-            LOG_WRN("Battery low (%d%%) — flushing SD; recording continues to critical shutdown",
-                    battery_percentage);
+        if (!is_charging && battery_percentage <= BATTERY_LOW_SD_FLUSH_THRESHOLD && !sd_flushed_for_low_battery) {
+            LOG_WRN("Battery low (%d%%) — flushing SD; recording continues to critical shutdown", battery_percentage);
             sd_flush_current_file();
             sd_flushed_for_low_battery = true;
-        } else if (sd_flushed_for_low_battery &&
-                   (is_charging || battery_percentage > BATTERY_LOW_SD_FLUSH_THRESHOLD)) {
+        } else if (sd_flushed_for_low_battery && (is_charging || battery_percentage > BATTERY_LOW_SD_FLUSH_THRESHOLD)) {
             sd_flushed_for_low_battery = false;
         }
 
@@ -881,8 +899,7 @@ void broadcast_battery_level(struct k_work *work_item)
         LOG_ERR("Failed to read battery level");
     }
 
-    uint32_t interval = is_connected ? BATTERY_REFRESH_INTERVAL_CONNECTED
-                                     : BATTERY_REFRESH_INTERVAL_DISCONNECTED;
+    uint32_t interval = is_connected ? BATTERY_REFRESH_INTERVAL_CONNECTED : BATTERY_REFRESH_INTERVAL_DISCONNECTED;
     k_work_reschedule(&battery_work, K_MSEC(interval));
 }
 
@@ -895,7 +912,7 @@ static void battery_detail_ccc_changed(const struct bt_gatt_attr *attr, uint16_t
         return;
     }
     if (battery_ready) {
-        uint8_t is_charging_byte = (uint8_t)is_charging;
+        uint8_t is_charging_byte = (uint8_t) is_charging;
         /* Notify on the characteristic value attribute (index 2), matching the
          * periodic-notify path above; avoids fragile attr-relative arithmetic. */
         bt_gatt_notify(NULL, &battery_detail_service_attr[2], &is_charging_byte, 1);
@@ -916,7 +933,7 @@ void transport_notify_battery_soon(void)
 //
 
 /* Forward declarations for helpers used in connection callbacks */
-#define MTU_RECHECK_DELAY_MS     800
+#define MTU_RECHECK_DELAY_MS 800
 #define MTU_RECHECK_MAX_ATTEMPTS 6
 static uint8_t mtu_recheck_attempts = 0;
 static void mtu_recheck_work_handler(struct k_work *work);
@@ -966,13 +983,13 @@ K_WORK_DELAYABLE_DEFINE(post_connect_work, post_connect_work_handler);
  * connect/disconnect loop (BT_HCI_ERR_REMOTE_USER_TERM_CONN / gatt_status_19).
  * 15 s gives the 10 s keep-alive a 5 s margin. */
 #define IDLE_DISCONNECT_TIMEOUT_MS 15000
-#define IDLE_DISCONNECT_POLL_MS    5000
+#define IDLE_DISCONNECT_POLL_MS 5000
 
 static atomic_t last_activity_ms;
 
 void transport_mark_activity(void)
 {
-    atomic_set(&last_activity_ms, (atomic_val_t)k_uptime_get_32());
+    atomic_set(&last_activity_ms, (atomic_val_t) k_uptime_get_32());
 }
 
 static void idle_disconnect_work_handler(struct k_work *work)
@@ -999,7 +1016,7 @@ static void idle_disconnect_work_handler(struct k_work *work)
 #endif
 
     uint32_t now = k_uptime_get_32();
-    uint32_t last = (uint32_t)atomic_get(&last_activity_ms);
+    uint32_t last = (uint32_t) atomic_get(&last_activity_ms);
     uint32_t idle_ms = now - last;
 
     if (idle_ms < IDLE_DISCONNECT_TIMEOUT_MS) {
@@ -1015,7 +1032,7 @@ static void idle_disconnect_work_handler(struct k_work *work)
     /* Re-check idle under the lock: a disconnect+reconnect between the
      * timestamp read above and acquiring the mutex would otherwise let us
      * disconnect a freshly-connected link.  Cheap two-line guard. */
-    uint32_t idle_ms_locked = k_uptime_get_32() - (uint32_t)atomic_get(&last_activity_ms);
+    uint32_t idle_ms_locked = k_uptime_get_32() - (uint32_t) atomic_get(&last_activity_ms);
     if (idle_ms_locked >= IDLE_DISCONNECT_TIMEOUT_MS) {
         conn_to_release = current_connection;
         current_connection = NULL;
@@ -1066,10 +1083,13 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
          * controller/RF wedge); if nothing logs while a phone is retrying, the
          * CONNECT_IND is never reaching the device. adv_mode reveals slow-interval
          * correlation. */
-        uint32_t fails = (uint32_t)atomic_inc(&failed_conn_count) + 1;
+        uint32_t fails = (uint32_t) atomic_inc(&failed_conn_count) + 1;
         last_failed_adv_slow = (current_adv_mode[0] == 's') ? 1 : 0; /* "slow" vs "fast" */
         LOG_ERR("Connection failed (err 0x%02x) adv_mode=%s failed_conn_count=%u uptime=%lld ms",
-                err, current_adv_mode, fails, (long long)k_uptime_get());
+                err,
+                current_adv_mode,
+                fails,
+                (long long) k_uptime_get());
         /* Coalesced flash persist so the count survives the power-cycle needed to read it. */
         k_work_schedule(&conn_fail_persist_work, K_MSEC(CONN_FAIL_PERSIST_DELAY_MS));
         return;
@@ -1249,9 +1269,10 @@ static void mtu_recheck_work_handler(struct k_work *work)
     uint16_t mtu = bt_gatt_get_mtu(current_connection);
     if (mtu <= 23 && mtu_recheck_attempts < MTU_RECHECK_MAX_ATTEMPTS) {
         mtu_recheck_attempts++;
-        LOG_INF("MTU still at minimum (%u), recheck attempt %u/%u", mtu, mtu_recheck_attempts, MTU_RECHECK_MAX_ATTEMPTS);
+        LOG_INF(
+            "MTU still at minimum (%u), recheck attempt %u/%u", mtu, mtu_recheck_attempts, MTU_RECHECK_MAX_ATTEMPTS);
         update_mtu(current_connection);
-        k_work_reschedule((struct k_work_delayable *)work, K_MSEC(MTU_RECHECK_DELAY_MS));
+        k_work_reschedule((struct k_work_delayable *) work, K_MSEC(MTU_RECHECK_DELAY_MS));
     } else {
         LOG_INF("MTU recheck done: MTU=%u after %u attempts", mtu, mtu_recheck_attempts);
     }
@@ -1281,8 +1302,8 @@ static void update_conn_params(struct bt_conn *conn)
     struct bt_le_conn_param params = {
         .interval_min = 6,
         .interval_max = 18,
-        .latency      = 0,
-        .timeout      = 600,
+        .latency = 0,
+        .timeout = 600,
     };
     for (int i = 0; i < CONN_PARAM_UPDATE_RETRIES; i++) {
         int err = bt_conn_le_param_update(conn, &params);
@@ -1311,8 +1332,8 @@ static void conn_param_recheck_work_handler(struct k_work *work)
         struct bt_le_conn_param params = {
             .interval_min = 12, // 15 ms — Apple's minimum
             .interval_max = 24, // 30 ms
-            .latency      = 0,
-            .timeout      = 600, // 6 s
+            .latency = 0,
+            .timeout = 600, // 6 s
         };
         LOG_INF("Conn interval still %.2f ms after connect — requesting Apple-compliant 15-30 ms",
                 info.le.interval * 1.25);
@@ -1338,7 +1359,6 @@ static struct ring_buf ring_buf;
 
 /* Wakes pusher() when a frame is queued — replaces 10 ms sleep polling. */
 K_SEM_DEFINE(tx_queue_sem, 0, NETWORK_RING_BUF_SIZE);
-
 
 static bool write_to_tx_queue(uint8_t *data, size_t size)
 {
@@ -1439,9 +1459,8 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
         memset(storage_temp_data + buffer_offset, 0, MAX_WRITE_SIZE - buffer_offset);
         /* If the block being flushed carries a marker, use the blocking enqueue
          * so it isn't dropped on transient saturation. */
-        uint32_t wrote = storage_block_has_marker
-                             ? write_to_file_blocking(storage_temp_data, MAX_WRITE_SIZE)
-                             : write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        uint32_t wrote = storage_block_has_marker ? write_to_file_blocking(storage_temp_data, MAX_WRITE_SIZE)
+                                                  : write_to_file(storage_temp_data, MAX_WRITE_SIZE);
         storage_block_has_marker = false;
         if (wrote != MAX_WRITE_SIZE) {
             /* SD queue rejected the block — the buffered bytes (up to one
@@ -1450,19 +1469,19 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
              * caller is trying to write; otherwise the writer is stuck
              * forever and loses every subsequent frame too. Signal the
              * loss via the return value. */
-            LOG_WRN("Storage rollover flush dropped block (wrote=%u/%u)", wrote, (uint32_t)MAX_WRITE_SIZE);
+            LOG_WRN("Storage rollover flush dropped block (wrote=%u/%u)", wrote, (uint32_t) MAX_WRITE_SIZE);
             atomic_inc(&storage_block_drops);
-            atomic_set(&last_storage_drop_uptime_ms, (atomic_val_t)k_uptime_get());
+            atomic_set(&last_storage_drop_uptime_ms, (atomic_val_t) k_uptime_get());
             ok = false;
         }
         buffer_offset = 0;
     }
 
     /* Write 4-byte Little-Endian length prefix */
-    storage_temp_data[buffer_offset + 0] = (uint8_t)(marker & 0xFF);
-    storage_temp_data[buffer_offset + 1] = (uint8_t)((marker >> 8) & 0xFF);
-    storage_temp_data[buffer_offset + 2] = (uint8_t)((marker >> 16) & 0xFF);
-    storage_temp_data[buffer_offset + 3] = (uint8_t)((marker >> 24) & 0xFF);
+    storage_temp_data[buffer_offset + 0] = (uint8_t) (marker & 0xFF);
+    storage_temp_data[buffer_offset + 1] = (uint8_t) ((marker >> 8) & 0xFF);
+    storage_temp_data[buffer_offset + 2] = (uint8_t) ((marker >> 16) & 0xFF);
+    storage_temp_data[buffer_offset + 3] = (uint8_t) ((marker >> 24) & 0xFF);
 
     /* Write payload */
     memcpy(storage_temp_data + buffer_offset + 4, data, data_size);
@@ -1482,16 +1501,15 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
     }
 
     if (buffer_offset == MAX_WRITE_SIZE) {
-        uint32_t wrote = storage_block_has_marker
-                             ? write_to_file_blocking(storage_temp_data, MAX_WRITE_SIZE)
-                             : write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        uint32_t wrote = storage_block_has_marker ? write_to_file_blocking(storage_temp_data, MAX_WRITE_SIZE)
+                                                  : write_to_file(storage_temp_data, MAX_WRITE_SIZE);
         storage_block_has_marker = false;
         if (wrote != MAX_WRITE_SIZE) {
             /* Full-buffer flush rejected. Same trade-off as above: reset
              * so subsequent writes can proceed, but report the loss. */
-            LOG_WRN("Storage full-block flush dropped (wrote=%u/%u)", wrote, (uint32_t)MAX_WRITE_SIZE);
+            LOG_WRN("Storage full-block flush dropped (wrote=%u/%u)", wrote, (uint32_t) MAX_WRITE_SIZE);
             atomic_inc(&storage_block_drops);
-            atomic_set(&last_storage_drop_uptime_ms, (atomic_val_t)k_uptime_get());
+            atomic_set(&last_storage_drop_uptime_ms, (atomic_val_t) k_uptime_get());
             ok = false;
         }
         buffer_offset = 0;
@@ -1517,14 +1535,15 @@ atomic_t device_session_id = ATOMIC_INIT(0);
  * from the audio path and the button-tap marker path during boot (B18). */
 static uint32_t ensure_device_session_id(void)
 {
-    uint32_t sid = (uint32_t)atomic_get(&device_session_id);
-    if (sid != 0) return sid;
+    uint32_t sid = (uint32_t) atomic_get(&device_session_id);
+    if (sid != 0)
+        return sid;
     do {
         sid = sys_rand32_get();
     } while (sid == 0);
     /* If another thread already published an ID, keep theirs. */
-    if (!atomic_cas(&device_session_id, 0, (atomic_val_t)sid)) {
-        sid = (uint32_t)atomic_get(&device_session_id);
+    if (!atomic_cas(&device_session_id, 0, (atomic_val_t) sid)) {
+        sid = (uint32_t) atomic_get(&device_session_id);
     }
     return sid;
 }
@@ -1535,7 +1554,7 @@ static bool write_marker_header_to_storage(uint32_t header, const char *label)
 
     uint8_t temp_buffer[16];
     uint64_t utc_time_ms = rtc_get_utc_time_ms();
-    uint32_t uptime_ms = (uint32_t)k_uptime_get();
+    uint32_t uptime_ms = (uint32_t) k_uptime_get();
 
     memcpy(temp_buffer, &utc_time_ms, 8);
     memcpy(temp_buffer + 8, &uptime_ms, 4);
@@ -1619,7 +1638,7 @@ void pusher(void)
         // Always write to storage for offline-only recording
         if (!is_muted && sd_get_cached_total_size() < MAX_STORAGE_BYTES && is_sd_on()) {
             storage_full_warned = false;
-            
+
             write_to_storage();
         } else {
             if (is_muted) {
@@ -1693,11 +1712,8 @@ int transport_off()
 /* Slow advertising parameters for low-power mode (~1 s interval).
  * BT_LE_ADV_CONN uses 100-150ms by default; 1000-1200ms saves ~300-500 µA.
  * Advertising interval unit = 0.625 ms → 1000 ms = 1600, 1200 ms = 1920. */
-static const struct bt_le_adv_param adv_param_slow = BT_LE_ADV_PARAM_INIT(
-    BT_LE_ADV_OPT_CONNECTABLE | BT_LE_ADV_OPT_ONE_TIME,
-    1600,
-    1920,
-    NULL);
+static const struct bt_le_adv_param adv_param_slow =
+    BT_LE_ADV_PARAM_INIT(BT_LE_ADV_OPT_CONNECTABLE | BT_LE_ADV_OPT_ONE_TIME, 1600, 1920, NULL);
 
 int transport_set_adv_slow(void)
 {
@@ -1760,15 +1776,13 @@ int transport_start()
     // Configure callbacks
     bt_conn_cb_register(&_callback_references);
 
-
-
     /* Seed the connection-failure counter from flash (app_settings_init ran in
      * main before transport_start) so it stays cumulative across reboots — the
      * count is only readable after the user power-cycles to reconnect. */
     {
         uint32_t persisted = 0;
         app_settings_get_conn_fail(&persisted, &last_failed_adv_slow);
-        atomic_set(&failed_conn_count, (atomic_val_t)persisted);
+        atomic_set(&failed_conn_count, (atomic_val_t) persisted);
     }
 
     // Enable Bluetooth
