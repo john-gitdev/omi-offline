@@ -6,6 +6,7 @@ Patch releases are rolled up into their minor version. Each section reflects the
 
 ### 0.26
 
+- **New: 10-minute option for "Silence to End Conversation."** The setting (Offline Audio Settings, automatic mode) now offers 10 min alongside the existing 30 s / 1 / 2 / 5 min choices, for longer pauses between conversations.
 - **New: Customizable vibration feedback for button actions.** The Button Configuration screen now lets you choose how the device buzzes to confirm each gesture — Off, Single, Double, or Triple — shown right beneath any tap slot that has an action assigned. A slot set to "None" has no vibration option. The buzz fires only when the action actually does something, so (for example) a mute tap the device ignores in manual mode stays silent. Every gesture defaults to Off. Requires updated firmware; on older firmware the vibration options simply don't appear.
 - **New: "Debug Menu" toggle hides the Debug Tools entry.** App Settings has a new "Debug Menu" switch at the bottom, off by default. While it's off, the "Debug Tools" entry no longer appears in the Settings drawer; turn it on to bring it back. (Heads up: because it defaults off, the Debug Tools entry will be hidden until you enable this.)
 - **Fix: "File Count" in Device Settings no longer undercounts by one.** The count was subtracting one extra file on top of the firmware already excluding the in-progress recording, so it read one low (and showed "0" when one closed file was waiting). It now matches the number of closed, syncable files on the device.
