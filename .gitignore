@@ -218,6 +218,10 @@ web/app/next-env.d.ts
 /REFACTORING_INSTRUCTIONS.md
 app/.claude/
 .claude/worktrees/
+.claude/settings.json
+.claude/projects/
+/diff.patch
+/test_codec.dart
 LOCAL_DEV_SETUP.md
 app/macos/Config/Prod/GoogleService-Info.plist
 app/.metadata
