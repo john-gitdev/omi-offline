@@ -151,7 +151,7 @@ Non-Omi-prefix services in use:
 | Device Info (DIS) | `0000180a-…` | Model `2a24`, firmware rev `2a26`, hardware rev `2a27`, manufacturer `2a29`, serial `2a25` |
 | Storage | `30295780-4301-eabd-2904-2849adfeae43` | Data stream char `…81`, read-control char `…82` |
 | Button | `23ba7924-0000-1000-7450-346eac492e92` / trigger char `…7925` | Tap-event notify (1 byte). App consumes event `2` only (double-tap → manual mode toggle). Firmware emits inline `0xFFFFFFFE` markers in the audio stream regardless. |
-| Button config | `23ba7926-0000-1000-7450-346eac492e92` / char `…7927` | 6 B read/write button-action config; surfaced in Settings → `ButtonConfigPage` (`button_config_page.dart`). |
+| Button config | `23ba7926-0000-1000-7450-346eac492e92` / char `…7927` | 6 B read/write button-action config; surfaced in Settings → `ButtonConfigPage` (`button_config_page.dart`). Service also carries char `…7928`: 6 B read/write per-slot vibration pattern (0=off, 1=single, 2=double, 3=triple), persisted as `omi/haptic_config`. Appended last so `…7927`'s handle stays stable. |
 
 Storage protocol: write commands to `storageDataStreamCharacteristicUuid` (`…81`). Responses arrive on the same characteristic; `0x03` first byte = `PACKET_ACK` (`data[1]==0` = success).
 
