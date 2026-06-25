@@ -167,4 +167,20 @@ int app_settings_save_button_config(const uint8_t config[6]);
  */
 void app_settings_get_button_config(uint8_t config[6]);
 
+/**
+ * @brief Save the haptic (vibration pattern) configuration.
+ *
+ * @param config Array of 6 bytes, one vibration pattern per tap slot
+ *               (0=Off, 1=Single, 2=Double, 3=Triple).
+ * @return 0 on success, negative error code otherwise.
+ */
+int app_settings_save_haptic_config(const uint8_t config[6]);
+
+/**
+ * @brief Get the haptic (vibration pattern) configuration.
+ *
+ * @param config Array of 6 bytes to store the configuration.
+ */
+void app_settings_get_haptic_config(uint8_t config[6]);
+
 #endif // SETTINGS_H
