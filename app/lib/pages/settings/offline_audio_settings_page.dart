@@ -500,7 +500,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                                 underline: const SizedBox(),
                                 style: const TextStyle(
                                     color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
-                                items: [30, 60, 120, 300].map((sec) {
+                                items: [30, 60, 120, 300, 600].map((sec) {
                                   return DropdownMenuItem(
                                     value: sec,
                                     child: Text(sec < 60 ? '${sec}s' : '${sec ~/ 60} min'),
