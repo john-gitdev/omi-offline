@@ -263,9 +263,17 @@ class MockDeviceConnection implements DeviceConnection {
   @override
   Future<List<int>?> performGetButtonConfig() => throw UnimplementedError();
   @override
+  Future<void> performSetHapticConfig(List<int> config) => throw UnimplementedError();
+  @override
+  Future<List<int>?> performGetHapticConfig() => throw UnimplementedError();
+  @override
   Future<void> setButtonConfig(List<int> config) => throw UnimplementedError();
   @override
   Future<List<int>?> getButtonConfig() => throw UnimplementedError();
+  @override
+  Future<void> setHapticConfig(List<int> config) => throw UnimplementedError();
+  @override
+  Future<List<int>?> getHapticConfig() => throw UnimplementedError();
   @override
   Future<bool> sendUnpairCommand() => throw UnimplementedError();
   @override
