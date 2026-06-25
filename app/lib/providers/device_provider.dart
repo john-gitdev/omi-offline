@@ -1146,8 +1146,12 @@ class DeviceProvider extends ChangeNotifier
     _backgroundSyncTimer?.cancel();
     // Keep _foregroundKeepAliveTimer running: DFU uses the SMP service, not the
     // Omi storage characteristic, so transport_mark_activity() never fires during
-    // the transfer. Without the keep-alive the firmware's 30 s idle-disconnect
-    // triggers mid-DFU and kills the connection.
+    // the transfer. Without the keep-alive the firmware's 15 s idle-disconnect
+    // triggers mid-DFU and kills the connection. Newer firmware also defers
+    // idle-disconnect while a DFU image upload is active (sd_get_ota_active), so
+    // this heartbeat is the backstop that flashes a device still running the
+    // older firmware that lacks that defer — keep it until the floor firmware
+    // version guarantees the defer.
 
     final walSync = ServiceManager.instance().wal.getSyncs();
     if (walSync.isSyncing) {
