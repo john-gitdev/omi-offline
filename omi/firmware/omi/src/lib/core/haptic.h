@@ -24,6 +24,16 @@ int haptic_init(void);
 void play_haptic_milli(uint32_t duration);
 
 /**
+ * @brief Play a button-feedback vibration pattern.
+ *
+ * Emits @p pulses short buzzes (100 ms on, 100 ms gap). 0 = silent, 1 = single,
+ * 2 = double, 3 = triple. Non-blocking; supersedes any pattern already playing.
+ *
+ * @param pulses Number of buzzes (clamped to HAPTIC_MAX_PULSES).
+ */
+void play_haptic_pattern(uint8_t pulses);
+
+/**
  * @brief Register the Haptic BLE service.
  *
  * Registers the GATT service for controlling the haptic motor over Bluetooth.
