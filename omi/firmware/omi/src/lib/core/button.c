@@ -9,13 +9,13 @@
 #include <zephyr/sys/poweroff.h>
 
 #include "haptic.h"
+#include "imu.h"
 #include "led.h"
 #include "mic.h"
 #include "rtc.h"
 #include "speaker.h"
 #include "transport.h"
 #include "wdog_facade.h"
-#include "imu.h"
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
 #include "sd_card.h"
 #endif
@@ -68,7 +68,7 @@ bool mute_apply(bool on)
         led_state_before_mute = is_led_enabled;
         is_led_enabled = true;
         mute_since_utc_s = get_utc_time();
-        mute_since_uptime_ms = (uint32_t)k_uptime_get();
+        mute_since_uptime_ms = (uint32_t) k_uptime_get();
         mic_pause();
     } else {
         is_led_enabled = led_state_before_mute;
@@ -120,32 +120,27 @@ void check_button_level(struct k_work *work_item);
 K_WORK_DELAYABLE_DEFINE(button_work, check_button_level);
 
 // State machine definitions
-typedef enum {
-    STATE_IDLE,
-    STATE_PRESS,
-    STATE_RELEASE,
-    STATE_WAIT_FOR_RELEASE
-} button_fsm_state_t;
+typedef enum { STATE_IDLE, STATE_PRESS, STATE_RELEASE, STATE_WAIT_FOR_RELEASE } button_fsm_state_t;
 
 static volatile button_fsm_state_t fsm_state = STATE_IDLE;
 static uint32_t state_timer = 0;
 static uint8_t tap_count = 0;
 
-#define HOLD_TIME 1000             // 1s hold threshold for customizable actions
-#define POWER_OFF_HOLD_TIME 3000   // 3s hold for 4-tap power off
-#define UNPAIR_HOLD_TIME 10000     // 10s hold for 5-tap unpair
-#define MULTI_TAP_WINDOW 600       // 600ms window for multi-taps
-
+#define HOLD_TIME 1000           // 1s hold threshold for customizable actions
+#define POWER_OFF_HOLD_TIME 3000 // 3s hold for 4-tap power off
+#define UNPAIR_HOLD_TIME 10000   // 10s hold for 5-tap unpair
+#define MULTI_TAP_WINDOW 600     // 600ms window for multi-taps
 
 static void execute_button_action(uint8_t taps, bool is_hold)
 {
-    if (taps < 1 || taps > 3) return;
+    if (taps < 1 || taps > 3)
+        return;
 
     uint8_t config[6];
     app_settings_get_button_config(config);
 
     uint8_t index = (taps - 1) * 2 + (is_hold ? 1 : 0);
-    button_action_t action = (button_action_t)config[index];
+    button_action_t action = (button_action_t) config[index];
 
     LOG_INF("Action triggered: taps=%d, hold=%d -> action=%d", taps, is_hold, action);
 
