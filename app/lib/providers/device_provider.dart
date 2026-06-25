@@ -96,8 +96,24 @@ class DeviceProvider extends ChangeNotifier
   // soon as the isolate thaws, so it also recovers a frozen attempt on the next
   // CPU slice. The window is longer than the timer body's 3-attempt connect loop
   // (~100 s) so a legitimately slow connect isn't cut short.
+  //
+  // Belt-and-suspenders: the watchdog only recovers *after* a thaw, which under
+  // a long Doze can be many minutes away. So for the duration of the attempt we
+  // also hold a CPU partial wake-lock (see [_acquireConnectWakeLock]) so the
+  // process can't be frozen mid-connect in the first place — then this timer
+  // fires on schedule. The wake-lock is the primary fix; the timer is the
+  // fallback for when the wake-lock can't hold (battery-optimisation exemption
+  // denied) or the process is killed outright.
   Timer? _connectSettleWatchdog;
   static const Duration _connectSettleTimeout = Duration(seconds: 150);
+  // Held (Android) while a background connect attempt is outstanding so Doze
+  // can't freeze the process mid-connect and strand a "Connecting…" notification
+  // — a freeze is exactly what stops the settle watchdog (and
+  // _connectThenSyncOrFail's give-up) from ever running. The native lock is
+  // reference-counted, so releasing it here never disturbs a concurrent DFU or
+  // processing run. This flag keeps the acquire/release pair balanced across the
+  // watchdog's several resolution paths (success, give-up, fire, dispose).
+  bool _connectWakeLockHeld = false;
   // Keep-alive: sends HEARTBEAT (0x32) to storage characteristic every 5s so
   // the firmware doesn't trip its 15s idle-disconnect (the 5s cadence leaves a
   // 10s margin and survives two missed beats). Runs while the user is actively in
@@ -896,8 +912,12 @@ class DeviceProvider extends ChangeNotifier
   /// resets the window.
   void _armConnectSettleWatchdog() {
     _connectSettleWatchdog?.cancel();
+    _acquireConnectWakeLock();
     _connectSettleWatchdog = Timer(_connectSettleTimeout, () {
       _connectSettleWatchdog = null;
+      // The connect window is over either way — drop the wake-lock now so it
+      // can't outlive the attempt (give-up below releases it again, harmlessly).
+      _releaseConnectWakeLock();
       // A connection arrived, or a sync/process now owns the notification —
       // whatever is showing isn't a stale "Connecting…", so leave it alone.
       if (_disposed || isConnected || _backgroundSyncActive || _syncOwnsNotification) return;
@@ -909,6 +929,25 @@ class DeviceProvider extends ChangeNotifier
   void _cancelConnectSettleWatchdog() {
     _connectSettleWatchdog?.cancel();
     _connectSettleWatchdog = null;
+    _releaseConnectWakeLock();
+  }
+
+  /// Acquire/release the connect-phase CPU wake-lock. Reference-counted natively
+  /// and guarded here so the pair stays balanced no matter which watchdog path
+  /// fires. Android-only: iOS has no stranded-"Connecting…" failure mode (no
+  /// persistent connection notification), and its acquireProcessingWakeLock
+  /// starts a bounded background-task assertion we don't want to burn on every
+  /// scheduled connect — so the gate keeps it from ever running there.
+  void _acquireConnectWakeLock() {
+    if (_connectWakeLockHeld || !Platform.isAndroid) return;
+    _connectWakeLockHeld = true;
+    BleHostApi().acquireProcessingWakeLock();
+  }
+
+  void _releaseConnectWakeLock() {
+    if (!_connectWakeLockHeld) return;
+    _connectWakeLockHeld = false;
+    BleHostApi().releaseProcessingWakeLock();
   }
 
   /// A sync cycle could not run (e.g. the device wasn't reachable). Advance to
@@ -1134,6 +1173,7 @@ class DeviceProvider extends ChangeNotifier
     _resumeReconnectDebounce?.cancel();
     _pauseDisconnectTimer?.cancel();
     _connectSettleWatchdog?.cancel();
+    _releaseConnectWakeLock();
     _backgroundSyncTimer?.cancel();
     _foregroundKeepAliveTimer?.cancel();
     _disconnectDebouncer.cancel();
