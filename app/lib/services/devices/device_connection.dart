@@ -223,6 +223,15 @@ abstract class DeviceConnection {
     return null;
   }
 
+  Future<void> setHapticConfig(List<int> config) async {
+    if (await isConnected()) await performSetHapticConfig(config);
+  }
+
+  Future<List<int>?> getHapticConfig() async {
+    if (await isConnected()) return performGetHapticConfig();
+    return null;
+  }
+
   Future<void> setVadThreshold(int threshold) async {
     if (await isConnected()) await performSetVadThreshold(threshold);
   }
@@ -294,6 +303,8 @@ abstract class DeviceConnection {
   Future<int?> performGetMicGain();
   Future<void> performSetButtonConfig(List<int> config);
   Future<List<int>?> performGetButtonConfig();
+  Future<void> performSetHapticConfig(List<int> config);
+  Future<List<int>?> performGetHapticConfig();
   Future<void> performSetVadThreshold(int threshold);
   Future<int?> performGetVadThreshold();
   Future<bool> performSyncDeviceTime();
