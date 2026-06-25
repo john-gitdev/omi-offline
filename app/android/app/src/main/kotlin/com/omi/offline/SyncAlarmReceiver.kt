@@ -14,11 +14,23 @@ class SyncAlarmReceiver : BroadcastReceiver() {
     companion object {
         private const val TAG = "OmiBle.SyncAlarm"
         private const val ACTION = "com.omi.offline.SYNC_ALARM"
+        // Separate action/requestCode so the settle alarm doesn't clobber the sync
+        // alarm's PendingIntent. Settles a stranded "Connecting…" notification when
+        // Dart can't (frozen/torn-down engine); see OmiBleForegroundService.
+        private const val ACTION_SETTLE = "com.omi.offline.SETTLE_NOTIFICATION"
 
         fun pendingIntent(context: Context): PendingIntent {
             val intent = Intent(ACTION).setPackage(context.packageName)
             return PendingIntent.getBroadcast(
                 context, 0, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        }
+
+        private fun settlePendingIntent(context: Context): PendingIntent {
+            val intent = Intent(ACTION_SETTLE).setPackage(context.packageName)
+            return PendingIntent.getBroadcast(
+                context, 1, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
         }
@@ -34,9 +46,43 @@ class SyncAlarmReceiver : BroadcastReceiver() {
                 Log.d(TAG, "schedule: cancelled")
             }
         }
+
+        /// Arm a one-shot, Doze-exempt alarm to settle a stranded "Connecting…"
+        /// notification. Re-arming collapses onto the single PendingIntent.
+        fun scheduleSettle(context: Context, timestampMs: Long) {
+            try {
+                val am = context.getSystemService(AlarmManager::class.java)
+                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, timestampMs, settlePendingIntent(context))
+                Log.d(TAG, "scheduleSettle: armed for ${java.util.Date(timestampMs)}")
+            } catch (e: Exception) {
+                // Non-critical recovery aid; the periodic sync alarm settles too.
+                Log.w(TAG, "scheduleSettle: could not arm: ${e.message}")
+            }
+        }
+
+        /// Cancel a pending settle alarm — the connect resolved (or moved on), so the
+        /// notification is no longer a stranded "Connecting…". Avoids a spurious wake.
+        fun cancelSettle(context: Context) {
+            try {
+                context.getSystemService(AlarmManager::class.java).cancel(settlePendingIntent(context))
+            } catch (e: Exception) {
+                Log.w(TAG, "cancelSettle: ${e.message}")
+            }
+        }
     }
 
     override fun onReceive(context: Context, intent: Intent) {
+        // Settle alarm: just un-stick a stranded "Connecting…" notification. Runs in
+        // this broadcast's Doze-exempt wakelock window with no live isolate needed,
+        // so it recovers the stuck notification even when Dart is frozen or gone.
+        if (intent.action == ACTION_SETTLE) {
+            Log.d(TAG, "onReceive: settle alarm fired")
+            if (!OmiBleManager.isInitialized) {
+                OmiBleManager.initialize(context.applicationContext as android.app.Application)
+            }
+            OmiBleForegroundService.instance?.settleStaleConnectingToIdle()
+            return
+        }
         if (intent.action != ACTION) return
         Log.d(TAG, "onReceive: alarm fired")
 
@@ -62,7 +108,13 @@ class SyncAlarmReceiver : BroadcastReceiver() {
         // start). See gap #2 in the single-notification design.
         OmiBleForegroundService.startServicePersistent(context.applicationContext)
 
-        val flutterApi = OmiBleManager.instance.flutterApi
+        // First, un-stick any "Connecting…" left stranded by a previous cycle whose
+        // Dart never resolved it (also catches the cold-start default that the
+        // dedicated settle alarm doesn't arm for). If Dart is alive it repaints
+        // "Connecting…" for the new attempt right below, harmlessly overwriting this.
+        OmiBleForegroundService.instance?.settleStaleConnectingToIdle()
+
+        val flutterApi = if (OmiBleManager.isFlutterAlive) OmiBleManager.instance.flutterApi else null
         if (flutterApi != null) {
             Handler(Looper.getMainLooper()).post {
                 flutterApi.onBackgroundSyncRequested {}
