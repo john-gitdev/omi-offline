@@ -49,6 +49,10 @@ static struct conn_fail_record conn_fail = {0};
  * Actions: 0=None, 1=Mute, 2=Marker, 3=Toggle LED */
 static uint8_t button_config[6] = {0, 0, 2, 1, 3, 0};
 
+/* Per-tap-slot vibration pattern, same slot order as button_config.
+ * Patterns: 0=Off, 1=Single, 2=Double, 3=Triple. Default off everywhere. */
+static uint8_t haptic_config[6] = {0, 0, 0, 0, 0, 0};
+
 static int settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
     const char *next;
@@ -205,6 +209,18 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         rc = read_cb(cb_arg, button_config, sizeof(button_config));
         if (rc >= 0) {
             LOG_INF("Loaded button_config");
+            return 0;
+        }
+        return rc;
+    }
+
+    if (settings_name_steq(name, "haptic_config", &next) && !next) {
+        if (len != sizeof(haptic_config)) {
+            return -EINVAL;
+        }
+        rc = read_cb(cb_arg, haptic_config, sizeof(haptic_config));
+        if (rc >= 0) {
+            LOG_INF("Loaded haptic_config");
             return 0;
         }
         return rc;
@@ -417,5 +433,22 @@ int app_settings_save_button_config(const uint8_t config[6])
 void app_settings_get_button_config(uint8_t config[6])
 {
     memcpy(config, button_config, sizeof(button_config));
+}
+
+int app_settings_save_haptic_config(const uint8_t config[6])
+{
+    memcpy(haptic_config, config, sizeof(haptic_config));
+    int err = settings_save_one("omi/haptic_config", haptic_config, sizeof(haptic_config));
+    if (err) {
+        LOG_ERR("Failed to save haptic_config (err %d)", err);
+    } else {
+        LOG_INF("Saved haptic_config");
+    }
+    return err;
+}
+
+void app_settings_get_haptic_config(uint8_t config[6])
+{
+    memcpy(config, haptic_config, sizeof(haptic_config));
 }
 
