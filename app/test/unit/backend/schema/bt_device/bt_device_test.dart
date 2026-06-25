@@ -188,6 +188,14 @@ class MockDeviceConnection extends DeviceConnection {
   }
 
   @override
+  Future<void> performSetHapticConfig(List<int> config) async {}
+
+  @override
+  Future<List<int>?> performGetHapticConfig() async {
+    return null;
+  }
+
+  @override
   Future<int?> performGetVadThreshold() async {
     return null;
   }
