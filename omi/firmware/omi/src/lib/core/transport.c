@@ -1013,6 +1013,18 @@ static void idle_disconnect_work_handler(struct k_work *work)
         k_work_schedule(k_work_delayable_from_work(work), K_MSEC(IDLE_DISCONNECT_POLL_MS));
         return;
     }
+
+    /* Same liveness exemption for a DFU image upload. DFU traffic rides the SMP
+     * characteristic, which never calls transport_mark_activity(), so a multi-
+     * minute flash would otherwise blow past the 15 s idle window and drop the
+     * link mid-update (the app's keep-alive is only a best-effort backstop and is
+     * easily starved under SMP saturation). ota_active is bracketed by the DFU
+     * STARTED/STOPPED mgmt callbacks and cleared on disconnect, so it cannot get
+     * stuck and permanently defeat idle-disconnect. */
+    if (sd_get_ota_active()) {
+        k_work_schedule(k_work_delayable_from_work(work), K_MSEC(IDLE_DISCONNECT_POLL_MS));
+        return;
+    }
 #endif
 
     uint32_t now = k_uptime_get_32();
@@ -1149,6 +1161,15 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
     storage_is_on = false;
     storage_stop_sync_session();
     sd_notify_ble_state(false);
+    /* A DFU can only run over a live link; if it dropped, the upload is dead.
+     * The img_mgmt DFU_STOPPED callback does NOT fire on a bare disconnect (the
+     * upload state is kept for resume), so clear ota_active here ourselves —
+     * otherwise it stays latched and would defer idle-disconnect forever on the
+     * next, non-DFU connection. A from-scratch retry re-fires DFU_STARTED. Gated
+     * so routine idle-disconnects don't spam the "OTA mode inactive" log. */
+    if (sd_get_ota_active()) {
+        sd_set_ota_active(false);
+    }
 #endif
 
     k_work_cancel_delayable(&mtu_recheck_work);
