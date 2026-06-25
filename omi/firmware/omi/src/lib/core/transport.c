@@ -429,6 +429,8 @@ static struct bt_uuid_128 button_config_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x23BA7926, 0x0000, 0x1000, 0x7450, 0x346EAC492E92));
 static struct bt_uuid_128 button_config_characteristic_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x23BA7927, 0x0000, 0x1000, 0x7450, 0x346EAC492E92));
+static struct bt_uuid_128 haptic_config_characteristic_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x23BA7928, 0x0000, 0x1000, 0x7450, 0x346EAC492E92));
 
 static ssize_t button_config_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                                           void *buf, uint16_t len, uint16_t offset)
@@ -452,6 +454,31 @@ static ssize_t button_config_write_handler(struct bt_conn *conn, const struct bt
         }
     }
     app_settings_save_button_config(cfg);
+    return len;
+}
+
+static ssize_t haptic_config_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                          void *buf, uint16_t len, uint16_t offset)
+{
+    uint8_t config[6];
+    app_settings_get_haptic_config(config);
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, config, sizeof(config));
+}
+
+static ssize_t haptic_config_write_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                           const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+    if (len != 6) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+    // Reject out-of-range patterns (0=Off, 1=Single, 2=Double, 3=Triple).
+    const uint8_t *cfg = (const uint8_t *)buf;
+    for (int i = 0; i < 6; i++) {
+        if (cfg[i] > 3) {
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+    }
+    app_settings_save_haptic_config(cfg);
     return len;
 }
 
@@ -484,6 +511,13 @@ static struct bt_gatt_attr button_config_service_attr[] = {
                            BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                            button_config_read_handler,
                            button_config_write_handler,
+                           NULL),
+    // Appended last so the button-config characteristic's handle stays stable.
+    BT_GATT_CHARACTERISTIC(&haptic_config_characteristic_uuid.uuid,
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
+                           BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
+                           haptic_config_read_handler,
+                           haptic_config_write_handler,
                            NULL),
 };
 
