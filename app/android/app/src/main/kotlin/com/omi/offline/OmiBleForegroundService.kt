@@ -14,6 +14,9 @@ import android.util.Log
 import android.content.pm.ServiceInfo
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -48,6 +51,11 @@ class OmiBleForegroundService : Service() {
         private const val PREFS_USER_DISCONNECTED = "user_disconnected"
         private const val DEFAULT_NOTIF_TITLE = "Omi Offline"
         private const val DEFAULT_NOTIF_TEXT = "Connecting..."
+        // Settle a stranded "Connecting…" notification this long after it's shown.
+        // Slightly longer than Dart's 150 s connect-settle watchdog so a genuinely
+        // slow connect isn't cut short; under deep Doze the exact alarm may defer to
+        // the OS's ~9 min throttle window, still far better than the prior ~hour.
+        private const val CONNECT_SETTLE_MS = 160_000L
         private const val ACTION_NOTIFICATION_DISMISSED = "com.omi.offline.NOTIFICATION_DISMISSED"
         @Volatile
         var instance: OmiBleForegroundService? = null
@@ -165,6 +173,9 @@ class OmiBleForegroundService : Service() {
     private val bleManager get() = OmiBleManager.instance
     private var currentNotificationTitle = DEFAULT_NOTIF_TITLE
     private var currentNotificationText = DEFAULT_NOTIF_TEXT
+    // Mirrors Dart's nextSyncTime (pushed via setNextSyncTime) so the native
+    // settle can render the "Next sync at H:MM" title without a live isolate.
+    private var nextSyncTimeMs: Long = 0L
     // True while auto-sync is scheduled. Suppresses transient "Connecting…"/"Connected"
     // text updates so the "Next sync at…" label stays stable through the brief
     // connect→sync→disconnect cycle.
@@ -915,6 +926,7 @@ class OmiBleForegroundService : Service() {
 
     fun setNextSyncTime(timestampMs: Long) {
         syncTimerActive = timestampMs > 0
+        nextSyncTimeMs = timestampMs
         SyncAlarmReceiver.schedule(this, timestampMs)
     }
 
@@ -941,6 +953,67 @@ class OmiBleForegroundService : Service() {
     /// service's own connection-state updates while a status is set.
     fun setSyncStatus(title: String, text: String) {
         dartDrivesNotification = true
+        updateNativeNotification(text, title)
+        // A "Connecting…" transient can be stranded if Dart freezes (Doze) or its
+        // engine is torn down before the attempt resolves. Arm a Doze-exempt exact
+        // alarm to settle it back to the idle line on its own. Re-arming collapses
+        // onto the single PendingIntent; any later push that resolves the connect
+        // (Syncing/idle/…) leaves the alarm to fire once and no-op (the receiver
+        // re-checks the live text). See SyncAlarmReceiver.scheduleSettle.
+        if (text.startsWith("Connecting")) {
+            SyncAlarmReceiver.scheduleSettle(this, System.currentTimeMillis() + CONNECT_SETTLE_MS)
+        } else {
+            // Connect resolved / moved on (Syncing, idle, …) — drop the pending settle.
+            SyncAlarmReceiver.cancelSettle(this)
+        }
+    }
+
+    /// Settle a stranded "Connecting…" notification back to the idle line. Invoked
+    /// from SyncAlarmReceiver, which runs in the alarm's Doze-exempt wakelock window
+    /// with no dependence on a live Flutter isolate — so it recovers the stuck
+    /// notification even when the engine is frozen or gone. No-op unless a connect
+    /// transient is actually showing, so a legit in-flight connect is left alone.
+    fun settleStaleConnectingToIdle() {
+        if (!currentNotificationText.startsWith("Connecting")) return
+        Log.i(TAG, "settleStaleConnectingToIdle: reverting stranded '$currentNotificationText' to idle")
+        // The connect never resolved — the app's UI engine was frozen or torn down
+        // before its give-up/watchdog could run. By definition that cycle synced
+        // nothing, so record it as a Skip *now*, into the same prefs Dart reads, so
+        // it reads back "Skipped" here and stays consistent when the app next opens.
+        // Recording it only at this confirmed-strand point (rather than eagerly at
+        // connect start) means a cycle that connected fine but deferred — e.g.
+        // processing already running — is never mislabelled. Safe to write from
+        // native: in this state no live isolate is racing us.
+        getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE).edit()
+            .putBoolean("flutter.lastSyncSkipped", true)
+            .putLong("flutter.lastSyncStatusMs", System.currentTimeMillis())
+            .apply()
+        renderIdleFromPrefs()
+    }
+
+    /// Render the resting "Next sync / Last Sync" line from the same
+    /// FlutterSharedPreferences keys Dart's SyncNotification.idle reads. Keep the
+    /// title/body format in sync with that method (note: this recovery path does
+    /// not reproduce the muted-state line that idle() renders first). The strand is
+    /// recorded as a Skip just above, so it reads back as "Last Sync: Skipped • <time>".
+    private fun renderIdleFromPrefs() {
+        val prefs = getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
+        val fmt = SimpleDateFormat("h:mm a", Locale.getDefault())
+        val title = if (nextSyncTimeMs > 0) "Next sync at ${fmt.format(Date(nextSyncTimeMs))}" else DEFAULT_NOTIF_TITLE
+        val lastMs = prefs.getLong("flutter.lastSyncStatusMs", 0L)
+        val text: String
+        if (lastMs > 0) {
+            val status = when {
+                prefs.getBoolean("flutter.lastSyncSkipped", false) -> "Skipped"
+                prefs.getBoolean("flutter.lastSyncPartial", false) -> "Partial"
+                else -> "Complete"
+            }
+            val time = fmt.format(Date(lastMs))
+            val battery = prefs.getLong("flutter.lastBatteryLevel", -1L).toInt()
+            text = if (battery >= 0) "Last Sync: $status • $time • $battery% Battery" else "Last Sync: $status • $time"
+        } else {
+            text = DEFAULT_NOTIF_TEXT
+        }
         updateNativeNotification(text, title)
     }
 
