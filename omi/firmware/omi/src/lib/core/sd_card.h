@@ -346,6 +346,17 @@ bool is_sd_on(void);
 void sd_set_ota_active(bool active);
 
 /**
+ * @brief Whether a DFU/OTA image upload is currently in progress.
+ *
+ * Bracketed by the MGMT_EVT_OP_IMG_MGMT_DFU_STARTED / _STOPPED callbacks (see
+ * main.c). The BLE idle-disconnect handler consults this so it never drops the
+ * link mid-DFU: DFU traffic rides the SMP characteristic and so never calls
+ * transport_mark_activity(), leaving the idle timer to expire on an otherwise
+ * healthy upload.
+ */
+bool sd_get_ota_active(void);
+
+/**
  * @brief Pause or resume SD card writes (for AAD power saving).
  *
  * @param pause true to pause writes and suspend SD, false to resume.
