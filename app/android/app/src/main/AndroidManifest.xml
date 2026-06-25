@@ -76,6 +76,7 @@
             android:exported="false">
             <intent-filter>
                 <action android:name="com.omi.offline.SYNC_ALARM" />
+                <action android:name="com.omi.offline.SETTLE_NOTIFICATION" />
             </intent-filter>
         </receiver>
 
