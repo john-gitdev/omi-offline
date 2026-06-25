@@ -797,6 +797,11 @@ void sd_set_ota_active(bool active)
     }
 }
 
+bool sd_get_ota_active(void)
+{
+    return atomic_get(&ota_active) != 0;
+}
+
 void sd_write_pause(bool pause)
 {
     if (pause) {
