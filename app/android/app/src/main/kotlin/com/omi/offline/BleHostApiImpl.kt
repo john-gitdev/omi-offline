@@ -23,6 +23,11 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
     private var companionManager: OmiCompanionManager? = null
     private var companionAssociationCallback: ((Result<String>) -> Unit)? = null
     private var processingWakeLock: PowerManager.WakeLock? = null
+    // Reference count so independent owners (VAD processing, DFU, and the
+    // background-connect settle window) can each acquire/release the single
+    // partial wake-lock without one owner's release pulling it out from under
+    // another's still-running work. Held while > 0.
+    private var wakeLockRefCount = 0
 
     fun initCompanionManager(activity: Activity) {
         companionManager = OmiCompanionManager(activity, getActivity)
@@ -172,6 +177,7 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
     }
 
     override fun acquireProcessingWakeLock() {
+        wakeLockRefCount++
         if (processingWakeLock?.isHeld == true) return
         val ctx = getActivity()?.applicationContext ?: return
         val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -180,6 +186,8 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
     }
 
     override fun releaseProcessingWakeLock() {
+        if (wakeLockRefCount > 0) wakeLockRefCount--
+        if (wakeLockRefCount > 0) return
         processingWakeLock?.let { if (it.isHeld) it.release() }
         processingWakeLock = null
     }
