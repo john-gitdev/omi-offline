@@ -118,6 +118,20 @@ class MainActivity : FlutterActivity() {
         super.onDestroy()
     }
 
+    override fun cleanUpFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
+        // Fires on EVERY engine teardown — including an OS memory-reclaim destroy
+        // (isFinishing == false), which onDestroy above does not handle. Without
+        // this, flutterApi keeps pointing at the dead dartExecutor messenger and
+        // isFlutterAlive stays true, so the next background alarm/worker posts into
+        // the void instead of recognising the engine is gone (and letting the
+        // native notification settle take over). configureFlutterEngine re-arms
+        // both on the next launch. See SyncAlarmReceiver / BackgroundSyncWorker.
+        OmiBleManager.isFlutterAlive = false
+        OmiBleManager.instance.flutterApi = null
+        bleHostApiImpl = null
+        super.cleanUpFlutterEngine(flutterEngine)
+    }
+
     private fun startAacEncoder(sampleRate: Int, outputPath: String, bitrate: Int): String {
         val tempPath = if (outputPath.endsWith(".m4a"))
             outputPath.dropLast(4) + ".tmp.m4a"
