@@ -29,6 +29,26 @@ Back when the device had limited button gestures, the `MARKER` action (`BUTTON_A
 2. **Firmware (`button.c`):** Remove the `in_manual` threshold logic from `BUTTON_ACTION_MARKER`. Add new `switch` cases for the new actions that call `aad_set_threshold(65535)` for start and `aad_set_threshold(32769)` for stop (and toggle between them based on current `aad_get_threshold()`).
 3. **App (`button_config_page.dart`):** Expand the `_actions` list to include `'Toggle Recording'`, `'Start Recording'`, and `'Stop Recording'`. Remove the `_manualMode ? ... : ...` ternary logic for the Marker label.
 
+## Device-side toggle for Manual/Auto Mode [medium] [Pending]
+
+Add a new button action that allows users to toggle between Auto Recording and Manual Recording directly from the device, without needing to use the app.
+
+### Why this is needed
+Users may want to quickly switch between continuous auto-recording and on-demand manual capture while on the go. Currently, this requires opening the app. 
+
+A key architectural strength already exists for this: the app prevents offline mode editing and treats the device's `vad_threshold` as the ultimate source of truth upon connection. Therefore, if the device toggles the mode locally, no "timestamp conflict resolution" is needed. The app will simply read the new state upon its next connection and update the UI accordingly.
+
+### The Firmware Catch
+Currently, the firmware only has one persisted threshold variable (`vad_threshold`). When the app switches the device into Manual Mode, it overwrites this variable with `32769`, effectively erasing the user's preferred Auto Mode threshold (e.g., `250`). If a device-side button tries to toggle *back* to Auto Mode, it doesn't know what threshold to fall back to.
+
+### Implementation details
+1. **Firmware (`settings.c`, `settings.h`):** Add a new persisted setting called `auto_vad_threshold` (e.g., defaulting to `250`). This ensures the device always remembers the user's preferred auto-sensitivity even while in manual standby.
+2. **App BLE Communication:** Update the "Auto VAD Threshold" slider in the app so that it writes the value not just to the active threshold (if in auto mode), but also explicitly saves it to the firmware's new `auto_vad_threshold` backup slot.
+3. **Firmware (`button.h`, `button.c`):** 
+   - Add `BUTTON_ACTION_MODE_TOGGLE = 7` to the action enum.
+   - When pressed: if `vad_threshold >= 32769` (currently in manual mode), switch the active threshold to the saved `auto_vad_threshold`. If `vad_threshold < 32769` (currently in auto mode), switch the active threshold to `32769`.
+4. **App (`button_config_page.dart`):** Add `'Toggle Auto/Manual Mode'` to the `_actions` list so users can assign it to a tap gesture.
+
 ## Device-driven BLE wake (firmware + iOS) [large] [Pending]
 
 Shift background-sync triggering from the *phone* (opportunistic iOS `BGTaskScheduler` / Android alarms) to the *device*: the Omi opens a connectable advertising **window** on its own RTC-driven schedule, and the phone — holding a standing pending-connect — is woken by the OS the moment that window opens. This is the model commercial BLE wearables (e.g. CGMs) use for reliable background sync on iOS.
