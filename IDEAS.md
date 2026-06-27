@@ -4,6 +4,31 @@
 
 ## PENDING
 
+## Clean session-end marker when entering Manual Mode [medium] [Pending]
+
+When the user toggles Manual Mode *on* in the app settings, the device transitions its VAD threshold to `32769` (manual standby). Currently, because the previous threshold wasn't `65535` (manual recording), the firmware doesn't instantly inject a `session-end` marker. Instead, it relies on the VAD's natural 10-second silence timeout (`CONFIG_OMI_VAD_HOLD_MS`) to put the recording to sleep. 
+
+### Why this should change
+Switching modes is a hard context boundary. Any ongoing auto-mode conversation should be cleanly finalized with a `session-end` marker the moment the user switches to Manual Mode, rather than letting it bleed out over a 10-second silence timeout. 
+
+### Implementation details
+- **Firmware (`aad.c`):** Update `aad_set_threshold()` so that injecting a `session-end` marker (`0xFFFFFFFC`) isn't strictly gated by `leaving_manual_record` (`prev == 65535 && threshold != 65535`). If the threshold is dropping to `32769` (entering manual mode) from an active auto-recording state (e.g., `prev == 250` and `vad_is_recording == true`), it should also trigger `write_session_end_marker_to_storage()` and instantly put the VAD to sleep.
+
+
+## Split manual recording Start/Stop from the Marker action [medium] [Pending]
+
+Back when the device had limited button gestures, the `MARKER` action (`BUTTON_ACTION_MARKER`) was overloaded to act as a Start/Stop toggle when `in_manual == true`. Now that the device has a customizable multi-gesture button configuration (`_config` array supporting single/double/triple taps), this overload is actively harmful.
+
+### Why this should change
+1. **Regain Marker utility:** Because `MARKER` is overloaded, a user cannot drop a timestamp marker *during* an active manual recording. By splitting them, `MARKER` can go back to just dropping the `0xFFFFFFFE` marker packet and flashing white, regardless of what mode the device is in.
+2. **Eliminate state confusion:** Toggles create "state confusion" (e.g., "Did I just start or stop it?"). With explicit Start/Stop actions, a user can map Double-Tap to Start and Triple-Tap to Stop. The gesture guarantees the intent, no LED checking required.
+3. **Cleaner codebase:** The `if (in_manual)` branching inside the `MARKER` switch case in `button.c` can be removed, and the ternary UI label hack in `button_config_page.dart` can be deleted.
+
+### Implementation details
+1. **Firmware (`button.h`):** Expand `button_action_t` to include `BUTTON_ACTION_RECORD_TOGGLE = 4`, `BUTTON_ACTION_RECORD_START = 5`, `BUTTON_ACTION_RECORD_STOP = 6`.
+2. **Firmware (`button.c`):** Remove the `in_manual` threshold logic from `BUTTON_ACTION_MARKER`. Add new `switch` cases for the new actions that call `aad_set_threshold(65535)` for start and `aad_set_threshold(32769)` for stop (and toggle between them based on current `aad_get_threshold()`).
+3. **App (`button_config_page.dart`):** Expand the `_actions` list to include `'Toggle Recording'`, `'Start Recording'`, and `'Stop Recording'`. Remove the `_manualMode ? ... : ...` ternary logic for the Marker label.
+
 ## Device-driven BLE wake (firmware + iOS) [large] [Pending]
 
 Shift background-sync triggering from the *phone* (opportunistic iOS `BGTaskScheduler` / Android alarms) to the *device*: the Omi opens a connectable advertising **window** on its own RTC-driven schedule, and the phone — holding a standing pending-connect — is woken by the OS the moment that window opens. This is the model commercial BLE wearables (e.g. CGMs) use for reliable background sync on iOS.
