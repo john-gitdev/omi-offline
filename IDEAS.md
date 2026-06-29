@@ -1,8 +1,24 @@
 # Ideas
 
+## Table of Contents
+
+### ACTIVE
+- [1. BLE stability: stuck notifications, partial syncs, Bluetooth wedge [large] [Active]](#1-ble-stability-stuck-notifications-partial-syncs-bluetooth-wedge-large-active)
+### PENDING
+- [2. High-Priority Marker Mode — "New Recording" Button Action [large] [Pending]](#2-high-priority-marker-mode-new-recording-button-action-large-pending)
+- [3. Clean session-end marker when entering Manual Mode [medium] [Pending]](#3-clean-session-end-marker-when-entering-manual-mode-medium-pending)
+- [4. Split manual recording Start/Stop from the Marker action [medium] [Pending]](#4-split-manual-recording-startstop-from-the-marker-action-medium-pending)
+- [5. Device-side toggle for Manual/Auto Mode [medium] [Pending]](#5-device-side-toggle-for-manualauto-mode-medium-pending)
+- [6. Device-driven BLE wake (firmware + iOS) [large] [Pending]](#6-device-driven-ble-wake-firmware-ios-large-pending)
+### DEFERRED
+- [7. iOS code signing & non-jailbroken distribution [medium] [Deferred]](#7-ios-code-signing-non-jailbroken-distribution-medium-deferred)
+
+---
+
+
 ## ACTIVE
 
-### BLE stability: stuck notifications, partial syncs, Bluetooth wedge [large] [Active]
+### 1. BLE stability: stuck notifications, partial syncs, Bluetooth wedge [large] [Active]
 
 Findings from analysing the device logs of 2026-06-27 and a full code review of
 [OmiBleManager.kt](app/android/app/src/main/kotlin/com/omi/offline/OmiBleManager.kt) and
@@ -210,7 +226,7 @@ When Bluetooth is turning off, the OS is tearing down all links anyway, so this 
 
 ## PENDING
 
-### High-Priority Marker Mode — "New Recording" Button Action [large] [Pending]
+### 2. High-Priority Marker Mode — "New Recording" Button Action [large] [Pending]
 
 Implementation spec. **Self-contained** — every file/line/symbol below was verified against the
 codebase during research. A fresh agent can implement straight from this doc.
@@ -585,7 +601,7 @@ add a `CHANGELOG.md` entry, and bump fw rev when shipping firmware.
 3. The upstream isolate `edl` source dict that feeds `writeMarkerEdl` (so `isHighPriority` reaches disk, not just the on-read path).
 
 
-### Clean session-end marker when entering Manual Mode [medium] [Pending]
+### 3. Clean session-end marker when entering Manual Mode [medium] [Pending]
 
 When the user toggles Manual Mode *on* in the app settings, the device transitions its VAD threshold to `32769` (manual standby). Currently, because the previous threshold wasn't `65535` (manual recording), the firmware doesn't instantly inject a `session-end` marker. Instead, it relies on the VAD's natural 10-second silence timeout (`CONFIG_OMI_VAD_HOLD_MS`) to put the recording to sleep. 
 
@@ -596,7 +612,7 @@ Switching modes is a hard context boundary. Any ongoing auto-mode conversation s
 - **Firmware (`aad.c`):** Update `aad_set_threshold()` so that injecting a `session-end` marker (`0xFFFFFFFC`) isn't strictly gated by `leaving_manual_record` (`prev == 65535 && threshold != 65535`). If the threshold is dropping to `32769` (entering manual mode) from an active auto-recording state (e.g., `prev == 250` and `vad_is_recording == true`), it should also trigger `write_session_end_marker_to_storage()` and instantly put the VAD to sleep.
 
 
-### Split manual recording Start/Stop from the Marker action [medium] [Pending]
+### 4. Split manual recording Start/Stop from the Marker action [medium] [Pending]
 
 Back when the device had limited button gestures, the `MARKER` action (`BUTTON_ACTION_MARKER`) was overloaded to act as a Start/Stop toggle when `in_manual == true`. Now that the device has a customizable multi-gesture button configuration (`_config` array supporting single/double/triple taps), this overload is actively harmful.
 
@@ -610,7 +626,7 @@ Back when the device had limited button gestures, the `MARKER` action (`BUTTON_A
 2. **Firmware (`button.c`):** Remove the `in_manual` threshold logic from `BUTTON_ACTION_MARKER`. Add new `switch` cases for the new actions that call `aad_set_threshold(65535)` for start and `aad_set_threshold(32769)` for stop (and toggle between them based on current `aad_get_threshold()`).
 3. **App (`button_config_page.dart`):** Expand the `_actions` list to include `'Toggle Recording'`, `'Start Recording'`, and `'Stop Recording'`. Remove the `_manualMode ? ... : ...` ternary logic for the Marker label.
 
-### Device-side toggle for Manual/Auto Mode [medium] [Pending]
+### 5. Device-side toggle for Manual/Auto Mode [medium] [Pending]
 
 Add a new button action that allows users to toggle between Auto Recording and Manual Recording directly from the device, without needing to use the app.
 
@@ -630,7 +646,7 @@ Currently, the firmware only has one persisted threshold variable (`vad_threshol
    - When pressed: if `vad_threshold >= 32769` (currently in manual mode), switch the active threshold to the saved `auto_vad_threshold`. If `vad_threshold < 32769` (currently in auto mode), switch the active threshold to `32769`.
 4. **App (`button_config_page.dart`):** Add `'Toggle Auto/Manual Mode'` to the `_actions` list so users can assign it to a tap gesture.
 
-### Device-driven BLE wake (firmware + iOS) [large] [Pending]
+### 6. Device-driven BLE wake (firmware + iOS) [large] [Pending]
 
 Shift background-sync triggering from the *phone* (opportunistic iOS `BGTaskScheduler` / Android alarms) to the *device*: the Omi opens a connectable advertising **window** on its own RTC-driven schedule, and the phone ΓÇö holding a standing pending-connect ΓÇö is woken by the OS the moment that window opens. This is the model commercial BLE wearables (e.g. CGMs) use for reliable background sync on iOS.
 
@@ -763,7 +779,7 @@ Highest-leverage cheap validation: **Phase 1 window scheduler + Phase 2 standing
 
 ## DEFERRED
 
-### iOS code signing & non-jailbroken distribution [medium] [Deferred]
+### 7. iOS code signing & non-jailbroken distribution [medium] [Deferred]
 
 The iOS build works end-to-end via CI (`.github/workflows/ios-build.yml`) and produces an **unsigned** dev IPA that installs on a **jailbroken** device (AppSync Unified / TrollStore ΓÇö current path for the iPhone 6s Plus). To run on a **stock** (non-jailbroken) iPhone, the IPA must be code-signed, which needs an Apple Developer account plus signing material wired into CI.
 
