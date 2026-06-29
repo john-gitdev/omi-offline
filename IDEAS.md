@@ -5,13 +5,14 @@
 ### ACTIVE
 - [1. BLE stability: stuck notifications, partial syncs, Bluetooth wedge [large] [Active]](#1-ble-stability-stuck-notifications-partial-syncs-bluetooth-wedge-large-active)
 ### PENDING
-- [2. High-Priority Marker Mode — "New Recording" Button Action [large] [Pending]](#2-high-priority-marker-mode-new-recording-button-action-large-pending)
-- [3. Clean session-end marker when entering Manual Mode [medium] [Pending]](#3-clean-session-end-marker-when-entering-manual-mode-medium-pending)
-- [4. Split manual recording Start/Stop from the Marker action [medium] [Pending]](#4-split-manual-recording-startstop-from-the-marker-action-medium-pending)
-- [5. Device-side toggle for Manual/Auto Mode [medium] [Pending]](#5-device-side-toggle-for-manualauto-mode-medium-pending)
-- [6. Device-driven BLE wake (firmware + iOS) [large] [Pending]](#6-device-driven-ble-wake-firmware-ios-large-pending)
+- [2. Hybrid "Isolated Recording" Architecture (Start/Stop) [large] [Pending]](#2-hybrid-isolated-recording-architecture-startstop-large-pending)
+- [3. High-Priority Marker Mode — "New Recording" Button Action [large] [Pending]](#3-high-priority-marker-mode-new-recording-button-action-large-pending)
+- [4. Clean session-end marker when entering Manual Mode [medium] [Pending]](#4-clean-session-end-marker-when-entering-manual-mode-medium-pending)
+- [5. Split manual recording Start/Stop from the Marker action [medium] [Pending]](#5-split-manual-recording-startstop-from-the-marker-action-medium-pending)
+- [6. Device-side toggle for Manual/Auto Mode [medium] [Pending]](#6-device-side-toggle-for-manualauto-mode-medium-pending)
+- [7. Device-driven BLE wake (firmware + iOS) [large] [Pending]](#7-device-driven-ble-wake-firmware-ios-large-pending)
 ### DEFERRED
-- [7. iOS code signing & non-jailbroken distribution [medium] [Deferred]](#7-ios-code-signing-non-jailbroken-distribution-medium-deferred)
+- [8. iOS code signing & non-jailbroken distribution [medium] [Deferred]](#8-ios-code-signing-non-jailbroken-distribution-medium-deferred)
 
 ---
 
@@ -47,7 +48,7 @@ Findings from analysing the device logs of 2026-06-27 and a full code review of
 2. **Use `AlarmManager.setExactAndAllowWhileIdle`** (it already may, but verify) so Doze doesn't batch it into the 9-min window.
 3. **Push a native-side `onConnectionStateChange → STATE_DISCONNECTED` notification update** immediately when the GATT callback fires, instead of relying on Dart to update the notification text. This would catch the case where Dart is frozen but native callbacks still fire.
 
-#### 2. Partial sync completions
+#### 3. Partial sync completions
 
 **Problem:** Background syncs identify multiple WAL files to transfer (e.g. "getMissingWals returned 4 WALs") but abort partway through because the Bluetooth connection drops mid-transfer. The logs show this pattern repeatedly:
 
@@ -79,7 +80,7 @@ A secondary cause visible in the logs is `Stream closed without EOT` ([OmiBleMan
 3. **Resume-from-offset after reconnect.** The `StorageDownloadSession` already supports a `startOffset` parameter. If a transfer is interrupted, persist the last successfully written offset and resume from there on the next connection instead of re-downloading the entire file. The WAL sync loop already deletes successfully synced WALs, so partially transferred WALs are re-fetched — but they restart from offset 0.
 4. **Reduce keepalive interval.** The storage keepalive is 15 s, but the firmware idle-disconnect timer is 30 s. If a keepalive write silently fails (e.g. Android flow control backs off), the firmware may time out. Consider reducing to 10 s for more margin.
 
-#### 3. Phone stops connecting to Omi (requires Bluetooth toggle)
+#### 4. Phone stops connecting to Omi (requires Bluetooth toggle)
 
 **Problem:** The logs show a connection attempt failing after the full 30 s timeout with `gatt_status_8`, followed by repeated failed retries until the user toggled Bluetooth:
 
@@ -226,7 +227,30 @@ When Bluetooth is turning off, the OS is tearing down all links anyway, so this 
 
 ## PENDING
 
-### 2. High-Priority Marker Mode — "New Recording" Button Action [large] [Pending]
+### 2. Hybrid "Isolated Recording" Architecture (Start/Stop) [large] [Pending]
+
+This architecture perfectly combines the eyes-free UX safety of distinct actions (Idea #5, previously Idea #4) with the file-system safety of bin rotations (Idea #3, previously Idea #2) and state-backup (Idea #6, previously Idea #5).
+
+#### Implementation details
+1. **Firmware (`settings.c`, `settings.h`)**:
+   - Implement the `auto_vad_threshold` backup variable (as detailed in Idea #6). This ensures the device remembers the user's preferred Auto sensitivity (e.g., `250`).
+2. **Firmware (`button.c`, `button.h`)**:
+   - Add two new distinct actions: `BUTTON_ACTION_RECORD_START` and `BUTTON_ACTION_RECORD_STOP`.
+   - **On Start Press**:
+     - Block and call `create_new_audio_file()` (Rotate Bin).
+     - Immediately write the `0xFFFFFFF8` marker (High-Priority Start Marker).
+     - Set `vad_threshold = 65535` (Force continuous capture to ensure no audio is dropped).
+   - **On Stop Press**:
+     - Block and call `create_new_audio_file()` (Rotate Bin).
+     - Immediately write the `0xFFFFFFF7` marker (High-Priority Stop Marker).
+     - Set `vad_threshold = auto_vad_threshold` (Safely restore the background VAD using the backup variable).
+3. **App (`vad_audio_processor.dart`)**:
+   - **On reading `0xFFFFFFF8`**: Finalize the current active auto-recording. Start a brand new, isolated recording anchored at this byte offset and set a high-priority flag (e.g., render it red in the UI).
+   - **On reading `0xFFFFFFF7`**: Finalize the isolated recording. Immediately start a new standard auto-recording to capture the ambient background audio moving forward.
+4. **App UI (`button_config_page.dart`)**:
+   - Add "Start Isolated Recording" and "Stop Isolated Recording" to the configuration list so users can map them to separate distinct gestures (e.g., Double Tap to Start, Triple Tap to Stop). This avoids "state confusion" and allows true eyes-free usage.
+
+### 3. High-Priority Marker Mode — "New Recording" Button Action [large] [Pending]
 
 Implementation spec. **Self-contained** — every file/line/symbol below was verified against the
 codebase during research. A fresh agent can implement straight from this doc.
@@ -264,7 +288,7 @@ because the marker is added *after* the flush, so it associates with the **next*
 
 ---
 
-#### 2. CRITICAL: why the firmware MUST rotate the bin (do not skip this)
+#### 3. CRITICAL: why the firmware MUST rotate the bin (do not skip this)
 
 The app's bin model is **whole-bin**: a recording's `.meta` stores the *set* of bins it touched
 (no byte-offset granularity), and the stateless reader re-reads each bin **from offset 0** every run.
@@ -299,7 +323,7 @@ the rotate.
 
 ---
 
-#### 3. Firmware changes (`omi/firmware/omi/src/`)
+#### 4. Firmware changes (`omi/firmware/omi/src/`)
 
 ##### 3a. `lib/core/button.h`
 Enum at lines 17-22 is `NONE=0, MUTE=1, MARKER=2, TOGGLE_LED=3`. Add:
@@ -380,7 +404,7 @@ case BUTTON_ACTION_NEW_RECORDING:
 
 ---
 
-#### 4. App changes (`app/lib/`)
+#### 5. App changes (`app/lib/`)
 
 ##### 4a. `backend/preferences.dart`
 Mirror the `manualMode` idiom at lines 39-40. Add:
@@ -553,7 +577,7 @@ this.isHighPriority = false,
 
 ---
 
-#### 5. Edge cases accounted for
+#### 6. Edge cases accounted for
 
 | Case | Handling |
 |---|---|
@@ -572,7 +596,7 @@ this.isHighPriority = false,
 
 ---
 
-#### 6. Files touched (checklist)
+#### 7. Files touched (checklist)
 
 **Firmware**
 - [ ] `lib/core/button.h` — `BUTTON_ACTION_NEW_RECORDING = 4`
@@ -595,13 +619,13 @@ add a `CHANGELOG.md` entry, and bump fw rev when shipping firmware.
 
 ---
 
-#### 7. Open items to confirm during implementation
+#### 8. Open items to confirm during implementation
 1. The exact firmware variable the `BUTTON_ACTION_MARKER` case uses to detect manual mode (button.c ~166) — reuse it for the `<IN_MANUAL>` guard.
 2. The VAD fresh-start field names at `vad_audio_processor.dart:797-804` (quoted from research; confirm in-file).
 3. The upstream isolate `edl` source dict that feeds `writeMarkerEdl` (so `isHighPriority` reaches disk, not just the on-read path).
 
 
-### 3. Clean session-end marker when entering Manual Mode [medium] [Pending]
+### 4. Clean session-end marker when entering Manual Mode [medium] [Pending]
 
 When the user toggles Manual Mode *on* in the app settings, the device transitions its VAD threshold to `32769` (manual standby). Currently, because the previous threshold wasn't `65535` (manual recording), the firmware doesn't instantly inject a `session-end` marker. Instead, it relies on the VAD's natural 10-second silence timeout (`CONFIG_OMI_VAD_HOLD_MS`) to put the recording to sleep. 
 
@@ -612,7 +636,7 @@ Switching modes is a hard context boundary. Any ongoing auto-mode conversation s
 - **Firmware (`aad.c`):** Update `aad_set_threshold()` so that injecting a `session-end` marker (`0xFFFFFFFC`) isn't strictly gated by `leaving_manual_record` (`prev == 65535 && threshold != 65535`). If the threshold is dropping to `32769` (entering manual mode) from an active auto-recording state (e.g., `prev == 250` and `vad_is_recording == true`), it should also trigger `write_session_end_marker_to_storage()` and instantly put the VAD to sleep.
 
 
-### 4. Split manual recording Start/Stop from the Marker action [medium] [Pending]
+### 5. Split manual recording Start/Stop from the Marker action [medium] [Pending]
 
 Back when the device had limited button gestures, the `MARKER` action (`BUTTON_ACTION_MARKER`) was overloaded to act as a Start/Stop toggle when `in_manual == true`. Now that the device has a customizable multi-gesture button configuration (`_config` array supporting single/double/triple taps), this overload is actively harmful.
 
@@ -626,7 +650,7 @@ Back when the device had limited button gestures, the `MARKER` action (`BUTTON_A
 2. **Firmware (`button.c`):** Remove the `in_manual` threshold logic from `BUTTON_ACTION_MARKER`. Add new `switch` cases for the new actions that call `aad_set_threshold(65535)` for start and `aad_set_threshold(32769)` for stop (and toggle between them based on current `aad_get_threshold()`).
 3. **App (`button_config_page.dart`):** Expand the `_actions` list to include `'Toggle Recording'`, `'Start Recording'`, and `'Stop Recording'`. Remove the `_manualMode ? ... : ...` ternary logic for the Marker label.
 
-### 5. Device-side toggle for Manual/Auto Mode [medium] [Pending]
+### 6. Device-side toggle for Manual/Auto Mode [medium] [Pending]
 
 Add a new button action that allows users to toggle between Auto Recording and Manual Recording directly from the device, without needing to use the app.
 
@@ -646,7 +670,7 @@ Currently, the firmware only has one persisted threshold variable (`vad_threshol
    - When pressed: if `vad_threshold >= 32769` (currently in manual mode), switch the active threshold to the saved `auto_vad_threshold`. If `vad_threshold < 32769` (currently in auto mode), switch the active threshold to `32769`.
 4. **App (`button_config_page.dart`):** Add `'Toggle Auto/Manual Mode'` to the `_actions` list so users can assign it to a tap gesture.
 
-### 6. Device-driven BLE wake (firmware + iOS) [large] [Pending]
+### 7. Device-driven BLE wake (firmware + iOS) [large] [Pending]
 
 Shift background-sync triggering from the *phone* (opportunistic iOS `BGTaskScheduler` / Android alarms) to the *device*: the Omi opens a connectable advertising **window** on its own RTC-driven schedule, and the phone ΓÇö holding a standing pending-connect ΓÇö is woken by the OS the moment that window opens. This is the model commercial BLE wearables (e.g. CGMs) use for reliable background sync on iOS.
 
@@ -779,7 +803,7 @@ Highest-leverage cheap validation: **Phase 1 window scheduler + Phase 2 standing
 
 ## DEFERRED
 
-### 7. iOS code signing & non-jailbroken distribution [medium] [Deferred]
+### 8. iOS code signing & non-jailbroken distribution [medium] [Deferred]
 
 The iOS build works end-to-end via CI (`.github/workflows/ios-build.yml`) and produces an **unsigned** dev IPA that installs on a **jailbroken** device (AppSync Unified / TrollStore ΓÇö current path for the iPhone 6s Plus). To run on a **stock** (non-jailbroken) iPhone, the IPA must be code-signed, which needs an Apple Developer account plus signing material wired into CI.
 
