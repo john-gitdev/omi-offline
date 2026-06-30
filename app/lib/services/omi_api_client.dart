@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'package:omi/backend/preferences.dart';
@@ -311,7 +312,7 @@ class OmiApiClient {
   /// Reads a .bin and returns its length-prefixed Opus frames split into chunks of
   /// at most [_maxChunkFrames] frames (≈ [_chunkSeconds] of audio), so each chunk
   /// becomes a separate server segment that stays under the Parakeet STT timeout.
-  /// App-side marker frames (0xFFFFFFFE/FD/FB) and zero/sentinel slots are skipped.
+  /// App-side marker frames (0xFFFFFFF8/F9/FA/FB/FC/FD/FE) and zero/sentinel slots are skipped.
   static Future<List<Uint8List>> _readOpusFrameChunks(File binFile) async {
     final bytes = await binFile.readAsBytes();
     final byteData = ByteData.sublistView(bytes);
@@ -342,6 +343,17 @@ class OmiApiClient {
       }
       if (frameLength == 0xFFFFFFFD) {
         offset += 16;
+        skippedMarkers++;
+        continue;
+      }
+      // 20-byte markers: priority-start (0xFFFFFFF8), mute-off (0xFFFFFFF9),
+      // mute-on (0xFFFFFFFA), session-end (0xFFFFFFFC). Without this they fall
+      // into the +4 catch-all below and desync the stream by 16 bytes.
+      if (frameLength == 0xFFFFFFF8 ||
+          frameLength == 0xFFFFFFF9 ||
+          frameLength == 0xFFFFFFFA ||
+          frameLength == 0xFFFFFFFC) {
+        offset += 20;
         skippedMarkers++;
         continue;
       }
@@ -380,6 +392,9 @@ class OmiApiClient {
 
     return chunks;
   }
+
+  @visibleForTesting
+  static Future<List<Uint8List>> readOpusFrameChunksForTest(File binFile) => _readOpusFrameChunks(binFile);
 
   static Future<http.Response> _doUploadBytes(
     String url,
