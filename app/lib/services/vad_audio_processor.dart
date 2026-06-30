@@ -1407,6 +1407,16 @@ class VadAudioProcessor {
     return flushRemaining();
   }
 
+  /// True while a Priority Recording is open (0xFFFFFFF8 seen) but no audio
+  /// frame has been buffered yet — its only durable trace is the pinned marker
+  /// bin ([_priorityOpenBinPath]). The checkpoint must not advance onto this
+  /// bin: a resume starting after it would skip the start marker and process the
+  /// following force-captured audio as ordinary VAD, losing force-capture and
+  /// the red marker. Cleared once audio buffers (refs gains a frame) or the
+  /// recording saves.
+  bool get hasOpenPriorityWithoutAudio =>
+      _inPriorityRecording && _priorityOpenBinPath != null && !_currentRefs.any((r) => r is FrameRef);
+
   /// Returns the set of segment file paths that have been fully processed and are
   /// no longer referenced by [_currentRefs].
   /// Each path is returned at most once. The caller may safely delete these files.
