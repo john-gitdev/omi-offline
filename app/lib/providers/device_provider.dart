@@ -470,11 +470,18 @@ class DeviceProvider extends ChangeNotifier
     try {
       if (!prefs.buttonConfigMigrated) {
         final existing = await connection.getButtonConfig();
+        // A null read means the characteristic was unreachable (transient BLE
+        // failure / disconnect mid-handshake). Bail without completing the
+        // one-time migration AND without pushing our defaults — otherwise a
+        // single failed first read would permanently skip preservation and
+        // overwrite a customized firmware mapping with the app default. Retry on
+        // the next connect.
+        if (existing == null) return;
         // Preserve a pre-existing customized/old-firmware config into the auto
         // slot; skip a factory-fresh device on new firmware so it keeps the
         // proper auto default.
         if (SharedPreferencesUtil.shouldPreserveExistingButtonConfig(existing)) {
-          prefs.buttonConfigAuto = existing!;
+          prefs.buttonConfigAuto = existing;
         }
         prefs.buttonConfigMigrated = true;
       }
