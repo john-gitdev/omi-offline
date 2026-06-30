@@ -131,6 +131,58 @@ static uint8_t tap_count = 0;
 #define UNPAIR_HOLD_TIME 10000   // 10s hold for 5-tap unpair
 #define MULTI_TAP_WINDOW 600     // 600ms window for multi-taps
 
+/* ================================================================
+ * Priority Recording (auto-mode force-capture)
+ * ================================================================
+ * An auto-mode RECORD_START forces continuous capture (runtime threshold
+ * 65535, deliberately NOT persisted so a reboot returns to auto) bracketed by
+ * a 0xFFFFFFF8 start marker and the existing 0xFFFFFFFC session-end on stop.
+ * A safety cap auto-stops a recording the user forgets to end so a runaway
+ * capture can't drain the 150 mAh cell or fill the SD card. */
+#if defined(CONFIG_OMI_ENABLE_T5838_AAD) && defined(CONFIG_OMI_ENABLE_OFFLINE_STORAGE)
+/* Compile-time for v1; a future enhancement exposes this as a user setting. */
+#define PRIORITY_RECORD_MAX_MS (2 * 60 * 60 * 1000) /* 2 hours */
+
+static void priority_record_stop(void);
+
+static void priority_cap_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    LOG_INF("Priority recording safety cap reached — auto-stopping");
+    priority_record_stop();
+}
+K_WORK_DELAYABLE_DEFINE(priority_cap_work, priority_cap_work_handler);
+
+static void priority_record_arm_cap(void)
+{
+    k_work_reschedule(&priority_cap_work, K_MSEC(PRIORITY_RECORD_MAX_MS));
+}
+
+static void priority_record_cancel_cap(void)
+{
+    k_work_cancel_delayable(&priority_cap_work);
+}
+
+/* Stop an auto-mode Priority Recording. Restoring the persisted auto VAD
+ * threshold takes aad_set_threshold's finalize path (prev == 65535) which emits
+ * the 0xFFFFFFFC session-end marker and ends the recording immediately; the bin
+ * rotate then gives the resumed auto recording a fresh bin so the priority
+ * recording owns whole bins (no shared-bin re-VAD). No-op if not force-capturing. */
+static void priority_record_stop(void)
+{
+    if (aad_get_threshold() != 65535) {
+        return;
+    }
+    uint16_t resting = app_settings_get_vad_threshold(); /* persisted auto value */
+    aad_set_threshold(resting);
+    create_new_audio_file();
+    priority_record_cancel_cap();
+}
+#else
+static inline void priority_record_arm_cap(void) {}
+static inline void priority_record_stop(void) {}
+#endif
+
 static void execute_button_action(uint8_t taps, bool is_hold)
 {
     if (taps < 1 || taps > 3)
@@ -155,57 +207,27 @@ static void execute_button_action(uint8_t taps, bool is_hold)
         break;
     case BUTTON_ACTION_MARKER:
         if (!is_muted) {
+            // Always a plain white bookmark now, in any mode. The manual-mode
+            // start/stop overload was removed — explicit RECORD_START /
+            // RECORD_STOP handle recording control in both modes, which also lets
+            // a marker be dropped *during* a manual recording.
             acted = true;
-#ifdef CONFIG_OMI_ENABLE_T5838_AAD
-            uint16_t thr = aad_get_threshold();
-            bool in_manual = (thr == 32769 || thr == 65535);
-#else
-            bool in_manual = false;
-            uint16_t thr = 0;
-#endif
-            if (in_manual) {
-                if (thr == 32769) {
-                    LOG_INF("Manual mode start recording");
-                    marker_flash_color = MARKER_FLASH_GREEN;
-                    marker_flash_count = 2;
-#ifdef CONFIG_OMI_ENABLE_T5838_AAD
-                    aad_set_threshold(65535);
-                    // Persist so the manual recording state survives a reboot
-                    // (e.g. battery dies). Without this the runtime threshold is
-                    // lost and boot reverts to the standby default (32769),
-                    // silently stopping a recording the user started offline.
-                    app_settings_save_vad_threshold(65535);
-#endif
-                } else {
-                    LOG_INF("Manual mode stop recording");
-                    marker_flash_color = MARKER_FLASH_RED;
-                    marker_flash_count = 2;
-#ifdef CONFIG_OMI_ENABLE_T5838_AAD
-                    aad_set_threshold(32769);
-                    // Persist the stop too, so a deliberate offline stop is
-                    // honored across a reboot rather than reverting to whatever
-                    // was last in flash.
-                    app_settings_save_vad_threshold(32769);
-#endif
-                }
-            } else {
-                LOG_INF("Marker detected");
-                marker_flash_color = MARKER_FLASH_WHITE;
-                marker_flash_count = 2;
+            LOG_INF("Marker detected");
+            marker_flash_color = MARKER_FLASH_WHITE;
+            marker_flash_count = 2;
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
-                // AAD may have paused SD writes during a silence gap. A marker
-                // written while paused is enqueued, reported as written, then
-                // silently dropped by the SD worker (sd_card.c process_write_data_req
-                // returns early on sd_write_paused). aad_force_wake() below only
-                // resumes writes ~debounce frames later — far too late. Resume
-                // first so the marker is durable, mirroring the mute path above.
-                sd_write_pause(false);
-                write_marker_to_storage();
+            // AAD may have paused SD writes during a silence gap. A marker
+            // written while paused is enqueued, reported as written, then
+            // silently dropped by the SD worker (sd_card.c process_write_data_req
+            // returns early on sd_write_paused). aad_force_wake() below only
+            // resumes writes ~debounce frames later — far too late. Resume
+            // first so the marker is durable, mirroring the mute path above.
+            sd_write_pause(false);
+            write_marker_to_storage();
 #endif
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
-                aad_force_wake();
+            aad_force_wake();
 #endif
-            }
         } else {
             LOG_INF("Marker ignored (muted)");
         }
@@ -214,6 +236,93 @@ static void execute_button_action(uint8_t taps, bool is_hold)
         is_led_enabled = !is_led_enabled;
         LOG_INF("LED toggled %s", is_led_enabled ? "ON" : "OFF");
         acted = true;
+        break;
+    case BUTTON_ACTION_RECORD_START:
+        if (is_muted) {
+            LOG_INF("Record start ignored (muted)");
+            break;
+        }
+        {
+            /* Mode is read from the PERSISTED threshold, not the runtime one:
+             * an auto-mode priority recording sets runtime 65535 without
+             * persisting it, so the persisted value still reflects the real
+             * mode (32769/65535 manual, < 32769 auto). */
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+            uint16_t resting = app_settings_get_vad_threshold();
+            bool in_manual = (resting == 32769 || resting == 65535);
+            bool already_recording = (aad_get_threshold() == 65535);
+#else
+            bool in_manual = false;
+            bool already_recording = false;
+#endif
+            if (in_manual) {
+                /* Explicit manual-mode start — same effect as today's MARKER
+                 * start, persisted so it survives a reboot. */
+                acted = true;
+                marker_flash_color = MARKER_FLASH_GREEN;
+                marker_flash_count = 2;
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+                aad_set_threshold(65535);
+                app_settings_save_vad_threshold(65535);
+#endif
+            } else if (already_recording) {
+                LOG_INF("Record start ignored (priority recording already active)");
+            } else {
+                /* Auto-mode Priority Recording: rotate first so the prior auto
+                 * recording owns the old bin, then write 0xFFFFFFF8 as the first
+                 * inline frame of the fresh bin and force continuous capture. */
+                acted = true;
+                marker_flash_color = MARKER_FLASH_RED;
+                marker_flash_count = 2;
+#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+                sd_write_pause(false);
+                create_new_audio_file();
+                write_priority_recording_marker_to_storage();
+#endif
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+                /* Runtime force-capture only — NOT persisted, so a reboot
+                 * mid-recording returns to the auto threshold. */
+                aad_set_threshold(65535);
+                aad_force_wake();
+#endif
+                priority_record_arm_cap();
+            }
+        }
+        break;
+    case BUTTON_ACTION_RECORD_STOP:
+        if (is_muted) {
+            LOG_INF("Record stop ignored (muted)");
+            break;
+        }
+        {
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+            uint16_t resting = app_settings_get_vad_threshold();
+            bool in_manual = (resting == 32769 || resting == 65535);
+            bool force_recording = (aad_get_threshold() == 65535);
+#else
+            bool in_manual = false;
+            bool force_recording = false;
+#endif
+            if (in_manual) {
+                /* Explicit manual-mode stop — same effect as today's MARKER
+                 * stop, persisted so the offline stop survives a reboot. */
+                acted = true;
+                marker_flash_color = MARKER_FLASH_RED;
+                marker_flash_count = 2;
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+                aad_set_threshold(32769);
+                app_settings_save_vad_threshold(32769);
+#endif
+            } else if (force_recording) {
+                /* Auto-mode Priority Recording stop. */
+                acted = true;
+                marker_flash_color = MARKER_FLASH_RED;
+                marker_flash_count = 2;
+                priority_record_stop();
+            } else {
+                LOG_INF("Record stop ignored (no priority recording active)");
+            }
+        }
         break;
     case BUTTON_ACTION_NONE:
     default:
