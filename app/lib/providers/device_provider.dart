@@ -454,6 +454,36 @@ class DeviceProvider extends ChangeNotifier
     await connection?.setVadThreshold(threshold);
   }
 
+  /// Push the button config for the device's current mode to the firmware.
+  /// The app owns two per-mode configs; the firmware holds a single active slot,
+  /// so the active one must be (re)pushed on connect and whenever the mode flips.
+  ///
+  /// On first run after upgrading to per-mode configs, the device's existing
+  /// single config is preserved into the auto slot (its default already matched
+  /// auto), and manual seeds from its default. Idempotent via [buttonConfigMigrated].
+  Future<void> pushActiveButtonConfig() async {
+    final dev = connectedDevice;
+    if (dev == null) return;
+    final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
+    if (connection == null) return;
+    final prefs = SharedPreferencesUtil();
+    try {
+      if (!prefs.buttonConfigMigrated) {
+        final existing = await connection.getButtonConfig();
+        // Preserve a pre-existing customized/old-firmware config into the auto
+        // slot; skip a factory-fresh device on new firmware so it keeps the
+        // proper auto default.
+        if (SharedPreferencesUtil.shouldPreserveExistingButtonConfig(existing)) {
+          prefs.buttonConfigAuto = existing!;
+        }
+        prefs.buttonConfigMigrated = true;
+      }
+      await connection.setButtonConfig(prefs.activeButtonConfig);
+    } catch (e) {
+      Logger.error('DeviceProvider: pushActiveButtonConfig failed: $e');
+    }
+  }
+
   Future<void> setManualMode(bool enabled) async {
     if (connectedDevice == null) return;
     final prefs = SharedPreferencesUtil();
@@ -464,6 +494,8 @@ class DeviceProvider extends ChangeNotifier
     } else {
       await _setDeviceVadThreshold(prefs.autoVadThreshold);
     }
+    // Mode flipped — make the new mode's button mapping live on the device.
+    await pushActiveButtonConfig();
     notifyListeners();
   }
 
@@ -1380,6 +1412,11 @@ class DeviceProvider extends ChangeNotifier
       // thr == null (read failed) → leave the last-known state untouched.
       notifyListeners();
     }
+
+    // The mode was just adopted from the device above, so push the matching
+    // per-mode button config (and run the one-time migration) now that
+    // prefs.manualMode is current.
+    await pushActiveButtonConfig();
 
     await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: []);
 
