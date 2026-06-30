@@ -1138,6 +1138,38 @@ void main() {
       expect(safe.contains(file.path), isTrue, reason: 'a stopped priority recording releases its source bin');
     });
 
+    test('hasOpenPriorityWithoutAudio is true only between a marker-only start and the first buffered frame', () async {
+      final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+      expect(proc.hasOpenPriorityWithoutAudio, isFalse, reason: 'no priority recording yet');
+
+      // Marker landed with no trailing audio: the checkpoint must not advance
+      // past this bin or a resume would skip the start marker.
+      final markerOnly = priorityBin('prio_cp_markeronly.bin', frames: 0);
+      await proc.processSegmentFile(markerOnly, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      expect(proc.hasOpenPriorityWithoutAudio, isTrue);
+
+      // A following bin of forced audio buffers frames → checkpoint may advance.
+      final contBuilder = BytesBuilder();
+      final h = ByteData(36)
+        ..setUint32(0, 0xFFFFFFFB, Endian.little)
+        ..setUint32(4, 28, Endian.little)
+        ..setUint64(8, kBase + 200, Endian.little)
+        ..setUint64(16, 0, Endian.little)
+        ..setUint32(24, 0, Endian.little)
+        ..setUint32(28, 1, Endian.little);
+      contBuilder.add(h.buffer.asUint8List());
+      final fhdr = ByteData(4)..setUint32(0, 4, Endian.little);
+      for (int i = 0; i < 10; i++) {
+        contBuilder.add(fhdr.buffer.asUint8List());
+        contBuilder.add(List.filled(4, 0));
+      }
+      final cont = File('${tempDir.path}/prio_cp_cont.bin')..writeAsBytesSync(contBuilder.toBytes());
+      await proc.processSegmentFile(cont, DateTime.fromMillisecondsSinceEpoch(kBase + 200, isUtc: true));
+      expect(proc.hasOpenPriorityWithoutAudio, isFalse, reason: 'forced audio buffered → safe to advance checkpoint');
+
+      await proc.destroy();
+    });
+
     group('Marker Protection Window', () {
       test('VAD resume within 50s of marker tap is ignored for split', () async {
         final builder = BytesBuilder();
