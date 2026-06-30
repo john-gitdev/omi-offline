@@ -39,6 +39,10 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   bool _isVadThresholdLoaded = false;
   bool? _hasVadThresholdFeature;
 
+  late int _priorityRecordCap; // minutes; 0 = no cap
+  bool _isPriorityCapLoaded = false;
+  bool? _hasPriorityCapFeature;
+
   Timer? _debounce;
   Timer? _micGainDebounce;
   Timer? _vadThresholdDebounce;
@@ -48,6 +52,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   @override
   void initState() {
     _vadThreshold = SharedPreferencesUtil().autoVadThreshold.toDouble();
+    _priorityRecordCap = SharedPreferencesUtil().priorityRecordMaxMinutes;
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final provider = context.read<DeviceProvider>();
       await provider.getDeviceInfo();
@@ -85,12 +90,14 @@ class _DeviceSettingsState extends State<DeviceSettings> {
         final hasDimming = OmiFeatures.hasFeature(features, OmiFeatures.ledDimming);
         final hasMicGain = OmiFeatures.hasFeature(features, OmiFeatures.micGain);
         final hasVadThreshold = OmiFeatures.hasFeature(features, OmiFeatures.vadThreshold);
+        final hasPriorityCap = OmiFeatures.hasFeature(features, OmiFeatures.priorityRecordCap);
 
         if (!mounted) return;
         setState(() {
           _hasDimmingFeature = hasDimming;
           _hasMicGainFeature = hasMicGain;
           _hasVadThresholdFeature = hasVadThreshold;
+          _hasPriorityCapFeature = hasPriorityCap;
         });
 
         if (!hasDimming) {
@@ -146,6 +153,24 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             });
           }
         }
+
+        if (!hasPriorityCap) {
+          setState(() {
+            _isPriorityCapLoaded = true;
+          });
+        } else {
+          var cap = await connection.getPriorityRecordCap();
+          if (cap != null && mounted) {
+            setState(() {
+              _priorityRecordCap = cap;
+              _isPriorityCapLoaded = true;
+            });
+          } else if (mounted) {
+            setState(() {
+              _isPriorityCapLoaded = true; // Loaded, but no value, use default
+            });
+          }
+        }
       }
     }
   }
@@ -175,6 +200,26 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
       var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
       await connection?.setVadThreshold(value.toInt());
+    }
+  }
+
+  void _updatePriorityCap(int minutes) async {
+    SharedPreferencesUtil().priorityRecordMaxMinutes = minutes;
+    setState(() => _priorityRecordCap = minutes);
+    // Capture the messenger + provider before the async gap. The cap is armed
+    // device-side at the start of a Priority Recording, so changing it never
+    // affects one already in progress — surface that so it isn't surprising.
+    final messenger = ScaffoldMessenger.of(context);
+    final deviceProvider = context.read<DeviceProvider>();
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('New cap applies to your next Priority Recording, not one already in progress.'),
+      ),
+    );
+    final pairedDevice = deviceProvider.pairedDevice;
+    if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
+      var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
+      await connection?.setPriorityRecordCap(minutes);
     }
   }
 
@@ -832,6 +877,87 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     );
   }
 
+  // Preset durations for the Priority Recording safety cap (minutes; 0 = no cap).
+  static const List<int> _priorityCapPresets = [30, 60, 120, 240, 480, 0];
+
+  String _formatPriorityCap(int minutes) {
+    if (minutes <= 0) return 'No cap';
+    if (minutes < 60) return '${minutes}m';
+    if (minutes % 60 == 0) return '${minutes ~/ 60}h';
+    return '${minutes ~/ 60}h ${minutes % 60}m';
+  }
+
+  void _showPriorityCapSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1C1C1E),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    margin: const EdgeInsets.only(bottom: 16),
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(color: const Color(0xFF3C3C43), borderRadius: BorderRadius.circular(2)),
+                  ),
+                ),
+                const Text(
+                  'Priority Recording Cap',
+                  style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  "A Priority Recording force-captures until you stop it. This safety cap auto-stops a "
+                  "forgotten one so it can't drain the battery or fill the SD card.",
+                  style: TextStyle(color: Colors.grey.shade500, fontSize: 13),
+                ),
+                const SizedBox(height: 16),
+                ..._priorityCapPresets.map((minutes) {
+                  final selected = _priorityRecordCap == minutes;
+                  return Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: () {
+                        Navigator.pop(sheetContext);
+                        if (minutes != _priorityRecordCap) _updatePriorityCap(minutes);
+                      },
+                      borderRadius: BorderRadius.circular(10),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 4),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              minutes == 0 ? 'No cap (battery / SD only)' : _formatPriorityCap(minutes),
+                              style: TextStyle(
+                                color: selected ? Colors.white : Colors.grey.shade300,
+                                fontSize: 16,
+                                fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                              ),
+                            ),
+                            if (selected) const Icon(Icons.check, color: Colors.white, size: 20),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   Widget _buildCustomizationSection() {
     return Material(
       color: const Color(0xFF1C1C1E),
@@ -866,6 +992,16 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               title: 'AAD Sensitivity',
               chipValue: _vadThreshold <= 0 ? 'Always On' : '${_vadThreshold.round()}',
               onTap: _showVadThresholdSheet,
+            ),
+          ],
+          // Priority Recording Cap (auto mode only — Priority Recording is an auto-mode action)
+          if (_isPriorityCapLoaded && _hasPriorityCapFeature == true && !SharedPreferencesUtil().manualMode) ...[
+            const Divider(height: 1, color: Color(0xFF3C3C43)),
+            _buildProfileStyleItem(
+              icon: FontAwesomeIcons.stopwatch,
+              title: 'Priority Recording Cap',
+              chipValue: _formatPriorityCap(_priorityRecordCap),
+              onTap: _showPriorityCapSheet,
             ),
           ],
           const Divider(height: 1, color: Color(0xFF3C3C43)),
