@@ -149,6 +149,17 @@ class VadAudioProcessor {
   // spans a sync boundary keeps capturing without splitting on the next run.
   bool _inPriorityRecording = false;
 
+  // Path of the bin holding the 0xFFFFFFF8 start marker of an open Priority
+  // Recording. Kept so consumeSafeToDeletePaths never releases that bin while
+  // the priority recording has buffered no audio yet (the marker landed at the
+  // tail of a sync with no trailing frames). Without it the marker bin is freed
+  // as fully-processed and the checkpoint is dropped on clean completion, so the
+  // next run loses force-capture and the red marker. Retaining the bin lets the
+  // next run re-see the marker and re-enter force-capture (the firmware rotated
+  // the bin around the marker precisely so this whole-bin reprocess is safe).
+  // Null when not in a priority recording or once its audio has been buffered.
+  String? _priorityOpenBinPath;
+
   // Muted-interval tracking. Opened by a 0xFFFFFFFA mute-on marker (which also
   // finalizes the in-progress recording, like session-end), closed by a
   // 0xFFFFFFF9 mute-off marker or — if the device powered off while muted — by
@@ -356,11 +367,10 @@ class VadAudioProcessor {
       'mpu': _markerProtectedUntilMs,
       'sep': _sessionEndPendingResume,
       'ipr': _inPriorityRecording,
+      'pob': _priorityOpenBinPath,
       'mtd': _muted,
       'mts': _muteStartMs,
-      'pm': _pendingMarkers
-          .map((m) => {'ms': m.markerMs, 'o': m.offsetAtMarkerMs, 'hp': m.isHighPriority})
-          .toList(),
+      'pm': _pendingMarkers.map((m) => {'ms': m.markerMs, 'o': m.offsetAtMarkerMs, 'hp': m.isHighPriority}).toList(),
       'vs': vadStateFloats,
       'vc': _vadContext.toList(),
       'pb': List<double>.generate(_pcmBufferLen, (i) => _pcmBuffer[i]),
@@ -403,6 +413,7 @@ class VadAudioProcessor {
     _markerProtectedUntilMs = s['mpu'] as int?;
     _sessionEndPendingResume = s['sep'] as bool;
     _inPriorityRecording = (s['ipr'] as bool?) ?? false;
+    _priorityOpenBinPath = s['pob'] as String?;
     _muted = (s['mtd'] as bool?) ?? false;
     _muteStartMs = s['mts'] as int?;
     _pendingMarkers.clear();
@@ -647,10 +658,14 @@ class VadAudioProcessor {
         final bool isClockJump =
             !sessionChanged && (hasUptime ? (uptimeGapMs < 5000 && gapMs.abs() > 10000) : (gapMs.abs() > 10000));
 
-        // Suppress splits while we're within 50 s of a marker tap.
+        // Suppress splits while we're within 50 s of a marker tap, or anywhere
+        // inside a Priority Recording — the firmware force-captures every frame
+        // across bins until the 0xFFFFFFFC stop, so RECORD_START/STOP are its
+        // only boundaries (a session change / large gap must not split it).
         final bool withinMarkerWindow =
             _markerProtectedUntilMs != null && segmentStartTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
         final bool splitTriggered = !withinMarkerWindow &&
+            !_inPriorityRecording &&
             ((sessionChanged && !imuGapMatches) ||
                 (gapMs > max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) && !isClockJump));
 
@@ -673,8 +688,12 @@ class VadAudioProcessor {
           _pcmBufferLen = 0;
           final filePath = await flushRemaining();
           if (filePath != null) savedFiles.add(filePath);
-        } else if (_currentRefs.isNotEmpty && (_currentChunkDurationMs + gapMs) >= _maxChunkMs) {
+        } else if (!_inPriorityRecording &&
+            _currentRefs.isNotEmpty &&
+            (_currentChunkDurationMs + gapMs) >= _maxChunkMs) {
           // INTER-FILE CUT: If this gap would push us over the 1hr/2hr limit, cut now.
+          // Bypassed inside a Priority Recording (matches the per-frame cap guard);
+          // the firmware safety cap bounds a force-captured stretch instead.
           Logger.debug('VadAudioProcessor: Max duration reached during inter-file gap — forcing cut.');
           final filePath = await flushRemaining();
           if (filePath != null) savedFiles.add(filePath);
@@ -875,6 +894,7 @@ class VadAudioProcessor {
             // restores the auto threshold, which the firmware finalizes by
             // emitting this same 0xFFFFFFFC). Leaving the force-capture span.
             _inPriorityRecording = false;
+            _priorityOpenBinPath = null;
             // Manual-mode stop is a hard end, not a silence/file split: the
             // protected recording is finalized and the tap consumed, so the
             // guaranteed-save window is done. Clear it so a tap-then-stop-then-
@@ -925,6 +945,10 @@ class VadAudioProcessor {
             // 4) Enter force-capture: every frame is speech, no silence split,
             // until the 0xFFFFFFFC stop.
             _inPriorityRecording = true;
+            // Pin this bin on disk until the priority recording buffers audio or
+            // finalizes, so a marker that arrived with no trailing frames isn't
+            // freed (and re-seen / re-captured on the next run). See field doc.
+            _priorityOpenBinPath = segmentFile.path;
             _sessionEndPendingResume = false;
             // 5) Start the fresh recording timeline at the marker (refs now empty).
             lastFrameWallTime = markerFrameTime;
@@ -1392,6 +1416,14 @@ class VadAudioProcessor {
       if (item is FrameRef) referenced.add(item.segmentFile.path);
     }
     final safe = _processedFiles.difference(referenced);
+    // Keep the open Priority Recording's marker bin on disk while it has buffered
+    // no audio yet — releasing it would let the next run lose force-capture and
+    // the red marker (the bin is freed and the checkpoint dropped on clean
+    // completion). Cleared on the first save, so this only fires for the
+    // genuinely audio-less case. See _priorityOpenBinPath doc.
+    if (_inPriorityRecording && _priorityOpenBinPath != null) {
+      safe.remove(_priorityOpenBinPath);
+    }
     _processedFiles.removeAll(safe);
     return safe;
   }
@@ -1865,6 +1897,11 @@ class VadAudioProcessor {
     final result = await _saveRecordingCore(refs, startTime,
         isDerivedTimestamp: isDerivedTimestamp, isDraft: isDraft, capEnded: capEnded);
     if (result != null) {
+      // The priority audio (if any) is now persisted in this file/draft, so the
+      // marker bin no longer needs pinning — release it for normal deletion.
+      // Only the genuinely audio-less open-priority case (no save happened)
+      // keeps the bin so the next run can re-see the marker. See field doc.
+      _priorityOpenBinPath = null;
       if (_pendingMarkers.isNotEmpty) {
         final filename = result.split('/').last;
         // EDL cropEnd must be playable: cap wall-clock progress at the file's
