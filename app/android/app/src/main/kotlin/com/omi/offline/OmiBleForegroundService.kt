@@ -474,7 +474,12 @@ class OmiBleForegroundService : Service() {
             val managed = managedDevices[addr] ?: return
             if (!isBluetoothEnabled || bleManager.isPeripheralConnected(addr)) return
 
-            if (bleManager.connectedGatts.containsKey(addr)) bleManager.closeGatt(addr)
+            if (bleManager.connectedGatts.containsKey(addr)) {
+                // disconnect() before close() so a link the OS still thinks is alive is
+                // torn down at the radio level, not just released app-side (ghost-slot guard).
+                bleManager.disconnectGatt(addr)
+                bleManager.closeGatt(addr)
+            }
 
             // Use autoConnect=false for initial connection and first 3 retries (direct connection, faster).
             // Switch to autoConnect=true for later retries (passive scan, more robust for background).
@@ -687,7 +692,12 @@ class OmiBleForegroundService : Service() {
         if (isDestroying || !isBluetoothEnabled) return
 
         managed.retryCount++
-        Log.i(TAG, "Retry #${managed.retryCount} for $addr in ${RECONNECT_DELAY_MS}ms (status=$status)")
+        // Exponential backoff: 1.5 → 3 → 6 → 12 → 24 → 30 s (capped). Replaces the prior
+        // fixed 1.5 s delay, whose rapid connectGatt/closeGatt churn was the most common
+        // trigger for the Android Bluetooth daemon wedging on Samsung/Qualcomm/MediaTek
+        // stacks. retryCount resets to 0 on a successful connect, so the backoff resets too.
+        val backoffDelay = minOf(RECONNECT_DELAY_MS shl minOf(managed.retryCount - 1, 5), 30_000L)
+        Log.i(TAG, "Retry #${managed.retryCount} for $addr in ${backoffDelay}ms (status=$status)")
 
         val runnable = Runnable {
             // Atomic with manageDevice's guard: an external manageDevice call must see
@@ -722,7 +732,7 @@ class OmiBleForegroundService : Service() {
             }
         }
         managed.pendingReconnect = runnable
-        handler.postDelayed(runnable, RECONNECT_DELAY_MS)
+        handler.postDelayed(runnable, backoffDelay)
     }
 
     // ── Stability timer ──
@@ -789,6 +799,7 @@ class OmiBleForegroundService : Service() {
                         managed.stabilityTimerRunnable?.let { handler.removeCallbacks(it) }
                         managed.stabilityTimerRunnable = null
                         bleManager.stopRssiKeepAlive()
+                        bleManager.disconnectGatt(addr)
                         bleManager.closeGatt(addr)
                         managed.currentGattHash = null
                         bleManager.mainHandler.post {
@@ -800,6 +811,7 @@ class OmiBleForegroundService : Service() {
                     isBluetoothEnabled = false
                     for ((addr, managed) in managedDevices) {
                         if (managed.currentGattHash != null) {
+                            bleManager.disconnectGatt(addr)
                             bleManager.closeGatt(addr)
                             managed.currentGattHash = null
                         }
