@@ -515,6 +515,10 @@ class MarkerConversation {
   final int cropEndMs; // user-adjustable crop end, default = segment duration
   final File edlFile;
   final bool userSaved;
+  // True for a Priority Recording marker (auto-mode RECORD_START). Rendered red
+  // ("Priority Recording") instead of the amber bookmark, gated on the
+  // showHighPriorityMarker visibility pref.
+  final bool isHighPriority;
 
   const MarkerConversation({
     required this.markerTime,
@@ -524,6 +528,7 @@ class MarkerConversation {
     this.cropStartMs = 0,
     this.cropEndMs = 0,
     this.userSaved = false,
+    this.isHighPriority = false,
   });
 
   bool get isPending => segment == null;
