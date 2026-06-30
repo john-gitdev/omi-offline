@@ -275,6 +275,13 @@ Future<void> processingIsolateEntry(IsolateParams params) async {
       // common (no-delete) segments are genuinely throttled.
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       if (params.checkpointPath != null &&
+          // Don't advance the checkpoint onto a pinned, audio-less Priority
+          // Recording marker bin: keep `lastIndex` before the marker so a resume
+          // reprocesses the bin and re-enters force-capture instead of treating
+          // the following forced audio as ordinary VAD. The marker bin is held
+          // on disk (consumeSafeToDeletePaths) and any pending deletes stay held
+          // (safe) until the next checkpoint once audio buffers.
+          !processor.hasOpenPriorityWithoutAudio &&
           (pendingDeleteBatch.isNotEmpty || nowMs - lastCheckpointMs >= checkpointMinIntervalMs)) {
         try {
           final cpState = await processor.serializeState();
