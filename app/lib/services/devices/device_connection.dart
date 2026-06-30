@@ -241,6 +241,15 @@ abstract class DeviceConnection {
     return null;
   }
 
+  Future<void> setPriorityRecordCap(int minutes) async {
+    if (await isConnected()) await performSetPriorityRecordCap(minutes);
+  }
+
+  Future<int?> getPriorityRecordCap() async {
+    if (await isConnected()) return performGetPriorityRecordCap();
+    return null;
+  }
+
   Future<StreamSubscription<List<int>>?> getBleBatteryLevelListener({
     void Function(int)? onBatteryLevelChange,
     void Function(bool)? onChargingStateChange,
@@ -307,6 +316,8 @@ abstract class DeviceConnection {
   Future<List<int>?> performGetHapticConfig();
   Future<void> performSetVadThreshold(int threshold);
   Future<int?> performGetVadThreshold();
+  Future<void> performSetPriorityRecordCap(int minutes);
+  Future<int?> performGetPriorityRecordCap();
   Future<bool> performSyncDeviceTime();
   Future<bool> performStopStorageSync();
   Future<bool> performRotateFile();
