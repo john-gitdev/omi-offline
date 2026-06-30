@@ -100,6 +100,40 @@ static ssize_t settings_vad_threshold_read_handler(struct bt_conn *conn,
                                                    void *buf,
                                                    uint16_t len,
                                                    uint16_t offset);
+static ssize_t settings_priority_cap_write_handler(struct bt_conn *conn,
+                                                   const struct bt_gatt_attr *attr,
+                                                   const void *buf,
+                                                   uint16_t len,
+                                                   uint16_t offset,
+                                                   uint8_t flags);
+static ssize_t settings_priority_cap_read_handler(struct bt_conn *conn,
+                                                  const struct bt_gatt_attr *attr,
+                                                  void *buf,
+                                                  uint16_t len,
+                                                  uint16_t offset);
+// Defined further down (originally under the retired 23BA7926 button-config service).
+static ssize_t button_config_write_handler(struct bt_conn *conn,
+                                           const struct bt_gatt_attr *attr,
+                                           const void *buf,
+                                           uint16_t len,
+                                           uint16_t offset,
+                                           uint8_t flags);
+static ssize_t button_config_read_handler(struct bt_conn *conn,
+                                          const struct bt_gatt_attr *attr,
+                                          void *buf,
+                                          uint16_t len,
+                                          uint16_t offset);
+static ssize_t haptic_config_write_handler(struct bt_conn *conn,
+                                           const struct bt_gatt_attr *attr,
+                                           const void *buf,
+                                           uint16_t len,
+                                           uint16_t offset,
+                                           uint8_t flags);
+static ssize_t haptic_config_read_handler(struct bt_conn *conn,
+                                          const struct bt_gatt_attr *attr,
+                                          void *buf,
+                                          uint16_t len,
+                                          uint16_t offset);
 static ssize_t
 features_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf, uint16_t len, uint16_t offset);
 
@@ -121,6 +155,14 @@ static struct bt_uuid_128 settings_mic_gain_characteristic_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10012, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 settings_vad_threshold_characteristic_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10013, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+// Priority Recording safety-cap (u16 minutes; 0 = no cap).
+static struct bt_uuid_128 settings_priority_cap_characteristic_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10014, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+// Button + haptic config, consolidated here from the retired 23BA7926 service.
+static struct bt_uuid_128 settings_button_config_characteristic_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10015, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+static struct bt_uuid_128 settings_haptic_config_characteristic_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10016, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 
 static struct bt_gatt_attr settings_service_attr[] = {
     BT_GATT_PRIMARY_SERVICE(&settings_service_uuid),
@@ -141,6 +183,25 @@ static struct bt_gatt_attr settings_service_attr[] = {
                            BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                            settings_vad_threshold_read_handler,
                            settings_vad_threshold_write_handler,
+                           NULL),
+    BT_GATT_CHARACTERISTIC(&settings_priority_cap_characteristic_uuid.uuid,
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
+                           BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
+                           settings_priority_cap_read_handler,
+                           settings_priority_cap_write_handler,
+                           NULL),
+    // Button + haptic config consolidated here from the retired 23BA7926 service.
+    BT_GATT_CHARACTERISTIC(&settings_button_config_characteristic_uuid.uuid,
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
+                           BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
+                           button_config_read_handler,
+                           button_config_write_handler,
+                           NULL),
+    BT_GATT_CHARACTERISTIC(&settings_haptic_config_characteristic_uuid.uuid,
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
+                           BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
+                           haptic_config_read_handler,
+                           haptic_config_write_handler,
                            NULL),
 };
 
@@ -432,12 +493,8 @@ static struct bt_uuid_128 button_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x23BA7924, 0x0000, 0x1000, 0x7450, 0x346EAC492E92));
 static struct bt_uuid_128 button_characteristic_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x23BA7925, 0x0000, 0x1000, 0x7450, 0x346EAC492E92));
-static struct bt_uuid_128 button_config_service_uuid =
-    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x23BA7926, 0x0000, 0x1000, 0x7450, 0x346EAC492E92));
-static struct bt_uuid_128 button_config_characteristic_uuid =
-    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x23BA7927, 0x0000, 0x1000, 0x7450, 0x346EAC492E92));
-static struct bt_uuid_128 haptic_config_characteristic_uuid =
-    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x23BA7928, 0x0000, 0x1000, 0x7450, 0x346EAC492E92));
+// Button + haptic config UUIDs moved to the Settings service (0x19B10015 / 0x19B10016);
+// the 23BA7926 service was retired during the config-characteristic consolidation.
 
 static ssize_t button_config_read_handler(struct bt_conn *conn,
                                           const struct bt_gatt_attr *attr,
@@ -520,24 +577,10 @@ static struct bt_gatt_attr button_service_attr[] = {
 
 struct bt_gatt_service button_service = BT_GATT_SERVICE(button_service_attr);
 
-static struct bt_gatt_attr button_config_service_attr[] = {
-    BT_GATT_PRIMARY_SERVICE(&button_config_service_uuid),
-    BT_GATT_CHARACTERISTIC(&button_config_characteristic_uuid.uuid,
-                           BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
-                           BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
-                           button_config_read_handler,
-                           button_config_write_handler,
-                           NULL),
-    // Appended last so the button-config characteristic's handle stays stable.
-    BT_GATT_CHARACTERISTIC(&haptic_config_characteristic_uuid.uuid,
-                           BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
-                           BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
-                           haptic_config_read_handler,
-                           haptic_config_write_handler,
-                           NULL),
-};
-
-static struct bt_gatt_service button_config_service = BT_GATT_SERVICE(button_config_service_attr);
+/* The button-config + haptic-config characteristics now live in the Settings
+ * service (0x19B10015 / 0x19B10016); the standalone 23BA7926 service was retired.
+ * Their handlers (button_config_*_handler / haptic_config_*_handler, above) are
+ * unchanged and are referenced from settings_service_attr. */
 
 void transport_notify_button_state(uint8_t state)
 {
@@ -777,6 +820,43 @@ static ssize_t settings_vad_threshold_read_handler(struct bt_conn *conn,
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &current_threshold, sizeof(current_threshold));
 }
 
+static ssize_t settings_priority_cap_write_handler(struct bt_conn *conn,
+                                                   const struct bt_gatt_attr *attr,
+                                                   const void *buf,
+                                                   uint16_t len,
+                                                   uint16_t offset,
+                                                   uint8_t flags)
+{
+    if (len != 2) {
+        LOG_WRN("Invalid length for priority-record cap write: %u", len);
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+
+    uint16_t minutes;
+    memcpy(&minutes, buf, 2);
+
+    LOG_INF("Received new priority-record cap: %u minutes", minutes);
+    int err = app_settings_save_priority_record_max_minutes(minutes);
+    if (err) {
+        LOG_ERR("Failed to save priority-record cap setting: %d", err);
+    }
+    // Takes effect on the next auto-mode Priority Recording start; an already-armed
+    // cap on an in-progress recording keeps the value it was armed with.
+
+    return len;
+}
+
+static ssize_t settings_priority_cap_read_handler(struct bt_conn *conn,
+                                                  const struct bt_gatt_attr *attr,
+                                                  void *buf,
+                                                  uint16_t len,
+                                                  uint16_t offset)
+{
+    uint16_t minutes = app_settings_get_priority_record_max_minutes();
+    LOG_INF("Reading priority-record cap: %u minutes", minutes);
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, &minutes, sizeof(minutes));
+}
+
 static ssize_t
 features_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf, uint16_t len, uint16_t offset)
 {
@@ -809,6 +889,10 @@ features_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, voi
     features |= OMI_FEATURE_MIC_GAIN;
     // VAD threshold control is always enabled.
     features |= OMI_FEATURE_VAD_THRESHOLD;
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    // Priority Recording (and thus its configurable safety cap) exists only on AAD builds.
+    features |= OMI_FEATURE_PRIORITY_RECORD_CAP;
+#endif
 
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &features, sizeof(features));
 }
@@ -1880,8 +1964,7 @@ int transport_start()
     bt_gatt_service_register(&diagnostics_service);
     // Mute service appended after diagnostics so all prior handles stay stable.
     bt_gatt_service_register(&mute_service);
-    // Button config service appended last so prior handles stay stable.
-    bt_gatt_service_register(&button_config_service);
+    // Button + haptic config now live under the Settings service — no separate service to register.
     err = bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
     if (err) {
         LOG_ERR("Transport advertising failed to start (err %d)", err);
