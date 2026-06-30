@@ -19,6 +19,13 @@ typedef enum {
     BUTTON_ACTION_MUTE = 1,
     BUTTON_ACTION_MARKER = 2,
     BUTTON_ACTION_TOGGLE_LED = 3,
+    /* Explicit start/stop of a recording, distinct gestures (no toggle).
+     * Manual mode: same as today's MARKER start/stop (65535 / 32769, persisted).
+     * Auto mode: start/stop a "Priority Recording" — a force-captured stretch
+     * (runtime 65535, not persisted) bracketed by a 0xFFFFFFF8 start marker and
+     * the existing 0xFFFFFFFC session-end on stop; rendered high-priority (red). */
+    BUTTON_ACTION_RECORD_START = 4,
+    BUTTON_ACTION_RECORD_STOP = 5,
 } button_action_t;
 
 extern volatile marker_flash_color_t marker_flash_color;
