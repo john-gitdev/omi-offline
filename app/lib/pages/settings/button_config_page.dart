@@ -132,7 +132,11 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
       try {
         final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
         if (connection != null) {
-          await connection.setButtonConfig(_config);
+          // Write the config captured at call time, not `_config` — the user may
+          // have switched the segmented control to the other mode while this
+          // ensureConnection await was pending, which would otherwise install the
+          // wrong mode's mapping on the device.
+          await connection.setButtonConfig(cfg);
           return;
         }
       } catch (_) {
