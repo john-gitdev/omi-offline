@@ -139,6 +139,17 @@ static uint8_t tap_count = 0;
  * a 0xFFFFFFF8 start marker and the existing 0xFFFFFFFC session-end on stop.
  * A safety cap auto-stops a recording the user forgets to end so a runaway
  * capture can't drain the 150 mAh cell or fill the SD card. */
+
+/* AAD without offline storage is an invalid build: RECORD_START's force-capture
+ * (aad_set_threshold(65535)) runs under AAD alone, but its only sink and the
+ * RECORD_STOP threshold-restore both live behind offline storage — so the mic
+ * would be pinned awake with no way to stop it. This offline-first firmware
+ * always ships SD storage, so forbid the combination at build time rather than
+ * carry a dead, asymmetric code path. */
+#if defined(CONFIG_OMI_ENABLE_T5838_AAD) && !defined(CONFIG_OMI_ENABLE_OFFLINE_STORAGE)
+#error "CONFIG_OMI_ENABLE_T5838_AAD requires CONFIG_OMI_ENABLE_OFFLINE_STORAGE"
+#endif
+
 #if defined(CONFIG_OMI_ENABLE_T5838_AAD) && defined(CONFIG_OMI_ENABLE_OFFLINE_STORAGE)
 /* Compile-time for v1; a future enhancement exposes this as a user setting. */
 #define PRIORITY_RECORD_MAX_MS (2 * 60 * 60 * 1000) /* 2 hours */
