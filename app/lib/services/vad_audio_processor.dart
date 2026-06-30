@@ -141,6 +141,14 @@ class VadAudioProcessor {
   // sub-50 ms recording.
   bool _sessionEndPendingResume = false;
 
+  // True while processing the audio between a 0xFFFFFFF8 Priority Recording
+  // start marker and its 0xFFFFFFFC stop. The firmware force-captures every
+  // frame across this span (runtime VAD threshold 65535), so the app must NOT
+  // split it on silence — every frame is treated as speech and the recording
+  // finalizes only at the stop marker. Persisted so a priority recording that
+  // spans a sync boundary keeps capturing without splitting on the next run.
+  bool _inPriorityRecording = false;
+
   // Muted-interval tracking. Opened by a 0xFFFFFFFA mute-on marker (which also
   // finalizes the in-progress recording, like session-end), closed by a
   // 0xFFFFFFF9 mute-off marker or — if the device powered off while muted — by
@@ -151,7 +159,7 @@ class VadAudioProcessor {
 
   // Markers accumulated since the last _saveRecording call, keyed by their
   // wall-clock timestamp and the recording offset at the time of the tap.
-  final List<({int markerMs, int offsetAtMarkerMs})> _pendingMarkers = [];
+  final List<({int markerMs, int offsetAtMarkerMs, bool isHighPriority})> _pendingMarkers = [];
   // EDL payload ready to be consumed by the isolate caller after each save.
   final List<Map<String, dynamic>> _pendingEdlData = [];
 
@@ -347,9 +355,12 @@ class VadAudioProcessor {
       'fbm': _forcedByMarker,
       'mpu': _markerProtectedUntilMs,
       'sep': _sessionEndPendingResume,
+      'ipr': _inPriorityRecording,
       'mtd': _muted,
       'mts': _muteStartMs,
-      'pm': _pendingMarkers.map((m) => {'ms': m.markerMs, 'o': m.offsetAtMarkerMs}).toList(),
+      'pm': _pendingMarkers
+          .map((m) => {'ms': m.markerMs, 'o': m.offsetAtMarkerMs, 'hp': m.isHighPriority})
+          .toList(),
       'vs': vadStateFloats,
       'vc': _vadContext.toList(),
       'pb': List<double>.generate(_pcmBufferLen, (i) => _pcmBuffer[i]),
@@ -391,11 +402,16 @@ class VadAudioProcessor {
     _forcedByMarker = s['fbm'] as bool;
     _markerProtectedUntilMs = s['mpu'] as int?;
     _sessionEndPendingResume = s['sep'] as bool;
+    _inPriorityRecording = (s['ipr'] as bool?) ?? false;
     _muted = (s['mtd'] as bool?) ?? false;
     _muteStartMs = s['mts'] as int?;
     _pendingMarkers.clear();
     for (final m in (s['pm'] as List).cast<Map<String, dynamic>>()) {
-      _pendingMarkers.add((markerMs: m['ms'] as int, offsetAtMarkerMs: m['o'] as int));
+      _pendingMarkers.add((
+        markerMs: m['ms'] as int,
+        offsetAtMarkerMs: m['o'] as int,
+        isHighPriority: (m['hp'] as bool?) ?? false,
+      ));
     }
     final vsRaw = s['vs'] as List?;
     if (vsRaw != null && _session != null) {
@@ -791,7 +807,7 @@ class VadAudioProcessor {
             // Mid-recording → current chunk duration.
             final int offsetForMarker = _currentRefs.isEmpty ? 0 : _currentChunkDurationMs;
             if (markerMs > 946684800000) {
-              _pendingMarkers.add((markerMs: markerMs, offsetAtMarkerMs: offsetForMarker));
+              _pendingMarkers.add((markerMs: markerMs, offsetAtMarkerMs: offsetForMarker, isHighPriority: false));
               Logger.debug('VadAudioProcessor: Queued marker at $markerFrameTime (offset ${offsetForMarker}ms)');
             }
             if (_currentRefs.isEmpty) {
@@ -855,11 +871,76 @@ class VadAudioProcessor {
               _emitOrphanMarkers();
             }
             _sessionEndPendingResume = true;
+            // Session-end also stops a Priority Recording (auto-mode RECORD_STOP
+            // restores the auto threshold, which the firmware finalizes by
+            // emitting this same 0xFFFFFFFC). Leaving the force-capture span.
+            _inPriorityRecording = false;
             // Manual-mode stop is a hard end, not a silence/file split: the
             // protected recording is finalized and the tap consumed, so the
             // guaranteed-save window is done. Clear it so a tap-then-stop-then-
             // restart inside the original 50 s doesn't force-promote noise.
             _markerProtectedUntilMs = null;
+            _pcmBufferLen = 0;
+            _cachedStateValue?.dispose();
+            _cachedStateValue = null;
+            _vadContext.fillRange(0, _vadContextSamples, 0.0);
+            _batchResetPending = true;
+          }
+          offset += 20;
+          continue;
+        }
+
+        // Priority Recording start marker (0xFFFFFFF8, 20 bytes: 4-byte header +
+        // 16-byte payload, same layout as the button-tap marker). Auto-mode
+        // RECORD_START. Finalize the current auto recording at this boundary and
+        // open a fresh high-priority recording anchored here; the firmware
+        // force-captures every frame until the matching 0xFFFFFFFC stop, so we
+        // enter _inPriorityRecording (no silence splitting). The firmware rotated
+        // the bin before writing this marker, so it normally arrives at the start
+        // of a fresh bin (_currentRefs typically empty). CRITICAL: do NOT set
+        // _sessionEndPendingResume — audio must flow straight into the new
+        // recording (no 0xFFFFFFFD resume marker follows a start).
+        if (frameLength == 0xFFFFFFF8) {
+          if (offset + 20 <= fileLength) {
+            // 1) Flush any deferred VAD batch before finalizing (two-pass runner).
+            if (_useBatchRunner && _batchDeferredFrames.isNotEmpty) {
+              segmentSpeechFrames =
+                  await _flushVadBatch(savedFiles: savedFiles, segmentSpeechFrames: segmentSpeechFrames);
+            }
+            // 2) Parse marker timestamp (same layout as 0xFFFFFFFE).
+            final markerUtcMs = byteData.getUint64(offset + 4, Endian.little);
+            final markerUptimeMs = byteData.getUint32(offset + 12, Endian.little);
+            final markerFrameTime = markerUtcMs > 946684800000
+                ? DateTime.fromMillisecondsSinceEpoch(markerUtcMs, isUtc: true)
+                : lastFrameWallTime;
+            final markerMs = markerFrameTime.millisecondsSinceEpoch;
+            // 3) Finalize the current auto recording (if any) at this boundary.
+            if (_currentRefs.isNotEmpty) {
+              _forcedByMarker = true;
+              final filePath = await flushRemaining(isDraft: false);
+              if (filePath != null) savedFiles.add(filePath);
+            } else {
+              _emitOrphanMarkers();
+            }
+            // 4) Enter force-capture: every frame is speech, no silence split,
+            // until the 0xFFFFFFFC stop.
+            _inPriorityRecording = true;
+            _sessionEndPendingResume = false;
+            // 5) Start the fresh recording timeline at the marker (refs now empty).
+            lastFrameWallTime = markerFrameTime;
+            _recordingStartTime = markerFrameTime;
+            _speechFrameCount = 0;
+            _currentChunkDurationMs = 0;
+            _silenceRunMs = 0;
+            _currentFrameUptimeMs = markerUptimeMs;
+            _isDerivedTimestamp = false;
+            // 6) Queue the high-priority marker at offset 0 of the new recording.
+            if (markerMs > 946684800000) {
+              _pendingMarkers.add((markerMs: markerMs, offsetAtMarkerMs: 0, isHighPriority: true));
+              _markerProtectedUntilMs = markerMs + _markerProtectionWindowMs;
+            }
+            // 7) Teardown for a clean VAD boundary (= session-end, minus the
+            // resume latch — audio continues straight into the new recording).
             _pcmBufferLen = 0;
             _cachedStateValue?.dispose();
             _cachedStateValue = null;
@@ -1108,6 +1189,13 @@ class VadAudioProcessor {
 
         // Align with firmware: force speech status if within marker protection window
         if (_markerProtectedUntilMs != null && lastFrameWallTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!) {
+          isSpeech = true;
+        }
+
+        // Inside a Priority Recording the firmware force-captured every frame;
+        // treat all audio as speech so the app never splits it on silence. It
+        // finalizes only at the 0xFFFFFFFC stop (or the firmware safety cap).
+        if (_inPriorityRecording) {
           isSpeech = true;
         }
 
@@ -1434,8 +1522,10 @@ class VadAudioProcessor {
       return _VadVerdictResult(segmentSpeechFrames: segmentSpeechFrames, splitFired: splitFired);
     }
 
-    // Max conversation duration cap (0 / disabled by default).
-    if (_currentChunkDurationMs >= _maxChunkMs) {
+    // Max conversation duration cap (0 / disabled by default). Bypassed inside a
+    // Priority Recording so a deliberate force-captured stretch stays one file;
+    // the firmware safety cap bounds its length instead.
+    if (!_inPriorityRecording && _currentChunkDurationMs >= _maxChunkMs) {
       Logger.debug('VadAudioProcessor: Max conversation duration — forcing cut.');
       await _flushPartialWindow();
       final speechMs = _speechFrameCount * frameDurationMs;
@@ -1604,6 +1694,7 @@ class VadAudioProcessor {
         'markerMs': m.markerMs,
         'offsetMs': 0,
         'durationMs': 0,
+        'isHighPriority': m.isHighPriority,
       });
     }
     _pendingMarkers.clear();
@@ -1794,6 +1885,7 @@ class VadAudioProcessor {
             'markerMs': m.markerMs,
             'offsetMs': m.offsetAtMarkerMs,
             'durationMs': durationMs,
+            'isHighPriority': m.isHighPriority,
           });
         }
         _pendingMarkers.clear();
