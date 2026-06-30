@@ -1808,6 +1808,11 @@ class RecordingsManager {
           // new segment.
           existing['segmentFilename'] = filename;
           existing['markerOffsetMs'] = offsetMs;
+          // Carry forward the high-priority flag (re-derived from the marker on
+          // every pass). A pre-feature user-saved EDL has no isHighPriority key,
+          // so without this a re-point after a file rename would silently drop a
+          // Priority Recording marker's red status.
+          existing['isHighPriority'] = isHighPriority;
           await _writeJsonAtomic(edlFile, existing);
           Logger.debug('RecordingsManager: Preserved user edits on marker_$markerMs.edl, re-pointed to $filename');
           return;
