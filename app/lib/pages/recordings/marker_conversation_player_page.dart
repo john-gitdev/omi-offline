@@ -146,6 +146,9 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
       'cropStartMs': _cropStart.inMilliseconds,
       'cropEndMs': _cropEnd.inMilliseconds,
       'userSaved': _userSaved,
+      // Preserve the priority flag — this map is rebuilt from scratch, so a crop
+      // save would otherwise silently revert a red marker back to amber.
+      'isHighPriority': widget.markerConversation.isHighPriority,
     };
     // Atomic (tmp + rename) so a concurrent getMarkerConversations() refresh
     // never reads a half-written EDL, and an app kill mid-save can't corrupt it.

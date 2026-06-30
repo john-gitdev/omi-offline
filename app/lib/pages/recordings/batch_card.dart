@@ -100,6 +100,17 @@ class MarkerSubEntry extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Priority Recording markers render red as "Priority Recording", gated on the
+    // showHighPriorityMarker visibility pref (main isolate read — fine here).
+    if (mc.isHighPriority && !SharedPreferencesUtil().showHighPriorityMarker) {
+      return const SizedBox.shrink();
+    }
+    final markerColor = mc.isPending
+        ? Colors.grey.shade600
+        : mc.isHighPriority
+            ? Colors.red
+            : Colors.amber;
+    final label = mc.isHighPriority ? 'Priority Recording at ${mc.markerTimeLabel}' : 'Marker at ${mc.markerTimeLabel}';
     return InkWell(
       onTap: mc.isPending ? null : onTap,
       onLongPress: onLongPress,
@@ -110,13 +121,13 @@ class MarkerSubEntry extends StatelessWidget {
           children: [
             FaIcon(
               FontAwesomeIcons.solidBookmark,
-              color: mc.isPending ? Colors.grey.shade600 : Colors.amber,
+              color: markerColor,
               size: 11,
             ),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
-                mc.isPending ? 'Marker at ${mc.markerTimeLabel} (no audio)' : 'Marker at ${mc.markerTimeLabel}',
+                mc.isPending ? '$label (no audio)' : label,
                 style: TextStyle(
                   color: mc.isPending ? Colors.grey.shade600 : Colors.white,
                   fontSize: 13,
@@ -228,7 +239,14 @@ class ConversationTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final sortedMarkers = [...markers]..sort((a, b) => a.markerTime.compareTo(b.markerTime));
+    // High-priority ("Priority Recording") markers are folded into the recording row
+    // itself as a leading red badge (below) rather than rendered as their own
+    // sub-row, so exclude them from the marker sub-entries. The badge and the
+    // exclusion both honor the showHighPriorityMarker visibility pref.
+    final showHighPriority = SharedPreferencesUtil().showHighPriorityMarker;
+    final isHighPriorityRec = showHighPriority && markers.any((m) => m.isHighPriority);
+    final sortedMarkers = markers.where((m) => !m.isHighPriority).toList()
+      ..sort((a, b) => a.markerTime.compareTo(b.markerTime));
     final isPassthrough = conversation.passthrough;
     final subtitle =
         isPassthrough ? conversation.durationLabel : '${conversation.durationLabel}  ·  ${conversation.sizeLabel}';
@@ -254,6 +272,13 @@ class ConversationTile extends StatelessWidget {
                     children: [
                       Row(
                         children: [
+                          if (isHighPriorityRec) ...[
+                            const Tooltip(
+                              message: 'Priority Recording',
+                              child: FaIcon(FontAwesomeIcons.solidBookmark, color: Colors.red, size: 13),
+                            ),
+                            const SizedBox(width: 8),
+                          ],
                           Text(
                             isAdj ? '${conversation.timeRangeLabel} | ADJ' : conversation.timeRangeLabel,
                             style: TextStyle(

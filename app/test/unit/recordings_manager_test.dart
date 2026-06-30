@@ -1067,6 +1067,51 @@ void main() {
       final onDisk = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
       expect(onDisk['cropEndMs'], 5000, reason: 'noop must not update cropEndMs');
     });
+
+    test('isHighPriority is written to the EDL payload on disk', () async {
+      final dateStr = dateOf(kMarkerMs);
+      final manager = RecordingsManager();
+      await manager.writeMarkerEdlTest(tempDir.path, {
+        ...edl(filename: ''),
+        'isHighPriority': true,
+      });
+      final onDisk = jsonDecode(await edlFile0(dateStr).readAsString()) as Map<String, dynamic>;
+      expect(onDisk['isHighPriority'], true);
+    });
+
+    test('isHighPriority defaults false when the writer map omits it', () async {
+      final dateStr = dateOf(kMarkerMs);
+      final manager = RecordingsManager();
+      await manager.writeMarkerEdlTest(tempDir.path, edl(filename: ''));
+      final onDisk = jsonDecode(await edlFile0(dateStr).readAsString()) as Map<String, dynamic>;
+      expect(onDisk['isHighPriority'], false);
+    });
+
+    test('getMarkerConversations surfaces isHighPriority from the EDL (and defaults false)', () async {
+      final dateStr = dateOf(kMarkerMs);
+      final f = edlFile0(dateStr);
+      await f.parent.create(recursive: true);
+      // High-priority marker (no segment → pending, but the flag must still read).
+      await f.writeAsString(jsonEncode({
+        'markerTimestampMs': kMarkerMs,
+        'segmentFilename': '',
+        'markerOffsetMs': 0,
+        'isHighPriority': true,
+      }));
+      var markers = await RecordingsManager().getMarkerConversations();
+      expect(markers.length, 1);
+      expect(markers.first.isHighPriority, true);
+
+      // Legacy EDL without the key → defaults false.
+      await f.writeAsString(jsonEncode({
+        'markerTimestampMs': kMarkerMs,
+        'segmentFilename': '',
+        'markerOffsetMs': 0,
+      }));
+      markers = await RecordingsManager().getMarkerConversations();
+      expect(markers.length, 1);
+      expect(markers.first.isHighPriority, false);
+    });
   });
 
   // ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/pages/settings/button_config_page.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:provider/provider.dart';
 
@@ -135,8 +136,36 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
   }
 
   Future<void> _saveAndPop() async {
+    final modeChanged = _manualMode != SharedPreferencesUtil().manualMode;
     await _saveSettings();
+    if (!mounted) return;
+    // Each mode has its own button mapping; nudge the user to review the one
+    // that just became active.
+    if (modeChanged) await _promptReviewButtonConfig(_manualMode);
     if (mounted) Navigator.of(context).pop();
+  }
+
+  Future<void> _promptReviewButtonConfig(bool manual) async {
+    final modeLabel = manual ? 'Manual' : 'Auto';
+    final review = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1C1C1E),
+        title: Text('Switched to $modeLabel mode', style: const TextStyle(color: Colors.white)),
+        content: Text(
+          'Your button actions for $modeLabel mode are now active on the device. '
+          'Want to review or change them?',
+          style: const TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Not now')),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Review')),
+        ],
+      ),
+    );
+    if (review == true && mounted) {
+      await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ButtonConfigPage()));
+    }
   }
 
   Future<void> _handleBack() async {

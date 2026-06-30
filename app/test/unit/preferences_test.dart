@@ -209,6 +209,48 @@ void main() {
       expect(prefsUtil.heypocketUploadedFiles, ['file2']);
     });
 
+    test('Per-mode button configs: defaults, round-trip, and activeButtonConfig', () async {
+      // Defaults when unset.
+      expect(prefsUtil.buttonConfigManual, SharedPreferencesUtil.defaultButtonConfigManual);
+      expect(prefsUtil.buttonConfigAuto, SharedPreferencesUtil.defaultButtonConfigAuto);
+
+      // Round-trip both configs (stored as a string list under the hood).
+      prefsUtil.buttonConfigManual = [0, 2, 4, 3, 5, 1];
+      prefsUtil.buttonConfigAuto = [1, 4, 2, 0, 3, 5];
+      expect(prefsUtil.buttonConfigManual, [0, 2, 4, 3, 5, 1]);
+      expect(prefsUtil.buttonConfigAuto, [1, 4, 2, 0, 3, 5]);
+
+      // A corrupt (wrong-length) stored value falls back to the default.
+      await prefsUtil.saveStringList('buttonConfigManual', ['9', '9']);
+      expect(prefsUtil.buttonConfigManual, SharedPreferencesUtil.defaultButtonConfigManual);
+
+      // activeButtonConfig follows manualMode.
+      prefsUtil.manualMode = true;
+      expect(prefsUtil.activeButtonConfig, prefsUtil.buttonConfigManual);
+      prefsUtil.manualMode = false;
+      expect(prefsUtil.activeButtonConfig, prefsUtil.buttonConfigAuto);
+
+      // Migration guard defaults false.
+      expect(prefsUtil.buttonConfigMigrated, false);
+      prefsUtil.buttonConfigMigrated = true;
+      expect(prefsUtil.buttonConfigMigrated, true);
+    });
+
+    test('shouldPreserveExistingButtonConfig: migrate old/customized, skip fresh device', () {
+      // Old factory default (double-tap=Marker) → preserve into auto.
+      expect(SharedPreferencesUtil.shouldPreserveExistingButtonConfig([0, 0, 2, 1, 3, 0]), true);
+      // Any customized config → preserve.
+      expect(SharedPreferencesUtil.shouldPreserveExistingButtonConfig([1, 2, 3, 0, 0, 0]), true);
+      // Factory-fresh new-firmware device (== new manual default) → skip.
+      expect(
+        SharedPreferencesUtil.shouldPreserveExistingButtonConfig(SharedPreferencesUtil.defaultButtonConfigManual),
+        false,
+      );
+      // Null / wrong-length reads → skip (nothing valid to preserve).
+      expect(SharedPreferencesUtil.shouldPreserveExistingButtonConfig(null), false);
+      expect(SharedPreferencesUtil.shouldPreserveExistingButtonConfig([0, 0, 2]), false);
+    });
+
     test('BtDevice serialization and deserialization work correctly', () async {
       // Default should return an empty BtDevice
       final defaultDevice = prefsUtil.btDevice;
