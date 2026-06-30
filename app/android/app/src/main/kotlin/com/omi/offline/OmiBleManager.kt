@@ -263,6 +263,10 @@ class OmiBleManager private constructor(private val application: Application) {
         // If we have an existing GATT for this address, close it first to ensure a fresh start
         connectedGatts[addr]?.let {
             Log.i(TAG, "Closing existing GATT for $addr before reconnecting")
+            // disconnect() before close(): if the OS still considers this link alive,
+            // close() alone releases our client handle but leaves the radio link up with
+            // no listener — a ghost occupying the device's single connection slot.
+            it.disconnect()
             it.close()
             connectedGatts.remove(addr)
         }
