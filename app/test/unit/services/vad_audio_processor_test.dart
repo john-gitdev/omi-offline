@@ -938,8 +938,7 @@ void main() {
       expect(flushed, isNull, reason: 'nothing remaining after session-end flush');
     });
 
-    test('priority-recording marker (0xFFFFFFF8) finalizes prior, opens red recording, stops at 0xFFFFFFFC',
-        () async {
+    test('priority-recording marker (0xFFFFFFF8) finalizes prior, opens red recording, stops at 0xFFFFFFFC', () async {
       // Bin: header + 10 frames + 0xFFFFFFF8 priority-start + 10 frames + 0xFFFFFFFC stop.
       // F8 finalizes the prior auto recording and opens a high-priority one; FC stops it.
       final builder = BytesBuilder();
@@ -1072,6 +1071,71 @@ void main() {
       expect(edls.length, 1);
       expect(edls[0]['isHighPriority'], isTrue);
       expect(edls[0]['filename'], '');
+    });
+
+    test('Priority Recording does not split across a session change between bins', () async {
+      // Bin A: priority start + 10 force-captured frames, session 1, NO stop.
+      final binA = priorityBin('priority_splitA.bin', frames: 10);
+      // Bin B: a fresh session (id 2), 10 min later, + 10 frames + the 0xFFFFFFFC
+      // stop. A session change / large gap normally forces an inter-file split;
+      // inside a Priority Recording it must be suppressed so RECORD_START/STOP
+      // stay the only boundaries.
+      final bBuilder = BytesBuilder();
+      final bHdr = ByteData(36);
+      bHdr.setUint32(0, 0xFFFFFFFB, Endian.little);
+      bHdr.setUint32(4, 28, Endian.little);
+      bHdr.setUint64(8, kBase + 600000, Endian.little); // 10 min after bin A
+      bHdr.setUint64(16, 0, Endian.little);
+      bHdr.setUint32(24, 0, Endian.little);
+      bHdr.setUint32(28, 2, Endian.little); // different session id
+      bBuilder.add(bHdr.buffer.asUint8List());
+      final fhdr = ByteData(4)..setUint32(0, 4, Endian.little);
+      for (int i = 0; i < 10; i++) {
+        bBuilder.add(fhdr.buffer.asUint8List());
+        bBuilder.add(List.filled(4, 0));
+      }
+      bBuilder.add((ByteData(20)..setUint32(0, 0xFFFFFFFC, Endian.little)).buffer.asUint8List());
+      final binB = File('${tempDir.path}/priority_splitB.bin')..writeAsBytesSync(bBuilder.toBytes());
+
+      final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+      final savedA = await proc.processSegmentFile(binA, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      final savedB =
+          await proc.processSegmentFile(binB, DateTime.fromMillisecondsSinceEpoch(kBase + 600000, isUtc: true));
+      final flushed = await proc.flushRemaining();
+      await proc.destroy();
+
+      expect(savedA.length, 0, reason: 'no boundary inside bin A (no stop yet)');
+      // Without the _inPriorityRecording guard the session change would split the
+      // span into two recordings; the guard keeps it as one.
+      expect(savedB.length, 1, reason: 'FC stop finalizes the single spanning priority recording');
+      expect(flushed, isNull);
+    });
+
+    test('open priority marker bin with no buffered audio is retained for the next run', () async {
+      // Marker landed at the tail of a sync with no trailing frames (frames: 0).
+      final file = priorityBin('priority_retain.bin', frames: 0);
+      final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+      await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      // End-of-run draft flush produces nothing (no audio) ...
+      await proc.flushRemaining(isDraft: true);
+      // ... but the marker bin must NOT be released: the next run re-sees the
+      // 0xFFFFFFF8 marker and re-enters force-capture. Releasing it would drop the
+      // priority recording's red marker and force-capture on the next pass.
+      final safe = proc.consumeSafeToDeletePaths();
+      await proc.destroy();
+      expect(safe.contains(file.path), isFalse, reason: 'open priority marker bin must stay on disk');
+    });
+
+    test('priority marker bin is released once the recording captures audio and stops', () async {
+      // Contrast with the retention case: a finalized priority recording no longer
+      // needs its source bin pinned.
+      final file = priorityBin('priority_released.bin', frames: 10, stop: true);
+      final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+      await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      await proc.flushRemaining();
+      final safe = proc.consumeSafeToDeletePaths();
+      await proc.destroy();
+      expect(safe.contains(file.path), isTrue, reason: 'a stopped priority recording releases its source bin');
     });
 
     group('Marker Protection Window', () {
