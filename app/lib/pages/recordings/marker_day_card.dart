@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/recordings_manager.dart';
 
 class MarkerTile extends StatelessWidget {
@@ -11,6 +12,18 @@ class MarkerTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Priority Recording markers render red as "Priority Recording", gated on the
+    // showHighPriorityMarker visibility pref (main isolate read — fine here).
+    if (mc.isHighPriority && !SharedPreferencesUtil().showHighPriorityMarker) {
+      return const SizedBox.shrink();
+    }
+    final markerColor = mc.isPending
+        ? Colors.grey.shade600
+        : mc.isHighPriority
+            ? Colors.red
+            : Colors.amber;
+    final subLabel =
+        mc.isHighPriority ? 'Priority Recording at ${mc.markerTimeLabel}' : 'Marker at ${mc.markerTimeLabel}';
     // Pending markers (no backing segment) still need a long-press affordance
     // so the user can delete them — otherwise orphan EDLs accumulate forever
     // with no in-UI cleanup path (NEW1/C1).
@@ -24,7 +37,7 @@ class MarkerTile extends StatelessWidget {
           children: [
             FaIcon(
               FontAwesomeIcons.solidBookmark,
-              color: mc.isPending ? Colors.grey.shade600 : Colors.amber,
+              color: markerColor,
               size: 14,
             ),
             const SizedBox(width: 12),
@@ -42,7 +55,7 @@ class MarkerTile extends StatelessWidget {
                   ),
                   const SizedBox(height: 3),
                   Text(
-                    'Marker at ${mc.markerTimeLabel}',
+                    subLabel,
                     style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
                   ),
                 ],
@@ -95,7 +108,8 @@ class MarkerDayCard extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 12),
-            ...sorted.map((mc) => MarkerTile(mc: mc, onTap: () => onMarkerTap(mc), onLongPress: () => onDeleteMarkerConversation(mc))),
+            ...sorted.map((mc) =>
+                MarkerTile(mc: mc, onTap: () => onMarkerTap(mc), onLongPress: () => onDeleteMarkerConversation(mc))),
           ],
         ),
       ),
