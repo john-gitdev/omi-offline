@@ -120,6 +120,11 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
     setState(() {
       cfg[index] = action;
     });
+    // Snapshot the intended bytes now, before any await. `cfg` is the live
+    // per-mode list, so a later same-mode edit (or its failure-revert) while the
+    // ensureConnection below is pending could otherwise mutate what THIS write
+    // sends — leaking an unconfirmed/reverted value onto the firmware.
+    final pending = List<int>.of(cfg);
     _persistSelectedConfig();
 
     // Only the device's currently-active mode is live on the firmware. Editing
@@ -132,11 +137,10 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
       try {
         final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
         if (connection != null) {
-          // Write the config captured at call time, not `_config` — the user may
-          // have switched the segmented control to the other mode while this
-          // ensureConnection await was pending, which would otherwise install the
-          // wrong mode's mapping on the device.
-          await connection.setButtonConfig(cfg);
+          // Send the snapshot taken at call time — not `_config` (a tab-dependent
+          // getter, wrong mode if the tab switched) and not the live `cfg` (whose
+          // values can change under us while this await is pending).
+          await connection.setButtonConfig(pending);
           return;
         }
       } catch (_) {
