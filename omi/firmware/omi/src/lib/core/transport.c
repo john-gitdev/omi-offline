@@ -827,6 +827,9 @@ static ssize_t settings_priority_cap_write_handler(struct bt_conn *conn,
                                                    uint16_t offset,
                                                    uint8_t flags)
 {
+    if (offset != 0) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+    }
     if (len != 2) {
         LOG_WRN("Invalid length for priority-record cap write: %u", len);
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
