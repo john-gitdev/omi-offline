@@ -20,8 +20,10 @@ Remaining BLE-reliability work from the 2026-06-27 device-log analysis plus a co
 review of [OmiBleManager.kt](app/android/app/src/main/kotlin/com/omi/offline/OmiBleManager.kt)
 and [OmiBleForegroundService.kt](app/android/app/src/main/kotlin/com/omi/offline/OmiBleForegroundService.kt).
 The GATT-churn fixes — exponential reconnect backoff and `disconnect()` before
-`close()` across all cleanup paths — shipped in app 0.26.9; the items below are the
-still-open follow-ups.
+`close()` across all cleanup paths — shipped in app 0.26.9, and most follow-ups
+(resume-from-offset, the keepalive margin, and stuck-"Connecting…" recovery) have since
+shipped too. **The one remaining open item is connection-param tuning** (below); the rest
+are recorded under "Shipped / dispositioned" for context.
 
 > **Already handled, so not listed below.** The firmware LE **supervision timeout is
 > already 6 s** (`transport.c` `update_conn_params`, `.timeout = 600`) — the original
@@ -38,33 +40,24 @@ are genuine multi-second RF/firmware stalls — not a tuning problem — so the 
 below mitigate the *fallout* (don't lose the partial transfer, don't strand the UI)
 rather than preventing the stall.
 
-#### Partial sync completions
-Background syncs transfer some WALs, then abort when the link drops mid-transfer
-(`Stream closed without EOT`, `OmiBleManager.kt` `cleanupPeripheral`). Successfully
-synced WALs are deleted, but a partially transferred WAL restarts from offset 0.
+#### Open: connection-param tuning during transfer
+Syncs transfer over `CONNECTION_PRIORITY_HIGH` (`OmiBleManager.kt`, ~11.25–15 ms
+interval) — great throughput, RF-fragile. The open experiment is whether
+`CONNECTION_PRIORITY_BALANCED` (30 ms) during a transfer trades throughput for fewer drops:
+- `BALANCED` ~halves throughput, but each interval is more RF-robust (fewer drops per unit
+  time) — at the cost of a longer transfer (more total exposure). Net effect on "did the
+  whole transfer finish" is empirical.
+- **Kept at HIGH on purpose for now:** resume-from-offset (shipped, below) already makes a
+  drop cheap, so HIGH + resume beats BALANCED unless measurement shows BALANCED's lower drop
+  rate outweighs the throughput cost. Wire it behind something measurable and A/B
+  throughput vs. drop-rate before committing. Android-only lever; the firmware's
+  `update_conn_params` (7.5–22.5 ms) bounds the floor either way.
 
-1. **Resume-from-offset after reconnect (highest value).** `StorageDownloadSession`
-   already takes a `startOffset`. Persist the last successfully written offset and
-   resume there on the next connection instead of refetching the whole file.
-2. **Connection-param tuning during transfer.** The code requests
-   `CONNECTION_PRIORITY_HIGH` (`OmiBleManager.kt`, ~11.25–15 ms interval) — great
-   throughput, RF-fragile. Try `CONNECTION_PRIORITY_BALANCED` (30 ms) for the duration
-   of a transfer: slower, fewer drops. Measure the throughput cost.
-3. **Reduce keepalive interval.** Storage keepalive is **15 s** and the firmware
-   idle-disconnect timer is **also 15 s** (`transport.c` `IDLE_DISCONNECT_TIMEOUT_MS`)
-   — *zero* margin. One silently dropped keepalive write (Android flow-control backoff)
-   can trip the idle-disconnect. Drop the keepalive to ~10 s.
-
-#### Notifications stuck on "Connecting…"
-The foreground-service notification can stay on "Connecting…" when Dart is frozen by
-Doze (or killed) mid-connect. A native settle alarm reverts it, but `CONNECT_SETTLE_MS`
-is **160 s**, and under deep Doze the alarm can defer to the OS's ~9-min window.
-
-1. **Reduce `CONNECT_SETTLE_MS`** (160 s) toward Dart's 150 s connect-settle watchdog
-   — e.g. 90–120 s — so the native fallback fires sooner.
-2. **Push a native disconnect-notification update** straight from the GATT
-   `onConnectionStateChange → STATE_DISCONNECTED` callback, instead of relying on Dart
-   to update the text — catches the Dart-frozen case directly.
+> **Guardrail (learned while shipping the stuck-notification fix):** don't reduce
+> `CONNECT_SETTLE_MS` (160 s) below Dart's 150 s connect-settle watchdog — it sits just above
+> it on purpose so native never preempts Dart's own handling. The recovery instead pulls the
+> settle alarm in on *disconnect* (to `now + 60 s`, never later than the original deadline),
+> which rescues a frozen-Dart strand without that risk.
 
 #### Relevant files
 | File | What it does |
