@@ -105,6 +105,7 @@ class OmiFeatures {
   static const int ledDimming = 1 << 7;
   static const int micGain = 1 << 8;
   static const int vadThreshold = 1 << 9;
+  static const int priorityRecordCap = 1 << 10;
 
   static bool hasFeature(int features, int feature) {
     return (features & feature) != 0;
