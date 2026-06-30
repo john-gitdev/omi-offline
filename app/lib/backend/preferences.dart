@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
@@ -38,6 +39,50 @@ class SharedPreferencesUtil {
   // Can only be toggled while the device is connected so the BLE write always lands.
   bool get manualMode => getBool('manualMode', defaultValue: true);
   set manualMode(bool v) => saveBool('manualMode', v);
+
+  // UI-visibility only: whether red "Priority Recording" markers
+  // show in the timeline. Read in the main isolate; the VAD processor always
+  // emits the marker with isHighPriority=true regardless.
+  bool get showHighPriorityMarker => getBool('showHighPriorityMarker', defaultValue: true);
+  set showHighPriorityMarker(bool v) => saveBool('showHighPriorityMarker', v);
+
+  // Per-mode button-action configs (6 slots: single / single-hold / double /
+  // double-hold / triple / triple-hold; values are button_action_t indices
+  // 0=None,1=Mute,2=Marker,3=Toggle LED,4=Record Start,5=Record Stop). The app
+  // owns both and pushes the active mode's config to the firmware on connect and
+  // on mode switch (the firmware keeps a single active slot). Mute is a no-op in
+  // manual mode, so the manual default omits it.
+  static const List<int> defaultButtonConfigManual = [0, 2, 4, 3, 5, 0];
+  static const List<int> defaultButtonConfigAuto = [0, 4, 2, 1, 3, 5];
+
+  List<int> get buttonConfigManual => _getButtonConfig('buttonConfigManual', defaultButtonConfigManual);
+  set buttonConfigManual(List<int> v) => saveStringList('buttonConfigManual', v.map((e) => e.toString()).toList());
+
+  List<int> get buttonConfigAuto => _getButtonConfig('buttonConfigAuto', defaultButtonConfigAuto);
+  set buttonConfigAuto(List<int> v) => saveStringList('buttonConfigAuto', v.map((e) => e.toString()).toList());
+
+  // The config for the device's current mode (the one that should be live on the
+  // firmware right now).
+  List<int> get activeButtonConfig => manualMode ? buttonConfigManual : buttonConfigAuto;
+
+  // One-time migration guard: when first upgrading to per-mode configs, the
+  // device's existing single config is preserved into the auto slot.
+  bool get buttonConfigMigrated => getBool('buttonConfigMigrated', defaultValue: false);
+  set buttonConfigMigrated(bool v) => saveBool('buttonConfigMigrated', v);
+
+  List<int> _getButtonConfig(String key, List<int> fallback) {
+    final raw = getStringList(key);
+    if (raw.length != 6) return List<int>.from(fallback);
+    return raw.map((e) => int.tryParse(e) ?? 0).toList();
+  }
+
+  /// One-time per-mode-config migration decision: should the device's existing
+  /// single button config be preserved into the auto slot? Yes for a valid
+  /// customized / old-firmware config; no for a factory-fresh new-firmware device
+  /// (its config already equals the new manual default), which should keep the
+  /// proper auto default instead.
+  static bool shouldPreserveExistingButtonConfig(List<int>? existing) =>
+      existing != null && existing.length == 6 && !listEquals(existing, defaultButtonConfigManual);
 
   bool get adjustmentMode => getBool('adjustmentMode', defaultValue: false);
   set adjustmentMode(bool v) => saveBool('adjustmentMode', v);

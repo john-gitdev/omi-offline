@@ -5,14 +5,26 @@
 ### ACTIVE
 - [1. BLE stability: stuck notifications, partial syncs, Bluetooth wedge [large] [Active]](#1-ble-stability-stuck-notifications-partial-syncs-bluetooth-wedge-large-active)
 ### PENDING
-- [2. Hybrid "Isolated Recording" Architecture (Start/Stop) [large] [Pending]](#2-hybrid-isolated-recording-architecture-startstop-large-pending)
-- [3. High-Priority Marker Mode — "New Recording" Button Action [large] [Pending]](#3-high-priority-marker-mode-new-recording-button-action-large-pending)
-- [4. Clean session-end marker when entering Manual Mode [medium] [Pending]](#4-clean-session-end-marker-when-entering-manual-mode-medium-pending)
-- [5. Split manual recording Start/Stop from the Marker action [medium] [Pending]](#5-split-manual-recording-startstop-from-the-marker-action-medium-pending)
-- [6. Device-side toggle for Manual/Auto Mode [medium] [Pending]](#6-device-side-toggle-for-manualauto-mode-medium-pending)
-- [7. Device-driven BLE wake (firmware + iOS) [large] [Pending]](#7-device-driven-ble-wake-firmware-ios-large-pending)
+- [2. Priority Recording: expose the safety-cap duration as a setting [small] [Pending]](#2-priority-recording-expose-the-safety-cap-duration-as-a-setting-small-pending)
+- [3. Priority Recording: live "recording active" indicator in the app [small] [Pending]](#3-priority-recording-live-recording-active-indicator-in-the-app-small-pending)
+- [4. Device-side toggle for Manual/Auto Mode [medium] [Pending]](#4-device-side-toggle-for-manualauto-mode-medium-pending)
+- [5. Device-driven BLE wake (firmware + iOS) [large] [Pending]](#5-device-driven-ble-wake-firmware-ios-large-pending)
 ### DEFERRED
-- [8. iOS code signing & non-jailbroken distribution [medium] [Deferred]](#8-ios-code-signing-non-jailbroken-distribution-medium-deferred)
+- [6. iOS code signing & non-jailbroken distribution [medium] [Deferred]](#6-ios-code-signing-non-jailbroken-distribution-medium-deferred)
+
+> **Shipped (was pending ideas 2–5): Priority Recording.** The "Hybrid Isolated
+> Recording / High-Priority Marker / clean manual-mode session-end / split
+> Start-Stop" cluster shipped as the **Priority Recording** feature
+> (app 0.26 + firmware oo-2.4). Auto-mode `RECORD_START`/`RECORD_STOP` button
+> actions bracket a force-captured recording (start marker `0xFFFFFFF8`, reuse
+> session-end `0xFFFFFFFC` on stop, bin rotated on both edges), rendered red as
+> "New Recording", with a firmware safety cap. Mode detection reads the
+> *persisted* VAD threshold so a forced runtime `65535` is never misread as
+> manual mode. The `MARKER` overload was removed (Idea 5) and replaced with
+> **per-mode button mappings** (app-owned `buttonConfigManual`/`buttonConfigAuto`,
+> pushed to the firmware's single active slot on connect + mode switch), a
+> Manual/Auto segmented editor, and a review prompt on mode switch. Details in
+> CHANGELOG.md; the two remaining follow-ups are pending ideas 2 and 3 below.
 
 ---
 
@@ -227,450 +239,102 @@ When Bluetooth is turning off, the OS is tearing down all links anyway, so this 
 
 ## PENDING
 
-### 2. Hybrid "Isolated Recording" Architecture (Start/Stop) [large] [Pending]
+### 2. Priority Recording: expose the safety-cap duration as a setting [small] [Pending]
 
-This architecture perfectly combines the eyes-free UX safety of distinct actions (Idea #5, previously Idea #4) with the file-system safety of bin rotations (Idea #3, previously Idea #2) and state-backup (Idea #6, previously Idea #5).
+The auto-mode Priority Recording safety cap (auto-stop of a runaway force-capture)
+shipped as a **compile-time** constant `PRIORITY_RECORD_MAX_MS` in
+`omi/firmware/omi/src/lib/core/button.c` (default 2 h). Make the duration
+user-configurable so users can pick a shorter cap (e.g. 30 min) or a longer one.
 
-#### Implementation details
-1. **Firmware (`settings.c`, `settings.h`)**:
-   - Implement the `auto_vad_threshold` backup variable (as detailed in Idea #6). This ensures the device remembers the user's preferred Auto sensitivity (e.g., `250`).
-2. **Firmware (`button.c`, `button.h`)**:
-   - Add two new distinct actions: `BUTTON_ACTION_RECORD_START` and `BUTTON_ACTION_RECORD_STOP`.
-   - **On Start Press**:
-     - Block and call `create_new_audio_file()` (Rotate Bin).
-     - Immediately write the `0xFFFFFFF8` marker (High-Priority Start Marker).
-     - Set `vad_threshold = 65535` (Force continuous capture to ensure no audio is dropped).
-   - **On Stop Press**:
-     - Block and call `create_new_audio_file()` (Rotate Bin).
-     - Immediately write the `0xFFFFFFF7` marker (High-Priority Stop Marker).
-     - Set `vad_threshold = auto_vad_threshold` (Safely restore the background VAD using the backup variable).
-3. **App (`vad_audio_processor.dart`)**:
-   - **On reading `0xFFFFFFF8`**: Finalize the current active auto-recording. Start a brand new, isolated recording anchored at this byte offset and set a high-priority flag (e.g., render it red in the UI).
-   - **On reading `0xFFFFFFF7`**: Finalize the isolated recording. Immediately start a new standard auto-recording to capture the ambient background audio moving forward.
-4. **App UI (`button_config_page.dart`)**:
-   - Add "Start Isolated Recording" and "Stop Isolated Recording" to the configuration list so users can map them to separate distinct gestures (e.g., Double Tap to Start, Triple Tap to Stop). This avoids "state confusion" and allows true eyes-free usage.
+#### Implementation sketch
+1. **Firmware (`settings.c` / `settings.h`):** persist `priority_record_max_minutes`
+   (default 120; `0` = no cap, relying on battery/SD as the only limit). Have
+   `priority_record_arm_cap()` read it instead of the `#define`.
+2. **BLE:** add a small read/write characteristic under the Settings service
+   (`0010`, e.g. `0015`), `u16` minutes, range-validated — mirror the VAD-threshold
+   plumbing (`transport.c` `settings_vad_threshold_*_handler`).
+3. **App:** surface it in Offline Audio Settings (auto mode only) near the VAD
+   controls; default 2 h. Read on connect; re-push on change.
+4. **Capability bit** (optional): gate the UI on a Features bit so old firmware
+   hides the control.
 
-### 3. High-Priority Marker Mode — "New Recording" Button Action [large] [Pending]
+Low risk: the cap mechanism already exists end-to-end; this only makes the
+duration data-driven.
 
-Implementation spec. **Self-contained** — every file/line/symbol below was verified against the
-codebase during research. A fresh agent can implement straight from this doc.
+### 3. Priority Recording: live "recording active" indicator in the app [small] [Pending]
 
-> Magic byte: `0xFFFFFFF8` (next in sequence below mute-off `0xFFFFFFF9`).
-> Verified unused anywhere in `app/lib/` or firmware source.
-> Payload: 20 bytes total = 4-byte header + 16-byte payload `utc_time_ms` (u64) + `uptime_ms` (u32)
-> + `device_session_id` (u32) — identical to the button-tap marker `0xFFFFFFFE`.
+When a Priority Recording is active on the device, the app shows nothing live —
+the recording only surfaces (in red) after the next sync+process, consistent with
+the offline-first model. Add an optional live indicator for when the phone *is*
+connected.
 
----
+#### Why
+A Priority Recording is a deliberate, attention-worthy action ("I'm capturing
+this for sure"). When connected, a small live badge ("Priority Recording in
+progress…") reassures the user it's running and offers a one-tap stop.
 
-#### 1. What it is (design, settled)
+#### The catch (why it was deferred)
+The device exposes mode via the *persisted* VAD threshold read (`getVadThreshold()`
+→ `app_settings_get_vad_threshold()`), which deliberately stays at the auto value
+(e.g. `250`) during a Priority Recording — so the app **cannot** tell
+"force-capturing now" apart from "idle in auto mode" from that read alone.
+Surfacing live state needs a new signal:
+- **Option A:** a new 1-byte read/notify characteristic exposing the *runtime*
+  recording state (idle / auto-recording / priority-recording / manual-recording),
+  driven off the firmware's runtime `vad_threshold` + `vad_is_recording`.
+- **Option B:** fold a "recording state" byte into the diagnostics characteristic
+  (`0061`/`0062`) and poll it.
 
-A **fifth button action, "New Recording"**, available **only in auto (VAD) mode** — not manual mode,
-which is already press-to-start / press-to-stop. On tap (auto mode, not muted) the device:
-1. **rotates the SD bin file** (closes the current bin, opens a new one), then
-2. writes a `0xFFFFFFF8` marker as the first inline frame of the new bin,
-3. flashes the LED **red**, and wakes AAD.
+#### Implementation sketch
+1. **Firmware:** expose the runtime recording state (notify-on-change is ideal so
+   the app updates without polling).
+2. **App:** subscribe while connected; show a dismissible badge with a Stop
+   affordance (writes the auto threshold to stop, mirroring the device-side
+   `RECORD_STOP`). Foreground-only; no background cost.
 
-The app, when processing audio, treats `0xFFFFFFF8` as a **split**: it finalizes the current
-recording at that boundary and starts a fresh one anchored at the marker. The new recording carries
-a **high-priority** marker rendered **red** (vs. the normal amber bookmark). A settings toggle
-(`showHighPriorityMarker`) controls whether these red markers are shown in the timeline.
+Independent of idea 2; both are pure-additive follow-ups to the shipped Priority
+Recording.
 
-It reuses the existing **marker** infrastructure end-to-end. The only behavioural deltas vs. the
-normal `0xFFFFFFFE` marker: (a) it forces a recording split (close prior, start new), (b) red instead
-of amber, (c) auto-mode-only, (d) firmware rotates the bin.
+### 4. Device-side toggle for Manual/Auto Mode [medium] [Pending]
 
-##### Why the flag lives on `MarkerConversation`, not on the recording
-"red flag instead of yellow flag" — the only amber/yellow element in the UI is the **marker bookmark
-icon** (`batch_card` `MarkerSubEntry`, `Colors.amber`). There is no yellow on recordings. So "red"
-means recoloring the marker. "A separate recording starting at the high-priority marker" is satisfied
-because the marker is added *after* the flush, so it associates with the **next** saved recording
-(the new split) at `offsetAtMarkerMs: 0` → its `segment` = the new recording, marker sits at its start.
-
----
-
-#### 3. CRITICAL: why the firmware MUST rotate the bin (do not skip this)
-
-The app's bin model is **whole-bin**: a recording's `.meta` stores the *set* of bins it touched
-(no byte-offset granularity), and the stateless reader re-reads each bin **from offset 0** every run.
-
-If the bin is **not** rotated, one physical bin holds `[prior audio][0xFFFFFFF8 marker][new audio]`.
-That shared bin is **retained** across runs (the in-progress new recording flushes as a `_draft`, and
-`pruneConsumedBins` keeps any bin a draft references). On the next run the retained bin is re-read
-from offset 0, and its **pre-marker audio is re-VAD'd into a DUPLICATE of the already-finalized prior
-recording**. `coveredBinPaths` only skips *fully*-covered bins, and the prior recording's interval
-ends mid-bin, so the shared bin is not skipped. This is the system's own documented failure mode
-("near-duplicate .wav with a slightly different VAD cut", `recordings_manager.dart:2650`).
-
-App-only would require adding **sub-bin consumed-offset tracking** to both the deletion path and the
-reader — a much larger, riskier change. **Rotating the bin makes the recording boundary coincide with
-a bin boundary**, which the whole-bin model handles cleanly:
-- prior bin → fully consumed by the finalized prior recording, referenced by no draft → deleted cleanly;
-- new bin → owned only by the draft → retained, re-read with no pre-marker audio to duplicate.
-
-The existing `0xFFFFFFFC` (session-end) / `0xFFFFFFFA` (mute-on) handlers dodge this only because they
-**drop** all post-marker audio (`_sessionEndPendingResume` / `_muted`). `0xFFFFFFF8` is the FIRST case
-that finalizes mid-stream **and keeps consuming into a new recording**, which is exactly why it needs
-the rotate.
-
-##### Known caveats (accepted)
-- `create_new_audio_file()` **blocks the button thread up to ~25 s** worst case (SD contention);
-  normally milliseconds. Acceptable for a button action. The async-flag alternative
-  (`rotate_file_requested`) avoids the block but races the marker into the *old* bin → marker lost, so
-  the **blocking call is the correct choice**.
-- The marker is not *guaranteed* the literal first frame — a few audio frames queued at rotation time
-  can land in the new bin ahead of it. Worst case that is a sub-second fragment that VAD almost always
-  drops; the app handler only finalizes when `_currentRefs` is non-empty, so it tolerates this.
-
----
-
-#### 4. Firmware changes (`omi/firmware/omi/src/`)
-
-##### 3a. `lib/core/button.h`
-Enum at lines 17-22 is `NONE=0, MUTE=1, MARKER=2, TOGGLE_LED=3`. Add:
-```c
-typedef enum {
-    BUTTON_ACTION_NONE = 0,
-    BUTTON_ACTION_MUTE = 1,
-    BUTTON_ACTION_MARKER = 2,
-    BUTTON_ACTION_TOGGLE_LED = 3,
-    BUTTON_ACTION_NEW_RECORDING = 4,   // ADD
-} button_action_t;
-```
-(`marker_flash_color_t` at button.h:11-15 already defines `MARKER_FLASH_WHITE/GREEN/RED`.)
-
-##### 3b. `lib/core/transport.h`
-Marker declarations are at lines 33-60, **return `bool`** (not `int`). Add after line 60:
-```c
-bool write_new_recording_marker_to_storage(void);
-```
-
-##### 3c. `lib/core/transport.c`
-- Helper `static bool write_marker_header_to_storage(uint32_t header, const char *label)` at **line
-  1572**; `label` is logging-only (no length constraint). All marker fns live inside
-  `#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE` (opened **1455**, closed **1641**). Add the new fn before
-  line 1641, alongside the others:
-  ```c
-  bool write_new_recording_marker_to_storage(void)
-  {
-      return write_marker_header_to_storage(0xFFFFFFF8, "new-record");
-  }
-  ```
-- **Bounds-check fix (mandatory — else the app can never assign action 4).** In
-  `button_config_write_handler` (lines 453-472), the loop at 463-469 rejects anything `> 3`:
-  ```c
-  for (int i = 0; i < 6; i++) {
-      if (cfg[i] > BUTTON_ACTION_TOGGLE_LED) {      // CHANGE → BUTTON_ACTION_NEW_RECORDING
-          return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
-      }
-  }
-  ```
-
-##### 3d. `lib/core/button.c` — `execute_button_action()` (lines 134-233)
-Mirror the **non-manual** `BUTTON_ACTION_MARKER` branch (lines 191-207), but red, and **only in
-auto mode**. The existing MARKER case branches on manual mode at line ~166; **find the exact variable
-the MARKER case uses to detect manual mode** (it is the same one) and guard on it. `acted` (line 150,
-`bool __maybe_unused acted`) gates haptic at line 227; set it so haptic fires. `is_muted` is
-`volatile bool` (button.c:31).
-
-```c
-case BUTTON_ACTION_NEW_RECORDING:
-    // Auto-mode only: manual mode is already press-to-start/stop.
-    if (<IN_MANUAL>) {                 // same check the MARKER case uses (~line 166)
-        LOG_INF("New Recording ignored (manual mode)");
-    } else if (is_muted) {
-        LOG_INF("New Recording ignored (muted)");
-    } else {
-        acted = true;
-        marker_flash_color = MARKER_FLASH_RED;   // red, vs MARKER_FLASH_WHITE for normal marker
-        marker_flash_count = 2;
-#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
-        sd_write_pause(false);
-        create_new_audio_file();                  // ROTATE: close prior bin, open fresh one (blocks)
-        write_new_recording_marker_to_storage();  // 0xFFFFFFF8 as first inline frame of new bin
-#endif
-#ifdef CONFIG_OMI_ENABLE_T5838_AAD
-        aad_force_wake();
-#endif
-    }
-    break;
-```
-- `create_new_audio_file()` is at `sd_card.c:2769` (thread-safe blocking wrapper; posts
-  `REQ_CREATE_NEW_FILE` to `sd_prio_msgq`, SD worker does the close/open via
-  `create_audio_file_with_timestamp`, new file gets a fresh `timerStart` from `get_utc_time()`,
-  header `0xFFFFFFFB` written first). Include `sd_card.h` — already included in button.c under the
-  offline-storage guard.
-- Default button config `settings.c:50` `{0,0,2,1,3,0}` needs no change; out-of-range stored values
-  fall through `default: break` harmlessly.
-
----
-
-#### 5. App changes (`app/lib/`)
-
-##### 4a. `backend/preferences.dart`
-Mirror the `manualMode` idiom at lines 39-40. Add:
-```dart
-bool get showHighPriorityMarker => getBool('showHighPriorityMarker', defaultValue: true);
-set showHighPriorityMarker(bool v) => saveBool('showHighPriorityMarker', v);
-```
-This is a **UI-visibility** pref only, read in the main isolate. **It is NOT read by the VAD
-processor** (the processor runs in a background isolate that has no `SharedPreferencesUtil`; do not try
-to read it there). The processor always emits the marker with `isHighPriority: true`; the UI decides
-whether to show it.
-
-##### 4b. `pages/settings/button_config_page.dart`
-`_actions` getter at lines 38-43. Add "New Recording" **only in auto mode** (index 4):
-```dart
-List<String> get _actions => [
-      'None',
-      _manualMode ? 'Mute - Disabled' : 'Mute',
-      _manualMode ? 'Start/Stop Recording' : 'Marker',
-      'Toggle LED',
-      if (!_manualMode) 'New Recording',   // ADD
-    ];
-```
-Dropdowns are auto-generated from `_actions.length` (`List.generate`, line 183) with a clamp at line
-156, so the new entry just works. Add a `SwitchListTile` (no existing one in this file — use the
-standard Material widget) wired to `SharedPreferencesUtil().showHighPriorityMarker`. Config is sent via
-`_updateConfig(index, action)` → `setButtonConfig(_config)` (lines 92-121).
-
-##### 4c. `services/vad_audio_processor.dart`  (the core change)
-
-**Record type** — `_pendingMarkers` at **line 154**:
-```dart
-final List<({int markerMs, int offsetAtMarkerMs, bool isHighPriority})> _pendingMarkers = [];
-```
-This record is touched at **4 existing sites** beyond the declaration — update all:
-- **Serialize, line 352:** `... {'ms': m.markerMs, 'o': m.offsetAtMarkerMs}` → add `'hp': m.isHighPriority`.
-- **Deserialize, line 398:** `_pendingMarkers.add((markerMs: m['ms'] as int, offsetAtMarkerMs: m['o'] as int))`
-  → add `isHighPriority: (m['hp'] as bool?) ?? false` (backward-compat default — old persisted state lacks it).
-- **0xFFFFFFFE add-site, line 794:** add `isHighPriority: false`.
-- EDL emit sites (below).
-
-**EDL emit — add `'isHighPriority': m.isHighPriority` to the map at both:**
-- `_saveRecording`, loop at lines 1791-1798 (`_pendingEdlData.add({...})`).
-- `_emitOrphanMarkers`, map at lines 1602-1607.
-
-**New `0xFFFFFFF8` handler.** It is `[session-end flush MINUS the resume latch]` + `[button-tap
-fresh-start]` + `[high-priority tag]`. Insert near the other frame handlers (after the `0xFFFFFFFC`
-block at lines 839-871). **Do NOT set `_sessionEndPendingResume`** — that would drop the new
-recording's audio. Symbols verified: `_useBatchRunner` (300), `_batchDeferredFrames` (55),
-`_flushVadBatch` (1492, `Future<int>`, named args `savedFiles`/`segmentSpeechFrames`),
-`flushRemaining` (1257, `Future<String?> {bool isDraft=false}`), `_currentRefs` (77),
-`_forcedByMarker` (133), `_markerProtectedUntilMs` (136), `_markerProtectionWindowMs` (188, =50000),
-`_pcmBufferLen` (44), `_cachedStateValue` (29), `_vadContext` (38), `_vadContextSamples` (176, =64),
-`_batchResetPending` (58). The fresh-start fields come verbatim from the `0xFFFFFFFE` handler lines
-797-804 (`_recordingStartTime`, `_speechFrameCount`, `_currentChunkDurationMs`,
-`_currentFrameUptimeMs`, `_isDerivedTimestamp`).
-
-```dart
-// New-recording marker (0xFFFFFFF8, 20 bytes). Auto-mode "New Recording" button.
-// Finalize the current recording at this boundary and start a fresh one.
-// Firmware rotates the bin here, so this marker normally arrives near the start of a fresh
-// bin (_currentRefs typically empty). CRITICAL: do NOT set _sessionEndPendingResume — audio
-// must flow straight into the new recording (no 0xFFFFFFFD resume marker follows).
-if (frameLength == 0xFFFFFFF8) {
-  if (offset + 20 <= fileLength) {
-    // 1) Flush any deferred VAD batch first (two-pass runner) — capture the returned count.
-    if (_useBatchRunner && _batchDeferredFrames.isNotEmpty) {
-      segmentSpeechFrames =
-          await _flushVadBatch(savedFiles: savedFiles, segmentSpeechFrames: segmentSpeechFrames);
-    }
-    // 2) Parse marker timestamp (same layout as 0xFFFFFFFE).
-    final markerUtcMs = byteData.getUint64(offset + 4, Endian.little);
-    final markerUptimeMs = byteData.getUint32(offset + 12, Endian.little);
-    final markerFrameTime = markerUtcMs > 946684800000
-        ? DateTime.fromMillisecondsSinceEpoch(markerUtcMs, isUtc: true)
-        : lastFrameWallTime;
-    final markerMs = markerFrameTime.millisecondsSinceEpoch;
-    // 3) Finalize the current recording (if any) at this boundary.
-    if (_currentRefs.isNotEmpty) {
-      _forcedByMarker = true;
-      final filePath = await flushRemaining(isDraft: false);
-      if (filePath != null) savedFiles.add(filePath);
-    } else {
-      _emitOrphanMarkers();
-    }
-    // 4) Start the fresh recording timeline at the marker (refs are now empty). Fields per 797-804.
-    lastFrameWallTime = markerFrameTime;
-    _recordingStartTime = markerFrameTime;
-    _speechFrameCount = 0;
-    _currentChunkDurationMs = 0;
-    _currentFrameUptimeMs = markerUptimeMs;
-    _isDerivedTimestamp = false;
-    // 5) Queue the high-priority marker at offset 0 of the new recording.
-    if (markerMs > 946684800000) {
-      _pendingMarkers.add((markerMs: markerMs, offsetAtMarkerMs: 0, isHighPriority: true));
-      _markerProtectedUntilMs = markerMs + _markerProtectionWindowMs;
-    }
-    // 6) Teardown for a clean VAD boundary (= session-end 863-867, minus the resume latch).
-    _pcmBufferLen = 0;
-    _cachedStateValue?.dispose();
-    _cachedStateValue = null;
-    _vadContext.fillRange(0, _vadContextSamples, 0.0);
-    _batchResetPending = true;
-  }
-  offset += 20;
-  continue;
-}
-```
-> Verify the exact fresh-start field names against lines 797-804 before committing (they were quoted
-> verbatim from research but confirm in-file). The `0xFFFFFFFE` handler has extra drift-correction
-> logic around lines 753-820; for `0xFFFFFFF8` the simplified timestamp parse above is sufficient
-> because the marker sits at a fresh bin start.
-
-##### 4d. `services/recordings_manager.dart`
-- **Frame-skip guard, line 1194** (inside `_stitchGhostAudio`, loop 1181-1206). Change the threshold —
-  this also fixes the **pre-existing** latent bug where mute markers `0xFFFFFFF9/FA` break the scan early:
-  ```dart
-  if (frameLen >= 0xFFFFFFF8) {                      // was >= 0xFFFFFFFB
-    offset += (frameLen == 0xFFFFFFFB ? 36 : 20);    // ternary already correct for F8..FE
-    continue;
-  }
-  ```
-- **`getMarkerConversations()` constructor, lines 1935-1943.** Add:
-  ```dart
-  isHighPriority: json['isHighPriority'] as bool? ?? false,
-  ```
-- **EDL creation payload, lines 1771-1778** (the `payload` map written to the `.edl`). Add
-  `'isHighPriority': ...`. The **upstream `edl` source dict** built in the VAD isolate (where the
-  marker is parsed) must also carry the flag, or it never reaches disk.
-- `pruneConsumedBins` (2680-2743) and `consumeSafeToDeletePaths`
-  (`vad_audio_processor.dart:1301-1309`) are the bin-deletion paths — **no change needed**; they are
-  the reason the firmware rotate is required (see §2). Context only.
-
-##### 4e. `pages/recordings/marker_conversation_player_page.dart` — lines 142-152 (`_saveEdl()`)
-**Bug to fix:** `_saveEdl()` rebuilds the EDL map from scratch and drops unknown keys, so cropping a
-red marker would silently revert it to amber. Add:
-```dart
-'isHighPriority': widget.markerConversation.isHighPriority,
-```
-
-##### 4f. `services/omi_api_client.dart` — `_readOpusFrameChunks` (lines 326-369)
-Currently skips `FB(+36)`, `FE(+20)`, `FD(+16)`, and a catch-all `>0xFFFF00(+4)` at line 348. Insert
-**before line 348** (each marker is 20 bytes; this also fixes existing mute markers wrongly hitting the
-+4 catch-all):
-```dart
-if (frameLength == 0xFFFFFFF8 || frameLength == 0xFFFFFFF9 || frameLength == 0xFFFFFFFA) {
-  offset += 20;
-  skippedMarkers++;
-  continue;
-}
-```
-Update the stale doc comment at line 314 (it lists only "0xFFFFFFFE/FD/FB").
-
-##### 4g. `models/recordings/recordings_models.dart` — `MarkerConversation` (lines 508-536)
-`const` constructor, no `copyWith`/`fromJson`/`toJson`. Add a defaulted field — safe, the only
-construction site is `recordings_manager.dart:1935`:
-```dart
-final bool isHighPriority;
-// ...in the const constructor:
-this.isHighPriority = false,
-```
-
-##### 4h. UI — render red at BOTH sites
-- `pages/recordings/batch_card.dart` — `MarkerSubEntry` (94-137), render at 110-126:
-  icon `FontAwesomeIcons.solidBookmark` color `Colors.amber`, label `'Marker at ${mc.markerTimeLabel}'`.
-  When `mc.isHighPriority`: red color + label `'New Recording at ${mc.markerTimeLabel}'`. Gate
-  visibility on `SharedPreferencesUtil().showHighPriorityMarker` (main isolate — fine here).
-- `pages/recordings/marker_day_card.dart:98` — `MarkerTile` is a **second render site**; apply the
-  same red branch for consistency. Confirm which view is live; style both.
-
----
-
-#### 6. Edge cases accounted for
-
-| Case | Handling |
-|---|---|
-| Manual mode | Action hidden in app (`if (!_manualMode)`) **and** ignored by firmware (the `<IN_MANUAL>` guard) — covers assign-in-auto-then-switch-to-manual. |
-| Muted | Firmware no-ops the tap, same as the marker. |
-| Pre-time-sync (no RTC) | Timestamp falls back to `lastFrameWallTime`; no 1970 timestamps. |
-| Old persisted data | `isHighPriority` defaults `false` everywhere (`as bool? ?? false`); no crash on old `.edl` / serialized state. |
-| Crop-save | `_saveEdl()` explicitly preserves the flag (§4e). |
-| App restart mid-run | Flag survives the `_pendingMarkers` serialize/deserialize round-trip (§4c). |
-| Latent mute-marker bugs | The frame-skip fixes (§4d, §4f) also repair `0xFFFFFFF9/FA` handling. |
-| Two timeline views | Both `batch_card` and `marker_day_card` get the red branch. |
-| Pref-in-isolate | Avoided: processor always emits the flag; UI (main isolate) gates display. |
-| Shared-bin duplication | Avoided by the firmware rotate making recording boundary = bin boundary (§2). |
-| Rotation leftover-audio race | Negligible (sub-second, VAD-dropped); handler only finalizes when `_currentRefs` non-empty. |
-| ~25 s worst-case button-thread block | Accepted; blocking is required for correct marker ordering. |
-
----
-
-#### 7. Files touched (checklist)
-
-**Firmware**
-- [ ] `lib/core/button.h` — `BUTTON_ACTION_NEW_RECORDING = 4`
-- [ ] `lib/core/transport.h` — declare `bool write_new_recording_marker_to_storage(void)`
-- [ ] `lib/core/transport.c` — impl inside offline-storage guard; **bounds check 466 → `> BUTTON_ACTION_NEW_RECORDING`**
-- [ ] `lib/core/button.c` — new case: auto-mode-only, red flash, rotate→marker→wake (verify `<IN_MANUAL>` var)
-
-**App**
-- [ ] `backend/preferences.dart` — `showHighPriorityMarker` (default true)
-- [ ] `pages/settings/button_config_page.dart` — `_actions` entry (auto-only) + `SwitchListTile`
-- [ ] `services/vad_audio_processor.dart` — `_pendingMarkers` field + 4 serde/add sites; `0xFFFFFFF8` handler; 2 EDL emits
-- [ ] `services/recordings_manager.dart` — frame-skip `>= 0xFFFFFFF8` (1194); `getMarkerConversations` flag (1935); EDL creation payload (1771) + isolate source dict
-- [ ] `pages/recordings/marker_conversation_player_page.dart:142` — preserve flag in `_saveEdl`
-- [ ] `services/omi_api_client.dart:348` — skip F8/F9/FA; fix doc comment 314
-- [ ] `models/recordings/recordings_models.dart` — `isHighPriority` on `MarkerConversation`
-- [ ] `pages/recordings/batch_card.dart` + `pages/recordings/marker_day_card.dart:98` — red render at both sites
-
-**After implementing:** format (`dart format --line-length 120 <files>`, `clang-format -i <firmware>`),
-add a `CHANGELOG.md` entry, and bump fw rev when shipping firmware.
-
----
-
-#### 8. Open items to confirm during implementation
-1. The exact firmware variable the `BUTTON_ACTION_MARKER` case uses to detect manual mode (button.c ~166) — reuse it for the `<IN_MANUAL>` guard.
-2. The VAD fresh-start field names at `vad_audio_processor.dart:797-804` (quoted from research; confirm in-file).
-3. The upstream isolate `edl` source dict that feeds `writeMarkerEdl` (so `isHighPriority` reaches disk, not just the on-read path).
-
-
-### 4. Clean session-end marker when entering Manual Mode [medium] [Pending]
-
-When the user toggles Manual Mode *on* in the app settings, the device transitions its VAD threshold to `32769` (manual standby). Currently, because the previous threshold wasn't `65535` (manual recording), the firmware doesn't instantly inject a `session-end` marker. Instead, it relies on the VAD's natural 10-second silence timeout (`CONFIG_OMI_VAD_HOLD_MS`) to put the recording to sleep. 
-
-#### Why this should change
-Switching modes is a hard context boundary. Any ongoing auto-mode conversation should be cleanly finalized with a `session-end` marker the moment the user switches to Manual Mode, rather than letting it bleed out over a 10-second silence timeout. 
-
-#### Implementation details
-- **Firmware (`aad.c`):** Update `aad_set_threshold()` so that injecting a `session-end` marker (`0xFFFFFFFC`) isn't strictly gated by `leaving_manual_record` (`prev == 65535 && threshold != 65535`). If the threshold is dropping to `32769` (entering manual mode) from an active auto-recording state (e.g., `prev == 250` and `vad_is_recording == true`), it should also trigger `write_session_end_marker_to_storage()` and instantly put the VAD to sleep.
-
-
-### 5. Split manual recording Start/Stop from the Marker action [medium] [Pending]
-
-Back when the device had limited button gestures, the `MARKER` action (`BUTTON_ACTION_MARKER`) was overloaded to act as a Start/Stop toggle when `in_manual == true`. Now that the device has a customizable multi-gesture button configuration (`_config` array supporting single/double/triple taps), this overload is actively harmful.
-
-#### Why this should change
-1. **Regain Marker utility:** Because `MARKER` is overloaded, a user cannot drop a timestamp marker *during* an active manual recording. By splitting them, `MARKER` can go back to just dropping the `0xFFFFFFFE` marker packet and flashing white, regardless of what mode the device is in.
-2. **Eliminate state confusion:** Toggles create "state confusion" (e.g., "Did I just start or stop it?"). With explicit Start/Stop actions, a user can map Double-Tap to Start and Triple-Tap to Stop. The gesture guarantees the intent, no LED checking required.
-3. **Cleaner codebase:** The `if (in_manual)` branching inside the `MARKER` switch case in `button.c` can be removed, and the ternary UI label hack in `button_config_page.dart` can be deleted.
-
-#### Implementation details
-1. **Firmware (`button.h`):** Expand `button_action_t` to include `BUTTON_ACTION_RECORD_TOGGLE = 4`, `BUTTON_ACTION_RECORD_START = 5`, `BUTTON_ACTION_RECORD_STOP = 6`.
-2. **Firmware (`button.c`):** Remove the `in_manual` threshold logic from `BUTTON_ACTION_MARKER`. Add new `switch` cases for the new actions that call `aad_set_threshold(65535)` for start and `aad_set_threshold(32769)` for stop (and toggle between them based on current `aad_get_threshold()`).
-3. **App (`button_config_page.dart`):** Expand the `_actions` list to include `'Toggle Recording'`, `'Start Recording'`, and `'Stop Recording'`. Remove the `_manualMode ? ... : ...` ternary logic for the Marker label.
-
-### 6. Device-side toggle for Manual/Auto Mode [medium] [Pending]
-
-Add a new button action that allows users to toggle between Auto Recording and Manual Recording directly from the device, without needing to use the app.
+Add a new button action that toggles between Auto Recording and Manual Recording
+directly from the device, without opening the app.
 
 #### Why this is needed
-Users may want to quickly switch between continuous auto-recording and on-demand manual capture while on the go. Currently, this requires opening the app. 
+Users may want to quickly switch between continuous auto-recording and on-demand
+manual capture while on the go. Currently this requires opening the app.
 
-A key architectural strength already exists for this: the app prevents offline mode editing and treats the device's `vad_threshold` as the ultimate source of truth upon connection. Therefore, if the device toggles the mode locally, no "timestamp conflict resolution" is needed. The app will simply read the new state upon its next connection and update the UI accordingly.
+A key architectural strength already exists: the app treats the device's
+`vad_threshold` as the source of truth on connect, so a device-side mode change
+needs no timestamp-conflict resolution — the app just reads the new state next
+connection and updates the UI.
 
-#### The Firmware Catch
-Currently, the firmware only has one persisted threshold variable (`vad_threshold`). When the app switches the device into Manual Mode, it overwrites this variable with `32769`, effectively erasing the user's preferred Auto Mode threshold (e.g., `250`). If a device-side button tries to toggle *back* to Auto Mode, it doesn't know what threshold to fall back to.
+#### The Firmware Catch (still open — unlike Priority Recording)
+The firmware persists a single `vad_threshold`. When the app switches to Manual
+Mode it overwrites this with `32769`, erasing the user's preferred Auto threshold
+(e.g. `250`). A device-side toggle *back* to Auto wouldn't know what to fall back
+to. Note the shipped **Priority Recording** feature sidesteps this only because
+its force-capture sets the *runtime* threshold to `65535` **without persisting** —
+so the persisted value keeps the auto sensitivity. A genuine mode toggle to manual
+standby *does* persist `32769`, so it still needs the auto value backed up.
 
 #### Implementation details
-1. **Firmware (`settings.c`, `settings.h`):** Add a new persisted setting called `auto_vad_threshold` (e.g., defaulting to `250`). This ensures the device always remembers the user's preferred auto-sensitivity even while in manual standby.
-2. **App BLE Communication:** Update the "Auto VAD Threshold" slider in the app so that it writes the value not just to the active threshold (if in auto mode), but also explicitly saves it to the firmware's new `auto_vad_threshold` backup slot.
-3. **Firmware (`button.h`, `button.c`):** 
-   - Add `BUTTON_ACTION_MODE_TOGGLE = 7` to the action enum.
-   - When pressed: if `vad_threshold >= 32769` (currently in manual mode), switch the active threshold to the saved `auto_vad_threshold`. If `vad_threshold < 32769` (currently in auto mode), switch the active threshold to `32769`.
-4. **App (`button_config_page.dart`):** Add `'Toggle Auto/Manual Mode'` to the `_actions` list so users can assign it to a tap gesture.
+1. **Firmware (`settings.c`, `settings.h`):** add a persisted `auto_vad_threshold`
+   (default `250`) so the device always remembers the auto sensitivity even in
+   manual standby.
+2. **App BLE:** the "Auto VAD Threshold" slider writes both the active threshold
+   (when in auto) and the new `auto_vad_threshold` backup slot.
+3. **Firmware (`button.h`, `button.c`):**
+   - Add `BUTTON_ACTION_MODE_TOGGLE = 6` to the action enum (4/5 are now
+     `RECORD_START`/`RECORD_STOP`); bump the button-config bounds check accordingly.
+   - On press, detect the current mode from the **persisted** threshold (the same
+     pattern Priority Recording introduced — never the runtime value, which can be
+     `65535` mid-recording): persisted `>= 32769` → manual → switch active to
+     `auto_vad_threshold`; persisted `< 32769` → auto → switch active to `32769`.
+4. **App (`button_config_page.dart`):** add `'Toggle Auto/Manual Mode'` to
+   `_actions`.
 
-### 7. Device-driven BLE wake (firmware + iOS) [large] [Pending]
+### 5. Device-driven BLE wake (firmware + iOS) [large] [Pending]
 
 Shift background-sync triggering from the *phone* (opportunistic iOS `BGTaskScheduler` / Android alarms) to the *device*: the Omi opens a connectable advertising **window** on its own RTC-driven schedule, and the phone ΓÇö holding a standing pending-connect ΓÇö is woken by the OS the moment that window opens. This is the model commercial BLE wearables (e.g. CGMs) use for reliable background sync on iOS.
 
@@ -803,7 +467,7 @@ Highest-leverage cheap validation: **Phase 1 window scheduler + Phase 2 standing
 
 ## DEFERRED
 
-### 8. iOS code signing & non-jailbroken distribution [medium] [Deferred]
+### 6. iOS code signing & non-jailbroken distribution [medium] [Deferred]
 
 The iOS build works end-to-end via CI (`.github/workflows/ios-build.yml`) and produces an **unsigned** dev IPA that installs on a **jailbroken** device (AppSync Unified / TrollStore ΓÇö current path for the iPhone 6s Plus). To run on a **stock** (non-jailbroken) iPhone, the IPA must be code-signed, which needs an Apple Developer account plus signing material wired into CI.
 

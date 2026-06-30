@@ -60,6 +60,19 @@ bool write_mute_on_marker_to_storage(void);
 bool write_mute_off_marker_to_storage(void);
 
 /**
+ * @brief Write a Priority Recording start marker (header 0xFFFFFFF8) to storage.
+ *
+ * Emitted on an auto-mode RECORD_START. Written as the first inline frame of a
+ * freshly rotated bin so the recording boundary coincides with a bin boundary.
+ * The app finalizes the current auto recording at this point and opens a new
+ * high-priority (force-captured) recording anchored here. Same 16-byte payload
+ * as the button-tap marker (utc_ms u64 + uptime_ms u32 + device_session_id u32).
+ *
+ * @return true if successful
+ */
+bool write_priority_recording_marker_to_storage(void);
+
+/**
  * @brief Broadcast audio packets over BLE
  *
  * @param buffer Buffer containing audio data

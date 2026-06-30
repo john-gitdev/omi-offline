@@ -18,28 +18,44 @@ class ButtonConfigPage extends StatefulWidget {
 
 class _ButtonConfigPageState extends State<ButtonConfigPage> {
   _ConfigStatus _status = _ConfigStatus.loading;
-  List<int> _config = [0, 0, 2, 1, 3, 0];
+
+  // Per-mode button configs, app-owned (the firmware holds only the active one).
+  // _activeIsManual is the device's actual mode (which config is live on the
+  // firmware); _selectedManual is which mode's mapping the segmented control is
+  // currently viewing/editing.
+  List<int> _configManual = SharedPreferencesUtil().buttonConfigManual;
+  List<int> _configAuto = SharedPreferencesUtil().buttonConfigAuto;
+  final bool _activeIsManual = SharedPreferencesUtil().manualMode;
+  late bool _selectedManual = _activeIsManual;
+
+  List<int> get _config => _selectedManual ? _configManual : _configAuto;
 
   // Per-slot vibration pattern (0=Off, 1=Single, 2=Double, 3=Triple), same slot
-  // order as _config. Only surfaced when the device reports the haptic-config
-  // characteristic — older firmware returns null and we hide the selector.
+  // order as the button config. Shared across both modes (the buzz confirms the
+  // gesture, not the action). Only surfaced when the device reports the
+  // haptic-config characteristic — older firmware returns null and we hide it.
   List<int> _hapticConfig = [0, 0, 0, 0, 0, 0];
   bool _hapticSupported = false;
 
   static const List<String> _vibrationPatterns = ['Off', 'Single', 'Double', 'Triple'];
 
-  // Manual mode is the default capture mode. In it the firmware ignores the Mute
-  // action and the Marker action instead toggles recording on/off — so the labels
-  // are tailored to the active mode. Read once: the page is pushed fresh each time.
-  final bool _manualMode = SharedPreferencesUtil().manualMode;
+  // Whether red "Priority Recording" markers (auto-mode Priority Recordings) show
+  // in the timeline. Local mirror of the pref so the switch updates instantly.
+  bool _showHighPriorityMarker = SharedPreferencesUtil().showHighPriorityMarker;
 
-  // Labels are index-addressed to match the firmware's config bytes
-  // (0=None, 1=Mute, 2=Marker, 3=Toggle LED); only the mode-sensitive labels change.
+  // Labels match the firmware's config bytes (0=None, 1=Mute, 2=Marker,
+  // 3=Toggle LED, 4=Record Start, 5=Record Stop). Mute is a no-op while recording
+  // is under manual control, so it reads as disabled in the Manual view. Record
+  // Start/Stop are explicit distinct-gesture controls: in manual they start/stop
+  // a manual recording; in auto they bracket a red "Priority Recording" (so the
+  // auto-tab labels say so, to distinguish it from the ambient auto capture).
   List<String> get _actions => [
         'None',
-        _manualMode ? 'Mute - Disabled' : 'Mute',
-        _manualMode ? 'Start/Stop Recording' : 'Marker',
+        _selectedManual ? 'Mute - Disabled' : 'Mute',
+        'Marker',
         'Toggle LED',
+        _selectedManual ? 'Start Recording' : 'Start Prio Rec',
+        _selectedManual ? 'Stop Recording' : 'Stop Prio Rec',
       ];
 
   bool get _editable => _status == _ConfigStatus.ready;
@@ -62,45 +78,69 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
         if (mounted) setState(() => _status = _ConfigStatus.noDevice);
         return;
       }
-      final config = await connection.getButtonConfig();
-      if (config != null && config.length == 6) {
-        // Best-effort: older firmware lacks this characteristic and returns null,
-        // in which case we simply don't offer vibration patterns.
-        final haptic = await connection.getHapticConfig();
-        if (mounted) {
-          setState(() {
-            _config = config;
-            if (haptic != null && haptic.length == 6) {
-              _hapticConfig = haptic;
-              _hapticSupported = true;
-            } else {
-              _hapticSupported = false;
-            }
-            _status = _ConfigStatus.ready;
-          });
-        }
-        return;
+      final prefs = SharedPreferencesUtil();
+      // Per-mode configs come from prefs (app-owned). The one-time migration that
+      // seeds buttonConfigAuto from the device's existing config runs in
+      // DeviceProvider.pushActiveButtonConfig on connect, which has already
+      // happened by the time this page is reachable.
+      //
+      // Best-effort: older firmware lacks the haptic characteristic and returns
+      // null, in which case we simply don't offer vibration patterns.
+      final haptic = await connection.getHapticConfig();
+      if (mounted) {
+        setState(() {
+          _configManual = prefs.buttonConfigManual;
+          _configAuto = prefs.buttonConfigAuto;
+          if (haptic != null && haptic.length == 6) {
+            _hapticConfig = haptic;
+            _hapticSupported = true;
+          } else {
+            _hapticSupported = false;
+          }
+          _status = _ConfigStatus.ready;
+        });
       }
-      // Live connection but the read came back empty (transient BLE hiccup) — surface the
-      // not-connected/retry state rather than letting the user edit a phantom config.
-      if (mounted) setState(() => _status = _ConfigStatus.noDevice);
     } catch (_) {
       if (mounted) setState(() => _status = _ConfigStatus.noDevice);
     }
   }
 
+  void _persistSelectedConfig() {
+    final prefs = SharedPreferencesUtil();
+    if (_selectedManual) {
+      prefs.buttonConfigManual = _configManual;
+    } else {
+      prefs.buttonConfigAuto = _configAuto;
+    }
+  }
+
   Future<void> _updateConfig(int index, int action) async {
-    final previous = _config[index];
+    final cfg = _config;
+    final previous = cfg[index];
     setState(() {
-      _config[index] = action;
+      cfg[index] = action;
     });
+    // Snapshot the intended bytes now, before any await. `cfg` is the live
+    // per-mode list, so a later same-mode edit (or its failure-revert) while the
+    // ensureConnection below is pending could otherwise mutate what THIS write
+    // sends — leaking an unconfirmed/reverted value onto the firmware.
+    final pending = List<int>.of(cfg);
+    _persistSelectedConfig();
+
+    // Only the device's currently-active mode is live on the firmware. Editing
+    // the other mode just saves to prefs; it goes live when that mode activates
+    // (DeviceProvider.pushActiveButtonConfig on the next mode switch / connect).
+    if (_selectedManual != _activeIsManual) return;
 
     final pairedDevice = context.read<DeviceProvider>().pairedDevice;
     if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
       try {
         final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
         if (connection != null) {
-          await connection.setButtonConfig(_config);
+          // Send the snapshot taken at call time — not `_config` (a tab-dependent
+          // getter, wrong mode if the tab switched) and not the live `cfg` (whose
+          // values can change under us while this await is pending).
+          await connection.setButtonConfig(pending);
           return;
         }
       } catch (_) {
@@ -112,9 +152,10 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
     // reflecting what's actually on the firmware, and tell the user why.
     if (!mounted) return;
     setState(() {
-      _config[index] = previous;
+      cfg[index] = previous;
       _status = _ConfigStatus.noDevice;
     });
+    _persistSelectedConfig();
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Device not connected — change not saved.')),
     );
@@ -266,6 +307,47 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
     );
   }
 
+  Widget _buildModeSelector() {
+    Widget seg(String label, bool manual) {
+      final selected = _selectedManual == manual;
+      return Expanded(
+        child: GestureDetector(
+          onTap: selected ? null : () => setState(() => _selectedManual = manual),
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            decoration: BoxDecoration(
+              color: selected ? Colors.deepPurpleAccent : Colors.transparent,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            alignment: Alignment.center,
+            child: Text(
+              label,
+              style: TextStyle(
+                color: selected ? Colors.white : Colors.white54,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                fontSize: 14,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1C1C1E),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          seg('Manual mode', true),
+          seg('Auto mode', false),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -289,7 +371,8 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
                   padding: EdgeInsets.symmetric(vertical: 16.0),
                   child: Text(
                     'Customize what actions are triggered by different button presses, '
-                    'and how the device vibrates to confirm them.',
+                    'and how the device vibrates to confirm them. Each recording mode '
+                    'has its own button mapping.',
                     style: TextStyle(color: Colors.white70, fontSize: 14),
                   ),
                 ),
@@ -297,6 +380,16 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
                   _buildStatusBanner(),
                   const SizedBox(height: 16),
                 ],
+                _buildModeSelector(),
+                Padding(
+                  padding: const EdgeInsets.only(top: 8.0, bottom: 12.0, left: 4.0),
+                  child: Text(
+                    _selectedManual == _activeIsManual
+                        ? 'This mode is active on your device now.'
+                        : 'Saved for when you switch to this mode.',
+                    style: const TextStyle(color: Colors.white38, fontSize: 12),
+                  ),
+                ),
                 Material(
                   color: const Color(0xFF1C1C1E),
                   borderRadius: BorderRadius.circular(12),
@@ -324,6 +417,30 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
                     style: TextStyle(color: Colors.white54, fontSize: 12),
                   ),
                 ),
+                // Priority Recording markers are an auto-mode-only concept (manual-mode
+                // RECORD_START writes no priority marker — every manual recording
+                // is user-triggered), so only offer the visibility toggle on the
+                // Auto tab.
+                if (!_selectedManual)
+                  Material(
+                    color: const Color(0xFF1C1C1E),
+                    borderRadius: BorderRadius.circular(12),
+                    clipBehavior: Clip.antiAlias,
+                    child: SwitchListTile(
+                      value: _showHighPriorityMarker,
+                      onChanged: (v) {
+                        setState(() => _showHighPriorityMarker = v);
+                        SharedPreferencesUtil().showHighPriorityMarker = v;
+                      },
+                      title: const Text('Show Priority Recording markers',
+                          style: TextStyle(color: Colors.white, fontSize: 16)),
+                      subtitle: const Text(
+                        'Display the red markers added when you start a priority recording in auto mode.',
+                        style: TextStyle(color: Colors.white54, fontSize: 12),
+                      ),
+                      activeThumbColor: Colors.red,
+                    ),
+                  ),
               ],
             ),
     );

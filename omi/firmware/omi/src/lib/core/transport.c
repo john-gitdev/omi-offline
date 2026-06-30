@@ -463,7 +463,7 @@ static ssize_t button_config_write_handler(struct bt_conn *conn,
     // Reject out-of-range actions so we never persist a config the FSM can't map.
     const uint8_t *cfg = (const uint8_t *) buf;
     for (int i = 0; i < 6; i++) {
-        if (cfg[i] > BUTTON_ACTION_TOGGLE_LED) {
+        if (cfg[i] > BUTTON_ACTION_RECORD_STOP) {
             return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
         }
     }
@@ -1637,6 +1637,11 @@ bool write_mute_on_marker_to_storage(void)
 bool write_mute_off_marker_to_storage(void)
 {
     return write_marker_header_to_storage(0xFFFFFFF9, "mute-off");
+}
+
+bool write_priority_recording_marker_to_storage(void)
+{
+    return write_marker_header_to_storage(0xFFFFFFF8, "priority-record");
 }
 #endif
 

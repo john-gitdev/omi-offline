@@ -1191,7 +1191,12 @@ class RecordingsManager {
                 offset += 4;
                 continue;
               }
-              if (frameLen >= 0xFFFFFFFB) {
+              // Skip all inline control frames: metadata header 0xFFFFFFFB (36 B)
+              // and every 20-B marker 0xFFFFFFF8..0xFFFFFFFE (priority-start,
+              // mute-off, mute-on, session-end, VAD-resume, button-tap). The old
+              // >= 0xFFFFFFFB bound let mute (F9/FA) and priority-start (F8)
+              // markers fall through and be decoded as garbage opus.
+              if (frameLen >= 0xFFFFFFF8) {
                 offset += (frameLen == 0xFFFFFFFB ? 36 : 20);
                 continue;
               }
@@ -1755,6 +1760,7 @@ class RecordingsManager {
     final markerMs = edl['markerMs'] as int;
     final offsetMs = edl['offsetMs'] as int;
     final durationMs = edl['durationMs'] as int;
+    final isHighPriority = (edl['isHighPriority'] as bool?) ?? false;
 
     int? millis;
     if (filename.isNotEmpty) {
@@ -1775,6 +1781,7 @@ class RecordingsManager {
       'cropStartMs': 0,
       'cropEndMs': durationMs,
       'userSaved': false,
+      'isHighPriority': isHighPriority,
     };
 
     final File edlFile = File('${liveDir.path}/marker_$markerMs.edl');
@@ -1801,6 +1808,11 @@ class RecordingsManager {
           // new segment.
           existing['segmentFilename'] = filename;
           existing['markerOffsetMs'] = offsetMs;
+          // Carry forward the high-priority flag (re-derived from the marker on
+          // every pass). A pre-feature user-saved EDL has no isHighPriority key,
+          // so without this a re-point after a file rename would silently drop a
+          // Priority Recording marker's red status.
+          existing['isHighPriority'] = isHighPriority;
           await _writeJsonAtomic(edlFile, existing);
           Logger.debug('RecordingsManager: Preserved user edits on marker_$markerMs.edl, re-pointed to $filename');
           return;
@@ -1940,6 +1952,7 @@ class RecordingsManager {
             cropEndMs: cropEndMs,
             edlFile: edlFile,
             userSaved: json['userSaved'] as bool? ?? false,
+            isHighPriority: json['isHighPriority'] as bool? ?? false,
           ));
         } catch (e) {
           Logger.error('RecordingsManager: Failed to parse EDL ${edlFile.path}: $e');
