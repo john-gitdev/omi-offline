@@ -204,6 +204,14 @@ class MockDeviceConnection extends DeviceConnection {
   Future<void> performSetVadThreshold(int threshold) async {}
 
   @override
+  Future<int?> performGetPriorityRecordCap() async {
+    return null;
+  }
+
+  @override
+  Future<void> performSetPriorityRecordCap(int minutes) async {}
+
+  @override
   Future<bool> performStopStorageSync() async {
     return false;
   }
