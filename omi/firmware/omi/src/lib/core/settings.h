@@ -59,6 +59,20 @@ int app_settings_save_vad_threshold(uint16_t new_threshold);
 uint16_t app_settings_get_vad_threshold(void);
 
 /**
+ * @brief Save the auto-mode Priority Recording safety-cap duration.
+ *
+ * @param minutes Max minutes a force-capture runs before auto-stop; 0 = no cap
+ *                (battery / SD capacity become the only limit).
+ * @return 0 on success, negative error code otherwise.
+ */
+int app_settings_save_priority_record_max_minutes(uint16_t minutes);
+
+/**
+ * @brief Get the Priority Recording safety-cap duration in minutes (0 = no cap).
+ */
+uint16_t app_settings_get_priority_record_max_minutes(void);
+
+/**
  * @brief Save the RTC timestamp setting.
  *
  * @param ts The new RTC timestamp.

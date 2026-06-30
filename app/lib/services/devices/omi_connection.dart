@@ -22,10 +22,11 @@ class OmiDeviceConnection extends DeviceConnection {
   static const String buttonServiceUuid = '23ba7924-0000-1000-7450-346eac492e92';
   static const String buttonTriggerCharacteristicUuid = '23ba7925-0000-1000-7450-346eac492e92';
 
-  static const String buttonConfigServiceUuid = '23ba7926-0000-1000-7450-346eac492e92';
-  static const String buttonConfigCharacteristicUuid = '23ba7927-0000-1000-7450-346eac492e92';
-  // Haptic (vibration pattern) config shares the button-config service.
-  static const String hapticConfigCharacteristicUuid = '23ba7928-0000-1000-7450-346eac492e92';
+  // Button + haptic config were consolidated into the Settings service: button
+  // config = 19b10015, haptic = 19b10016. The old 23ba7926 service was retired;
+  // both are read/written via settingsServiceUuid (byte layouts unchanged).
+  static const String buttonConfigCharacteristicUuid = '19b10015-e8f2-537e-4f6c-d104768a1214';
+  static const String hapticConfigCharacteristicUuid = '19b10016-e8f2-537e-4f6c-d104768a1214';
 
   static const String featuresServiceUuid = '19b10020-e8f2-537e-4f6c-d104768a1214';
   static const String featuresCharacteristicUuid = '19b10021-e8f2-537e-4f6c-d104768a1214';
@@ -50,6 +51,9 @@ class OmiDeviceConnection extends DeviceConnection {
   static const String settingsDimRatioCharacteristicUuid = '19b10011-e8f2-537e-4f6c-d104768a1214';
   static const String settingsMicGainCharacteristicUuid = '19b10012-e8f2-537e-4f6c-d104768a1214';
   static const String settingsVadThresholdCharacteristicUuid = '19b10013-e8f2-537e-4f6c-d104768a1214';
+  // Auto-mode Priority Recording safety cap, u16 LE minutes (0 = no cap).
+  static const String settingsPriorityRecordCapCharacteristicUuid = '19b10014-e8f2-537e-4f6c-d104768a1214';
+  // 19b10015 = button config, 19b10016 = haptic config (declared near the button section above).
 
   // 8-byte diagnostics: [uint32 reset_cause LE] [uint32 uptime_seconds LE]
   static const String diagnosticsServiceUuid = '19b10060-e8f2-537e-4f6c-d104768a1214';
@@ -489,7 +493,7 @@ class OmiDeviceConnection extends DeviceConnection {
   @override
   Future<List<int>?> performGetButtonConfig() async {
     try {
-      final data = await transport.readCharacteristic(buttonConfigServiceUuid, buttonConfigCharacteristicUuid);
+      final data = await transport.readCharacteristic(settingsServiceUuid, buttonConfigCharacteristicUuid);
       if (data.length == 6) return data;
     } catch (_) {}
     return null;
@@ -498,14 +502,14 @@ class OmiDeviceConnection extends DeviceConnection {
   @override
   Future<void> performSetButtonConfig(List<int> config) async {
     try {
-      await transport.writeCharacteristic(buttonConfigServiceUuid, buttonConfigCharacteristicUuid, config);
+      await transport.writeCharacteristic(settingsServiceUuid, buttonConfigCharacteristicUuid, config);
     } catch (_) {}
   }
 
   @override
   Future<List<int>?> performGetHapticConfig() async {
     try {
-      final data = await transport.readCharacteristic(buttonConfigServiceUuid, hapticConfigCharacteristicUuid);
+      final data = await transport.readCharacteristic(settingsServiceUuid, hapticConfigCharacteristicUuid);
       if (data.length == 6) return data;
     } catch (_) {}
     return null;
@@ -514,7 +518,7 @@ class OmiDeviceConnection extends DeviceConnection {
   @override
   Future<void> performSetHapticConfig(List<int> config) async {
     try {
-      await transport.writeCharacteristic(buttonConfigServiceUuid, hapticConfigCharacteristicUuid, config);
+      await transport.writeCharacteristic(settingsServiceUuid, hapticConfigCharacteristicUuid, config);
     } catch (_) {}
   }
 
@@ -531,6 +535,26 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<int?> performGetVadThreshold() async {
     try {
       final data = await transport.readCharacteristic(settingsServiceUuid, settingsVadThresholdCharacteristicUuid);
+      if (data.length >= 2) {
+        return data[0] + (data[1] << 8);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  @override
+  Future<void> performSetPriorityRecordCap(int minutes) async {
+    try {
+      // u16 minutes LE (0 = no cap)
+      final data = [minutes & 0xFF, (minutes >> 8) & 0xFF];
+      await transport.writeCharacteristic(settingsServiceUuid, settingsPriorityRecordCapCharacteristicUuid, data);
+    } catch (_) {}
+  }
+
+  @override
+  Future<int?> performGetPriorityRecordCap() async {
+    try {
+      final data = await transport.readCharacteristic(settingsServiceUuid, settingsPriorityRecordCapCharacteristicUuid);
       if (data.length >= 2) {
         return data[0] + (data[1] << 8);
       }

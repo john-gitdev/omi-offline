@@ -4,6 +4,10 @@ Patch releases are rolled up into their minor version. Each section reflects the
 
 ## App
 
+### 0.27
+
+- **New: Adjustable Priority Recording safety cap.** Device Settings → Customize now has a "Priority Recording Cap" control (automatic mode) that sets how long a Priority Recording force-captures before the device auto-stops a forgotten one — pick 30 min, 1 / 2 / 4 / 8 h, or "No cap" (battery and SD capacity become the only limit). This was previously a fixed 2-hour limit baked into the firmware. The cap is enforced on the device, so it still fires when your phone is away. Changing it applies to your *next* Priority Recording, not one already in progress. Requires updated firmware; on older firmware the control doesn't appear. **Heads up:** this firmware update also moved the button/haptic configuration onto the main settings service, so if the Omi won't reconnect after updating, re-pair it (Forget/Unpair on the phone, 5-tap-and-hold on the device).
+
 ### 0.26
 
 - **Fix: More reliable Bluetooth reconnection after a dropped connection (Android).** When the phone loses its link to the Omi, it now backs off progressively between reconnect attempts (1.5 → 3 → 6 → 12 → 24 → 30 s, instead of retrying every 1.5 s) and fully tears the old connection down before opening a new one. The previous rapid-retry churn was a known trigger for the Android Bluetooth stack wedging into a state where the phone couldn't reconnect until you toggled Bluetooth off and on; this reduces how often that happens.

@@ -151,8 +151,9 @@ static uint8_t tap_count = 0;
 #endif
 
 #if defined(CONFIG_OMI_ENABLE_T5838_AAD) && defined(CONFIG_OMI_ENABLE_OFFLINE_STORAGE)
-/* Compile-time for v1; a future enhancement exposes this as a user setting. */
-#define PRIORITY_RECORD_MAX_MS (2 * 60 * 60 * 1000) /* 2 hours */
+/* Safety-cap duration is user-configurable over BLE (Settings char 0x19B10014),
+ * persisted as priority_record_max_minutes; 0 disables the cap so battery / SD
+ * capacity become the only limit. Default 120 minutes (see settings.c). */
 
 static void priority_record_stop(void);
 
@@ -166,7 +167,14 @@ K_WORK_DELAYABLE_DEFINE(priority_cap_work, priority_cap_work_handler);
 
 static void priority_record_arm_cap(void)
 {
-    k_work_reschedule(&priority_cap_work, K_MSEC(PRIORITY_RECORD_MAX_MS));
+    uint16_t minutes = app_settings_get_priority_record_max_minutes();
+    if (minutes == 0) {
+        /* 0 = no safety cap: let battery / SD capacity be the only limit. */
+        k_work_cancel_delayable(&priority_cap_work);
+        return;
+    }
+    /* minutes <= 65535 -> <= 3.93e9 ms, within uint32 unsigned range. */
+    k_work_reschedule(&priority_cap_work, K_MSEC((uint32_t) minutes * 60U * 1000U));
 }
 
 static void priority_record_cancel_cap(void)

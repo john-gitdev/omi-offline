@@ -94,6 +94,10 @@ class SharedPreferencesUtil {
   int get autoVadThreshold => getInt('autoVadThreshold', defaultValue: 250);
   set autoVadThreshold(int v) => saveInt('autoVadThreshold', v);
 
+  // Auto-mode Priority Recording safety cap, in minutes (0 = no cap). Default 2 h.
+  int get priorityRecordMaxMinutes => getInt('priorityRecordMaxMinutes', defaultValue: 120);
+  set priorityRecordMaxMinutes(int v) => saveInt('priorityRecordMaxMinutes', v);
+
   // When true, Silero VAD classifies each audio frame as speech or silence.
   // When false, all audio is treated as speech (AAD mode — splits by firmware timestamps only).
   bool get vadEnabled => getBool('vadEnabled', defaultValue: true);
