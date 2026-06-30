@@ -46,8 +46,12 @@ struct conn_fail_record {
 static struct conn_fail_record conn_fail = {0};
 
 /* 6 bytes: 1 tap, 1 tap hold, 2 tap, 2 tap hold, 3 tap, 3 tap hold.
- * Actions: 0=None, 1=Mute, 2=Marker, 3=Toggle LED */
-static uint8_t button_config[6] = {0, 0, 2, 1, 3, 0};
+ * Actions: 0=None, 1=Mute, 2=Marker, 3=Toggle LED, 4=Record Start, 5=Record Stop.
+ * Default matches the app's manual-mode default (the device boots in manual
+ * standby): single-hold=Marker, double=Start, double-hold=Toggle LED, triple=Stop.
+ * The app pushes the per-mode config (manual/auto) on connect, so this only
+ * governs a factory device that has never been connected to the app. */
+static uint8_t button_config[6] = {0, 2, 4, 3, 5, 0};
 
 /* Per-tap-slot vibration pattern, same slot order as button_config.
  * Patterns: 0=Off, 1=Single, 2=Double, 3=Triple. Default off everywhere. */
