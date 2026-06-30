@@ -281,9 +281,17 @@ class MockDeviceConnection implements DeviceConnection {
   @override
   Future<int?> getVadThreshold() => throw UnimplementedError();
   @override
+  Future<void> setPriorityRecordCap(int minutes) => throw UnimplementedError();
+  @override
+  Future<int?> getPriorityRecordCap() => throw UnimplementedError();
+  @override
   Future<void> performSetVadThreshold(int threshold) => throw UnimplementedError();
   @override
   Future<int?> performGetVadThreshold() => throw UnimplementedError();
+  @override
+  Future<void> performSetPriorityRecordCap(int minutes) => throw UnimplementedError();
+  @override
+  Future<int?> performGetPriorityRecordCap() => throw UnimplementedError();
   @override
   Future<bool> performSyncDeviceTime() => throw UnimplementedError();
   @override
