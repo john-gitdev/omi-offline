@@ -938,6 +938,142 @@ void main() {
       expect(flushed, isNull, reason: 'nothing remaining after session-end flush');
     });
 
+    test('priority-recording marker (0xFFFFFFF8) finalizes prior, opens red recording, stops at 0xFFFFFFFC',
+        () async {
+      // Bin: header + 10 frames + 0xFFFFFFF8 priority-start + 10 frames + 0xFFFFFFFC stop.
+      // F8 finalizes the prior auto recording and opens a high-priority one; FC stops it.
+      final builder = BytesBuilder();
+      final hdr = ByteData(36);
+      hdr.setUint32(0, 0xFFFFFFFB, Endian.little);
+      hdr.setUint32(4, 28, Endian.little);
+      hdr.setUint64(8, kBase, Endian.little);
+      hdr.setUint64(16, 0, Endian.little);
+      hdr.setUint32(24, 0, Endian.little);
+      hdr.setUint32(28, 1, Endian.little);
+      builder.add(hdr.buffer.asUint8List());
+      final fhdr = ByteData(4)..setUint32(0, 4, Endian.little);
+      // 10 frames of prior auto recording.
+      for (int i = 0; i < 10; i++) {
+        builder.add(fhdr.buffer.asUint8List());
+        builder.add(List.filled(4, 0));
+      }
+      // Priority-start marker at kBase + 200 (same payload layout as button-tap).
+      final start = ByteData(20);
+      start.setUint32(0, 0xFFFFFFF8, Endian.little);
+      start.setUint64(4, kBase + 200, Endian.little);
+      start.setUint32(12, 0, Endian.little);
+      start.setUint32(16, 1, Endian.little);
+      builder.add(start.buffer.asUint8List());
+      // 10 frames captured inside the priority recording.
+      for (int i = 0; i < 10; i++) {
+        builder.add(fhdr.buffer.asUint8List());
+        builder.add(List.filled(4, 0));
+      }
+      // Session-end stop.
+      final end = ByteData(20)..setUint32(0, 0xFFFFFFFC, Endian.little);
+      builder.add(end.buffer.asUint8List());
+      final file = File('${tempDir.path}/priority.bin')..writeAsBytesSync(builder.toBytes());
+
+      final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+      final saved = await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      final flushed = await proc.flushRemaining();
+      final edls = proc.consumePendingEdlData();
+      await proc.destroy();
+
+      // Two finalized recordings: the prior auto recording (closed by F8) and the
+      // priority recording (closed by FC).
+      expect(saved.length, 2, reason: 'F8 closes the prior recording, FC closes the priority one');
+      expect(flushed, isNull, reason: 'nothing remaining after the FC stop');
+      // Exactly one EDL — the priority marker — flagged high-priority at offset 0.
+      expect(edls.length, 1);
+      expect(edls[0]['isHighPriority'], isTrue);
+      expect(edls[0]['markerMs'], kBase + 200);
+      expect(edls[0]['offsetMs'], 0);
+      expect((edls[0]['filename'] as String).isNotEmpty, isTrue,
+          reason: 'priority marker anchors to the new recording, not an orphan');
+    });
+
+    // Builds [header + 0xFFFFFFF8 priority-start + `frames` frames + optional FC].
+    File priorityBin(String name, {required int frames, bool stop = false}) {
+      final builder = BytesBuilder();
+      final hdr = ByteData(36);
+      hdr.setUint32(0, 0xFFFFFFFB, Endian.little);
+      hdr.setUint32(4, 28, Endian.little);
+      hdr.setUint64(8, kBase, Endian.little);
+      hdr.setUint64(16, 0, Endian.little);
+      hdr.setUint32(24, 0, Endian.little);
+      hdr.setUint32(28, 1, Endian.little);
+      builder.add(hdr.buffer.asUint8List());
+      final start = ByteData(20);
+      start.setUint32(0, 0xFFFFFFF8, Endian.little);
+      start.setUint64(4, kBase + 200, Endian.little);
+      start.setUint32(12, 0, Endian.little);
+      start.setUint32(16, 1, Endian.little);
+      builder.add(start.buffer.asUint8List());
+      final fhdr = ByteData(4)..setUint32(0, 4, Endian.little);
+      for (int i = 0; i < frames; i++) {
+        builder.add(fhdr.buffer.asUint8List());
+        builder.add(List.filled(4, 0));
+      }
+      if (stop) {
+        builder.add((ByteData(20)..setUint32(0, 0xFFFFFFFC, Endian.little)).buffer.asUint8List());
+      }
+      return File('${tempDir.path}/$name')..writeAsBytesSync(builder.toBytes());
+    }
+
+    test('serialize/restore preserves _inPriorityRecording and the high-priority marker', () async {
+      // Leave the processor mid-Priority-Recording (start + frames, no stop).
+      final file = priorityBin('priority_serde.bin', frames: 10);
+      final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+      await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      final state = await proc.serializeState();
+      await proc.destroy();
+
+      expect(state, isNotNull);
+      expect(state!['ipr'], isTrue, reason: '_inPriorityRecording must survive serialization');
+      final pm = (state['pm'] as List).cast<Map<String, dynamic>>();
+      expect(pm.any((m) => m['hp'] == true), isTrue, reason: 'queued high-priority marker must survive');
+
+      // Round-trip into a fresh processor and re-serialize — state must persist.
+      final proc2 = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+      await proc2.restoreState(state);
+      final state2 = await proc2.serializeState();
+      await proc2.destroy();
+      expect(state2, isNotNull);
+      expect(state2!['ipr'], isTrue);
+      expect((state2['pm'] as List).cast<Map<String, dynamic>>().any((m) => m['hp'] == true), isTrue);
+    });
+
+    test('priority-start with no audio emits a high-priority orphan marker', () async {
+      final file = priorityBin('priority_orphan.bin', frames: 0);
+      final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+      final saved = await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      await proc.flushRemaining(isDraft: true);
+      final edls = proc.consumePendingEdlData();
+      await proc.destroy();
+
+      expect(saved.length, 0, reason: 'no audio to finalize');
+      expect(edls.length, 1);
+      expect(edls[0]['isHighPriority'], isTrue);
+      expect(edls[0]['filename'], '', reason: 'no surrounding audio → orphan');
+      expect(edls[0]['markerMs'], kBase + 200);
+    });
+
+    test('priority Start immediately followed by Stop yields a high-priority orphan, no recording', () async {
+      final file = priorityBin('priority_empty.bin', frames: 0, stop: true);
+      final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+      final saved = await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      final flushed = await proc.flushRemaining();
+      final edls = proc.consumePendingEdlData();
+      await proc.destroy();
+
+      expect(saved.length, 0);
+      expect(flushed, isNull);
+      expect(edls.length, 1);
+      expect(edls[0]['isHighPriority'], isTrue);
+      expect(edls[0]['filename'], '');
+    });
+
     group('Marker Protection Window', () {
       test('VAD resume within 50s of marker tap is ignored for split', () async {
         final builder = BytesBuilder();
