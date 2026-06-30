@@ -440,30 +440,39 @@ void aad_set_threshold(uint16_t threshold)
 {
     uint16_t prev = vad_threshold;
 
-    /* Leaving the manual always-record state while a recording is active
-     * (button stop, BLE threshold push, or manual→auto mode switch): emit a
-     * session-end marker so the app finalizes the recording at this boundary,
-     * then end the recording immediately. Without the immediate state flip
-     * the normal VAD-hold tail (CONFIG_OMI_VAD_HOLD_MS) would leak ~10 s of
-     * post-stop audio into the bin and produce a spurious short recording.
-     * Marker first, then state flip, so the marker lands inside the active
-     * recording region while AAD frames are still flowing. */
-    bool leaving_manual_record = (prev == 65535 && threshold != 65535 && vad_is_recording);
+    /* Cleanly finalize the active recording the moment a deliberate threshold
+     * change ends it: emit a session-end marker so the app finalizes the
+     * recording at this boundary, then end the recording immediately. Without
+     * the immediate state flip the normal VAD-hold tail (CONFIG_OMI_VAD_HOLD_MS)
+     * would leak ~10 s of post-stop audio into the bin and produce a spurious
+     * short recording. Marker first, then state flip, so the marker lands inside
+     * the active recording region while AAD frames are still flowing.
+     *
+     * Three cases, all while vad_is_recording and not re-entering force-capture:
+     *   - prev == 65535  → leaving manual/priority always-record (button stop,
+     *                      BLE push, or manual→auto switch).
+     *   - threshold == 32769 → entering manual standby mid auto-recording (the
+     *                      app's "switch to Manual Mode" toggle); finalize the
+     *                      in-progress auto recording at the mode boundary rather
+     *                      than letting it bleed out over the VAD-hold tail.
+     * An auto→auto sensitivity tweak (e.g. 250→300) leaves both false, so it
+     * never interrupts an active recording. */
+    bool finalize_now = vad_is_recording && threshold != 65535 && (prev == 65535 || threshold == 32769);
 
-    if (leaving_manual_record) {
+    if (finalize_now) {
         write_session_end_marker_to_storage();
     }
 
     vad_threshold = threshold;
 
-    if (leaving_manual_record) {
+    if (finalize_now) {
         vad_is_recording = false;
         vad_sleeping = true;
         vad_voice_streak = 0;
         atomic_set(&sd_pause_pending, 1);
         atomic_set(&adv_slow_req, 1);
         k_sem_give(&aad_sem);
-        LOG_INF("AAD: manual stop — recording ended immediately");
+        LOG_INF("AAD: recording finalized immediately (prev=%u thr=%u)", prev, threshold);
     }
 
     LOG_INF("AAD: threshold updated to %u", vad_threshold);
