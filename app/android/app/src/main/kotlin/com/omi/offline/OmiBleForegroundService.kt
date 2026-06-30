@@ -52,10 +52,15 @@ class OmiBleForegroundService : Service() {
         private const val DEFAULT_NOTIF_TITLE = "Omi Offline"
         private const val DEFAULT_NOTIF_TEXT = "Connecting..."
         // Settle a stranded "Connecting…" notification this long after it's shown.
-        // Slightly longer than Dart's 150 s connect-settle watchdog so a genuinely
-        // slow connect isn't cut short; under deep Doze the exact alarm may defer to
-        // the OS's ~9 min throttle window, still far better than the prior ~hour.
+        // Deliberately slightly longer than Dart's 150 s connect-settle watchdog so a
+        // genuinely slow connect isn't cut short and native never preempts Dart's own
+        // handling — do NOT reduce this below 150 s. A disconnect pulls it in sooner
+        // without that risk (see DISCONNECT_SETTLE_GRACE_MS / handleDisconnection).
         private const val CONNECT_SETTLE_MS = 160_000L
+        // When a disconnect strands a Dart-driven "Connecting…", pull the settle alarm in
+        // to this grace from the drop (never later than the connect-start deadline), so a
+        // frozen-Dart recovery doesn't wait out the full window — or a Doze-throttled alarm.
+        private const val DISCONNECT_SETTLE_GRACE_MS = 60_000L
         private const val ACTION_NOTIFICATION_DISMISSED = "com.omi.offline.NOTIFICATION_DISMISSED"
         @Volatile
         var instance: OmiBleForegroundService? = null
@@ -194,6 +199,9 @@ class OmiBleForegroundService : Service() {
     // text updates are suppressed so the two don't fight.
     @Volatile
     private var dartDrivesNotification = false
+    // Absolute due-time of the connect-settle alarm (0 = none). Tracked so a disconnect
+    // can pull the alarm in without ever pushing it later (see handleDisconnection).
+    private var connectSettleDeadlineMs: Long = 0L
 
     private val notificationDismissedReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -589,7 +597,25 @@ class OmiBleForegroundService : Service() {
         // it (see connectToDevice's source != "manageDevice" branch). This path
         // only runs for genuine drops we're about to retry — intentional
         // disconnects early-return above (managed entry removed by unmanageDevice).
-        if (!dartDrivesNotification) updateNativeNotification(DEFAULT_NOTIF_TEXT)
+        if (!dartDrivesNotification) {
+            updateNativeNotification(DEFAULT_NOTIF_TEXT)
+        } else if (currentNotificationText.startsWith("Connecting") && connectSettleDeadlineMs > 0L) {
+            // Dart owns the notification and last pushed "Connecting…", but the link just
+            // dropped. If Dart is frozen by Doze it can't run its ~150 s connect-settle
+            // watchdog, so the line would otherwise stay stuck until the connect-start
+            // settle alarm (which can itself be Doze-throttled out to ~9 min). The
+            // disconnect is direct, native evidence the attempt dropped, so pull the settle
+            // alarm in toward now — but never later than the original deadline, so a
+            // flapping link still settles on schedule rather than sliding forever. The
+            // receiver re-checks the live text and no-ops unless it's still "Connecting…",
+            // so a reconnect that resolves (Dart thaws → "Syncing…") within the grace is
+            // never mislabelled.
+            val pulledIn = minOf(connectSettleDeadlineMs, System.currentTimeMillis() + DISCONNECT_SETTLE_GRACE_MS)
+            if (pulledIn < connectSettleDeadlineMs) {
+                connectSettleDeadlineMs = pulledIn
+                SyncAlarmReceiver.scheduleSettle(this, pulledIn)
+            }
+        }
 
         bleManager.mainHandler.post {
             bleManager.flutterApi?.onPeripheralDisconnected(addr, error) {}
@@ -973,9 +999,11 @@ class OmiBleForegroundService : Service() {
         // (Syncing/idle/…) leaves the alarm to fire once and no-op (the receiver
         // re-checks the live text). See SyncAlarmReceiver.scheduleSettle.
         if (text.startsWith("Connecting")) {
-            SyncAlarmReceiver.scheduleSettle(this, System.currentTimeMillis() + CONNECT_SETTLE_MS)
+            connectSettleDeadlineMs = System.currentTimeMillis() + CONNECT_SETTLE_MS
+            SyncAlarmReceiver.scheduleSettle(this, connectSettleDeadlineMs)
         } else {
             // Connect resolved / moved on (Syncing, idle, …) — drop the pending settle.
+            connectSettleDeadlineMs = 0L
             SyncAlarmReceiver.cancelSettle(this)
         }
     }
