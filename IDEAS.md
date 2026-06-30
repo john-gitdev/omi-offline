@@ -5,12 +5,9 @@
 ### ACTIVE
 - [1. BLE stability: partial syncs, stuck notifications [medium] [Active]](#1-ble-stability-partial-syncs-stuck-notifications-medium-active)
 ### PENDING
-- [2. Priority Recording: expose the safety-cap duration as a setting [small] [Pending]](#2-priority-recording-expose-the-safety-cap-duration-as-a-setting-small-pending)
-- [3. Priority Recording: live "recording active" indicator in the app [small] [Pending]](#3-priority-recording-live-recording-active-indicator-in-the-app-small-pending)
-- [4. Device-side toggle for Manual/Auto Mode [medium] [Pending]](#4-device-side-toggle-for-manualauto-mode-medium-pending)
-- [5. Device-driven BLE wake (firmware + iOS) [large] [Pending]](#5-device-driven-ble-wake-firmware-ios-large-pending)
+- [2. Device-driven BLE wake (firmware + iOS) [large] [Pending]](#2-device-driven-ble-wake-firmware-ios-large-pending)
 ### DEFERRED
-- [6. iOS code signing & non-jailbroken distribution [medium] [Deferred]](#6-ios-code-signing-non-jailbroken-distribution-medium-deferred)
+- [3. iOS code signing & non-jailbroken distribution [medium] [Deferred]](#3-ios-code-signing-non-jailbroken-distribution-medium-deferred)
 
 ---
 
@@ -81,102 +78,7 @@ is **160 s**, and under deep Doze the alarm can defer to the OS's ~9-min window.
 
 ## PENDING
 
-### 2. Priority Recording: expose the safety-cap duration as a setting [small] [Pending]
-
-The auto-mode Priority Recording safety cap (auto-stop of a runaway force-capture)
-shipped as a **compile-time** constant `PRIORITY_RECORD_MAX_MS` in
-`omi/firmware/omi/src/lib/core/button.c` (default 2 h). Make the duration
-user-configurable so users can pick a shorter cap (e.g. 30 min) or a longer one.
-
-#### Implementation sketch
-1. **Firmware (`settings.c` / `settings.h`):** persist `priority_record_max_minutes`
-   (default 120; `0` = no cap, relying on battery/SD as the only limit). Have
-   `priority_record_arm_cap()` read it instead of the `#define`.
-2. **BLE:** add a small read/write characteristic under the Settings service
-   (`0010`, e.g. `0015`), `u16` minutes, range-validated — mirror the VAD-threshold
-   plumbing (`transport.c` `settings_vad_threshold_*_handler`).
-3. **App:** surface it in Offline Audio Settings (auto mode only) near the VAD
-   controls; default 2 h. Read on connect; re-push on change.
-4. **Capability bit** (optional): gate the UI on a Features bit so old firmware
-   hides the control.
-
-Low risk: the cap mechanism already exists end-to-end; this only makes the
-duration data-driven.
-
-### 3. Priority Recording: live "recording active" indicator in the app [small] [Pending]
-
-When a Priority Recording is active on the device, the app shows nothing live —
-the recording only surfaces (in red) after the next sync+process, consistent with
-the offline-first model. Add an optional live indicator for when the phone *is*
-connected.
-
-#### Why
-A Priority Recording is a deliberate, attention-worthy action ("I'm capturing
-this for sure"). When connected, a small live badge ("Priority Recording in
-progress…") reassures the user it's running and offers a one-tap stop.
-
-#### The catch (why it was deferred)
-The device exposes mode via the *persisted* VAD threshold read (`getVadThreshold()`
-→ `app_settings_get_vad_threshold()`), which deliberately stays at the auto value
-(e.g. `250`) during a Priority Recording — so the app **cannot** tell
-"force-capturing now" apart from "idle in auto mode" from that read alone.
-Surfacing live state needs a new signal:
-- **Option A:** a new 1-byte read/notify characteristic exposing the *runtime*
-  recording state (idle / auto-recording / priority-recording / manual-recording),
-  driven off the firmware's runtime `vad_threshold` + `vad_is_recording`.
-- **Option B:** fold a "recording state" byte into the diagnostics characteristic
-  (`0061`/`0062`) and poll it.
-
-#### Implementation sketch
-1. **Firmware:** expose the runtime recording state (notify-on-change is ideal so
-   the app updates without polling).
-2. **App:** subscribe while connected; show a dismissible badge with a Stop
-   affordance (writes the auto threshold to stop, mirroring the device-side
-   `RECORD_STOP`). Foreground-only; no background cost.
-
-Independent of idea 2; both are pure-additive follow-ups to the shipped Priority
-Recording.
-
-### 4. Device-side toggle for Manual/Auto Mode [medium] [Pending]
-
-Add a new button action that toggles between Auto Recording and Manual Recording
-directly from the device, without opening the app.
-
-#### Why this is needed
-Users may want to quickly switch between continuous auto-recording and on-demand
-manual capture while on the go. Currently this requires opening the app.
-
-A key architectural strength already exists: the app treats the device's
-`vad_threshold` as the source of truth on connect, so a device-side mode change
-needs no timestamp-conflict resolution — the app just reads the new state next
-connection and updates the UI.
-
-#### The Firmware Catch (still open — unlike Priority Recording)
-The firmware persists a single `vad_threshold`. When the app switches to Manual
-Mode it overwrites this with `32769`, erasing the user's preferred Auto threshold
-(e.g. `250`). A device-side toggle *back* to Auto wouldn't know what to fall back
-to. Note the shipped **Priority Recording** feature sidesteps this only because
-its force-capture sets the *runtime* threshold to `65535` **without persisting** —
-so the persisted value keeps the auto sensitivity. A genuine mode toggle to manual
-standby *does* persist `32769`, so it still needs the auto value backed up.
-
-#### Implementation details
-1. **Firmware (`settings.c`, `settings.h`):** add a persisted `auto_vad_threshold`
-   (default `250`) so the device always remembers the auto sensitivity even in
-   manual standby.
-2. **App BLE:** the "Auto VAD Threshold" slider writes both the active threshold
-   (when in auto) and the new `auto_vad_threshold` backup slot.
-3. **Firmware (`button.h`, `button.c`):**
-   - Add `BUTTON_ACTION_MODE_TOGGLE = 6` to the action enum (4/5 are now
-     `RECORD_START`/`RECORD_STOP`); bump the button-config bounds check accordingly.
-   - On press, detect the current mode from the **persisted** threshold (the same
-     pattern Priority Recording introduced — never the runtime value, which can be
-     `65535` mid-recording): persisted `>= 32769` → manual → switch active to
-     `auto_vad_threshold`; persisted `< 32769` → auto → switch active to `32769`.
-4. **App (`button_config_page.dart`):** add `'Toggle Auto/Manual Mode'` to
-   `_actions`.
-
-### 5. Device-driven BLE wake (firmware + iOS) [large] [Pending]
+### 2. Device-driven BLE wake (firmware + iOS) [large] [Pending]
 
 Shift background-sync triggering from the *phone* (opportunistic iOS `BGTaskScheduler` / Android alarms) to the *device*: the Omi opens a connectable advertising **window** on its own RTC-driven schedule, and the phone ΓÇö holding a standing pending-connect ΓÇö is woken by the OS the moment that window opens. This is the model commercial BLE wearables (e.g. CGMs) use for reliable background sync on iOS.
 
@@ -229,7 +131,7 @@ Phone side: a **standing pending-connect is always armed** (iOS `connect()` + re
 2. **Sync-window scheduler** (new `sync_window.c` or folded into `transport.c`, a `k_work_delayable`, driven by the **monotonic clock** so it's immune to time-sync state): DARK for `cooldown_ms` ΓåÆ open SYNC WINDOW (`transport_set_adv_fast()`). The window is a **connectability *ceiling*, not a broadcast duration** ΓÇö fast-advertise up to `window_ms` (**45ΓÇô60 s**; iOS background scan is duty-cycled and slow to notice adverts), but **stop advertising the moment a phone connects** (you only needed to be findable long enough to latch). Once connected, the existing `idle_disconnect_work` owns teardown, so a sync runs as long as data flows ΓÇö far past `window_ms`. On `_transport_disconnected`, **schedule the next window as `now + cooldown` on the monotonic clock**: because it resets off the *last disconnect*, a manual button-sync automatically pushes the next scheduled window out by a full interval ΓÇö the "manual sync moves the timer" behavior, free, no special handling. Window expiry with no connect ΓåÆ DARK, restart cooldown.
 3. **Hand advertising ownership from AAD to the scheduler** ΓÇö keep AAD's VAD/SD-pause logic; remove/gate its `adv_*_req` writes (`aad.c:310,330,464`, applied in the AAD loop `aad.c:247-250`). Most invasive *refactor*; regression-test VAD recording, SD pause/resume, marker durability.
 4. **Gate windows on "has unsynced data"** ΓÇö use "SD has stored files" as the proxy (app deletes via `CMD_DELETE_FILE`); SD empty ΓåÆ stay DARK until new audio is recorded.
-5. **Config characteristic + user-facing "Dark Mode" toggle (default OFF)** ΓÇö new char under Settings service (`0010`, e.g. `0014`): `interval_minutes(u16) + window_seconds(u8) + enabled(u8)` (+ optional `next_override_seconds(u16)` for app-side policy nudges), persisted via `settings.c`, range-validated, with a **compiled-in default** (`config.h`) as the floor for a never-configured device. Surfaces in the app as a single **Dark Mode** switch (writes `enabled=1`). **Cadence reuses the existing "Auto Sync Interval" dropdown** (`app_settings_page.dart`: 15/30/60 min / Manual Only) ΓÇö no new cadence setting; the user's existing `backgroundSyncIntervalMinutes` drives the *device's* cooldown. **"Manual Only" (`-1`) maps to button-only wake** ΓÇö firmware opens *no* scheduled windows, only the button window. The app **re-pushes config on every connect** (belt-and-suspenders: the device never holds stale config; the dropdown is the source of truth). Firmware default is `enabled=0` = today's always-connectable behavior (old apps and Android untouched). `enabled=1` activates DARK/window cycling. See "Cross-platform: why this is opt-in" below.
+5. **Config characteristic + user-facing "Dark Mode" toggle (default OFF)** ΓÇö new char under Settings service (`0010`, e.g. `0017` — `0014`/`0015`/`0016` are now taken by the priority-record cap + the consolidated button/haptic config): `interval_minutes(u16) + window_seconds(u8) + enabled(u8)` (+ optional `next_override_seconds(u16)` for app-side policy nudges), persisted via `settings.c`, range-validated, with a **compiled-in default** (`config.h`) as the floor for a never-configured device. Surfaces in the app as a single **Dark Mode** switch (writes `enabled=1`). **Cadence reuses the existing "Auto Sync Interval" dropdown** (`app_settings_page.dart`: 15/30/60 min / Manual Only) ΓÇö no new cadence setting; the user's existing `backgroundSyncIntervalMinutes` drives the *device's* cooldown. **"Manual Only" (`-1`) maps to button-only wake** ΓÇö firmware opens *no* scheduled windows, only the button window. The app **re-pushes config on every connect** (belt-and-suspenders: the device never holds stale config; the dropdown is the source of truth). Firmware default is `enabled=0` = today's always-connectable behavior (old apps and Android untouched). `enabled=1` activates DARK/window cycling. See "Cross-platform: why this is opt-in" below.
 6. **Capability bit** ΓÇö add `deviceDrivenSync` to the Features bitfield (`0021`, `OmiFeatures`) for mixed-version safety (new app + old fw ΓåÆ old timer path; old app + new fw ΓåÆ covered by #7).
 7. **On-demand connectability + recovery floors (critical UX safeguard, see "Button-to-wake" below)** ΓÇö button/motion triggers open a window immediately. Plus two recovery behaviors so the device can't strand itself:
    - **Boot:** on reboot, **advertise connectably (like `enabled=0`) until the phone connects and writes config at least once, then resume the persisted dark schedule** ΓÇö re-anchoring `last_disconnect` to that fresh contact so there's no post-reboot blackout (the phone's standing pending-connect latches the moment the device advertises). **Cap the stay-open at ~15 min:** if the phone never shows (rebooted away from the phone), fall back to the persisted last-known config and resume dark scheduling so continuous advertising doesn't drain the 150 mAh cell.
@@ -309,7 +211,7 @@ Highest-leverage cheap validation: **Phase 1 window scheduler + Phase 2 standing
 
 ## DEFERRED
 
-### 6. iOS code signing & non-jailbroken distribution [medium] [Deferred]
+### 3. iOS code signing & non-jailbroken distribution [medium] [Deferred]
 
 The iOS build works end-to-end via CI (`.github/workflows/ios-build.yml`) and produces an **unsigned** dev IPA that installs on a **jailbroken** device (AppSync Unified / TrollStore ΓÇö current path for the iPhone 6s Plus). To run on a **stock** (non-jailbroken) iPhone, the IPA must be code-signed, which needs an Apple Developer account plus signing material wired into CI.
 
