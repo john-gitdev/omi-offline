@@ -10,11 +10,13 @@ LOG_MODULE_REGISTER(app_settings, CONFIG_LOG_DEFAULT_LEVEL);
 #define DEFAULT_DIM_LIGHT_RATIO 50
 #define DEFAULT_MIC_GAIN 6
 #define DEFAULT_VAD_THRESHOLD 32769
+#define DEFAULT_PRIORITY_RECORD_MAX_MINUTES 120 // 2 h; 0 = no cap
 
 // In-memory cache for the settings
 static uint8_t dim_light_ratio = DEFAULT_DIM_LIGHT_RATIO;
 static uint8_t mic_gain = DEFAULT_MIC_GAIN;
 static uint16_t vad_threshold = DEFAULT_VAD_THRESHOLD;
+static uint16_t priority_record_max_minutes = DEFAULT_PRIORITY_RECORD_MAX_MINUTES;
 static struct rtc_time rtc_timestamp = {0};
 static uint64_t rtc_epoch = 0;
 
@@ -93,6 +95,18 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         rc = read_cb(cb_arg, &vad_threshold, sizeof(vad_threshold));
         if (rc >= 0) {
             LOG_INF("Loaded vad_threshold: %u", vad_threshold);
+            return 0;
+        }
+        return rc;
+    }
+
+    if (settings_name_steq(name, "prio_rec_max", &next) && !next) {
+        if (len != sizeof(priority_record_max_minutes)) {
+            return -EINVAL;
+        }
+        rc = read_cb(cb_arg, &priority_record_max_minutes, sizeof(priority_record_max_minutes));
+        if (rc >= 0) {
+            LOG_INF("Loaded prio_rec_max: %u", priority_record_max_minutes);
             return 0;
         }
         return rc;
@@ -375,6 +389,23 @@ int app_settings_save_vad_threshold(uint16_t new_threshold)
 uint16_t app_settings_get_vad_threshold(void)
 {
     return vad_threshold;
+}
+
+int app_settings_save_priority_record_max_minutes(uint16_t minutes)
+{
+    priority_record_max_minutes = minutes;
+    int err = settings_save_one("omi/prio_rec_max", &priority_record_max_minutes, sizeof(priority_record_max_minutes));
+    if (err) {
+        LOG_ERR("Failed to save prio_rec_max (err %d)", err);
+    } else {
+        LOG_INF("Saved prio_rec_max: %u", priority_record_max_minutes);
+    }
+    return err;
+}
+
+uint16_t app_settings_get_priority_record_max_minutes(void)
+{
+    return priority_record_max_minutes;
 }
 
 int app_settings_save_last_reset(uint32_t cause, uint64_t uptime_ms)
