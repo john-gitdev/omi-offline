@@ -793,9 +793,22 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         : await ServiceManager.instance().device.ensureConnection(dev.id);
     if (connection == null) throw Exception('No connection');
 
+    // A brief non-sync storage op (e.g. refreshStorageStats when the device
+    // settings page opens) can hold the lock for a second or two. Returning null
+    // here reads as "no new segments" to the pipeline, which then proceeds to
+    // processing as if the sync ran — so a real sync gets silently skipped. Wait a
+    // bounded time for a transient holder to clear before giving up; a genuinely
+    // stuck holder still skips gracefully (and acquireStorageLock below carries its
+    // own 10s timeout as a backstop).
     if (connection.isStorageBusy) {
-      Logger.debug('Storage busy, skipping: syncAll');
-      return null;
+      final deadline = DateTime.now().add(const Duration(seconds: 3));
+      while (connection.isStorageBusy && DateTime.now().isBefore(deadline)) {
+        await Future.delayed(const Duration(milliseconds: 250));
+      }
+      if (connection.isStorageBusy) {
+        Logger.debug('Storage busy, skipping: syncAll (lock held >3s)');
+        return null;
+      }
     }
 
     _resetSyncState();
