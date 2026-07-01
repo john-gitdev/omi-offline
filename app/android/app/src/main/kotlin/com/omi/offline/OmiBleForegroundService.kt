@@ -201,6 +201,9 @@ class OmiBleForegroundService : Service() {
     private var dartDrivesNotification = false
     // Absolute due-time of the connect-settle alarm (0 = none). Tracked so a disconnect
     // can pull the alarm in without ever pushing it later (see handleDisconnection).
+    // @Volatile: written by setSyncStatus (Dart platform-channel thread), read+written by
+    // handleDisconnection (GATT binder thread) — same cross-thread pattern as dartDrivesNotification.
+    @Volatile
     private var connectSettleDeadlineMs: Long = 0L
 
     private val notificationDismissedReceiver = object : BroadcastReceiver() {
