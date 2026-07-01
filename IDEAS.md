@@ -22,8 +22,8 @@ and [OmiBleForegroundService.kt](app/android/app/src/main/kotlin/com/omi/offline
 The GATT-churn fixes — exponential reconnect backoff and `disconnect()` before
 `close()` across all cleanup paths — shipped in app 0.26.9, and most follow-ups
 (resume-from-offset, the keepalive margin, and stuck-"Connecting…" recovery) have since
-shipped too. **The one remaining open item is connection-param tuning** (below); the rest
-are recorded under "Shipped / dispositioned" for context.
+shipped too. **The one remaining open item is connection-param tuning** (below); the
+already-handled items are noted in the callout below for context.
 
 > **Already handled, so not listed below.** The firmware LE **supervision timeout is
 > already 6 s** (`transport.c` `update_conn_params`, `.timeout = 600`) — the original
