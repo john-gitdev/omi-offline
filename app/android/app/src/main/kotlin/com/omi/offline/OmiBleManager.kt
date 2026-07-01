@@ -101,7 +101,11 @@ class OmiBleManager private constructor(private val application: Application) {
     private val rssiKeepAliveInterval = 3000L
 
     private var storageKeepAliveRunnable: Runnable? = null
-    private val storageKeepAliveInterval = 15_000L
+    // 5 s, not 15 s: the firmware idle-disconnect is 15 s, so a 15 s cadence left
+    // zero margin — one silently-dropped write (Android flow-control backoff) tripped
+    // the idle-drop. 5 s fits 2+ attempts inside the 15 s window, so a single missed
+    // keepalive can't disconnect us. Matches the Dart foreground keepalive cadence.
+    private val storageKeepAliveInterval = 5_000L
     private val STORAGE_SERVICE_UUID = UUID.fromString("30295780-4301-eabd-2904-2849adfeae43")
     private val STORAGE_CHAR_UUID    = UUID.fromString("30295781-4301-eabd-2904-2849adfeae43")
 
@@ -448,10 +452,10 @@ class OmiBleManager private constructor(private val application: Application) {
         rssiKeepAliveRunnable = null
     }
 
-    // Sends 0x32 (KEEP_ALIVE) to the storage characteristic every 15 s using
+    // Sends 0x32 (KEEP_ALIVE) to the storage characteristic every 5 s using
     // WRITE_NO_RESPONSE so it bypasses the GATT command queue and never stalls
-    // an in-flight file read. Resets the firmware's 30 s idle-disconnect timer
-    // regardless of whether a data stream is active.
+    // an in-flight file read. Resets the firmware's 15 s idle-disconnect timer
+    // (IDLE_DISCONNECT_TIMEOUT_MS) regardless of whether a data stream is active.
     fun startStorageKeepAlive(address: String) {
         stopStorageKeepAlive()
         val runnable = object : Runnable {
