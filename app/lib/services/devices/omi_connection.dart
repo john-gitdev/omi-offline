@@ -690,7 +690,12 @@ class OmiDeviceConnection extends DeviceConnection {
 
       await Future.delayed(_cccdSettleDelay);
       await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x10]);
-      _timeoutTimer = Timer(const Duration(seconds: 120), () => fail("Timeout"));
+      // 20s, not 120s: listFiles runs while holding the shared _storageMutex, so a
+      // non-responsive listing pins the lock — starving syncAll (which skips when the
+      // lock is busy) and refreshStorageStats (10s acquire timeout) for the whole
+      // window. A healthy listing answers in seconds; 20s stays well clear of a slow
+      // stack while capping the starvation, and sits under the 60s pipeline watchdog.
+      _timeoutTimer = Timer(const Duration(seconds: 20), () => fail("Timeout"));
       _cccdRetryTimer = Timer(const Duration(seconds: 10), () async {
         if (isStale() || currentCompleter.isCompleted) return;
         try {
