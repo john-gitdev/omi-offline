@@ -1269,7 +1269,16 @@ class DeviceProvider extends ChangeNotifier
     // Mark for resume before cancelling so the flag is set even if cancelSync
     // triggers a re-entrant callback. Only arm it in the background — foreground
     // disconnects recover through the normal reconnect loop.
-    if (!_isAppInForeground && walSync.isSyncing) {
+    //
+    // Arm on _backgroundSyncActive too, not just isSyncing: a background sync's
+    // connect+setup window (time-sync, diagnostics, pushActiveButtonConfig) runs
+    // before syncAll flips isSyncing, so an accidental drop there would otherwise
+    // fall through to _handleDeviceConnected's drop-guard and kill the reconnect
+    // mid-run. _backgroundSyncActive spans the whole _doBackgroundSync attempt.
+    // Safe against the intentional end-of-sync disconnect (_doBackgroundSync's
+    // :937): that path clears _backgroundSyncActive synchronously (:945) in the
+    // same turn, before its debounced disconnect callback reaches here.
+    if (!_isAppInForeground && (walSync.isSyncing || _backgroundSyncActive)) {
       _pendingSyncResume = true;
     }
     walSync.cancelSync();
