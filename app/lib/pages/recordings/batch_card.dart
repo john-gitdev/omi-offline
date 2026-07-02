@@ -624,8 +624,15 @@ class BatchCard extends StatelessWidget {
                     PopupMenuButton<String>(
                       tooltip: 'Day actions',
                       color: const Color(0xFF2C2C2E),
-                      padding: EdgeInsets.zero,
-                      icon: FaIcon(FontAwesomeIcons.ellipsisVertical, size: 16, color: Colors.grey.shade400),
+                      // `child:` (not `icon:`) avoids IconButton's 48px min box,
+                      // so the glyph sits near the card's right edge — matching
+                      // the date's 16px inset on the left. Right padding 0 keeps
+                      // it close to the edge; left/vertical padding hold the tap
+                      // target.
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 12, 0, 12),
+                        child: FaIcon(FontAwesomeIcons.ellipsisVertical, size: 16, color: Colors.grey.shade400),
+                      ),
                       onSelected: (value) {
                         switch (value) {
                           case 'export':
