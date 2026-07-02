@@ -781,16 +781,6 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
               }
             });
           }
-          // Whether any status card sits between the header and the list.
-          // Mirrors those widgets' own show conditions: SyncProcessCard renders
-          // whenever we're not idle, and AccumulatingBanner renders when there's
-          // draft / to-process audio. When nothing sits below the header we tuck
-          // the header's bottom padding in to match its 8px top, so the "Last
-          // synced" line isn't left floating above a big empty gap.
-          const double minShownMinutes = 1.0 / 60.0;
-          final hasStatusCard = controller.spState != SyncProcessState.idle ||
-              controller.toProcessMinutes >= minShownMinutes ||
-              controller.draftMinutes >= minShownMinutes;
           return Scaffold(
             backgroundColor: const Color(0xFF0D0D0D),
             appBar: AppBar(
@@ -921,10 +911,10 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Padding(
-                  // Bottom padding matches the 8px top when there's no status
-                  // card below (keeps the header block balanced); when a card is
-                  // present it steps back up to a 16px day-gap down to that card.
-                  padding: EdgeInsets.fromLTRB(16, 8, 16, hasStatusCard ? 16 : 8),
+                  // 16 all around: a full day-gap above the title and below the
+                  // "Last synced" line, matching the day-gap down to whatever
+                  // sits below (the first day card, or a status card).
+                  padding: const EdgeInsets.all(16),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
