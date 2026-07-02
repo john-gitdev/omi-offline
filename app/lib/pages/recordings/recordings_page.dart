@@ -781,6 +781,16 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
               }
             });
           }
+          // Whether any status card sits between the header and the list.
+          // Mirrors those widgets' own show conditions: SyncProcessCard renders
+          // whenever we're not idle, and AccumulatingBanner renders when there's
+          // draft / to-process audio. When nothing sits below the header we tuck
+          // the header's bottom padding in to match its 8px top, so the "Last
+          // synced" line isn't left floating above a big empty gap.
+          const double minShownMinutes = 1.0 / 60.0;
+          final hasStatusCard = controller.spState != SyncProcessState.idle ||
+              controller.toProcessMinutes >= minShownMinutes ||
+              controller.draftMinutes >= minShownMinutes;
           return Scaffold(
             backgroundColor: const Color(0xFF0D0D0D),
             appBar: AppBar(
@@ -911,7 +921,10 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                  // Bottom padding matches the 8px top when there's no status
+                  // card below (keeps the header block balanced); when a card is
+                  // present it steps back up to a 16px day-gap down to that card.
+                  padding: EdgeInsets.fromLTRB(16, 8, 16, hasStatusCard ? 16 : 8),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -930,57 +943,65 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                           // Filter menu — only meaningful when short conversations
                           // are hidden. Off (filterMinDurationSeconds == 0) → no
                           // overflow menu at all. Using `child:` (not `icon:`)
-                          // avoids IconButton's 48px min box, so the glyph's right
-                          // edge sits flush on the card border; left/vertical
-                          // padding keeps a comfortable tap target.
+                          // avoids IconButton's 48px min box so the glyph sits
+                          // flush on the section's right edge. The tap ink flash
+                          // is suppressed via the wrapping Theme (transparent
+                          // splash/highlight/hover) — against a flush-right glyph
+                          // the rectangular highlight looked lopsided.
                           if (!_showMarkersOnly && _prefs.filterMinDurationSeconds > 0)
-                            PopupMenuButton<RecordingFilterMode>(
-                              tooltip: 'Filter recordings',
-                              color: const Color(0xFF2C2C2E),
-                              position: PopupMenuPosition.under,
-                              initialValue: _filterMode,
-                              onSelected: (mode) => setState(() => _filterMode = mode),
-                              itemBuilder: (context) => [
-                                _buildFilterMenuItem('Main', RecordingFilterMode.visible),
-                                _buildFilterMenuItem('Hidden', RecordingFilterMode.hidden),
-                                _buildFilterMenuItem('All', RecordingFilterMode.all),
-                              ],
-                              // Show the active filter as a label on the control
-                              // (like a select). Tinted purple on a non-default
-                              // filter so a stray "Hidden"/"All" — where some
-                              // recordings are held back — stands out.
-                              child: Builder(builder: (context) {
-                                final filtering = _filterMode != RecordingFilterMode.visible;
-                                final tint = filtering ? Colors.deepPurpleAccent : Colors.grey.shade400;
-                                return Padding(
-                                  padding: const EdgeInsets.fromLTRB(12, 8, 0, 8),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      // Default filter (Main) shows the funnel
-                                      // alone; only a non-default selection labels
-                                      // itself, tinted purple so it stands out.
-                                      if (filtering) ...[
-                                        Text(
-                                          _filterLabel(_filterMode),
-                                          style: TextStyle(
+                            Theme(
+                                data: Theme.of(context).copyWith(
+                                  splashColor: Colors.transparent,
+                                  highlightColor: Colors.transparent,
+                                  hoverColor: Colors.transparent,
+                                ),
+                                child: PopupMenuButton<RecordingFilterMode>(
+                                  tooltip: 'Filter recordings',
+                                  color: const Color(0xFF2C2C2E),
+                                  position: PopupMenuPosition.under,
+                                  initialValue: _filterMode,
+                                  onSelected: (mode) => setState(() => _filterMode = mode),
+                                  itemBuilder: (context) => [
+                                    _buildFilterMenuItem('Main', RecordingFilterMode.visible),
+                                    _buildFilterMenuItem('Hidden', RecordingFilterMode.hidden),
+                                    _buildFilterMenuItem('All', RecordingFilterMode.all),
+                                  ],
+                                  // Show the active filter as a label on the control
+                                  // (like a select). Tinted purple on a non-default
+                                  // filter so a stray "Hidden"/"All" — where some
+                                  // recordings are held back — stands out.
+                                  child: Builder(builder: (context) {
+                                    final filtering = _filterMode != RecordingFilterMode.visible;
+                                    final tint = filtering ? Colors.deepPurpleAccent : Colors.grey.shade400;
+                                    return Padding(
+                                      padding: const EdgeInsets.fromLTRB(12, 8, 0, 8),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          // Default filter (Main) shows the funnel
+                                          // alone; only a non-default selection labels
+                                          // itself, tinted purple so it stands out.
+                                          if (filtering) ...[
+                                            Text(
+                                              _filterLabel(_filterMode),
+                                              style: TextStyle(
+                                                color: tint,
+                                                fontSize: 13,
+                                                fontWeight: FontWeight.w500,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                          ],
+                                          FaIcon(
+                                            FontAwesomeIcons.filter,
+                                            size: 16,
                                             color: tint,
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.w500,
                                           ),
-                                        ),
-                                        const SizedBox(width: 8),
-                                      ],
-                                      FaIcon(
-                                        FontAwesomeIcons.filter,
-                                        size: 16,
-                                        color: tint,
+                                        ],
                                       ),
-                                    ],
-                                  ),
-                                );
-                              }),
-                            ),
+                                    );
+                                  }),
+                                )),
                         ],
                       ),
                       // "Last synced …" sits directly under the header; renders
@@ -1089,15 +1110,6 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                     );
                   },
                 ),
-                // Fixed 16px gap below the status-card region, OUTSIDE the
-                // scroll view. The lists below carry no top padding, so this
-                // spacer is the whole status-card→list gap — and because it's
-                // part of the page Column (not the scrollable content) it stays
-                // put while you scroll, so the list can't slide up and blend
-                // into the sync/processing card. In the no-status-card state
-                // it just adds to the header's own bottom padding, preserving
-                // the existing header→list spacing.
-                const SizedBox(height: 16),
                 Expanded(
                   child: Stack(
                     fit: StackFit.expand,
@@ -1135,9 +1147,10 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                                           )
                                         : ListView.builder(
                                             physics: const AlwaysScrollableScrollPhysics(),
-                                            // Top 0: the gap above sits outside
-                                            // the scroll view (see the SizedBox
-                                            // spacer above Expanded).
+                                            // Top 0: the gap above lives outside
+                                            // the scroll view (header padding, or
+                                            // the status card's margin), so it
+                                            // persists while scrolling.
                                             padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                                             itemCount: dates.length,
                                             itemBuilder: (context, index) => MarkerDayCard(
@@ -1270,9 +1283,11 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                                       : ListView.builder(
                                           controller: _scrollController,
                                           physics: const AlwaysScrollableScrollPhysics(),
-                                          // Top 0: the gap above sits outside the
-                                          // scroll view (see the SizedBox spacer
-                                          // above Expanded) so it persists while
+                                          // Top 0: the gap above the list lives
+                                          // outside the scroll view — the header's
+                                          // bottom padding when no status card is
+                                          // shown, else the bottom-most status
+                                          // card's margin — so it persists while
                                           // scrolling instead of scrolling away.
                                           padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                                           // Unorganized section hides in selection mode.
