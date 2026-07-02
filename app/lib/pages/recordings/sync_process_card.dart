@@ -26,11 +26,11 @@ class SyncProcessCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Idle: reuse the empty slot for an ambient "Last synced …" line. It shows
-    // nothing before the first-ever sync (lastSyncStatusMs == 0), and is
-    // replaced by live progress the moment a sync/process run starts.
+    // Idle: no card. The ambient "Last synced …" line now lives directly under
+    // the Conversations header (see LastSyncedLabel); live progress replaces
+    // this slot the moment a sync/process run starts.
     if (data.state == SyncProcessState.idle) {
-      return _IdleLastSynced(lastSyncStatusMs: data.lastSyncStatusMs);
+      return const SizedBox.shrink();
     }
 
     return Container(
@@ -225,19 +225,20 @@ class SyncProcessCard extends StatelessWidget {
   }
 }
 
-/// Ambient "Last synced …" line shown in the idle slot. Owns a minute-ticker so
-/// the relative label ("5m ago") stays fresh even when nothing else rebuilds the
-/// page. Renders nothing until the first sync stamps [lastSyncStatusMs].
-class _IdleLastSynced extends StatefulWidget {
+/// Ambient "Last synced …" line shown directly under the Conversations header.
+/// Owns a minute-ticker so the relative label ("5m ago") stays fresh even when
+/// nothing else rebuilds the page. Renders nothing until the first sync stamps
+/// [lastSyncStatusMs].
+class LastSyncedLabel extends StatefulWidget {
   final int lastSyncStatusMs;
 
-  const _IdleLastSynced({required this.lastSyncStatusMs});
+  const LastSyncedLabel({super.key, required this.lastSyncStatusMs});
 
   @override
-  State<_IdleLastSynced> createState() => _IdleLastSyncedState();
+  State<LastSyncedLabel> createState() => _LastSyncedLabelState();
 }
 
-class _IdleLastSyncedState extends State<_IdleLastSynced> {
+class _LastSyncedLabelState extends State<LastSyncedLabel> {
   Timer? _ticker;
 
   @override
@@ -247,7 +248,7 @@ class _IdleLastSyncedState extends State<_IdleLastSynced> {
   }
 
   @override
-  void didUpdateWidget(_IdleLastSynced oldWidget) {
+  void didUpdateWidget(LastSyncedLabel oldWidget) {
     super.didUpdateWidget(oldWidget);
     // Start/stop as the pref crosses 0 (e.g. a background sync landing the
     // first-ever timestamp while the page sits idle).
@@ -288,8 +289,9 @@ class _IdleLastSyncedState extends State<_IdleLastSynced> {
   Widget build(BuildContext context) {
     if (widget.lastSyncStatusMs <= 0) return const SizedBox.shrink();
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      padding: const EdgeInsets.only(top: 4),
       child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
           Icon(Icons.schedule, size: 13, color: Colors.grey.shade600),
           const SizedBox(width: 6),
