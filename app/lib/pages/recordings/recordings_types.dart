@@ -29,6 +29,10 @@ class SyncCardData {
   final String audioSaveFormat;
   final String lastActiveStage;
 
+  /// Epoch ms of the last completed sync (0 = never synced). Surfaced as a
+  /// relative "Last synced …" line in the otherwise-empty idle slot.
+  final int lastSyncStatusMs;
+
   const SyncCardData({
     required this.state,
     required this.isForcePipeline,
@@ -41,5 +45,6 @@ class SyncCardData {
     required this.isTranscoding,
     required this.audioSaveFormat,
     required this.lastActiveStage,
+    required this.lastSyncStatusMs,
   });
 }
