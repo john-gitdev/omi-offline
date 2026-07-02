@@ -243,9 +243,31 @@ class _IdleLastSyncedState extends State<_IdleLastSynced> {
   @override
   void initState() {
     super.initState();
-    _ticker = Timer.periodic(const Duration(minutes: 1), (_) {
-      if (mounted) setState(() {});
-    });
+    _syncTicker();
+  }
+
+  @override
+  void didUpdateWidget(_IdleLastSynced oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Start/stop as the pref crosses 0 (e.g. a background sync landing the
+    // first-ever timestamp while the page sits idle).
+    if ((widget.lastSyncStatusMs > 0) != (oldWidget.lastSyncStatusMs > 0)) {
+      _syncTicker();
+    }
+  }
+
+  /// Only run the minute-ticker while there's a timestamp to keep fresh. Before
+  /// the first-ever sync the widget renders nothing, so a timer would just wake
+  /// the app every minute for no visible change.
+  void _syncTicker() {
+    if (widget.lastSyncStatusMs > 0) {
+      _ticker ??= Timer.periodic(const Duration(minutes: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    } else {
+      _ticker?.cancel();
+      _ticker = null;
+    }
   }
 
   @override
