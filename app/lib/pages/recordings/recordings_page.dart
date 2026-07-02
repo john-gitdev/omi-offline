@@ -957,18 +957,23 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                                   child: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      Text(
-                                        _filterLabel(_filterMode),
-                                        style: TextStyle(
-                                          color: tint,
-                                          fontSize: 13,
-                                          fontWeight: FontWeight.w500,
+                                      // Default filter (Main) shows the funnel
+                                      // alone; only a non-default selection labels
+                                      // itself, tinted purple so it stands out.
+                                      if (filtering) ...[
+                                        Text(
+                                          _filterLabel(_filterMode),
+                                          style: TextStyle(
+                                            color: tint,
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w500,
+                                          ),
                                         ),
-                                      ),
-                                      const SizedBox(width: 4),
+                                        const SizedBox(width: 8),
+                                      ],
                                       FaIcon(
-                                        FontAwesomeIcons.ellipsisVertical,
-                                        size: 18,
+                                        FontAwesomeIcons.filter,
+                                        size: 16,
                                         color: tint,
                                       ),
                                     ],
