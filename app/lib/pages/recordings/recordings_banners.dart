@@ -147,7 +147,13 @@ class AccumulatingBanner extends StatelessWidget {
     }
 
     return Container(
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      // Top margin 16 only when the SyncProcessCard renders above us (every
+      // state except idle) — that keeps the two status cards a day-gap apart
+      // during the ~10s successUi+draft window without touching. In idle the
+      // sync card is hidden, so 0 keeps us flush under the header. Bottom 0:
+      // the 16px down to the recordings list is the ListView's top padding, so
+      // the status-card→recording-card gap matches the inter-day gap.
+      margin: EdgeInsets.fromLTRB(16, spState == SyncProcessState.idle ? 0 : 16, 16, 0),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.05),
