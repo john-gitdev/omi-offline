@@ -541,6 +541,12 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
     }
   }
 
+  String _filterLabel(RecordingFilterMode mode) => switch (mode) {
+        RecordingFilterMode.visible => 'Main',
+        RecordingFilterMode.hidden => 'Hidden',
+        RecordingFilterMode.all => 'All',
+      };
+
   PopupMenuItem<RecordingFilterMode> _buildFilterMenuItem(String label, RecordingFilterMode mode) {
     final selected = _filterMode == mode;
     return PopupMenuItem<RecordingFilterMode>(
@@ -939,14 +945,36 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                                 _buildFilterMenuItem('Hidden', RecordingFilterMode.hidden),
                                 _buildFilterMenuItem('All', RecordingFilterMode.all),
                               ],
-                              child: Padding(
-                                padding: const EdgeInsets.fromLTRB(12, 8, 0, 8),
-                                child: FaIcon(
-                                  FontAwesomeIcons.ellipsisVertical,
-                                  size: 18,
-                                  color: Colors.grey.shade300,
-                                ),
-                              ),
+                              // Show the active filter as a label on the control
+                              // (like a select). Tinted purple on a non-default
+                              // filter so a stray "Hidden"/"All" — where some
+                              // recordings are held back — stands out.
+                              child: Builder(builder: (context) {
+                                final filtering = _filterMode != RecordingFilterMode.visible;
+                                final tint = filtering ? Colors.deepPurpleAccent : Colors.grey.shade400;
+                                return Padding(
+                                  padding: const EdgeInsets.fromLTRB(12, 8, 0, 8),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        _filterLabel(_filterMode),
+                                        style: TextStyle(
+                                          color: tint,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 4),
+                                      FaIcon(
+                                        FontAwesomeIcons.ellipsisVertical,
+                                        size: 18,
+                                        color: tint,
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              }),
                             ),
                         ],
                       ),
