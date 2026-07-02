@@ -1089,6 +1089,15 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                     );
                   },
                 ),
+                // Fixed 16px gap below the status-card region, OUTSIDE the
+                // scroll view. The lists below carry no top padding, so this
+                // spacer is the whole status-card→list gap — and because it's
+                // part of the page Column (not the scrollable content) it stays
+                // put while you scroll, so the list can't slide up and blend
+                // into the sync/processing card. In the no-status-card state
+                // it just adds to the header's own bottom padding, preserving
+                // the existing header→list spacing.
+                const SizedBox(height: 16),
                 Expanded(
                   child: Stack(
                     fit: StackFit.expand,
@@ -1126,7 +1135,10 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                                           )
                                         : ListView.builder(
                                             physics: const AlwaysScrollableScrollPhysics(),
-                                            padding: const EdgeInsets.all(16),
+                                            // Top 0: the gap above sits outside
+                                            // the scroll view (see the SizedBox
+                                            // spacer above Expanded).
+                                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                                             itemCount: dates.length,
                                             itemBuilder: (context, index) => MarkerDayCard(
                                               dateStr: dates[index],
@@ -1258,7 +1270,11 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                                       : ListView.builder(
                                           controller: _scrollController,
                                           physics: const AlwaysScrollableScrollPhysics(),
-                                          padding: const EdgeInsets.all(16),
+                                          // Top 0: the gap above sits outside the
+                                          // scroll view (see the SizedBox spacer
+                                          // above Expanded) so it persists while
+                                          // scrolling instead of scrolling away.
+                                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                                           // Unorganized section hides in selection mode.
                                           itemCount: renderBatches.length + (_inSelectionMode ? 0 : 1),
                                           itemBuilder: (context, index) {
