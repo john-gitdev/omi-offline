@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/pages/recordings/recordings_types.dart';
@@ -24,7 +26,12 @@ class SyncProcessCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (data.state == SyncProcessState.idle) return const SizedBox.shrink();
+    // Idle: reuse the empty slot for an ambient "Last synced …" line. It shows
+    // nothing before the first-ever sync (lastSyncStatusMs == 0), and is
+    // replaced by live progress the moment a sync/process run starts.
+    if (data.state == SyncProcessState.idle) {
+      return _IdleLastSynced(lastSyncStatusMs: data.lastSyncStatusMs);
+    }
 
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
@@ -214,6 +221,84 @@ class SyncProcessCard extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+}
+
+/// Ambient "Last synced …" line shown in the idle slot. Owns a minute-ticker so
+/// the relative label ("5m ago") stays fresh even when nothing else rebuilds the
+/// page. Renders nothing until the first sync stamps [lastSyncStatusMs].
+class _IdleLastSynced extends StatefulWidget {
+  final int lastSyncStatusMs;
+
+  const _IdleLastSynced({required this.lastSyncStatusMs});
+
+  @override
+  State<_IdleLastSynced> createState() => _IdleLastSyncedState();
+}
+
+class _IdleLastSyncedState extends State<_IdleLastSynced> {
+  Timer? _ticker;
+
+  @override
+  void initState() {
+    super.initState();
+    _syncTicker();
+  }
+
+  @override
+  void didUpdateWidget(_IdleLastSynced oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Start/stop as the pref crosses 0 (e.g. a background sync landing the
+    // first-ever timestamp while the page sits idle).
+    if ((widget.lastSyncStatusMs > 0) != (oldWidget.lastSyncStatusMs > 0)) {
+      _syncTicker();
+    }
+  }
+
+  /// Only run the minute-ticker while there's a timestamp to keep fresh. Before
+  /// the first-ever sync the widget renders nothing, so a timer would just wake
+  /// the app every minute for no visible change.
+  void _syncTicker() {
+    if (widget.lastSyncStatusMs > 0) {
+      _ticker ??= Timer.periodic(const Duration(minutes: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    } else {
+      _ticker?.cancel();
+      _ticker = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  static String _relativeLabel(int ms) {
+    final diff = DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(ms));
+    if (diff.isNegative || diff.inSeconds < 45) return 'just now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    return '${diff.inDays}d ago';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.lastSyncStatusMs <= 0) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      child: Row(
+        children: [
+          Icon(Icons.schedule, size: 13, color: Colors.grey.shade600),
+          const SizedBox(width: 6),
+          Text(
+            'Last synced ${_relativeLabel(widget.lastSyncStatusMs)}',
+            style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -992,6 +992,7 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                     isTranscoding: controller.isTranscoding,
                     audioSaveFormat: _prefs.audioSaveFormat,
                     lastActiveStage: controller.lastActiveStage,
+                    lastSyncStatusMs: _prefs.lastSyncStatusMs,
                   ),
                   onCancelTap: () => unawaited(_showCancelModal()),
                   onDismissTap: () => controller.dismissSuccess(),
