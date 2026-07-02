@@ -541,39 +541,30 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
     }
   }
 
-  Widget _buildFilterBubble(String label, RecordingFilterMode mode) {
+  String _filterLabel(RecordingFilterMode mode) => switch (mode) {
+        RecordingFilterMode.visible => 'Main',
+        RecordingFilterMode.hidden => 'Hidden',
+        RecordingFilterMode.all => 'All',
+      };
+
+  PopupMenuItem<RecordingFilterMode> _buildFilterMenuItem(String label, RecordingFilterMode mode) {
     final selected = _filterMode == mode;
-    return Expanded(
-      child: Semantics(
-        button: true,
-        label: 'Filter by $label',
-        selected: selected,
-        child: Tooltip(
-          message: 'Filter by $label',
-          child: Material(
-            color: selected ? Colors.deepPurpleAccent : Colors.transparent,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(17),
-              side: selected ? BorderSide.none : BorderSide(color: Colors.grey.shade700),
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: InkWell(
-              onTap: () => setState(() => _filterMode = mode),
-              child: Container(
-                height: 34,
-                alignment: Alignment.center,
-                child: Text(
-                  label,
-                  style: TextStyle(
-                    color: selected ? Colors.white : Colors.grey.shade500,
-                    fontSize: 13,
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                  ),
-                ),
-              ),
+    return PopupMenuItem<RecordingFilterMode>(
+      value: mode,
+      child: Row(
+        children: [
+          SizedBox(
+            width: 24,
+            child: selected ? const Icon(Icons.check, size: 16, color: Colors.deepPurpleAccent) : null,
+          ),
+          Text(
+            label,
+            style: TextStyle(
+              color: selected ? Colors.white : Colors.grey.shade300,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
             ),
           ),
-        ),
+        ],
       ),
     );
   }
@@ -842,6 +833,26 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                       ),
                     ),
               actions: [
+                // Manual/Automatic mode indicator — icon only. Taps open the
+                // audio settings page where the mode (and its per-mode fields)
+                // are edited; the icon refreshes on return.
+                IconButton(
+                  icon: FaIcon(
+                    _prefs.manualMode ? FontAwesomeIcons.hand : FontAwesomeIcons.wandMagicSparkles,
+                    color: _prefs.manualMode ? Colors.grey.shade300 : Colors.deepPurpleAccent,
+                    size: 20,
+                  ),
+                  tooltip: _prefs.manualMode ? 'Manual mode' : 'Automatic mode',
+                  onPressed: () => Navigator.of(context)
+                      .push(
+                    MaterialPageRoute(
+                      builder: (_) => const OfflineAudioSettingsPage(flashManualMode: true),
+                    ),
+                  )
+                      .then((_) {
+                    if (mounted) setState(() {});
+                  }),
+                ),
                 if (controller.markerConversations.isNotEmpty)
                   IconButton(
                     icon: FaIcon(
@@ -900,77 +911,79 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 8, 16, 16),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        'Conversations',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 24,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const Spacer(),
-                      GestureDetector(
-                        onTap: () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const OfflineAudioSettingsPage(
-                              flashManualMode: true,
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          const Text(
+                            'Conversations',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
                             ),
                           ),
-                        ),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                          decoration: BoxDecoration(
-                            color: _prefs.manualMode
-                                ? const Color(0xFF2A2A2E)
-                                : Colors.deepPurpleAccent.withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(
-                              color: _prefs.manualMode
-                                  ? Colors.grey.shade700
-                                  : Colors.deepPurpleAccent.withValues(alpha: 0.6),
+                          const Spacer(),
+                          // Filter menu — only meaningful when short conversations
+                          // are hidden. Off (filterMinDurationSeconds == 0) → no
+                          // overflow menu at all. Using `child:` (not `icon:`)
+                          // avoids IconButton's 48px min box, so the glyph's right
+                          // edge sits flush on the card border; left/vertical
+                          // padding keeps a comfortable tap target.
+                          if (!_showMarkersOnly && _prefs.filterMinDurationSeconds > 0)
+                            PopupMenuButton<RecordingFilterMode>(
+                              tooltip: 'Filter recordings',
+                              color: const Color(0xFF2C2C2E),
+                              position: PopupMenuPosition.under,
+                              initialValue: _filterMode,
+                              onSelected: (mode) => setState(() => _filterMode = mode),
+                              itemBuilder: (context) => [
+                                _buildFilterMenuItem('Main', RecordingFilterMode.visible),
+                                _buildFilterMenuItem('Hidden', RecordingFilterMode.hidden),
+                                _buildFilterMenuItem('All', RecordingFilterMode.all),
+                              ],
+                              // Show the active filter as a label on the control
+                              // (like a select). Tinted purple on a non-default
+                              // filter so a stray "Hidden"/"All" — where some
+                              // recordings are held back — stands out.
+                              child: Builder(builder: (context) {
+                                final filtering = _filterMode != RecordingFilterMode.visible;
+                                final tint = filtering ? Colors.deepPurpleAccent : Colors.grey.shade400;
+                                return Padding(
+                                  padding: const EdgeInsets.fromLTRB(12, 8, 0, 8),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        _filterLabel(_filterMode),
+                                        style: TextStyle(
+                                          color: tint,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 4),
+                                      FaIcon(
+                                        FontAwesomeIcons.ellipsisVertical,
+                                        size: 18,
+                                        color: tint,
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              }),
                             ),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              FaIcon(
-                                _prefs.manualMode ? FontAwesomeIcons.hand : FontAwesomeIcons.wandMagicSparkles,
-                                size: 11,
-                                color: _prefs.manualMode ? Colors.grey.shade400 : Colors.deepPurpleAccent,
-                              ),
-                              const SizedBox(width: 5),
-                              Text(
-                                _prefs.manualMode ? 'Manual' : 'Automatic',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: _prefs.manualMode ? Colors.grey.shade400 : Colors.deepPurpleAccent,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
+                        ],
                       ),
+                      // "Last synced …" sits directly under the header; renders
+                      // nothing before the first-ever sync.
+                      LastSyncedLabel(lastSyncStatusMs: _prefs.lastSyncStatusMs),
                     ],
                   ),
                 ),
-                if (!_showMarkersOnly && _prefs.filterMinDurationSeconds > 0)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                    child: Row(
-                      children: [
-                        _buildFilterBubble('Main', RecordingFilterMode.visible),
-                        const SizedBox(width: 8),
-                        _buildFilterBubble('Hidden', RecordingFilterMode.hidden),
-                        const SizedBox(width: 8),
-                        _buildFilterBubble('All', RecordingFilterMode.all),
-                      ],
-                    ),
-                  ),
                 StorageWarningBanner(
                   percentage: deviceProvider.storageFullPercentage,
                 ),
@@ -992,7 +1005,6 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                     isTranscoding: controller.isTranscoding,
                     audioSaveFormat: _prefs.audioSaveFormat,
                     lastActiveStage: controller.lastActiveStage,
-                    lastSyncStatusMs: _prefs.lastSyncStatusMs,
                   ),
                   onCancelTap: () => unawaited(_showCancelModal()),
                   onDismissTap: () => controller.dismissSuccess(),
