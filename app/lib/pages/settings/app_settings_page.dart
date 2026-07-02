@@ -485,7 +485,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                             DropdownMenuItem(value: -1, child: Text('Always Keep')),
                             DropdownMenuItem(value: 3, child: Text('3 Days')),
                             DropdownMenuItem(value: 7, child: Text('7 Days')),
-                            DropdownMenuItem(value: 0, child: Text('Delete After Upload')),
+                            DropdownMenuItem(value: 0, child: Text('Upload Only')),
                           ],
                           onChanged: (value) async {
                             if (value == null) return;
@@ -494,8 +494,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                                 context: context,
                                 builder: (c) => AlertDialog(
                                   backgroundColor: const Color(0xFF1C1C1E),
-                                  title:
-                                      const Text('Enable Delete After Upload?', style: TextStyle(color: Colors.white)),
+                                  title: const Text('Enable Upload Only?', style: TextStyle(color: Colors.white)),
                                   content: const Text(
                                     'Recordings will be sent to your integrations and deleted from your device after a successful upload.',
                                     style: TextStyle(color: Colors.white70, fontSize: 14),
