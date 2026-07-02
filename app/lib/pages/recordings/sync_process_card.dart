@@ -36,8 +36,10 @@ class SyncProcessCard extends StatelessWidget {
     return Container(
       // Bottom margin 0: the 16px gap down to the next block (the recordings
       // list, or the AccumulatingBanner when it co-occurs) is owned below —
-      // either the ListView's top padding or AccumulatingBanner's top margin —
-      // so the status-card→recording-card gap matches the inter-day gap (16).
+      // either the fixed spacer above the list (a non-scrolling SizedBox in the
+      // page, so the gap persists while scrolling) or AccumulatingBanner's top
+      // margin — so the status-card→recording-card gap matches the inter-day
+      // gap (16).
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 0),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
