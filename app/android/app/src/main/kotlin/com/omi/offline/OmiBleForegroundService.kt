@@ -43,7 +43,7 @@ class OmiBleForegroundService : Service() {
         // single connection slot, drop it (purgeGhostGattForAddress) before reconnecting.
         // Capped to once per GHOST_PURGE_MIN_INTERVAL_MS to bound client-interface churn;
         // GHOST_PURGE_SETTLE_MS lets the firmware re-advertise after the purge.
-        private const val GHOST_PURGE_MIN_INTERVAL_MS = 30_000L
+        private const val GHOST_PURGE_MIN_INTERVAL_MS = 10_000L
         private const val GHOST_PURGE_SETTLE_MS = 500L
         private const val COMPANION_RATE_LIMIT_MS = 15_000L
         private const val PREFS_NAME = "ble_config"
@@ -490,6 +490,14 @@ class OmiBleForegroundService : Service() {
                 // torn down at the radio level, not just released app-side (ghost-slot guard).
                 bleManager.disconnectGatt(addr)
                 bleManager.closeGatt(addr)
+            } else if (source == "manageDevice") {
+                // Fresh connection attempt from Dart. No propagation lag to worry about since we haven't
+                // held a GATT handle recently. Proactively purge any ghost before we start.
+                val now = System.currentTimeMillis()
+                if (now - managed.lastGhostPurgeMs >= GHOST_PURGE_MIN_INTERVAL_MS && bleManager.purgeGhostGattForAddress(addr)) {
+                    managed.lastGhostPurgeMs = now
+                    Log.i(TAG, "Ghost GATT proactively purged for $addr before initial connect")
+                }
             }
 
             // Use autoConnect=false for initial connection and first 3 retries (direct connection, faster).

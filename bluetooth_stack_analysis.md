@@ -272,7 +272,7 @@ sequenceDiagram
 
 ## 6. Suggested Solutions
 
-### Solution 1: Purge Ghost Immediately on First Retry (High Impact)
+### Solution 1: Purge Ghost Immediately on First Retry (✅ IMPLEMENTED)
 
 Currently `purgeGhostGattForAddress` only fires inside the retry loop and is rate-limited to 30s. The first connect attempt never checks for ghosts. 
 
@@ -280,7 +280,7 @@ Currently `purgeGhostGattForAddress` only fires inside the retry loop and is rat
 
 Code location: [OmiBleForegroundService.kt:482-536](file:///C:/Users/johnw/repos/omi-offline/app/android/app/src/main/kotlin/com/omi/offline/OmiBleForegroundService.kt#L482-L536), just before the `connectGatt` call at line 511.
 
-### Solution 2: Reduce Ghost Purge Rate Limit (Medium Impact)
+### Solution 2: Reduce Ghost Purge Rate Limit (✅ IMPLEMENTED)
 
 `GHOST_PURGE_MIN_INTERVAL_MS = 30_000L` means at most one purge per 30 seconds. On stacks that re-arm ghosts quickly (OnePlus, Xiaomi), this is too slow. 
 
@@ -348,8 +348,8 @@ Add a periodic (every 5s) check in the foreground service that queries `bluetoot
 
 | Symptom | Root Cause | Code Location | Fix Complexity |
 |---|---|---|---|
-| `gatt_status_-1` repeating | Ghost GATT holding firmware's single slot | [OmiBleManager.kt:552-582](file:///C:/Users/johnw/repos/omi-offline/app/android/app/src/main/kotlin/com/omi/offline/OmiBleManager.kt#L552-L582) | Medium |
-| 2-5 minute connect delays | Ghost purge rate-limited to 30s | [OmiBleForegroundService.kt:46](file:///C:/Users/johnw/repos/omi-offline/app/android/app/src/main/kotlin/com/omi/offline/OmiBleForegroundService.kt#L46) | Easy |
+| `gatt_status_-1` repeating | Ghost GATT holding firmware's single slot | [OmiBleManager.kt:552-582](file:///C:/Users/johnw/repos/omi-offline/app/android/app/src/main/kotlin/com/omi/offline/OmiBleManager.kt#L552-L582) | ✅ Fixed (Sol 1) |
+| 2-5 minute connect delays | Ghost purge rate-limited to 30s | [OmiBleForegroundService.kt:46](file:///C:/Users/johnw/repos/omi-offline/app/android/app/src/main/kotlin/com/omi/offline/OmiBleForegroundService.kt#L46) | ✅ Fixed (Sol 2) |
 | Connection succeeds then immediately drops | Background drop-guard kills hard-won connections | [device_provider.dart:1524-1531](file:///C:/Users/johnw/repos/omi-offline/app/lib/providers/device_provider.dart#L1524-L1531) | Medium |
 | "ignoring transient GATT error" spam | Dart swallows errors hoping native retries | [native_ble_transport.dart:316](file:///C:/Users/johnw/repos/omi-offline/app/lib/services/devices/transports/native_ble_transport.dart#L316) | Low |
 | BT toggle always fixes it | Only reliable way to kill system-level ghosts | Android OS behavior | N/A |
