@@ -18,6 +18,7 @@ import 'package:omi/pages/settings/widgets/debug_button.dart';
 import 'package:omi/pages/settings/widgets/diagnostic_log_row.dart';
 import 'package:omi/widgets/dialog.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 class SyncPage extends StatefulWidget {
@@ -710,7 +711,18 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                           // upload/save targets. Derived from the on-disk basename
                           // (`omi_debug_YYYYMMDD.log`) so the date matches exactly.
                           final logName = files.first.uri.pathSegments.last;
-                          final shareName = logName.replaceFirst('omi_debug_', 'omi_offline_debug_');
+                          
+                          String appVersion = 'unknown';
+                          try {
+                            final packageInfo = await PackageInfo.fromPlatform();
+                            appVersion = packageInfo.version;
+                          } catch (_) {}
+                          
+                          final fwVersion = context.read<DeviceProvider>().connectedDevice?.firmwareRevision ?? 'unknown';
+                          final os = Platform.operatingSystem;
+                          
+                          final datePart = logName.replaceFirst('omi_debug_', '');
+                          final shareName = '${os}_${appVersion}_${fwVersion}_omi_offline_debug_$datePart';
                           // Name the XFile (not just the share `subject`) so the name lands on
                           // targets that use the file's own name, not the title.
                           final xFile = XFile(files.first.path, name: shareName);
