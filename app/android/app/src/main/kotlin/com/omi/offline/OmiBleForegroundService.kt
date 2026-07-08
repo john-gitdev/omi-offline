@@ -276,9 +276,9 @@ class OmiBleForegroundService : Service() {
                 managed.currentGattHash = gatt.hashCode()
             }
 
-            // Outage over — retire the toggle-Bluetooth alert if one is showing
-            // (no-op when none was posted).
-            cancelWedgeAlert()
+            // Outage over — retire this device's toggle-Bluetooth alert if one is
+            // showing (no-op when none was posted).
+            cancelWedgeAlert(addr)
 
             startStabilityTimer(addr)
             bleManager.startRssiKeepAlive(addr)
@@ -479,8 +479,8 @@ class OmiBleForegroundService : Service() {
         managed.pendingReconnect?.let { handler.removeCallbacks(it) }
         managed.stabilityTimerRunnable?.let { handler.removeCallbacks(it) }
 
-        // Intentional disconnect ends the outage the alert was about.
-        cancelWedgeAlert()
+        // Intentional disconnect ends the outage this device's alert was about.
+        cancelWedgeAlert(addr)
 
         // Stop OS-level presence observation BEFORE closing the GATT. Without
         // this, OnePlus/Xiaomi stacks immediately re-establish a passive LE link
@@ -1181,15 +1181,18 @@ class OmiBleForegroundService : Service() {
                 .setOnlyAlertOnce(true)
                 .setContentIntent(pi)
                 .build()
-            getSystemService(NotificationManager::class.java)?.notify(ALERT_NOTIFICATION_ID, notif)
+            // Tagged with the device address so one alert per wedged device: with two
+            // managed Omis, device A reconnecting must not clear device B's still-valid
+            // alert (cancelWedgeAlert cancels only its own tag).
+            getSystemService(NotificationManager::class.java)?.notify(address, ALERT_NOTIFICATION_ID, notif)
         } catch (e: Exception) {
             Log.w(TAG, "postWedgeNotification failed: ${e.message}")
         }
     }
 
-    private fun cancelWedgeAlert() {
+    private fun cancelWedgeAlert(address: String) {
         try {
-            getSystemService(NotificationManager::class.java)?.cancel(ALERT_NOTIFICATION_ID)
+            getSystemService(NotificationManager::class.java)?.cancel(address, ALERT_NOTIFICATION_ID)
         } catch (_: Exception) {}
     }
 
