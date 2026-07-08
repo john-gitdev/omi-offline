@@ -1122,6 +1122,15 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final hasMarkers = _batches.any((b) => b.markerTimestamps.isNotEmpty);
     if (!hasBins && !hasMarkers) {
       _isUserTriggered = false;
+      // Never reached the device (out of range / BT off) with nothing already on
+      // disk: the intended outcome is a skip, not a sync error. The with-bins
+      // path reaches _finishPipelineRun through _runProcessing and skips there;
+      // do the same here so both cases read "Last Sync: Skipped" instead of one
+      // skipping and the other popping an error banner.
+      if (!_deviceReached) {
+        await _finishPipelineRun();
+        return;
+      }
       _releaseWakelock();
       if (_isAppForeground()) {
         _settleNotification();
