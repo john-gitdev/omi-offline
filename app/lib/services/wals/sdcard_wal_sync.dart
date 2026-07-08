@@ -15,6 +15,7 @@ import 'package:disk_space_2/disk_space_2.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices/device_connection.dart';
+import 'package:omi/services/devices/errors.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/services/wals/wal.dart';
@@ -791,7 +792,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     final connection = _connectionProvider != null
         ? await _connectionProvider!(dev.id)
         : await ServiceManager.instance().device.ensureConnection(dev.id);
-    if (connection == null) throw Exception('No connection');
+    if (connection == null) throw DeviceConnectionException('No connection');
 
     // A brief non-sync storage op (e.g. refreshStorageStats when the device
     // settings page opens) can hold the lock for a second or two. Returning null
@@ -1035,7 +1036,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             ? await _connectionProvider!(_device!.id)
             : await ServiceManager.instance().device.ensureConnection(_device!.id))
         : null;
-    if (connection == null) throw Exception('No connection');
+    if (connection == null) throw DeviceConnectionException('No connection');
 
     if (connection.isStorageBusy) {
       Logger.debug('Storage busy, skipping: syncWal');
@@ -1140,7 +1141,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     final dev = _device!;
     final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
-    if (connection == null) throw Exception('No connection');
+    if (connection == null) throw DeviceConnectionException('No connection');
 
     if (connection.isStorageBusy) {
       Logger.debug('Storage busy, skipping: rotateAndSync');
