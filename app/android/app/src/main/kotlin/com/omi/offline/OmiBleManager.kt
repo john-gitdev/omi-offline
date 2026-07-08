@@ -157,22 +157,62 @@ class OmiBleManager private constructor(private val application: Application) {
         }
     }
 
+    // ACL-level connection check via the hidden BluetoothDevice.isConnected() API.
+    // getConnectedDevices(GATT) only lists links with a registered GATT client; OEM
+    // stacks can hold a bare ACL link (e.g. a passive reconnect surviving gatt.close())
+    // that never appears there — the exact state seen in the 2026-07-08 wedge, where
+    // the GATT list stayed empty for 30+ minutes while the firmware's slot was held.
+    // Reflection failure (API removed/blocked) degrades to false, i.e. pre-fix behavior.
+    private fun isAclConnected(device: BluetoothDevice): Boolean {
+        return try {
+            device.javaClass.getMethod("isConnected").invoke(device) as? Boolean ?: false
+        } catch (e: Exception) {
+            Log.w(TAG, "isConnected() reflection failed for ${device.address}: ${e.message}")
+            false
+        }
+    }
+
+    // Same device-resolution rule as connectGatt: API 34+ resolves by LE random
+    // address (the nRF5340 advertises a random static address), older falls back to
+    // getRemoteDevice. Keep the two paths identical so a purge targets exactly the
+    // device object a subsequent connect will use.
+    private fun remoteLeDevice(addr: String): BluetoothDevice? {
+        val adapter = bluetoothAdapter ?: return null
+        return if (android.os.Build.VERSION.SDK_INT >= 34) {
+            adapter.getRemoteLeDevice(addr, BluetoothDevice.ADDRESS_TYPE_RANDOM)
+        } else {
+            adapter.getRemoteDevice(addr)
+        }
+    }
+
     // Targeted ghost-GATT purge for one address — an in-app analog of toggling phone
-    // Bluetooth. If the system still reports this device connected at the GATT profile
-    // level while WE hold no handle for it, a stale OS/OEM link is occupying the
-    // peripheral's single connection slot and blocking our reconnect (the "toggle BT to
-    // reconnect" wedge). Drop it via a dummy connect-close so the next connectGatt can get
-    // in. Returns true only if such a ghost was found and purged. Conditional by design:
-    // no dummy GATT is created when there is no system-held connection, so it is a no-op
-    // on a healthy disconnect.
-    fun purgeGhostGattForAddress(address: String): Boolean {
+    // Bluetooth. If the system still reports this device connected (GATT-profile list,
+    // or a bare ACL link via isConnected()) while WE hold no handle for it, a stale
+    // OS/OEM link is occupying the peripheral's single connection slot and blocking our
+    // reconnect (the "toggle BT to reconnect" wedge). Drop it via a dummy connect-close
+    // so the next connectGatt can get in. Returns true only if a purge was performed.
+    // Conditional by design: no dummy GATT is created when there is no evidence of a
+    // system-held connection, so it is a no-op on a healthy disconnect — unless [force]
+    // is set, for callers that have independent evidence of the wedge (a run of connect
+    // attempts timing out with no GATT callback at all): some OEM stacks hold the link
+    // where neither query can see it, and the dummy connect-close against a genuinely
+    // absent device is harmless (the client is unregistered immediately).
+    fun purgeGhostGattForAddress(address: String, force: Boolean = false): Boolean {
         val addr = address.uppercase()
         // Never touch a connection we actually hold.
         if (connectedGatts.containsKey(addr)) return false
         return try {
-            val device = bluetoothManager.getConnectedDevices(BluetoothProfile.GATT)
-                .firstOrNull { it.address.uppercase() == addr } ?: return false
-            Log.w(TAG, "Purging ghost GATT for $addr via dummy connect-close")
+            val fromGattList = bluetoothManager.getConnectedDevices(BluetoothProfile.GATT)
+                .firstOrNull { it.address.uppercase() == addr }
+            val device = fromGattList
+                ?: remoteLeDevice(addr)?.takeIf { force || isAclConnected(it) }
+                ?: return false
+            val why = when {
+                fromGattList != null -> "gatt-profile link"
+                !force -> "acl link"
+                else -> "forced (wedge signature)"
+            }
+            Log.w(TAG, "Purging ghost GATT for $addr via dummy connect-close ($why)")
             val dummyGatt = device.connectGatt(application, false, object : BluetoothGattCallback() {}, BluetoothDevice.TRANSPORT_LE)
             // Immediately disconnect and close to flush the OS daemon state
             dummyGatt?.disconnect()
@@ -257,13 +297,8 @@ class OmiBleManager private constructor(private val application: Application) {
 
     fun connectGatt(address: String, autoConnect: Boolean): BluetoothGatt? {
         val addr = address.uppercase()
-        val adapter = bluetoothAdapter ?: return null
-        val device = if (android.os.Build.VERSION.SDK_INT >= 34) {
-            adapter.getRemoteLeDevice(addr, BluetoothDevice.ADDRESS_TYPE_RANDOM)
-        } else {
-            adapter.getRemoteDevice(addr)
-        }
-        
+        val device = remoteLeDevice(addr) ?: return null
+
         // If we have an existing GATT for this address, close it first to ensure a fresh start
         connectedGatts[addr]?.let {
             Log.i(TAG, "Closing existing GATT for $addr before reconnecting")
