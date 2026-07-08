@@ -995,8 +995,11 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                         ],
                       ),
                       // "Last synced …" sits directly under the header; renders
-                      // nothing before the first-ever sync.
-                      LastSyncedLabel(lastSyncStatusMs: _prefs.lastSyncStatusMs),
+                      // nothing before the first-ever sync. Uses the completion
+                      // timestamp (success/partial), not the status timestamp, so a
+                      // skipped cycle (device out of range / BT off) never resets
+                      // the clock — only a sync that actually moved data does.
+                      LastSyncedLabel(lastSyncCompletedMs: _prefs.lastSyncCompletedMs),
                     ],
                   ),
                 ),
