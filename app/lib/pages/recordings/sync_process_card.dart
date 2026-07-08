@@ -231,12 +231,14 @@ class SyncProcessCard extends StatelessWidget {
 
 /// Ambient "Last synced …" line shown directly under the Conversations header.
 /// Owns a minute-ticker so the relative label ("5m ago") stays fresh even when
-/// nothing else rebuilds the page. Renders nothing until the first sync stamps
-/// [lastSyncStatusMs].
+/// nothing else rebuilds the page. Reflects only the last sync that actually
+/// moved data (success/partial) — a skipped cycle (device out of range, BT off)
+/// leaves this untouched, so the time never jumps to a run that synced nothing.
+/// Renders nothing until the first such sync stamps [lastSyncCompletedMs].
 class LastSyncedLabel extends StatefulWidget {
-  final int lastSyncStatusMs;
+  final int lastSyncCompletedMs;
 
-  const LastSyncedLabel({super.key, required this.lastSyncStatusMs});
+  const LastSyncedLabel({super.key, required this.lastSyncCompletedMs});
 
   @override
   State<LastSyncedLabel> createState() => _LastSyncedLabelState();
@@ -256,7 +258,7 @@ class _LastSyncedLabelState extends State<LastSyncedLabel> {
     super.didUpdateWidget(oldWidget);
     // Start/stop as the pref crosses 0 (e.g. a background sync landing the
     // first-ever timestamp while the page sits idle).
-    if ((widget.lastSyncStatusMs > 0) != (oldWidget.lastSyncStatusMs > 0)) {
+    if ((widget.lastSyncCompletedMs > 0) != (oldWidget.lastSyncCompletedMs > 0)) {
       _syncTicker();
     }
   }
@@ -265,7 +267,7 @@ class _LastSyncedLabelState extends State<LastSyncedLabel> {
   /// the first-ever sync the widget renders nothing, so a timer would just wake
   /// the app every minute for no visible change.
   void _syncTicker() {
-    if (widget.lastSyncStatusMs > 0) {
+    if (widget.lastSyncCompletedMs > 0) {
       _ticker ??= Timer.periodic(const Duration(minutes: 1), (_) {
         if (mounted) setState(() {});
       });
@@ -291,7 +293,7 @@ class _LastSyncedLabelState extends State<LastSyncedLabel> {
 
   @override
   Widget build(BuildContext context) {
-    if (widget.lastSyncStatusMs <= 0) return const SizedBox.shrink();
+    if (widget.lastSyncCompletedMs <= 0) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.only(top: 4),
       child: Row(
@@ -300,7 +302,7 @@ class _LastSyncedLabelState extends State<LastSyncedLabel> {
           Icon(Icons.schedule, size: 13, color: Colors.grey.shade600),
           const SizedBox(width: 6),
           Text(
-            'Last synced ${_relativeLabel(widget.lastSyncStatusMs)}',
+            'Last synced ${_relativeLabel(widget.lastSyncCompletedMs)}',
             style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
           ),
         ],

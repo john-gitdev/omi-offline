@@ -4,6 +4,10 @@ Patch releases are rolled up into their minor version. Each section reflects the
 
 ## App
 
+### 0.28
+
+- **Fix: "Last synced" and the sync notification no longer treat a skipped sync as completed.** The "Last synced …" line under the Conversations header now tracks only syncs that actually pulled data (complete or partial) — a cycle skipped because the Omi was out of range or Bluetooth was off no longer resets it, so it always reflects how current your recordings really are. Relatedly, tapping Sync while the Omi is unreachable previously settled the notification to "Last Sync: Complete" at the current time even though nothing was pulled from the device; such a run is now recorded as a skip ("Last Sync: Skipped"), matching how automatic background syncs already report skips, and it leaves the "Last synced" time where the last real sync put it.
+
 ### 0.27
 
 - **Fix: The "toggle Bluetooth to reconnect" wedge is now detected and broken automatically (Android).** Some phone Bluetooth stacks silently keep a leftover link to the Omi after the app disconnects. The Omi only supports one connection, so it believes it's still connected, stops advertising, and every reconnect attempt times out — previously only a manual Bluetooth off/on fixed it. Three layers now address this: ghost-link detection also checks the lower (ACL) level that the previous check couldn't see; after 3 consecutive silent connect timeouts the app force-flushes the stale link (a brief dummy connect-close, the in-app equivalent of a Bluetooth toggle) even when the OS claims no link exists; and if the device still hasn't reconnected after ~6 such timeouts, a one-time "Omi can't reconnect" notification suggests toggling Bluetooth (apps can't cycle it themselves since Android 13). The notification appears at most once per outage, clears itself on reconnect, and lives on its own "Connection problems" notification channel so it can be tuned or muted independently.
