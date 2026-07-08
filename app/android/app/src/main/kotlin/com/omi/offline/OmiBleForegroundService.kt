@@ -45,6 +45,24 @@ class OmiBleForegroundService : Service() {
         // GHOST_PURGE_SETTLE_MS lets the firmware re-advertise after the purge.
         private const val GHOST_PURGE_MIN_INTERVAL_MS = 10_000L
         private const val GHOST_PURGE_SETTLE_MS = 500L
+        // Wedge signature: consecutive connect attempts that died to OUR local timeout
+        // (status -1 — the stack never delivered any onConnectionStateChange callback).
+        // A peripheral whose single connection slot is held by a stale OS link produces
+        // exactly this: no advertisement to scan, no GATT callback, just silence
+        // (observed 2026-07-08: 30+ min of status -1 every ~60 s until a BT toggle).
+        // After WEDGE_FORCE_PURGE_AFTER of them in a row, run the dummy connect-close
+        // purge even when no system-held link is visible (see purgeGhostGattForAddress
+        // force param) — rate-limited on its own longer interval so an absent device
+        // doesn't churn a client interface every retry tick. After WEDGE_NOTIFY_AFTER
+        // (past the forced-purge threshold, so purges have already been tried), tell
+        // the user to toggle Bluetooth — apps can't cycle the adapter themselves since
+        // Android 13. One notification per outage: the flag resets only on a
+        // successful connect.
+        private const val WEDGE_FORCE_PURGE_AFTER = 3
+        private const val FORCED_GHOST_PURGE_MIN_INTERVAL_MS = 60_000L
+        private const val WEDGE_NOTIFY_AFTER = 6
+        private const val ALERT_CHANNEL_ID = "omi_ble_alerts"
+        private const val ALERT_NOTIFICATION_ID = 2002
         private const val COMPANION_RATE_LIMIT_MS = 15_000L
         private const val PREFS_NAME = "ble_config"
         private const val PREFS_KEY = "managed_device"
@@ -167,7 +185,16 @@ class OmiBleForegroundService : Service() {
         var bondClearTimeoutRunnable: Runnable? = null,
         // Timestamp of the last mid-retry ghost-GATT purge; rate-limits purges so a
         // persistent ghost can't churn Android client interfaces every retry tick.
-        var lastGhostPurgeMs: Long = 0
+        var lastGhostPurgeMs: Long = 0,
+        // Consecutive connect attempts that ended in our local timeout (status -1,
+        // no GATT callback at all) — the wedge signature. Reset only on a successful
+        // connect, NOT on re-manage: Dart re-manages every sync cycle and a wedge
+        // survives those, so resetting there would keep the count forever below the
+        // forced-purge/notify thresholds.
+        var consecutiveTimeoutFailures: Int = 0,
+        // True once the toggle-Bluetooth alert has been posted for the current outage;
+        // prevents re-alerting every retry. Cleared on successful connect.
+        var wedgeNotified: Boolean = false
     )
 
     private val managedDevices = ConcurrentHashMap<String, ManagedDevice>()
@@ -238,6 +265,8 @@ class OmiBleForegroundService : Service() {
                 Log.i(TAG, "onGattConnected: $addr")
                 managed.retryCount = 0
                 managed.lastGhostPurgeMs = 0
+                managed.consecutiveTimeoutFailures = 0
+                managed.wedgeNotified = false
                 managed.hasEverConnected = true
                 managed.pendingReconnect?.let { handler.removeCallbacks(it) }
                 managed.pendingReconnect = null
@@ -246,6 +275,10 @@ class OmiBleForegroundService : Service() {
                 managed.connectionStartTime = System.currentTimeMillis()
                 managed.currentGattHash = gatt.hashCode()
             }
+
+            // Outage over — retire this device's toggle-Bluetooth alert if one is
+            // showing (no-op when none was posted).
+            cancelWedgeAlert(addr)
 
             startStabilityTimer(addr)
             bleManager.startRssiKeepAlive(addr)
@@ -445,6 +478,9 @@ class OmiBleForegroundService : Service() {
 
         managed.pendingReconnect?.let { handler.removeCallbacks(it) }
         managed.stabilityTimerRunnable?.let { handler.removeCallbacks(it) }
+
+        // Intentional disconnect ends the outage this device's alert was about.
+        cancelWedgeAlert(addr)
 
         // Stop OS-level presence observation BEFORE closing the GATT. Without
         // this, OnePlus/Xiaomi stacks immediately re-establish a passive LE link
@@ -728,6 +764,20 @@ class OmiBleForegroundService : Service() {
 
         if (isDestroying || !isBluetoothEnabled) return
 
+        // Track the wedge signature (see WEDGE_* constants). Only status -1 counts —
+        // it means our local timeout fired with no onConnectionStateChange callback at
+        // all. A real status (133, 8, …) proves the stack is responding, which the
+        // slot-held wedge never does, so it breaks the streak.
+        if (status == -1) {
+            managed.consecutiveTimeoutFailures++
+            if (managed.consecutiveTimeoutFailures >= WEDGE_NOTIFY_AFTER && !managed.wedgeNotified) {
+                managed.wedgeNotified = true
+                postWedgeNotification(addr)
+            }
+        } else {
+            managed.consecutiveTimeoutFailures = 0
+        }
+
         managed.retryCount++
         // Exponential backoff: 1.5 → 3 → 6 → 12 → 24 → 30 s (capped). Replaces the prior
         // fixed 1.5 s delay, whose rapid connectGatt/closeGatt churn was the most common
@@ -748,9 +798,16 @@ class OmiBleForegroundService : Service() {
                 // closeGatt. If a stale system link still holds the firmware's slot, purge
                 // it, then reconnect after a short settle so the firmware can re-advertise.
                 // Rate-limited so a persistent ghost can't churn client interfaces per tick.
+                // Once the wedge signature is established (consecutive callback-less
+                // timeouts), purge unconditionally — some OEM stacks hold the link where
+                // neither the GATT list nor the ACL query sees it — on the longer forced
+                // interval so a merely-absent device costs at most one dummy connect-close
+                // a minute.
                 val now = System.currentTimeMillis()
-                if (now - managed.lastGhostPurgeMs >= GHOST_PURGE_MIN_INTERVAL_MS &&
-                    bleManager.purgeGhostGattForAddress(addr)
+                val forcePurge = managed.consecutiveTimeoutFailures >= WEDGE_FORCE_PURGE_AFTER
+                val purgeInterval = if (forcePurge) FORCED_GHOST_PURGE_MIN_INTERVAL_MS else GHOST_PURGE_MIN_INTERVAL_MS
+                if (now - managed.lastGhostPurgeMs >= purgeInterval &&
+                    bleManager.purgeGhostGattForAddress(addr, force = forcePurge)
                 ) {
                     managed.lastGhostPurgeMs = now
                     Log.i(TAG, "Ghost GATT purged for $addr; reconnecting after ${GHOST_PURGE_SETTLE_MS}ms settle")
@@ -1092,6 +1149,51 @@ class OmiBleForegroundService : Service() {
         channel.setSound(null, null)
         channel.enableVibration(false)
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+
+        // Separate channel for the rare actionable alert (toggle Bluetooth). Distinct
+        // from the silent ongoing status channel so the user can tune or disable it
+        // independently, and so it may actually alert (DEFAULT importance).
+        val alerts = NotificationChannel(ALERT_CHANNEL_ID, "Connection problems", NotificationManager.IMPORTANCE_DEFAULT)
+        alerts.enableVibration(false)
+        getSystemService(NotificationManager::class.java).createNotificationChannel(alerts)
+    }
+
+    /// One-shot, dismissible alert telling the user how to break the wedge. Deliberately
+    /// NOT routed through updateNativeNotification: that renders the ongoing foreground
+    /// status line, whose text Dart may own (dartDrivesNotification) and whose settle
+    /// machinery (SyncAlarmReceiver) rewrites it — a separate notification can't be
+    /// clobbered by either. Posted at most once per outage (wedgeNotified guard).
+    private fun postWedgeNotification(address: String) {
+        Log.w(TAG, "Wedge suspected for $address — posting toggle-Bluetooth alert")
+        try {
+            val intent = packageManager.getLaunchIntentForPackage(packageName)
+            // requestCode 1: distinct from the status notification's PendingIntent
+            // (requestCode 0) so the two never collapse onto one another.
+            val pi = PendingIntent.getActivity(this, 1, intent, PendingIntent.FLAG_IMMUTABLE)
+            val text = "Your phone's Bluetooth may be stuck. If your Omi is nearby, " +
+                "toggle Bluetooth off and on to reconnect."
+            val notif = NotificationCompat.Builder(this, ALERT_CHANNEL_ID)
+                .setContentTitle("Omi can't reconnect")
+                .setContentText(text)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                .setSmallIcon(applicationInfo.icon)
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(true)
+                .setContentIntent(pi)
+                .build()
+            // Tagged with the device address so one alert per wedged device: with two
+            // managed Omis, device A reconnecting must not clear device B's still-valid
+            // alert (cancelWedgeAlert cancels only its own tag).
+            getSystemService(NotificationManager::class.java)?.notify(address, ALERT_NOTIFICATION_ID, notif)
+        } catch (e: Exception) {
+            Log.w(TAG, "postWedgeNotification failed: ${e.message}")
+        }
+    }
+
+    private fun cancelWedgeAlert(address: String) {
+        try {
+            getSystemService(NotificationManager::class.java)?.cancel(address, ALERT_NOTIFICATION_ID)
+        } catch (_: Exception) {}
     }
 
     private fun buildNotification(title: String, text: String): Notification {
