@@ -6,6 +6,7 @@
 - [1. BLE stability: partial syncs, stuck notifications [medium] [Active]](#1-ble-stability-partial-syncs-stuck-notifications-medium-active)
 ### PENDING
 - [2. Device-driven BLE wake (firmware + iOS) [large] [Pending]](#2-device-driven-ble-wake-firmware-ios-large-pending)
+- [4. Streaming WAV stitch — fix OOM on long-recording merge [small] [Pending]](#4-streaming-wav-stitch--fix-oom-on-long-recording-merge-small-pending)
 ### DEFERRED
 - [3. iOS code signing & non-jailbroken distribution [medium] [Deferred]](#3-ios-code-signing-non-jailbroken-distribution-medium-deferred)
 
@@ -199,6 +200,28 @@ Highest-leverage cheap validation: **Phase 1 window scheduler + Phase 2 standing
 - `app/lib/pages/settings/button_config_page.dart` — expose "Wake for Sync" as a selectable button action (default single tap).
 - `app/lib/pages/settings/app_settings_page.dart` — add the **Dark Mode** toggle (writes `enabled`); the existing "Auto Sync Interval" dropdown (15/30/60 / Manual Only, ~`:248`) already supplies the cadence — Manual Only = button-only. The staleness banner lives wherever sync status surfaces (home/recordings).
 - Android (phase 3, optional): `OmiBleForegroundService.kt`, `BackgroundSyncWorker.kt`, `SyncAlarmReceiver.kt`.
+
+### 4. Streaming WAV stitch — fix OOM on long-recording merge [small] [Pending]
+
+Observed 2026-07-08 00:39:06 (device log): `RecordingsManager: Stitch failed: Out of Memory` while stitching a draft onto a 2-hour recording (`recording_1783461803610.wav`, 7,353,745 ms of 16 kHz mono 16-bit PCM ≈ 235 MB).
+
+#### What happens today (no data loss, but conversations split)
+`_stitchWav` loads **both entire WAVs into RAM plus a combined copy** — peak ≈ 2× the combined file size (~½ GB in the observed case) — so it hard-fails on exactly the long recordings the stitch matters most for. The failure path is clean: the OOM throws before `draftFile.openWrite()` is reached (all allocation-heavy steps precede the write), so the draft is untouched on disk; `_performStitch`'s catch finalizes the draft as its own recording (`_draft.wav` → `.wav`, meta promoted, EDLs re-pointed). Net effect: one continuous conversation surfaces as **two separate recordings** with no inserted gap — cosmetic, not data loss. The finalized file even uploads fine afterwards.
+
+#### Proposed fix
+Stream instead of materializing:
+1. Open the draft in **append** mode (never rewrite its existing PCM — today's truncate-and-rewrite of the draft's own bytes is redundant work anyway).
+2. Write the silence gap, then copy the next file's PCM through in chunks (~64 KB).
+3. Patch the WAV header size fields in place afterwards (`RandomAccessFile`, RIFF size at offset 4, data size at offset 40).
+4. **Rollback on failure:** record the draft's original length first; on any mid-stream error, `RandomAccessFile.truncate(originalLen)` restores the draft exactly, then fall back to the existing finalize-separately path. This is the one property the in-memory version got for free (all-or-nothing) that streaming must implement explicitly — without it, a crash mid-append leaves junk trailing bytes and a retry would double-append.
+5. Only run the post-write steps (`_mergeMeta`, `_reanchorMarkerEdls`, delete `nextFile`) after a *verified* complete append.
+
+Trade-offs accepted: a small partial-write crash window (mitigated by the truncate-back rollback; an unpatched header still describes the original length, so players ignore a partial tail), and a bit more code. Performance is a wash or better (no giant allocation / GC pressure); final disk footprint identical.
+
+Same pattern applies to `_stitchBinIfPresent`, which reads the whole next Opus bin into RAM before appending — less urgent (bins are ~30× smaller than PCM) but trivial to convert while in there.
+
+#### Relevant files
+- `app/lib/services/recordings_manager.dart` — `_stitchWav` (~`:1465`, the in-memory read/combine/write), `_performStitch` (~`:1441`, catch → `_finalizeDraft` fallback to keep), `_stitchBinIfPresent` (~`:1528`, whole-bin `readAsBytes` append), `_finalizeDraft` (~`:1290`, unchanged fallback), `_mergeMeta` / `_reanchorMarkerEdls` (post-write steps that must gate on verified append).
 
 ---
 
