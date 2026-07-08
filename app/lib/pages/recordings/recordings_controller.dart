@@ -11,6 +11,7 @@ import 'package:omi/services/vad_audio_processor.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/wals/wal_interfaces.dart';
+import 'package:omi/services/devices/errors.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:omi/pages/recordings/passthrough_integration.dart';
 import 'package:omi/pages/recordings/integration_upload_manager.dart';
@@ -158,6 +159,17 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   bool _isForcePipeline = false;
   bool get isForcePipeline => _isForcePipeline;
+
+  // Whether the device was actually reached during the current run. A run that
+  // attempts a device sync (_runPipeline / _runForcePipeline) resets this to
+  // false and flips it true once the sync connects; a run that only processes
+  // local bins (Force Process / resume / retry) leaves it true. When it stays
+  // false — a manual sync while the Omi is out of range or Bluetooth is off —
+  // the outcome is recorded as a skip (like the background auto-sync path)
+  // instead of a completion, so the notification reads "Last Sync: Skipped" and
+  // the "Last synced" clock (lastSyncCompletedMs) isn't bumped by a run that
+  // pulled nothing from the device.
+  bool _deviceReached = true;
 
   // When the user cancels mid-sync they pick whether to process what already
   // downloaded (true) or stop everything (false). Disconnects never set this —
@@ -669,6 +681,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _pipelineCompleter = Completer<void>();
     _isForcePipeline = false;
     _isUserTriggered = true;
+    // Process-only run (no device sync) — it completes on its own merits.
+    _deviceReached = true;
     unawaited(_runProcessing().whenComplete(() => _isUserTriggered = false));
     return _pipelineCompleter?.future;
   }
@@ -682,6 +696,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _pipelineCompleter = Completer<void>();
     _isForcePipeline = true;
     _isUserTriggered = true;
+    // Process-only run (no device sync) — it completes on its own merits.
+    _deviceReached = true;
     unawaited(
       _runProcessing().whenComplete(() {
         _isUserTriggered = false;
@@ -716,6 +732,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _isUserTriggered = true;
     _isForcePipeline = true;
     _processAfterCancel = false;
+    _deviceReached = false;
     _lastActiveStage = 'syncing';
 
     _totalCount = 0;
@@ -733,8 +750,14 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     SyncLocalFilesResponse? result;
     try {
       result = await syncs.rotateAndSync(progress: this);
+      _deviceReached = true;
       _prefs.lastSyncPartial = result?.isPartial ?? false;
     } catch (e) {
+      // A connection-null throw means we never reached the device (out of range
+      // / BT off); anything else means we connected but the transfer failed —
+      // still a real (partial) sync, so keep _deviceReached false only for the
+      // former.
+      _deviceReached = e is! DeviceConnectionException;
       if (gen != _pipelineGeneration) return; // watchdog already recovered
       if (_spState == SyncProcessState.stopping) {
         // User cancelled — honor the choice they made in the cancel dialog.
@@ -788,6 +811,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (_spState != SyncProcessState.resume) return;
     if (_lastCompletedStage == 'syncing') {
       _isUserTriggered = true;
+      // The syncing stage already completed — resuming only processing.
+      _deviceReached = true;
       unawaited(_runProcessing().whenComplete(() => _isUserTriggered = false));
     } else {
       unawaited(_runPipeline()); // _runPipeline manages _isUserTriggered itself
@@ -798,6 +823,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (_spState != SyncProcessState.error) return;
     if (_lastActiveStage == 'processing' && _lastCompletedStage == 'syncing') {
       _isUserTriggered = true;
+      // The syncing stage already completed — retrying only processing.
+      _deviceReached = true;
       unawaited(_runProcessing().whenComplete(() => _isUserTriggered = false));
     } else {
       unawaited(_runPipeline()); // _runPipeline manages _isUserTriggered itself
@@ -808,6 +835,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final int gen = _pipelineGeneration;
     _isUserTriggered = true;
     _processAfterCancel = false;
+    _deviceReached = false;
     _lastActiveStage = 'syncing';
 
     final syncs = ServiceManager.instance().wal.getSyncs();
@@ -829,11 +857,15 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     try {
       final result = await syncs.syncAll(progress: this);
+      _deviceReached = true;
       _prefs.lastSyncPartial = result?.isPartial ?? false;
       if (result == null) {
         Logger.debug('RecordingsController: syncAll returned null (no new segments)');
       }
     } catch (e) {
+      // See _runForcePipeline: a connection-null throw = never reached the
+      // device (skip); any other throw = connected but interrupted (partial).
+      _deviceReached = e is! DeviceConnectionException;
       if (gen != _pipelineGeneration) return; // watchdog already recovered
       if (_spState == SyncProcessState.stopping) {
         // User cancelled — honor the choice they made in the cancel dialog.
@@ -920,10 +952,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final hasMarkers = processableBatches.any((b) => b.markerTimestamps.isNotEmpty);
 
     if (activeBatches.isEmpty && !(_isForcePipeline && hasDrafts) && !hasMarkers) {
-      _prefs.lastSyncSkipped = false;
-      _prefs.lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
-      _prefs.lastSyncStatusMs = DateTime.now().millisecondsSinceEpoch;
-      await _finishSuccess();
+      await _finishPipelineRun();
       return;
     }
 
@@ -999,10 +1028,38 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _persistProgress();
     await RecordingsManager.pruneConsumedBins();
     await reloadBatchesSilently();
-    _prefs.lastSyncSkipped = false;
-    _prefs.lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
-    _prefs.lastSyncStatusMs = DateTime.now().millisecondsSinceEpoch;
-    await _finishSuccess();
+    await _finishPipelineRun();
+  }
+
+  /// Record the outcome of a finished pipeline run and settle the UI. When the
+  /// device was reached this run, it's a real sync completion (Complete/Partial
+  /// per [lastSyncPartial]) that stamps [lastSyncCompletedMs] and shows the
+  /// success banner. When it was never reached — a manual sync while the Omi is
+  /// out of range or Bluetooth is off — record a skip instead (mirroring the
+  /// background auto-sync path): flag [lastSyncSkipped], stamp only
+  /// [lastSyncStatusMs] so the notification reads "Last Sync: Skipped", leave
+  /// [lastSyncCompletedMs] untouched (nothing was pulled), and settle straight
+  /// to idle with no "complete" banner.
+  Future<void> _finishPipelineRun() async {
+    // Idempotent (Set-based) — the main processing path already released, but the
+    // "nothing to process" early-return reaches here still holding it.
+    _releaseWakelock();
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (_deviceReached) {
+      _prefs.lastSyncSkipped = false;
+      _prefs.lastSyncCompletedMs = now;
+      _prefs.lastSyncStatusMs = now;
+      await _finishSuccess();
+      return;
+    }
+    _prefs.lastSyncSkipped = true;
+    _prefs.lastSyncStatusMs = now;
+    _isForcePipeline = false;
+    _transitionTo(SyncProcessState.idle);
+    if (_isAppForeground()) {
+      _settleNotification();
+    }
+    unawaited(reloadBatchesSilently());
   }
 
   /// Resolves a user cancel once the sync has unwound: continue into processing
@@ -1065,6 +1122,15 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final hasMarkers = _batches.any((b) => b.markerTimestamps.isNotEmpty);
     if (!hasBins && !hasMarkers) {
       _isUserTriggered = false;
+      // Never reached the device (out of range / BT off) with nothing already on
+      // disk: the intended outcome is a skip, not a sync error. The with-bins
+      // path reaches _finishPipelineRun through _runProcessing and skips there;
+      // do the same here so both cases read "Last Sync: Skipped" instead of one
+      // skipping and the other popping an error banner.
+      if (!_deviceReached) {
+        await _finishPipelineRun();
+        return;
+      }
       _releaseWakelock();
       if (_isAppForeground()) {
         _settleNotification();
