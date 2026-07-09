@@ -366,12 +366,19 @@ static atomic_t last_storage_drop_uptime_ms = ATOMIC_INIT(0);
  *     with success the moment it receives CONNECT_IND, so the host takes the
  *     err = 0 path and only learns of the failure at disconnect.
  *
- * The pair is the discriminator. After an outage: estab_fail_count > 0 means the
- * Omi *did* receive the CONNECT_INDs and the link died at establishment (points at
- * the peripheral controller / RF / coexistence). Both counters flat means the Omi
- * never heard the CONNECT_INDs at all (deaf RX, or nothing usable reached the air),
- * which puts the fault on the central. Pairing with the advertising mode in effect
- * tells us whether either correlates with slow (1 s) advertising. */
+ * The pair is the discriminator, and only their *movement* discriminates: both are
+ * persisted to flash and re-seeded from it in transport_start(), so they accumulate
+ * for the life of the device and a nonzero absolute value says nothing about the
+ * outage in front of you. Compare a reading taken after the outage against one from
+ * before it (the app keeps such a baseline — see sync_page.dart's estab_fail_baseline,
+ * which likewise survives reboot).
+ *
+ * estab_fail_count *rose* across the outage: the Omi did receive the CONNECT_INDs and
+ * the link died at establishment (points at the peripheral controller / RF /
+ * coexistence). Both counters unchanged: the Omi never heard the CONNECT_INDs at all
+ * (deaf RX, or nothing usable reached the air), which puts the fault on the central.
+ * Pairing with the advertising mode in effect tells us whether either correlates with
+ * slow (1 s) advertising. */
 static atomic_t failed_conn_count = ATOMIC_INIT(0);
 static atomic_t estab_fail_count = ATOMIC_INIT(0);
 static const char *current_adv_mode = "fast"; /* boot + post-disconnect both start fast */
@@ -408,7 +415,9 @@ static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_ha
 //   [uint32 sd_stream_drops]       stat_dropped_frames from sd_card.c (queue-full audio frame drops)
 //   [uint32 sd_boot_drops]         frames lost during SD mount/boot window
 //   [uint32 current_uptime_ms]     k_uptime_get() at the moment of read
-//   [uint32 conn_fails]            BLE connection-establishment failures (offset 20)
+//   [uint32 conn_fails]            connect attempts the host reported as failed outright,
+//                                  i.e. the connected callback fired with err != 0 (offset 20).
+//                                  NOT establishment failures — those are estab_fail_count.
 //   [uint32 last_failed_adv_slow]  1 if last conn fail was during slow adv (offset 24)
 //   [uint32 codec_drops]           PCM blocks dropped before encode, ring-full (offset 28)
 //   [uint32 sd_msgq_peak_depth]    high-water mark of sd_msgq occupancy / SD_REQ_QUEUE_MSGS (offset 32)
