@@ -895,6 +895,12 @@ Three events land in the `omi_debug_*.log` that `DebugLogManager` owns, in its o
 - `peripheral_advertising` → the phone can plainly hear the Omi while every connect dies at establishment. Its TX and our RX both work; the link dies in the handshake between them.
 - `no_advertisements_heard` → either the Omi's radio stopped or the phone's never listened. Cross-check against the device's `estab_fail_count`.
 
+**The verdict also gates the toggle-Bluetooth alert**, so the probe is load-bearing and runs even when file logging is off. Six failures alone do not mean a wedge — an out-of-range, powered-off, or otherwise-connected Omi produces the same streak, and Android reports the same generic `133` for a device that isn't there as for one whose links keep dying. Only `peripheral_advertising` means "present and unreachable", the one case where toggling Bluetooth is sensible advice. Every path where the probe cannot run reports `true`, preserving the pre-probe behaviour.
+
+**Two counter invariants, both load-bearing:**
+- The streak clears in `onGattServicesDiscovered`, **not** `onGattConnected`. `onGattConnected` fires on `newState == STATE_CONNECTED` with the GATT `status` ignored, so a link that comes up and dies — the exact failure being detected — would reset the streak on the way past and it could never reach `WEDGE_NOTIFY_AFTER`. The observed "connects, then service discovery times out at 30 s" loop does precisely this. Services discovered is the first point the link has demonstrably carried traffic.
+- `wedgeDetected` latches at *detection*, not at notification. It is what makes capture once-per-outage; whether an alert follows is the probe's call.
+
 The device's own counter cannot be read during an outage, by definition. Dart's `_finishDeviceSetup` logs it on the next successful connect, right after `ble_wedge_recovered` — which is why both halves of the picture end up in one file.
 
 **Constraints that shaped this, so nobody tries to "improve" it:**
