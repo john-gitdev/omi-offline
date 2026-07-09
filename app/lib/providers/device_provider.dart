@@ -1461,17 +1461,26 @@ class DeviceProvider extends ChangeNotifier
         }
       }
 
-      // Log the persisted BLE connect-failure counter on every connect so it
-      // lands in 'Save Diagnostic Logs to File'. The count survives a reboot, so
-      // after power-cycling to reconnect, this captures failures from before the
-      // reboot. See NOTES.md "BLE: advertising but won't connect". Skip if a sync
-      // is already transferring — a GATT read racing the storage stream throws
-      // Error 133 on Android (next connect logs it instead).
+      // Log the persisted BLE connect-failure counters on every connect so they land
+      // in 'Save Diagnostic Logs to File'. The counts survive a reboot, so after
+      // power-cycling to reconnect, this captures failures from before the reboot.
+      // See NOTES.md "BLE: advertising but won't connect". Skip if a sync is already
+      // transferring — a GATT read racing the storage stream throws Error 133 on
+      // Android (next connect logs it instead).
+      //
+      // Logged whatever the values are, including all-zero. Counters that did not move
+      // across an outage are the reading that acquits the peripheral — it never heard
+      // the CONNECT_INDs — and are exactly as diagnostic as counters that did. Gating
+      // on `> 0` made that case indistinguishable from a read that never happened.
+      // The counters are cumulative across boots, so only their movement between two
+      // consecutive lines means anything.
       final dropStats = conn.isStorageBusy ? null : await conn.getDropStats();
-      if (dropStats != null && (dropStats.failedConnCount > 0 || dropStats.estabFailCount > 0)) {
-        Logger.warning('Device BLE connect-fail counters: conn=${dropStats.failedConnCount} '
-            'estab_0x3e=${dropStats.estabFailCount} '
-            '(last failure during ${dropStats.lastFailedConnDuringSlowAdv ? "slow" : "fast"} advertising)');
+      if (dropStats != null) {
+        if (dropStats.failedConnCount > 0 || dropStats.estabFailCount > 0) {
+          Logger.warning('Device BLE connect-fail counters: conn=${dropStats.failedConnCount} '
+              'estab_0x3e=${dropStats.estabFailCount} '
+              '(last failure during ${dropStats.lastFailedConnDuringSlowAdv ? "slow" : "fast"} advertising)');
+        }
         await DebugLogManager.logEvent('device_conn_fail', {
           'failed_conn_count': dropStats.failedConnCount,
           'estab_fail_count': dropStats.estabFailCount,
