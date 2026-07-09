@@ -61,8 +61,19 @@ class OmiBleForegroundService : Service() {
         // by tearing down every other host-side LE link, not by repairing the Omi: the failure
         // is `0x3e`, a link that comes up and dies before the first six connection events.
         // Counted on any failed attempt, not on our synthetic -1 — see the timeout constants
-        // above. Once per outage; the latch clears only once services are discovered.
+        // above. The alert is posted at most once per outage; the streak, the alert latch and
+        // the probe schedule all clear only once services are discovered.
         private const val WEDGE_NOTIFY_AFTER = 6
+
+        // A probe that heard no advertisements is repeated after this many further failures.
+        // An Omi that was out of range when the outage began can walk back into range and
+        // start failing at establishment, and nothing else would ever re-examine it: the
+        // streak does not clear until services are discovered. The interval is far wider than
+        // WEDGE_NOTIFY_AFTER because the common reason for silence is an Omi that is simply
+        // switched off or at home, and each probe is an 8 s full-duty scan. Once the retry
+        // backoff saturates at 30 s this works out to roughly one probe per 15 minutes.
+        // No further probes run once the alert is posted — the verdict is in by then.
+        private const val WEDGE_REPROBE_AFTER = 30
         private const val ALERT_CHANNEL_ID = "omi_ble_alerts"
         private const val ALERT_NOTIFICATION_ID = 2002
         private const val COMPANION_RATE_LIMIT_MS = 15_000L
@@ -193,11 +204,19 @@ class OmiBleForegroundService : Service() {
         // survives those, so resetting there would keep the count forever below the
         // notify threshold.
         var consecutiveConnectFailures: Int = 0,
-        // True once the current outage has been detected, captured, and adjudicated for an
-        // alert; prevents re-capturing every retry. Note this latches at *detection*, not at
-        // notification — whether the alert is actually posted depends on the advertising
-        // probe. Cleared once services are discovered on a later connect.
+        // True once the current outage has been detected and captured. Note this latches at
+        // *detection*, not at notification — whether the alert is posted depends on the
+        // advertising probe. Cleared once services are discovered on a later connect.
         var wedgeDetected: Boolean = false,
+        // Failure count at which the next advertising probe runs: WEDGE_NOTIFY_AFTER for the
+        // first, then every WEDGE_REPROBE_AFTER further failures until the probe hears the
+        // Omi and the alert goes out. A probe that hears nothing must not mute the outage
+        // forever — see WEDGE_REPROBE_AFTER.
+        var nextWedgeProbeAt: Int = WEDGE_NOTIFY_AFTER,
+        // True once the toggle-Bluetooth alert has been posted for the current outage, so a
+        // re-probe that confirms the same wedge doesn't re-raise a notification the user
+        // already dismissed.
+        var wedgeAlertPosted: Boolean = false,
         // elapsedRealtime() when the current outage was first detected, so recovery can
         // report how long it lasted. 0 when no outage is open.
         var wedgeStartedAtMs: Long = 0
@@ -269,7 +288,6 @@ class OmiBleForegroundService : Service() {
                 val managed = managedDevices[addr] ?: return
 
                 Log.i(TAG, "onGattConnected: $addr")
-                managed.retryCount = 0
                 managed.lastGhostPurgeMs = 0
                 managed.hasEverConnected = true
                 managed.pendingReconnect?.let { handler.removeCallbacks(it) }
@@ -280,13 +298,18 @@ class OmiBleForegroundService : Service() {
                 managed.currentGattHash = gatt.hashCode()
             }
 
-            // NOTE: the outage streak is deliberately NOT cleared here. This callback fires
-            // on newState == STATE_CONNECTED with the GATT `status` ignored (see
-            // OmiBleManager.createGattCallback), so a link that comes up and immediately dies
-            // — precisely the failure this detector exists to catch — would reset the streak
-            // to 0 on the way past and it could never reach WEDGE_NOTIFY_AFTER. The observed
-            // "connects, then service discovery times out at 30 s" loop does exactly this.
-            // The streak clears in onGattServicesDiscovered, where the link is proven usable.
+            // NOTE: neither the outage streak nor the retry backoff is cleared here. This
+            // callback fires on newState == STATE_CONNECTED with the GATT `status` ignored
+            // (see OmiBleManager.createGattCallback), so a link that comes up and immediately
+            // dies — precisely the failure this detector exists to catch — would reset both on
+            // the way past: the streak could never reach WEDGE_NOTIFY_AFTER, and retryCount
+            // would pin the backoff at its 1.5 s floor, churning connectGatt/closeGatt at the
+            // rate that wedges the Bluetooth daemon in the first place. The observed "connects,
+            // then service discovery times out at 30 s" loop does exactly this. Both clear in
+            // onGattServicesDiscovered, where the link is proven to have carried traffic.
+            // A link that stays up but never discovers services is still covered: the stability
+            // timer below, and handleDisconnection's duration check, both clear retryCount once
+            // the connection has lasted STABILITY_TIMER_MS.
 
             startStabilityTimer(addr)
             bleManager.startRssiKeepAlive(addr)
@@ -310,7 +333,7 @@ class OmiBleForegroundService : Service() {
 
             // The outage ends here, not at onGattConnected: this is the first point at which
             // the link has demonstrably carried traffic, so a link that comes up and dies can
-            // never clear the streak. Snapshot under the lock, emit after.
+            // never clear the streak or the backoff. Snapshot under the lock, emit after.
             var recoveredFromWedge = false
             var wedgeStartedAtMs = 0L
             var failuresBeforeRecovery = 0
@@ -319,7 +342,10 @@ class OmiBleForegroundService : Service() {
                 wedgeStartedAtMs = managed.wedgeStartedAtMs
                 failuresBeforeRecovery = managed.consecutiveConnectFailures
                 managed.consecutiveConnectFailures = 0
+                managed.retryCount = 0
                 managed.wedgeDetected = false
+                managed.wedgeAlertPosted = false
+                managed.nextWedgeProbeAt = WEDGE_NOTIFY_AFTER
                 managed.wedgeStartedAtMs = 0
             }
 
@@ -801,14 +827,43 @@ class OmiBleForegroundService : Service() {
 
         if (isDestroying || !isBluetoothEnabled) return
 
-        // Any failed attempt counts. The previous rule (only status -1) keyed the outage
-        // detector on our own local timeout, which fired before Android could deliver a
-        // real status — so a genuine 0x3e storm looked like stack silence and never
-        // tripped the streak. See the timeout constants and NOTES.md.
-        managed.consecutiveConnectFailures++
-        if (managed.consecutiveConnectFailures >= WEDGE_NOTIFY_AFTER && !managed.wedgeDetected) {
-            managed.wedgeDetected = true
-            managed.wedgeStartedAtMs = android.os.SystemClock.elapsedRealtime()
+        // These counters are read and cleared under syncLock by onGattServicesDiscovered, on a
+        // different binder thread, so the writes take the lock too. The probe is started after
+        // the lock is released: it kicks off an LE scan and posts to the main thread, and none
+        // of that belongs under a lock this hot.
+        var startProbe = false
+        var failures = 0
+        var retries = 0
+        var backoffDelay = 0L
+        synchronized(syncLock) {
+            // Any failed attempt counts. The previous rule (only status -1) keyed the outage
+            // detector on our own local timeout, which fired before Android could deliver a
+            // real status — so a genuine 0x3e storm looked like stack silence and never
+            // tripped the streak. See the timeout constants and NOTES.md.
+            managed.consecutiveConnectFailures++
+            // Re-probe only while the probe still has something to decide. Once the alert is
+            // posted the verdict is in, and further 8 s low-latency scans would add radio load
+            // to an outage this service is otherwise trying to stop aggravating.
+            if (managed.consecutiveConnectFailures >= managed.nextWedgeProbeAt && !managed.wedgeAlertPosted) {
+                managed.nextWedgeProbeAt = managed.consecutiveConnectFailures + WEDGE_REPROBE_AFTER
+                if (!managed.wedgeDetected) {
+                    managed.wedgeDetected = true
+                    managed.wedgeStartedAtMs = android.os.SystemClock.elapsedRealtime()
+                }
+                startProbe = true
+            }
+            managed.retryCount++
+            failures = managed.consecutiveConnectFailures
+            retries = managed.retryCount
+            // Exponential backoff: 1.5 → 3 → 6 → 12 → 24 → 30 s (capped). Replaces the prior
+            // fixed 1.5 s delay, whose rapid connectGatt/closeGatt churn was the most common
+            // trigger for the Android Bluetooth daemon wedging on Samsung/Qualcomm/MediaTek
+            // stacks. retryCount resets once services are discovered, so the backoff resets
+            // with the streak rather than on a link that merely came up.
+            backoffDelay = minOf(RECONNECT_DELAY_MS shl minOf(managed.retryCount - 1, 5), 30_000L)
+        }
+
+        if (startProbe) {
             // Snapshot the outage into the debug log now, while it is happening. An outage
             // that starts overnight is over by the time anyone can attach adb, and its most
             // informative state — whether we can still hear the peripheral advertising —
@@ -817,8 +872,8 @@ class OmiBleForegroundService : Service() {
                 context = this,
                 bleManager = bleManager,
                 address = addr,
-                consecutiveFailures = managed.consecutiveConnectFailures,
-                retryCount = managed.retryCount,
+                consecutiveFailures = failures,
+                retryCount = retries,
                 lastStatus = status,
             ) { advertisingHeard ->
                 // The alert tells the user to toggle Bluetooth, which only helps when the Omi
@@ -832,19 +887,27 @@ class OmiBleForegroundService : Service() {
                     Log.i(TAG, "Outage on $addr but no advertisements heard — device absent, not a wedge; no alert")
                     return@captureWedge
                 }
-                // 8 s elapsed inside the probe; re-check nothing resolved meanwhile.
-                val stillWedged = managedDevices[addr]?.wedgeDetected == true && !bleManager.isPeripheralConnected(addr)
-                if (stillWedged) postWedgeNotification(addr)
+                // 8 s elapsed inside the probe; re-check nothing resolved meanwhile. The test
+                // is wedgeDetected, the same criterion the recovery path uses — asking
+                // isPeripheralConnected() would call the outage over the moment the link layer
+                // came up, and a link that comes up and dies before service discovery is the
+                // exact failure being detected. With a backoff floor of 1.5 s that link can
+                // easily reappear inside the 8 s probe window, and the alert would be
+                // suppressed for an outage that never ends.
+                val post = synchronized(syncLock) {
+                    val m = managedDevices[addr]
+                    if (m != null && m.wedgeDetected && !m.wedgeAlertPosted) {
+                        m.wedgeAlertPosted = true
+                        true
+                    } else {
+                        false
+                    }
+                }
+                if (post) postWedgeNotification(addr)
             }
         }
 
-        managed.retryCount++
-        // Exponential backoff: 1.5 → 3 → 6 → 12 → 24 → 30 s (capped). Replaces the prior
-        // fixed 1.5 s delay, whose rapid connectGatt/closeGatt churn was the most common
-        // trigger for the Android Bluetooth daemon wedging on Samsung/Qualcomm/MediaTek
-        // stacks. retryCount resets to 0 on a successful connect, so the backoff resets too.
-        val backoffDelay = minOf(RECONNECT_DELAY_MS shl minOf(managed.retryCount - 1, 5), 30_000L)
-        Log.i(TAG, "Retry #${managed.retryCount} for $addr in ${backoffDelay}ms (status=$status)")
+        Log.i(TAG, "Retry #$retries for $addr in ${backoffDelay}ms (status=$status)")
 
         val runnable = Runnable {
             // Atomic with manageDevice's guard: an external manageDevice call must see
@@ -881,7 +944,7 @@ class OmiBleForegroundService : Service() {
                 }
             }
         }
-        managed.pendingReconnect = runnable
+        synchronized(syncLock) { managed.pendingReconnect = runnable }
         handler.postDelayed(runnable, backoffDelay)
     }
 
@@ -1218,7 +1281,7 @@ class OmiBleForegroundService : Service() {
     /// NOT routed through updateNativeNotification: that renders the ongoing foreground
     /// status line, whose text Dart may own (dartDrivesNotification) and whose settle
     /// machinery (SyncAlarmReceiver) rewrites it — a separate notification can't be
-    /// clobbered by either. Posted at most once per outage (wedgeDetected guard), and only
+    /// clobbered by either. Posted at most once per outage (wedgeAlertPosted guard), and only
     /// when the advertising probe confirms the Omi is actually present — see handleRetryLogic.
     private fun postWedgeNotification(address: String) {
         Log.w(TAG, "Wedge suspected for $address — posting toggle-Bluetooth alert")
