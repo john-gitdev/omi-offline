@@ -94,6 +94,14 @@ object WedgeDiagnostics {
         UNAVAILABLE,
     }
 
+    /** The verdict as it appears in the debug log. One name per case, one place to change it. */
+    private fun ProbeVerdict.logName(): String = when (this) {
+        ProbeVerdict.ADVERTISING -> "peripheral_advertising"
+        ProbeVerdict.SILENT -> "no_advertisements_heard"
+        ProbeVerdict.INCONCLUSIVE -> "scan_failed"
+        ProbeVerdict.UNAVAILABLE -> "probe_unavailable"
+    }
+
     private const val TAG = "OmiBle.WedgeDiag"
 
     /** How long to listen for the peripheral's advertisements once wedged. */
@@ -210,8 +218,10 @@ object WedgeDiagnostics {
     /**
      * Snapshot the outage, then probe the air for the peripheral's advertisements.
      *
-     * Emits `ble_wedge` immediately (so the state survives even if the process dies
-     * mid-probe) and `ble_wedge_scan_probe` [PROBE_DURATION_MS] later.
+     * Emits `ble_wedge` immediately (so the state survives even if the process dies mid-probe)
+     * and exactly one `ble_wedge_scan_probe` once the probe resolves — [PROBE_DURATION_MS] later
+     * if it scanned, right away if it could not. Every outage record therefore carries its own
+     * verdict, and a missing one means the process died rather than that the probe stayed silent.
      *
      * [onProbeComplete] receives a [ProbeVerdict] for [address], on the main thread, once the
      * probe window closes. This is the caller's cue to decide whether the outage is a wedge
@@ -309,7 +319,9 @@ object WedgeDiagnostics {
      * Early returns post to the main thread rather than calling back inline: [captureWedge]
      * runs on whatever thread the disconnect arrived on — a GATT binder thread, in the common
      * case — and a callback whose thread depends on which branch it took is a trap for the
-     * next caller.
+     * next caller. They also log their verdict before returning: an outage record that holds a
+     * `ble_wedge` with no `ble_wedge_scan_probe` after it cannot be told apart from one where
+     * the process died mid-probe, and "we never got to look, and here is why" is a finding.
      */
     private fun probeAdvertising(
         context: Context,
@@ -317,13 +329,28 @@ object WedgeDiagnostics {
         addr: String,
         onComplete: (verdict: ProbeVerdict) -> Unit,
     ) {
-        fun report(verdict: ProbeVerdict) = handler.post { onComplete(verdict) }
+        // A verdict reached without scanning. Leaves the same one-line record a completed scan
+        // leaves, with `reason` naming the door that was shut.
+        fun reportUnscanned(verdict: ProbeVerdict, reason: String) {
+            Log.i(TAG, "Wedge probe for $addr: not scanned ($reason) → $verdict")
+            logEvent(
+                context, "ble_wedge_scan_probe", mapOf(
+                    "device" to addr,
+                    "probe_ms" to 0,
+                    "adv_packets" to 0,
+                    "verdict" to verdict.logName(),
+                    "reason" to reason,
+                )
+            )
+            handler.post { onComplete(verdict) }
+        }
 
         // Nothing a later probe could fix: the caller falls back to its pre-probe behaviour.
-        if (adapter == null || !adapter.isEnabled) { report(ProbeVerdict.UNAVAILABLE); return }
+        if (adapter == null) { reportUnscanned(ProbeVerdict.UNAVAILABLE, "no_adapter"); return }
+        if (!adapter.isEnabled) { reportUnscanned(ProbeVerdict.UNAVAILABLE, "adapter_off"); return }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
-                report(ProbeVerdict.UNAVAILABLE); return
+                reportUnscanned(ProbeVerdict.UNAVAILABLE, "no_bluetooth_scan_permission"); return
             }
         } else {
             // minSdk is 26, so Android 8–11 reach here, where scanning is gated on location
@@ -333,14 +360,18 @@ object WedgeDiagnostics {
             val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
             val coarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION)
             if (fine != PackageManager.PERMISSION_GRANTED && coarse != PackageManager.PERMISSION_GRANTED) {
-                report(ProbeVerdict.UNAVAILABLE); return
+                reportUnscanned(ProbeVerdict.UNAVAILABLE, "no_location_permission"); return
             }
-            if (!locationServicesEnabled(context)) { report(ProbeVerdict.UNAVAILABLE); return }
+            if (!locationServicesEnabled(context)) {
+                reportUnscanned(ProbeVerdict.UNAVAILABLE, "location_services_off"); return
+            }
         }
         val scanner = adapter.bluetoothLeScanner
-        if (scanner == null) { report(ProbeVerdict.UNAVAILABLE); return }
+        if (scanner == null) { reportUnscanned(ProbeVerdict.UNAVAILABLE, "no_scanner"); return }
         // Another device's probe owns the scanner right now. Transient — look again later.
-        if (!probeInFlight.compareAndSet(false, true)) { report(ProbeVerdict.INCONCLUSIVE); return }
+        if (!probeInFlight.compareAndSet(false, true)) {
+            reportUnscanned(ProbeVerdict.INCONCLUSIVE, "probe_already_running"); return
+        }
 
         val startedAt = SystemClock.elapsedRealtime()
 
@@ -383,11 +414,11 @@ object WedgeDiagnostics {
             // to ask for. Retrying cannot earn it back.
             Log.w(TAG, "Wedge probe scan denied: ${e.message}")
             probeInFlight.set(false)
-            report(ProbeVerdict.UNAVAILABLE); return
+            reportUnscanned(ProbeVerdict.UNAVAILABLE, "scan_denied"); return
         } catch (e: Exception) {
             Log.w(TAG, "Wedge probe scan could not start: ${e.message}")
             probeInFlight.set(false)
-            report(ProbeVerdict.INCONCLUSIVE); return
+            reportUnscanned(ProbeVerdict.INCONCLUSIVE, "scan_start_failed"); return
         }
 
         handler.postDelayed({
@@ -423,11 +454,7 @@ object WedgeDiagnostics {
                     // link-establishment handshake with a peripheral we can plainly hear;
                     // "silent" means either its radio stopped or ours never listened.
                     // "scan_failed" means we never got to ask.
-                    "verdict" to when (verdict) {
-                        ProbeVerdict.ADVERTISING -> "peripheral_advertising"
-                        ProbeVerdict.INCONCLUSIVE -> "scan_failed"
-                        else -> "no_advertisements_heard"
-                    },
+                    "verdict" to verdict.logName(),
                 )
             )
             onComplete(verdict)
