@@ -11,12 +11,12 @@
 /// `currentUptimeMs`: firmware uptime at the moment of the read — used to
 /// render "X ago" without trusting the phone clock.
 ///
-/// `failedConnCount` / `lastFailedConnDuringSlowAdv`: cumulative BLE
-/// connection-establishment failures (HCI 0x3e), persisted across reboots so the
-/// count survives the power-cycle the user must do to reconnect and read it.
+/// `failedConnCount` / `lastFailedConnDuringSlowAdv`: cumulative BLE connect
+/// callbacks that reported an outright failure, persisted across reboots.
 /// Appended to the characteristic at offset 20 — 0 / false on older firmware
-/// that returns only the legacy 20 bytes. See NOTES.md "BLE: advertising but
-/// won't connect".
+/// that returns only the legacy 20 bytes. Note this counter does NOT catch the
+/// common "visible but unconnectable" outage; see [estabFailCount]. See NOTES.md
+/// "BLE: advertising but won't connect".
 class DeviceDropStats {
   final int blockDrops;
   final int lastBlockDropUptimeMs;
@@ -41,6 +41,20 @@ class DeviceDropStats {
   /// steady read stream would otherwise have starved writes (write fairness
   /// engaged). Appended at offset 36; 0 on older firmware.
   final int writeFairActivations;
+
+  /// Links that came up and then died with HCI 0x3e (CONN_FAIL_TO_ESTAB) — no
+  /// data-channel packet exchanged in the first 6 connection events.
+  ///
+  /// This is the counter that identifies a "visible but unconnectable" outage,
+  /// and [failedConnCount] does not: on a peripheral the controller reports the
+  /// connection as successful the moment it receives CONNECT_IND, so the host
+  /// takes the success path and only learns of the failure at disconnect.
+  ///
+  /// Nonzero after an outage → the Omi *did* receive the connect requests and the
+  /// link died at establishment (peripheral controller / RF / coexistence). Flat,
+  /// with the central logging 0x3e → the Omi never heard them, so the fault is on
+  /// the central. Appended at offset 40; 0 on older firmware.
+  final int estabFailCount;
   final DateTime readAt;
 
   const DeviceDropStats({
@@ -54,6 +68,7 @@ class DeviceDropStats {
     this.codecFrameDrops = 0,
     this.msgqPeakDepth = 0,
     this.writeFairActivations = 0,
+    this.estabFailCount = 0,
     required this.readAt,
   });
 
