@@ -11,6 +11,7 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -85,9 +86,10 @@ object WedgeDiagnostics {
         INCONCLUSIVE,
 
         /**
-         * The scan cannot run at all: no adapter, adapter off, or BLUETOOTH_SCAN not granted.
-         * Looking again would not help, so the caller falls back to its pre-probe behaviour of
-         * alerting on the failure streak alone.
+         * The scan cannot run at all: no adapter, adapter off, BLUETOOTH_SCAN not granted, or —
+         * below Android 12, where a scan is a location operation — no location grant and no
+         * location toggle. Looking again would not help, so the caller falls back to its
+         * pre-probe behaviour of alerting on the failure streak alone.
          */
         UNAVAILABLE,
     }
@@ -175,6 +177,27 @@ object WedgeDiagnostics {
         BluetoothAdapter.STATE_ON -> "on"
         BluetoothAdapter.STATE_TURNING_OFF -> "turning_off"
         else -> "unknown_$state"
+    }
+
+    /**
+     * Below Android 12 an LE scan is a location operation: it needs a location grant, and it
+     * needs the system location toggle on. Without the toggle the scan starts, runs, and
+     * silently delivers nothing — indistinguishable from a peripheral that isn't there, which
+     * is precisely the verdict the probe must not fabricate.
+     *
+     * Unreadable state answers `true`: let the scan itself speak rather than invent a verdict.
+     */
+    private fun locationServicesEnabled(context: Context): Boolean = try {
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        when {
+            lm == null -> true
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.P -> lm.isLocationEnabled
+            else -> lm.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "Cannot read location services state: ${e.message}")
+        true
     }
 
     private fun bondStateName(state: Int): String = when (state) {
@@ -298,10 +321,21 @@ object WedgeDiagnostics {
 
         // Nothing a later probe could fix: the caller falls back to its pre-probe behaviour.
         if (adapter == null || !adapter.isEnabled) { report(ProbeVerdict.UNAVAILABLE); return }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED
-        ) {
-            report(ProbeVerdict.UNAVAILABLE); return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+                report(ProbeVerdict.UNAVAILABLE); return
+            }
+        } else {
+            // minSdk is 26, so Android 8–11 reach here, where scanning is gated on location
+            // rather than on BLUETOOTH_SCAN. A missing grant makes startScan throw; a disabled
+            // location toggle makes it return nothing at all. Catch both before they masquerade
+            // as INCONCLUSIVE-forever or as a silent Omi.
+            val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
+            val coarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION)
+            if (fine != PackageManager.PERMISSION_GRANTED && coarse != PackageManager.PERMISSION_GRANTED) {
+                report(ProbeVerdict.UNAVAILABLE); return
+            }
+            if (!locationServicesEnabled(context)) { report(ProbeVerdict.UNAVAILABLE); return }
         }
         val scanner = adapter.bluetoothLeScanner
         if (scanner == null) { report(ProbeVerdict.UNAVAILABLE); return }
@@ -344,6 +378,12 @@ object WedgeDiagnostics {
 
         try {
             scanner.startScan(filters, settings, tally)
+        } catch (e: SecurityException) {
+            // A grant revoked between the check above and here, or one this code does not know
+            // to ask for. Retrying cannot earn it back.
+            Log.w(TAG, "Wedge probe scan denied: ${e.message}")
+            probeInFlight.set(false)
+            report(ProbeVerdict.UNAVAILABLE); return
         } catch (e: Exception) {
             Log.w(TAG, "Wedge probe scan could not start: ${e.message}")
             probeInFlight.set(false)
