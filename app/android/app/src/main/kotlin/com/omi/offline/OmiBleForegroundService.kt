@@ -373,8 +373,10 @@ class OmiBleForegroundService : Service() {
                     val bonded = result.getOrDefault(false)
                     Log.i(TAG, "Bond result for $addr: $bonded")
                     if (bonded) {
-                        managed.retryCount = 0
-                        managed.requiresBond = false
+                        synchronized(syncLock) {
+                            managed.retryCount = 0
+                            managed.requiresBond = false
+                        }
                     }
                     requestMtuThenNotifyReady(addr, services)
                 }
@@ -642,16 +644,22 @@ class OmiBleForegroundService : Service() {
         }
     }
 
+    /**
+     * Takes syncLock over the guard fields and the backoff counter. manageDevice already holds
+     * it when it calls this; the monitor is reentrant, and the bluetoothOn path does not.
+     */
     private fun triggerReconnection(address: String, source: String) {
         val addr = address.uppercase()
         val managed = managedDevices[addr] ?: return
 
-        managed.pendingReconnect?.let { handler.removeCallbacks(it) }
-        managed.pendingReconnect = null
-        managed.connectionTimeoutRunnable?.let { handler.removeCallbacks(it) }
-        managed.connectionTimeoutRunnable = null
-        managed.retryCount = 0
-        connectToDevice(addr, source)
+        synchronized(syncLock) {
+            managed.pendingReconnect?.let { handler.removeCallbacks(it) }
+            managed.pendingReconnect = null
+            managed.connectionTimeoutRunnable?.let { handler.removeCallbacks(it) }
+            managed.connectionTimeoutRunnable = null
+            managed.retryCount = 0
+            connectToDevice(addr, source)
+        }
     }
 
     // ── Disconnect handling + retry ──
@@ -827,10 +835,19 @@ class OmiBleForegroundService : Service() {
 
         if (isDestroying || !isBluetoothEnabled) return
 
+        val runnable = buildReconnectRunnable(addr, managed)
+
         // These counters are read and cleared under syncLock by onGattServicesDiscovered, on a
         // different binder thread, so the writes take the lock too. The probe is started after
         // the lock is released: it kicks off an LE scan and posts to the main thread, and none
         // of that belongs under a lock this hot.
+        //
+        // pendingReconnect is installed in this same block. manageDevice treats "currentGattHash
+        // and pendingReconnect both null" as "nobody is handling this device" and kicks off its
+        // own connect, resetting the backoff — so the guard must go up at the instant the
+        // counters move, not one lock acquisition later. (A window remains between
+        // handleDisconnection clearing the guard and this block taking it; that one predates the
+        // retry counters and is not closed here.)
         var startProbe = false
         var failures = 0
         var retries = 0
@@ -861,6 +878,7 @@ class OmiBleForegroundService : Service() {
             // stacks. retryCount resets once services are discovered, so the backoff resets
             // with the streak rather than on a link that merely came up.
             backoffDelay = minOf(RECONNECT_DELAY_MS shl minOf(managed.retryCount - 1, 5), 30_000L)
+            managed.pendingReconnect = runnable
         }
 
         if (startProbe) {
@@ -875,7 +893,7 @@ class OmiBleForegroundService : Service() {
                 consecutiveFailures = failures,
                 retryCount = retries,
                 lastStatus = status,
-            ) { advertisingHeard ->
+            ) { verdict ->
                 // The alert tells the user to toggle Bluetooth, which only helps when the Omi
                 // is present and reachable. Six failures alone don't mean that: an Omi that is
                 // out of range, powered off, or connected to another phone produces the same
@@ -883,9 +901,29 @@ class OmiBleForegroundService : Service() {
                 // isn't there as for one whose links keep dying at establishment. The probe is
                 // what separates them — advertisements heard means the Omi is right there and
                 // we still can't reach it, which is the only case the advice fits.
-                if (!advertisingHeard) {
-                    Log.i(TAG, "Outage on $addr but no advertisements heard — device absent, not a wedge; no alert")
-                    return@captureWedge
+                //
+                // UNAVAILABLE is treated as present: the probe can never run on this phone, and
+                // withholding the alert forever is worse than the pre-probe behaviour of
+                // alerting on the streak alone. INCONCLUSIVE is not — a scan the framework
+                // refused says nothing, and latching the alert on it would both cry wolf and
+                // stop us ever looking again. Ask again a few failures from now instead.
+                when (verdict) {
+                    WedgeDiagnostics.ProbeVerdict.SILENT -> {
+                        Log.i(TAG, "Outage on $addr but no advertisements heard — device absent, not a wedge; no alert")
+                        return@captureWedge
+                    }
+                    WedgeDiagnostics.ProbeVerdict.INCONCLUSIVE -> {
+                        Log.i(TAG, "Outage on $addr but the probe could not run — no verdict; will re-probe")
+                        synchronized(syncLock) {
+                            val m = managedDevices[addr] ?: return@synchronized
+                            // Pull the schedule in: the wide interval is priced for a device we
+                            // established is absent, and we established nothing.
+                            m.nextWedgeProbeAt =
+                                minOf(m.nextWedgeProbeAt, m.consecutiveConnectFailures + WEDGE_NOTIFY_AFTER)
+                        }
+                        return@captureWedge
+                    }
+                    else -> Unit // ADVERTISING, UNAVAILABLE — fall through and alert.
                 }
                 // 8 s elapsed inside the probe; re-check nothing resolved meanwhile. The test
                 // is wedgeDetected, the same criterion the recovery path uses — asking
@@ -908,8 +946,12 @@ class OmiBleForegroundService : Service() {
         }
 
         Log.i(TAG, "Retry #$retries for $addr in ${backoffDelay}ms (status=$status)")
+        handler.postDelayed(runnable, backoffDelay)
+    }
 
-        val runnable = Runnable {
+    /** The delayed reconnect attempt. Installed as `pendingReconnect` before it is posted. */
+    private fun buildReconnectRunnable(addr: String, managed: ManagedDevice): Runnable {
+        return Runnable {
             // Atomic with manageDevice's guard: an external manageDevice call must see
             // either pendingReconnect != null (we haven't fired yet) or currentGattHash != null
             // (connectToDevice has registered the new gatt) — never both null.
@@ -944,8 +986,6 @@ class OmiBleForegroundService : Service() {
                 }
             }
         }
-        synchronized(syncLock) { managed.pendingReconnect = runnable }
-        handler.postDelayed(runnable, backoffDelay)
     }
 
     // ── Stability timer ──
@@ -955,8 +995,10 @@ class OmiBleForegroundService : Service() {
         val managed = managedDevices[addr] ?: return
 
         managed.stabilityTimerRunnable?.let { handler.removeCallbacks(it) }
+        // Main thread. handleRetryLogic increments retryCount on a binder thread, and
+        // handleDisconnection cancels this runnable — but only after it may already be running.
         val runnable = Runnable {
-            managed.retryCount = 0
+            synchronized(syncLock) { managed.retryCount = 0 }
         }
         managed.stabilityTimerRunnable = runnable
         handler.postDelayed(runnable, STABILITY_TIMER_MS)
@@ -976,7 +1018,7 @@ class OmiBleForegroundService : Service() {
             when (bondState) {
                 BluetoothDevice.BOND_BONDED -> {
                     Log.i(TAG, "Bond completed for $address")
-                    managed.retryCount = 0
+                    synchronized(syncLock) { managed.retryCount = 0 }
                 }
                 BluetoothDevice.BOND_NONE -> {
                     Log.w(TAG, "Bond removed/failed for $address")
