@@ -875,7 +875,33 @@ Note also: after a sync completes and the firmware idle-drops the link (`reason=
 - `purgeGhostGattForAddress(force=true)` fires a dummy `connectGatt` + immediate `disconnect()`/`close()` 500 ms before each real connect, adding initiator/`cancelOpen`/accept-list churn. We now know there is no ghost to purge.
 - Our 15 s / 30 s local timeout fires before Android surfaces the real disconnect status, so the app logs the synthetic `-1` and **never sees the `0x3e`**. The wedge detector keyed on `-1` is therefore counting "we gave up early", not "the stack went silent".
 
-**Still open:** attribute the contention (Garmin ACL vs `stella` scan) by restoring one app at a time and forcing an Omi reconnect. And read `failed_conn_count` — now possible without a power-cycle, since the device is reachable again.
+**Still open:** attribute the contention (Garmin ACL vs `stella` scan) by restoring one app at a time and forcing an Omi reconnect. Note that forcing a *real* re-establishment means waiting out the firmware's 15 s idle-drop or a sync tick — `am force-stop` will not do it (see above).
+
+### Capturing the next outage without adb (`WedgeDiagnostics.kt`, added 2026-07-09)
+
+The 2026-07-08 capture only happened because the outage was noticed while a cable was to hand. An outage that starts overnight is over before anyone can attach adb, so the app now snapshots one itself.
+
+Fires from `OmiBleForegroundService.handleRetryLogic` on the sixth consecutive failed connect, i.e. the same latch that posts the toggle-Bluetooth notification, once per outage. Written from **native**, not Dart: outages happen while backgrounded, where the Flutter isolate may be Doze-frozen and unable to service a platform channel. The foreground service is still running.
+
+Three events land in the `omi_debug_*.log` that `DebugLogManager` owns, in its own one-JSON-object-per-line `logEvent` shape, so the in-app viewer and "Save Diagnostic Logs to File" pick them up with no changes:
+
+| Event | When | Carries |
+|---|---|---|
+| `ble_wedge` | immediately at detection | failure/retry counts, last GATT status, adapter + bond state, every LE link the system holds, whether a stale GATT/ACL link to the Omi exists, screen + Doze state |
+| `ble_wedge_scan_probe` | 8 s later | `adv_packets`, RSSI min/max/last, `verdict` |
+| `ble_wedge_recovered` | on the next successful connect | how long the outage lasted, failures before recovery |
+
+`ble_wedge_scan_probe.verdict` is the point of the exercise:
+- `peripheral_advertising` → the phone can plainly hear the Omi while every connect dies at establishment. Its TX and our RX both work; the link dies in the handshake between them.
+- `no_advertisements_heard` → either the Omi's radio stopped or the phone's never listened. Cross-check against the device's `estab_fail_count`.
+
+The device's own counter cannot be read during an outage, by definition. Dart's `_finishDeviceSetup` logs it on the next successful connect, right after `ble_wedge_recovered` — which is why both halves of the picture end up in one file.
+
+**Constraints that shaped this, so nobody tries to "improve" it:**
+- The app **cannot** read `bt_stack` HCI logs or `dumpsys bluetooth_manager`. Those need `READ_LOGS` / `DUMP`, both `signature|privileged`. The phone-side `0x3e` count stays adb-only, permanently. The advertising probe is the reachable substitute, and it answers the same question.
+- The probe uses `SCAN_MODE_LOW_LATENCY` — the exact duty cycle just removed from the discovery path. Deliberate: it is bounded to 8 s, at most once per outage, and runs inside the ~30 s gap between backed-off retries (retry #6 backs off to the 30 s cap) so no connect is in flight. A lower duty cycle would let the 1 s slow-advertising tier fall between scan windows and report a false `no_advertisements_heard` — the one reading this probe exists to make trustworthy.
+- It never *creates* the log file, only appends to an existing one. `DebugLogManager.setEnabled(false)` deletes the files, so "no file" is the off switch. **Nothing is captured unless "Save Debug Logs to File" is on.**
+- `path_provider`'s `getApplicationDocumentsDirectory()` → `PathUtils.getDataDirectory()` → `getDir("flutter")` → `.../app_flutter` is engine-internal and undocumented, so `currentLogFile()` searches `filesDir` as a fallback instead of assuming it.
 
 ### Symptom (observed 2026-06-08, one data point)
 Phone could not connect to the Omi — every attempt failed with HCI `0x3e GATT_CONN_FAILED_ESTABLISHMENT` (`CONNECTION_FAILED_ESTABLISHMENT`), retrying through retry #3–#6 (15 s / 30 s timeouts). **Power-cycling the Omi fixed it instantly** — it connected on the first try afterward. So the device was at fault, and a reboot cleared whatever state it was in.
