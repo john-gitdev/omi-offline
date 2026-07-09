@@ -1271,7 +1271,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           // See NOTES.md "BLE: advertising but won't connect".
           _dropStatRow('BLE connect failures', connFails.toString(), connFails > 0),
           _dropStatRow('Died at establishment (0x3e)', estabFails.toString(), estabFails > 0),
-          if (stats.failedConnCount > 0 || stats.estabFailCount > 0)
+          // Gated on the since-reset deltas, not the lifetime totals: the adv mode
+          // describes whichever failure the two rows above are reporting. Keying it on
+          // the totals kept the row visible (and red) after a reset that zeroed both.
+          if (connFails > 0 || estabFails > 0)
             _dropStatRow('Last fail adv mode', stats.lastFailedConnDuringSlowAdv ? 'slow (1s)' : 'fast', true),
           const SizedBox(height: 10),
           SizedBox(
