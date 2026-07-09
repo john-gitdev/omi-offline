@@ -367,6 +367,19 @@ class OmiBleManager private constructor(private val application: Application) {
         return bluetoothManager.getConnectedDevices(BluetoothProfile.GATT).map { it.address.uppercase() }
     }
 
+    /** Every LE link the system holds, with names — for diagnostics that report contention. */
+    fun connectedLeLinks(): List<BluetoothDevice> = bluetoothManager.getConnectedDevices(BluetoothProfile.GATT)
+
+    /**
+     * Whether the system holds a bare ACL link to [address] that the GATT profile list
+     * does not show. Distinguishes "a stale link is holding the peripheral's slot" from
+     * "nothing is connected and the link keeps dying at establishment".
+     */
+    fun isAclConnectedTo(address: String): Boolean {
+        val device = remoteLeDevice(address.uppercase()) ?: return false
+        return isAclConnected(device)
+    }
+
     fun requestBond(address: String, completion: (Result<Boolean>) -> Unit) {
         val addr = address.uppercase()
         val device = connectedGatts[addr]?.device
