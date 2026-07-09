@@ -168,10 +168,11 @@ object WedgeDiagnostics {
      * main thread, once the probe window closes. This is the caller's cue to decide whether
      * the outage is a wedge (device present, unreachable) or simply an absent device — so
      * the probe runs even when file logging is off, and is not merely diagnostic. It is
-     * invoked exactly once; when the probe cannot run at all it is invoked immediately with
-     * `true`, preserving the pre-probe behaviour of alerting on any six-failure streak.
+     * invoked exactly once; when the probe cannot run at all it is invoked with `true`,
+     * preserving the pre-probe behaviour of alerting on any six-failure streak.
      *
-     * Call once per outage — the caller's `wedgeDetected` latch already ensures that.
+     * The caller re-probes a long outage every few failures, so this may run more than once
+     * per outage; [probeInFlight] keeps two probes from overlapping.
      */
     fun captureWedge(
         context: Context,
@@ -255,6 +256,11 @@ object WedgeDiagnostics {
      * main thread rather than calling back inline: [captureWedge] runs on whatever thread the
      * disconnect arrived on — a GATT binder thread, in the common case — and a callback whose
      * thread depends on which branch it took is a trap for the next caller.
+     *
+     * A scan Android accepts and then rejects asynchronously (`onScanFailed`, e.g.
+     * SCAN_FAILED_SCANNING_TOO_FREQUENTLY — plausible here, since the app runs its own
+     * discovery scans) reports `true` for the same reason: zero packets from a scan that
+     * never listened is not evidence the peripheral is silent.
      */
     private fun probeAdvertising(
         context: Context,
@@ -287,6 +293,9 @@ object WedgeDiagnostics {
             @Volatile var rssiMax = Int.MIN_VALUE
             @Volatile var rssiLast = 0
 
+            /** Non-null once Android rejects the scan; the probe then has no opinion. */
+            @Volatile var scanError: Int? = null
+
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 if (result.device.address.uppercase() != addr) return
                 packets++
@@ -297,6 +306,7 @@ object WedgeDiagnostics {
             }
 
             override fun onScanFailed(errorCode: Int) {
+                scanError = errorCode
                 Log.w(TAG, "Wedge probe scan failed: $errorCode")
             }
         }
@@ -322,7 +332,11 @@ object WedgeDiagnostics {
 
             val packets = tally.packets
             val heard = packets > 0
-            Log.i(TAG, "Wedge probe for $addr: $packets adv packets in ${PROBE_DURATION_MS}ms")
+            // A scan Android refused to run heard nothing because it never listened, not
+            // because the air was quiet. Reporting `false` there would tell the caller the
+            // Omi is absent and silently withhold the alert for the rest of the outage.
+            val scanError = tally.scanError
+            Log.i(TAG, "Wedge probe for $addr: $packets adv packets in ${PROBE_DURATION_MS}ms (error=$scanError)")
             logEvent(
                 context, "ble_wedge_scan_probe", mapOf(
                     "device" to addr,
@@ -332,13 +346,19 @@ object WedgeDiagnostics {
                     "rssi_min" to (if (heard) tally.rssiMin else null),
                     "rssi_max" to (if (heard) tally.rssiMax else null),
                     "rssi_last" to (if (heard) tally.rssiLast else null),
+                    "scan_error" to scanError,
                     // The whole point of the probe. "advertising" narrows the fault to the
                     // link-establishment handshake with a peripheral we can plainly hear;
                     // "silent" means either its radio stopped or ours never listened.
-                    "verdict" to (if (heard) "peripheral_advertising" else "no_advertisements_heard"),
+                    // "scan_failed" means we never got to ask.
+                    "verdict" to when {
+                        heard -> "peripheral_advertising"
+                        scanError != null -> "scan_failed"
+                        else -> "no_advertisements_heard"
+                    },
                 )
             )
-            onComplete(heard)
+            onComplete(heard || scanError != null)
         }, PROBE_DURATION_MS)
     }
 
