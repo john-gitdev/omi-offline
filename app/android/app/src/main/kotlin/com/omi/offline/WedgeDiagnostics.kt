@@ -66,6 +66,32 @@ import java.util.concurrent.atomic.AtomicBoolean
 @SuppressLint("MissingPermission")
 object WedgeDiagnostics {
 
+    /**
+     * What the advertising probe learned. A boolean cannot carry this: "the Omi is not there"
+     * and "I was unable to look" are opposite instructions to the caller, and collapsing them
+     * either alerts with no evidence or withholds the alert forever.
+     */
+    enum class ProbeVerdict {
+        /** Advertisements heard. The Omi is present and we still cannot reach it — a wedge. */
+        ADVERTISING,
+
+        /** The scan ran its full window and heard nothing. The Omi is absent, or its radio is. */
+        SILENT,
+
+        /**
+         * The scan could not run this time — rejected by the framework, or another probe held
+         * the scanner. Says nothing about the peripheral. The caller should look again soon.
+         */
+        INCONCLUSIVE,
+
+        /**
+         * The scan cannot run at all: no adapter, adapter off, or BLUETOOTH_SCAN not granted.
+         * Looking again would not help, so the caller falls back to its pre-probe behaviour of
+         * alerting on the failure streak alone.
+         */
+        UNAVAILABLE,
+    }
+
     private const val TAG = "OmiBle.WedgeDiag"
 
     /** How long to listen for the peripheral's advertisements once wedged. */
@@ -164,12 +190,10 @@ object WedgeDiagnostics {
      * Emits `ble_wedge` immediately (so the state survives even if the process dies
      * mid-probe) and `ble_wedge_scan_probe` [PROBE_DURATION_MS] later.
      *
-     * [onProbeComplete] receives whether any advertisement from [address] was heard, on the
-     * main thread, once the probe window closes. This is the caller's cue to decide whether
-     * the outage is a wedge (device present, unreachable) or simply an absent device — so
-     * the probe runs even when file logging is off, and is not merely diagnostic. It is
-     * invoked exactly once; when the probe cannot run at all it is invoked with `true`,
-     * preserving the pre-probe behaviour of alerting on any six-failure streak.
+     * [onProbeComplete] receives a [ProbeVerdict] for [address], on the main thread, once the
+     * probe window closes. This is the caller's cue to decide whether the outage is a wedge
+     * (device present, unreachable) or simply an absent device — so the probe runs even when
+     * file logging is off, and is not merely diagnostic. It is invoked exactly once.
      *
      * The caller re-probes a long outage every few failures, so this may run more than once
      * per outage; [probeInFlight] keeps two probes from overlapping.
@@ -181,7 +205,7 @@ object WedgeDiagnostics {
         consecutiveFailures: Int,
         retryCount: Int,
         lastStatus: Int,
-        onProbeComplete: (advertisingHeard: Boolean) -> Unit,
+        onProbeComplete: (verdict: ProbeVerdict) -> Unit,
     ) {
         val addr = address.uppercase()
         val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
@@ -251,34 +275,38 @@ object WedgeDiagnostics {
      * slow-advertising tier slip between scan windows and produce a false silence — the
      * exact reading this probe exists to make trustworthy.
      *
-     * Every early return reports `true` (assume present), which keeps the caller's alert
-     * behaviour identical to what it was before the probe existed. Those returns post to the
-     * main thread rather than calling back inline: [captureWedge] runs on whatever thread the
-     * disconnect arrived on — a GATT binder thread, in the common case — and a callback whose
-     * thread depends on which branch it took is a trap for the next caller.
+     * A zero-packet tally only means "silent" if the scan actually listened. The framework can
+     * refuse a scan up front, or accept it and reject it asynchronously via `onScanFailed` —
+     * SCAN_FAILED_SCANNING_TOO_FREQUENTLY is plausible here, since the app runs its own
+     * discovery scans and Android rate-limits scan starts per app. Those report
+     * [ProbeVerdict.INCONCLUSIVE], never [ProbeVerdict.SILENT]. Reporting them as advertising
+     * instead would post the alert on no evidence and, because the caller latches on the first
+     * affirmative verdict, stop it from ever looking again.
      *
-     * A scan Android accepts and then rejects asynchronously (`onScanFailed`, e.g.
-     * SCAN_FAILED_SCANNING_TOO_FREQUENTLY — plausible here, since the app runs its own
-     * discovery scans) reports `true` for the same reason: zero packets from a scan that
-     * never listened is not evidence the peripheral is silent.
+     * Early returns post to the main thread rather than calling back inline: [captureWedge]
+     * runs on whatever thread the disconnect arrived on — a GATT binder thread, in the common
+     * case — and a callback whose thread depends on which branch it took is a trap for the
+     * next caller.
      */
     private fun probeAdvertising(
         context: Context,
         adapter: BluetoothAdapter?,
         addr: String,
-        onComplete: (advertisingHeard: Boolean) -> Unit,
+        onComplete: (verdict: ProbeVerdict) -> Unit,
     ) {
-        fun assumePresent() = handler.post { onComplete(true) }
+        fun report(verdict: ProbeVerdict) = handler.post { onComplete(verdict) }
 
-        if (adapter == null || !adapter.isEnabled) { assumePresent(); return }
+        // Nothing a later probe could fix: the caller falls back to its pre-probe behaviour.
+        if (adapter == null || !adapter.isEnabled) { report(ProbeVerdict.UNAVAILABLE); return }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED
         ) {
-            assumePresent(); return
+            report(ProbeVerdict.UNAVAILABLE); return
         }
         val scanner = adapter.bluetoothLeScanner
-        if (scanner == null) { assumePresent(); return }
-        if (!probeInFlight.compareAndSet(false, true)) { assumePresent(); return }
+        if (scanner == null) { report(ProbeVerdict.UNAVAILABLE); return }
+        // Another device's probe owns the scanner right now. Transient — look again later.
+        if (!probeInFlight.compareAndSet(false, true)) { report(ProbeVerdict.INCONCLUSIVE); return }
 
         val startedAt = SystemClock.elapsedRealtime()
 
@@ -319,7 +347,7 @@ object WedgeDiagnostics {
         } catch (e: Exception) {
             Log.w(TAG, "Wedge probe scan could not start: ${e.message}")
             probeInFlight.set(false)
-            assumePresent(); return
+            report(ProbeVerdict.INCONCLUSIVE); return
         }
 
         handler.postDelayed({
@@ -332,11 +360,15 @@ object WedgeDiagnostics {
 
             val packets = tally.packets
             val heard = packets > 0
-            // A scan Android refused to run heard nothing because it never listened, not
-            // because the air was quiet. Reporting `false` there would tell the caller the
-            // Omi is absent and silently withhold the alert for the rest of the outage.
             val scanError = tally.scanError
-            Log.i(TAG, "Wedge probe for $addr: $packets adv packets in ${PROBE_DURATION_MS}ms (error=$scanError)")
+            // A packet heard is a packet heard, whatever the framework said afterwards. Zero
+            // packets from a scan the framework rejected is not silence — it never listened.
+            val verdict = when {
+                heard -> ProbeVerdict.ADVERTISING
+                scanError != null -> ProbeVerdict.INCONCLUSIVE
+                else -> ProbeVerdict.SILENT
+            }
+            Log.i(TAG, "Wedge probe for $addr: $packets adv packets in ${PROBE_DURATION_MS}ms → $verdict")
             logEvent(
                 context, "ble_wedge_scan_probe", mapOf(
                     "device" to addr,
@@ -351,14 +383,14 @@ object WedgeDiagnostics {
                     // link-establishment handshake with a peripheral we can plainly hear;
                     // "silent" means either its radio stopped or ours never listened.
                     // "scan_failed" means we never got to ask.
-                    "verdict" to when {
-                        heard -> "peripheral_advertising"
-                        scanError != null -> "scan_failed"
+                    "verdict" to when (verdict) {
+                        ProbeVerdict.ADVERTISING -> "peripheral_advertising"
+                        ProbeVerdict.INCONCLUSIVE -> "scan_failed"
                         else -> "no_advertisements_heard"
                     },
                 )
             )
-            onComplete(heard || scanError != null)
+            onComplete(verdict)
         }, PROBE_DURATION_MS)
     }
 
