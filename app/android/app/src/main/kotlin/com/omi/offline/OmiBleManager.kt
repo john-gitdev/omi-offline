@@ -197,7 +197,19 @@ class OmiBleManager private constructor(private val application: Application) {
     // attempts timing out with no GATT callback at all): some OEM stacks hold the link
     // where neither query can see it, and the dummy connect-close against a genuinely
     // absent device is harmless (the client is unregistered immediately).
-    fun purgeGhostGattForAddress(address: String, force: Boolean = false): Boolean {
+    /**
+     * Drop a stale system-held link to [address] so it stops occupying the firmware's
+     * single connection slot.
+     *
+     * Only ever runs when a link genuinely exists — either the GATT profile reports one
+     * or the device has a live ACL. There is deliberately no "force" mode: a purge with
+     * nothing to purge issues a dummy connectGatt + cancelOpen for no benefit, adding
+     * initiator and accept-list churn to a connect that is already failing. The wedge it
+     * used to chase was measured (2026-07-08) to be a `0x3e` establishment failure with
+     * the peripheral holding *zero* connections — there was never a ghost. See NOTES.md
+     * "BLE: advertising but won't connect".
+     */
+    fun purgeGhostGattForAddress(address: String): Boolean {
         val addr = address.uppercase()
         // Never touch a connection we actually hold.
         if (connectedGatts.containsKey(addr)) return false
@@ -205,13 +217,9 @@ class OmiBleManager private constructor(private val application: Application) {
             val fromGattList = bluetoothManager.getConnectedDevices(BluetoothProfile.GATT)
                 .firstOrNull { it.address.uppercase() == addr }
             val device = fromGattList
-                ?: remoteLeDevice(addr)?.takeIf { force || isAclConnected(it) }
+                ?: remoteLeDevice(addr)?.takeIf { isAclConnected(it) }
                 ?: return false
-            val why = when {
-                fromGattList != null -> "gatt-profile link"
-                !force -> "acl link"
-                else -> "forced (wedge signature)"
-            }
+            val why = if (fromGattList != null) "gatt-profile link" else "acl link"
             Log.w(TAG, "Purging ghost GATT for $addr via dummy connect-close ($why)")
             val dummyGatt = device.connectGatt(application, false, object : BluetoothGattCallback() {}, BluetoothDevice.TRANSPORT_LE)
             // Immediately disconnect and close to flush the OS daemon state
