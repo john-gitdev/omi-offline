@@ -57,6 +57,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  * the same one-JSON-object-per-line shape `DebugLogManager.logEvent` writes. If no
  * such file exists, developer file logging is off (`setEnabled(false)` deletes them)
  * and nothing is written — this never creates the log file.
+ *
+ * The advertising probe, however, always runs. It is not only diagnostic: its verdict
+ * decides whether the caller shows the user the "toggle Bluetooth" alert, which is bad
+ * advice for an Omi that is merely out of range. So the scan's cost is paid regardless
+ * of the logging setting, and only the log lines are conditional.
  */
 @SuppressLint("MissingPermission")
 object WedgeDiagnostics {
@@ -156,7 +161,14 @@ object WedgeDiagnostics {
      * Emits `ble_wedge` immediately (so the state survives even if the process dies
      * mid-probe) and `ble_wedge_scan_probe` [PROBE_DURATION_MS] later.
      *
-     * Call once per outage — the caller's `wedgeNotified` latch already ensures that.
+     * [onProbeComplete] receives whether any advertisement from [address] was heard, on the
+     * main thread, once the probe window closes. This is the caller's cue to decide whether
+     * the outage is a wedge (device present, unreachable) or simply an absent device — so
+     * the probe runs even when file logging is off, and is not merely diagnostic. It is
+     * invoked exactly once; when the probe cannot run at all it is invoked immediately with
+     * `true`, preserving the pre-probe behaviour of alerting on any six-failure streak.
+     *
+     * Call once per outage — the caller's `wedgeDetected` latch already ensures that.
      */
     fun captureWedge(
         context: Context,
@@ -165,6 +177,7 @@ object WedgeDiagnostics {
         consecutiveFailures: Int,
         retryCount: Int,
         lastStatus: Int,
+        onProbeComplete: (advertisingHeard: Boolean) -> Unit,
     ) {
         val addr = address.uppercase()
         val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
@@ -217,11 +230,12 @@ object WedgeDiagnostics {
             )
         )
 
-        probeAdvertising(context, adapter, addr)
+        probeAdvertising(context, adapter, addr, onProbeComplete)
     }
 
     /**
-     * Listen for [addr]'s advertisements for [PROBE_DURATION_MS] and log what was heard.
+     * Listen for [addr]'s advertisements for [PROBE_DURATION_MS], log what was heard, and
+     * hand the verdict to [onComplete] on the main thread.
      *
      * Deliberately its own [ScanCallback] and not [OmiBleManager.startScan]: that one owns
      * a single `scanCallback` field used by device discovery, and would be clobbered.
@@ -232,16 +246,24 @@ object WedgeDiagnostics {
      * between backed-off retries, and a lower duty cycle would let the peripheral's 1 s
      * slow-advertising tier slip between scan windows and produce a false silence — the
      * exact reading this probe exists to make trustworthy.
+     *
+     * Every early return reports `true` (assume present), which keeps the caller's alert
+     * behaviour identical to what it was before the probe existed.
      */
-    private fun probeAdvertising(context: Context, adapter: BluetoothAdapter?, addr: String) {
-        if (adapter == null || !adapter.isEnabled) return
+    private fun probeAdvertising(
+        context: Context,
+        adapter: BluetoothAdapter?,
+        addr: String,
+        onComplete: (advertisingHeard: Boolean) -> Unit,
+    ) {
+        if (adapter == null || !adapter.isEnabled) return onComplete(true)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED
         ) {
-            return
+            return onComplete(true)
         }
-        val scanner = adapter.bluetoothLeScanner ?: return
-        if (!probeInFlight.compareAndSet(false, true)) return
+        val scanner = adapter.bluetoothLeScanner ?: return onComplete(true)
+        if (!probeInFlight.compareAndSet(false, true)) return onComplete(true)
 
         val startedAt = SystemClock.elapsedRealtime()
 
@@ -278,7 +300,7 @@ object WedgeDiagnostics {
         } catch (e: Exception) {
             Log.w(TAG, "Wedge probe scan could not start: ${e.message}")
             probeInFlight.set(false)
-            return
+            return onComplete(true)
         }
 
         handler.postDelayed({
@@ -307,6 +329,7 @@ object WedgeDiagnostics {
                     "verdict" to (if (heard) "peripheral_advertising" else "no_advertisements_heard"),
                 )
             )
+            onComplete(heard)
         }, PROBE_DURATION_MS)
     }
 
