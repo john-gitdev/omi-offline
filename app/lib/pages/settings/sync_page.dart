@@ -690,7 +690,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 child: SwitchListTile(
                   title: const Text('Save Debug Logs to File',
                       style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-                  subtitle: Text('Persists info/debug logs to a file on your device.',
+                  subtitle: Text(
+                      'Persists info/debug logs to a file on your device. '
+                      'Leave on to capture BLE connection outages automatically, as they happen.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
                   value: SharedPreferencesUtil().devLogsToFileEnabled,
                   onChanged: (val) async {
