@@ -38,28 +38,29 @@ class OmiBleForegroundService : Service() {
         private const val MTU_SIZE = 512
         private const val STABILITY_TIMER_MS = 60_000L
         private const val RECONNECT_DELAY_MS = 1_500L
-        private const val CONNECTION_TIMEOUT_MS = 30_000L
+        // Local connect-attempt backstops. These must NOT preempt Android's own connect
+        // timeout, or we cancelOpen() an in-flight attempt and never learn why it failed:
+        // handleDisconnection() then synthesizes status -1 ("we gave up"), which is
+        // indistinguishable from a real stack fault. Android gives up on a direct connect
+        // at ~30 s and reports a real status (133, 62/0x3e, …), so ours sits above that.
+        // autoConnect=true attempts never time out in the framework — the accept-list
+        // initiator waits forever — so those need a backstop of our own.
+        private const val DIRECT_CONNECT_TIMEOUT_MS = 40_000L
+        private const val AUTO_CONNECT_TIMEOUT_MS = 30_000L
         // Mid-retry ghost-GATT purge: if a stale system link is holding the firmware's
         // single connection slot, drop it (purgeGhostGattForAddress) before reconnecting.
-        // Capped to once per GHOST_PURGE_MIN_INTERVAL_MS to bound client-interface churn;
+        // Only fires when such a link actually exists. Capped to once per
+        // GHOST_PURGE_MIN_INTERVAL_MS to bound client-interface churn;
         // GHOST_PURGE_SETTLE_MS lets the firmware re-advertise after the purge.
         private const val GHOST_PURGE_MIN_INTERVAL_MS = 10_000L
         private const val GHOST_PURGE_SETTLE_MS = 500L
-        // Wedge signature: consecutive connect attempts that died to OUR local timeout
-        // (status -1 — the stack never delivered any onConnectionStateChange callback).
-        // A peripheral whose single connection slot is held by a stale OS link produces
-        // exactly this: no advertisement to scan, no GATT callback, just silence
-        // (observed 2026-07-08: 30+ min of status -1 every ~60 s until a BT toggle).
-        // After WEDGE_FORCE_PURGE_AFTER of them in a row, run the dummy connect-close
-        // purge even when no system-held link is visible (see purgeGhostGattForAddress
-        // force param) — rate-limited on its own longer interval so an absent device
-        // doesn't churn a client interface every retry tick. After WEDGE_NOTIFY_AFTER
-        // (past the forced-purge threshold, so purges have already been tried), tell
-        // the user to toggle Bluetooth — apps can't cycle the adapter themselves since
-        // Android 13. One notification per outage: the flag resets only on a
-        // successful connect.
-        private const val WEDGE_FORCE_PURGE_AFTER = 3
-        private const val FORCED_GHOST_PURGE_MIN_INTERVAL_MS = 60_000L
+        // After this many consecutive failed connect attempts, tell the user to toggle
+        // Bluetooth — apps can't cycle the adapter themselves since Android 13, and a
+        // toggle empirically clears the outage. It does so by tearing down every other
+        // host-side LE link, not by repairing the Omi: the failure is `0x3e`, a link that
+        // comes up and dies before the first six connection events. Counted on any failed
+        // attempt, not on our synthetic -1 — see the timeout constants above. One
+        // notification per outage; the flag resets only on a successful connect.
         private const val WEDGE_NOTIFY_AFTER = 6
         private const val ALERT_CHANNEL_ID = "omi_ble_alerts"
         private const val ALERT_NOTIFICATION_ID = 2002
@@ -186,12 +187,11 @@ class OmiBleForegroundService : Service() {
         // Timestamp of the last mid-retry ghost-GATT purge; rate-limits purges so a
         // persistent ghost can't churn Android client interfaces every retry tick.
         var lastGhostPurgeMs: Long = 0,
-        // Consecutive connect attempts that ended in our local timeout (status -1,
-        // no GATT callback at all) — the wedge signature. Reset only on a successful
-        // connect, NOT on re-manage: Dart re-manages every sync cycle and a wedge
+        // Consecutive failed connect attempts, of any status. Reset only on a successful
+        // connect, NOT on re-manage: Dart re-manages every sync cycle and an outage
         // survives those, so resetting there would keep the count forever below the
-        // forced-purge/notify thresholds.
-        var consecutiveTimeoutFailures: Int = 0,
+        // notify threshold.
+        var consecutiveConnectFailures: Int = 0,
         // True once the toggle-Bluetooth alert has been posted for the current outage;
         // prevents re-alerting every retry. Cleared on successful connect.
         var wedgeNotified: Boolean = false
@@ -265,7 +265,7 @@ class OmiBleForegroundService : Service() {
                 Log.i(TAG, "onGattConnected: $addr")
                 managed.retryCount = 0
                 managed.lastGhostPurgeMs = 0
-                managed.consecutiveTimeoutFailures = 0
+                managed.consecutiveConnectFailures = 0
                 managed.wedgeNotified = false
                 managed.hasEverConnected = true
                 managed.pendingReconnect?.let { handler.removeCallbacks(it) }
@@ -543,9 +543,8 @@ class OmiBleForegroundService : Service() {
                 managed.retryCount <= 3 -> false
                 else -> true
             }
-            
-            // Use shorter timeout for direct connection attempts.
-            val timeoutMs = if (autoConnect) CONNECTION_TIMEOUT_MS else 15_000L
+
+            val timeoutMs = if (autoConnect) AUTO_CONNECT_TIMEOUT_MS else DIRECT_CONNECT_TIMEOUT_MS
 
             Log.i(TAG, "connectToDevice($source): $addr (autoConnect=$autoConnect, timeout=${timeoutMs}ms)")
             // Flip back to "Connecting..." when retrying after a disconnect.
@@ -764,18 +763,14 @@ class OmiBleForegroundService : Service() {
 
         if (isDestroying || !isBluetoothEnabled) return
 
-        // Track the wedge signature (see WEDGE_* constants). Only status -1 counts —
-        // it means our local timeout fired with no onConnectionStateChange callback at
-        // all. A real status (133, 8, …) proves the stack is responding, which the
-        // slot-held wedge never does, so it breaks the streak.
-        if (status == -1) {
-            managed.consecutiveTimeoutFailures++
-            if (managed.consecutiveTimeoutFailures >= WEDGE_NOTIFY_AFTER && !managed.wedgeNotified) {
-                managed.wedgeNotified = true
-                postWedgeNotification(addr)
-            }
-        } else {
-            managed.consecutiveTimeoutFailures = 0
+        // Any failed attempt counts. The previous rule (only status -1) keyed the outage
+        // detector on our own local timeout, which fired before Android could deliver a
+        // real status — so a genuine 0x3e storm looked like stack silence and never
+        // tripped the streak. See the timeout constants and NOTES.md.
+        managed.consecutiveConnectFailures++
+        if (managed.consecutiveConnectFailures >= WEDGE_NOTIFY_AFTER && !managed.wedgeNotified) {
+            managed.wedgeNotified = true
+            postWedgeNotification(addr)
         }
 
         managed.retryCount++
@@ -798,16 +793,12 @@ class OmiBleForegroundService : Service() {
                 // closeGatt. If a stale system link still holds the firmware's slot, purge
                 // it, then reconnect after a short settle so the firmware can re-advertise.
                 // Rate-limited so a persistent ghost can't churn client interfaces per tick.
-                // Once the wedge signature is established (consecutive callback-less
-                // timeouts), purge unconditionally — some OEM stacks hold the link where
-                // neither the GATT list nor the ACL query sees it — on the longer forced
-                // interval so a merely-absent device costs at most one dummy connect-close
-                // a minute.
+                // The purge no longer runs when no such link exists: during the 2026-07-08
+                // outage the peripheral held zero connections, so every forced purge was a
+                // dummy connectGatt + cancelOpen against a device that was failing 0x3e.
                 val now = System.currentTimeMillis()
-                val forcePurge = managed.consecutiveTimeoutFailures >= WEDGE_FORCE_PURGE_AFTER
-                val purgeInterval = if (forcePurge) FORCED_GHOST_PURGE_MIN_INTERVAL_MS else GHOST_PURGE_MIN_INTERVAL_MS
-                if (now - managed.lastGhostPurgeMs >= purgeInterval &&
-                    bleManager.purgeGhostGattForAddress(addr, force = forcePurge)
+                if (now - managed.lastGhostPurgeMs >= GHOST_PURGE_MIN_INTERVAL_MS &&
+                    bleManager.purgeGhostGattForAddress(addr)
                 ) {
                     managed.lastGhostPurgeMs = now
                     Log.i(TAG, "Ghost GATT purged for $addr; reconnecting after ${GHOST_PURGE_SETTLE_MS}ms settle")
