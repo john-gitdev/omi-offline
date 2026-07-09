@@ -119,7 +119,9 @@ object WedgeDiagnostics {
      * which is an acceptable trade for not sharing a lock across the language boundary.
      */
     private fun logEvent(context: Context, type: String, fields: Map<String, Any?>) {
-        val file = currentLogFile(context) ?: return
+        // Timestamp and encode on the caller's thread so the line records when the event
+        // happened, not when the writer got scheduled. Everything touching the disk —
+        // resolving the file included — happens off it.
         val line = try {
             val payload = JSONObject()
             payload.put("timestamp", timestamp())
@@ -133,6 +135,7 @@ object WedgeDiagnostics {
         }
         Thread {
             try {
+                val file = currentLogFile(context) ?: return@Thread
                 FileOutputStream(file, true).use { it.write(line.toByteArray(Charsets.UTF_8)) }
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to append $type: ${e.message}")
@@ -248,7 +251,10 @@ object WedgeDiagnostics {
      * exact reading this probe exists to make trustworthy.
      *
      * Every early return reports `true` (assume present), which keeps the caller's alert
-     * behaviour identical to what it was before the probe existed.
+     * behaviour identical to what it was before the probe existed. Those returns post to the
+     * main thread rather than calling back inline: [captureWedge] runs on whatever thread the
+     * disconnect arrived on — a GATT binder thread, in the common case — and a callback whose
+     * thread depends on which branch it took is a trap for the next caller.
      */
     private fun probeAdvertising(
         context: Context,
@@ -256,14 +262,17 @@ object WedgeDiagnostics {
         addr: String,
         onComplete: (advertisingHeard: Boolean) -> Unit,
     ) {
-        if (adapter == null || !adapter.isEnabled) return onComplete(true)
+        fun assumePresent() = handler.post { onComplete(true) }
+
+        if (adapter == null || !adapter.isEnabled) { assumePresent(); return }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED
         ) {
-            return onComplete(true)
+            assumePresent(); return
         }
-        val scanner = adapter.bluetoothLeScanner ?: return onComplete(true)
-        if (!probeInFlight.compareAndSet(false, true)) return onComplete(true)
+        val scanner = adapter.bluetoothLeScanner
+        if (scanner == null) { assumePresent(); return }
+        if (!probeInFlight.compareAndSet(false, true)) { assumePresent(); return }
 
         val startedAt = SystemClock.elapsedRealtime()
 
@@ -300,7 +309,7 @@ object WedgeDiagnostics {
         } catch (e: Exception) {
             Log.w(TAG, "Wedge probe scan could not start: ${e.message}")
             probeInFlight.set(false)
-            return onComplete(true)
+            assumePresent(); return
         }
 
         handler.postDelayed({
