@@ -194,7 +194,10 @@ class OmiBleForegroundService : Service() {
         var consecutiveConnectFailures: Int = 0,
         // True once the toggle-Bluetooth alert has been posted for the current outage;
         // prevents re-alerting every retry. Cleared on successful connect.
-        var wedgeNotified: Boolean = false
+        var wedgeNotified: Boolean = false,
+        // elapsedRealtime() when the current outage was first detected, so recovery can
+        // report how long it lasted. 0 when no outage is open.
+        var wedgeStartedAtMs: Long = 0
     )
 
     private val managedDevices = ConcurrentHashMap<String, ManagedDevice>()
@@ -259,14 +262,23 @@ class OmiBleForegroundService : Service() {
             val addr = address.uppercase()
             // Fires on the binder thread pool, not main. Hold syncLock so writes to
             // managed.* are visible to readers on other threads (manageDevice, retry runnable).
+            // Read before the reset below clears them, emitted after the lock is released.
+            var recoveredFromWedge = false
+            var wedgeStartedAtMs = 0L
+            var failuresBeforeRecovery = 0
+
             synchronized(syncLock) {
                 val managed = managedDevices[addr] ?: return
 
                 Log.i(TAG, "onGattConnected: $addr")
+                recoveredFromWedge = managed.wedgeNotified
+                wedgeStartedAtMs = managed.wedgeStartedAtMs
+                failuresBeforeRecovery = managed.consecutiveConnectFailures
                 managed.retryCount = 0
                 managed.lastGhostPurgeMs = 0
                 managed.consecutiveConnectFailures = 0
                 managed.wedgeNotified = false
+                managed.wedgeStartedAtMs = 0
                 managed.hasEverConnected = true
                 managed.pendingReconnect?.let { handler.removeCallbacks(it) }
                 managed.pendingReconnect = null
@@ -279,6 +291,18 @@ class OmiBleForegroundService : Service() {
             // Outage over — retire this device's toggle-Bluetooth alert if one is
             // showing (no-op when none was posted).
             cancelWedgeAlert(addr)
+
+            // Close the outage record. Dart's _finishDeviceSetup appends the peripheral's
+            // own establishment-failure counter to the same log moments from now, which is
+            // the half of the picture that can only be read once the link is back up.
+            if (recoveredFromWedge) {
+                WedgeDiagnostics.captureRecovery(
+                    context = this@OmiBleForegroundService,
+                    address = addr,
+                    wedgeStartedAtMs = wedgeStartedAtMs,
+                    failuresBeforeRecovery = failuresBeforeRecovery,
+                )
+            }
 
             startStabilityTimer(addr)
             bleManager.startRssiKeepAlive(addr)
@@ -770,7 +794,20 @@ class OmiBleForegroundService : Service() {
         managed.consecutiveConnectFailures++
         if (managed.consecutiveConnectFailures >= WEDGE_NOTIFY_AFTER && !managed.wedgeNotified) {
             managed.wedgeNotified = true
+            managed.wedgeStartedAtMs = android.os.SystemClock.elapsedRealtime()
             postWedgeNotification(addr)
+            // Snapshot the outage into the debug log now, while it is happening. An outage
+            // that starts overnight is over by the time anyone can attach adb, and its most
+            // informative state — whether we can still hear the peripheral advertising —
+            // exists only while it lasts. Written from native: Dart may be Doze-frozen.
+            WedgeDiagnostics.captureWedge(
+                context = this,
+                bleManager = bleManager,
+                address = addr,
+                consecutiveFailures = managed.consecutiveConnectFailures,
+                retryCount = managed.retryCount,
+                lastStatus = status,
+            )
         }
 
         managed.retryCount++
