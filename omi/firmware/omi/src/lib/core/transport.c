@@ -550,7 +550,7 @@ static ssize_t button_config_write_handler(struct bt_conn *conn,
     // Reject out-of-range actions so we never persist a config the FSM can't map.
     const uint8_t *cfg = (const uint8_t *) buf;
     for (int i = 0; i < 6; i++) {
-        if (cfg[i] > BUTTON_ACTION_RECORD_STOP) {
+        if (cfg[i] > BUTTON_ACTION_RECORD_TOGGLE) {
             return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
         }
     }
