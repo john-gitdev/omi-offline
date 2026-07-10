@@ -925,6 +925,9 @@ features_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, voi
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
     // Priority Recording (and thus its configurable safety cap) exists only on AAD builds.
     features |= OMI_FEATURE_PRIORITY_RECORD_CAP;
+    // The RECORD_TOGGLE action toggles a manual recording / auto priority
+    // recording — both require AAD, so advertise it only on AAD builds.
+    features |= OMI_FEATURE_RECORD_TOGGLE;
 #endif
 
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &features, sizeof(features));
