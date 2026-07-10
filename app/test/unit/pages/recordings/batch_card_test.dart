@@ -110,7 +110,21 @@ void main() {
       expect(rows.discards, isEmpty);
     });
 
-    test('shows a ghost that precedes the draft by more than the tolerance', () {
+    test('shows a long trailing ghost whose gap + duration reaches the fold window', () {
+      // gap 90s + duration 60s = 150s >= the 120s window, so the finalize/stitch
+      // pass would finalize the draft rather than fold this ghost in — it is a
+      // real standalone row and must stay visible.
+      final longGhost = ghost(draftEnd.add(const Duration(seconds: 90)), duration: const Duration(seconds: 60));
+      final rows = filterBatchRows(
+        batch(drafts: [draft(draftStart)], discards: [longGhost]),
+        RecordingFilterMode.visible,
+        0,
+        foldWindow: twoMinWindow,
+      );
+      expect(rows.discards, [longGhost]);
+    });
+
+    test("shows a ghost whose gap to the draft's end exceeds the backward tolerance", () {
       final earlyGhost = ghost(draftEnd.subtract(const Duration(minutes: 2)));
       final rows = filterBatchRows(
         batch(drafts: [draft(draftStart)], discards: [earlyGhost]),
