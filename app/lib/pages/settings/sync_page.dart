@@ -53,9 +53,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   static const _kBaselineBoot = 'drop_baseline_boot';
   static const _kBaselineCodec = 'drop_baseline_codec';
   static const _kBaselineConnFail = 'conn_fail_baseline';
-  // BLE connect-fail baseline (app-side). Unlike _dropBaseline it survives a
-  // device reboot, because the firmware counter is flash-persisted.
+  static const _kBaselineEstabFail = 'estab_fail_baseline';
+  // BLE connect-fail baselines (app-side). Unlike _dropBaseline they survive a
+  // device reboot, because the firmware counters are flash-persisted.
   int? _connFailBaseline;
+  int? _estabFailBaseline;
   List<Map<String, dynamic>> _recentLogs = const [];
 
   // Count of .bin files held in the isolated Adjustment Mode folder. Refreshed
@@ -93,6 +95,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     _dropStats = null;
     _dropBaseline = null;
     _connFailBaseline = null;
+    _estabFailBaseline = null;
     _dropsUnsupported = false;
     _dropsWaitingSync = false;
     _baselineRestored = false;
@@ -524,8 +527,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       }
     }
 
-    // BLE connect-fail baseline: SURVIVES reboot (firmware counter is flash-
-    // persisted). Only discard if the counter went backwards — i.e. the device's
+    // BLE connect-fail baselines: SURVIVE reboot (firmware counters are flash-
+    // persisted). Only discard if a counter went backwards — i.e. the device's
     // flash was wiped / re-flashed below the saved baseline.
     final savedConnFail = prefs.getInt(_kBaselineConnFail, defaultValue: -1);
     if (savedConnFail >= 0) {
@@ -533,6 +536,15 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         unawaited(prefs.remove(_kBaselineConnFail));
       } else {
         setState(() => _connFailBaseline = savedConnFail);
+      }
+    }
+
+    final savedEstabFail = prefs.getInt(_kBaselineEstabFail, defaultValue: -1);
+    if (savedEstabFail >= 0) {
+      if (stats.estabFailCount < savedEstabFail) {
+        unawaited(prefs.remove(_kBaselineEstabFail));
+      } else {
+        setState(() => _estabFailBaseline = savedEstabFail);
       }
     }
   }
@@ -551,8 +563,13 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   void _snapshotConnFailBaseline() {
     final stats = _dropStats;
     if (stats == null) return;
-    unawaited(SharedPreferencesUtil().saveInt(_kBaselineConnFail, stats.failedConnCount));
-    setState(() => _connFailBaseline = stats.failedConnCount);
+    final prefs = SharedPreferencesUtil();
+    unawaited(prefs.saveInt(_kBaselineConnFail, stats.failedConnCount));
+    unawaited(prefs.saveInt(_kBaselineEstabFail, stats.estabFailCount));
+    setState(() {
+      _connFailBaseline = stats.failedConnCount;
+      _estabFailBaseline = stats.estabFailCount;
+    });
   }
 
   /// Reset every diagnostic counter (SD-queue/block/codec drops + BLE connect
@@ -673,7 +690,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 child: SwitchListTile(
                   title: const Text('Save Debug Logs to File',
                       style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-                  subtitle: Text('Persists info/debug logs to a file on your device.',
+                  subtitle: Text(
+                      'Persists info/debug logs to a file on your device. '
+                      'Leave on to capture BLE connection outages automatically, as they happen.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
                   value: SharedPreferencesUtil().devLogsToFileEnabled,
                   onChanged: (val) async {
@@ -711,16 +730,17 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                           // upload/save targets. Derived from the on-disk basename
                           // (`omi_debug_YYYYMMDD.log`) so the date matches exactly.
                           final logName = files.first.uri.pathSegments.last;
-                          
+
                           String appVersion = 'unknown';
                           try {
                             final packageInfo = await PackageInfo.fromPlatform();
                             appVersion = packageInfo.version;
                           } catch (_) {}
-                          
-                          final fwVersion = context.read<DeviceProvider>().connectedDevice?.firmwareRevision ?? 'unknown';
+
+                          final fwVersion =
+                              context.read<DeviceProvider>().connectedDevice?.firmwareRevision ?? 'unknown';
                           final os = Platform.operatingSystem;
-                          
+
                           final datePart = logName.replaceFirst('omi_debug_', '');
                           final shareName = '${os}_${appVersion}_${fwVersion}_omi_offline_debug_$datePart';
                           // Name the XFile (not just the share `subject`) so the name lands on
@@ -1194,6 +1214,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final boot = stats.bootFrameDrops; // boot drops are fixed at boot; baseline doesn't apply
     final hasFreshDrops = blocks > 0 || frames > 0 || codec > 0;
     final connFails = _connFailBaseline == null ? stats.failedConnCount : (stats.failedConnCount - _connFailBaseline!);
+    final estabFails = _estabFailBaseline == null ? stats.estabFailCount : (stats.estabFailCount - _estabFailBaseline!);
 
     final color = hasFreshDrops ? Colors.amber : Colors.white70;
 
@@ -1242,11 +1263,18 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
             padding: EdgeInsets.symmetric(vertical: 6),
             child: Divider(color: Color(0xFF2C2C2E), height: 1),
           ),
-          // BLE connect-establishment failures. The firmware counter is
-          // persisted across reboots; this baseline ("Reset BLE") is too, unlike
-          // the SD-drop baseline. See NOTES.md "BLE: advertising but won't connect".
+          // BLE connect failures. The firmware counters are persisted across
+          // reboots; these baselines are too, unlike the SD-drop baseline.
+          // "Died at establishment" is the one that identifies a "visible but
+          // unconnectable" outage — if the phone logs 0x3e while this stays 0,
+          // the Omi never heard the connect requests and the phone is at fault.
+          // See NOTES.md "BLE: advertising but won't connect".
           _dropStatRow('BLE connect failures', connFails.toString(), connFails > 0),
-          if (stats.failedConnCount > 0)
+          _dropStatRow('Died at establishment (0x3e)', estabFails.toString(), estabFails > 0),
+          // Gated on the since-reset deltas, not the lifetime totals: the adv mode
+          // describes whichever failure the two rows above are reporting. Keying it on
+          // the totals kept the row visible (and red) after a reset that zeroed both.
+          if (connFails > 0 || estabFails > 0)
             _dropStatRow('Last fail adv mode', stats.lastFailedConnDuringSlowAdv ? 'slow (1s)' : 'fast', true),
           const SizedBox(height: 10),
           SizedBox(

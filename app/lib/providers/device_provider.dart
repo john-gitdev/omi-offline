@@ -598,37 +598,23 @@ class DeviceProvider extends ChangeNotifier
     Logger.debug('[BLE] _scanConnectDevice: starting connect to $pairedDeviceId');
 
     // Kick off native connect. This holds the Dart mutex internally until the
-    // device is fully ready (services + MTU). We don't await it to completion
-    // yet — first race it against a short probe so a BLE scan can start in
-    // parallel when the connect is slow. (connectFuture is listened to twice;
-    // Future.timeout keeps an error handler on the source across the probe, so a
-    // late rejection is never unhandled.)
+    // device is fully ready (services + MTU). Native owns connect + retry; there
+    // is nothing for Dart to do but wait.
+    //
+    // Do NOT start a parallel discover() here when the connect is slow. discover()
+    // runs an unfiltered SCAN_MODE_LOW_LATENCY scan (OmiBleManager.startScan), a
+    // 100%-duty-cycle radio load, and it fired precisely when establishment was
+    // most fragile — a link must be heard within 6 connection events (~165 ms) or
+    // the central reports HCI 0x3e. Because it only triggered once a connect was
+    // already struggling, it fed back on itself: slow connect → maximal scan →
+    // establishment fails → retry → scan again. Its result was discarded anyway
+    // (`unawaited`); the connect never consumed it. See NOTES.md "BLE: advertising
+    // but won't connect".
     final connectFuture = ServiceManager.instance().device.ensureConnection(pairedDeviceId, force: true);
 
-    // Probe: native consolidated connect + service discovery into a single
-    // device-ready event, so connectFuture is the only "connected" signal to
-    // race. If it completes within 5s the device was in range — skip the
-    // redundant scan; otherwise start a BLE scan in parallel while native keeps
-    // retrying. The scan portion of discover() doesn't need the Dart mutex and
-    // runs concurrently; only discover's final ensureConnection blocks on it.
-    bool ready = false;
+    // 30s budget, matching the native transport's own device-ready timeout.
     try {
-      await connectFuture.timeout(const Duration(seconds: 5));
-      ready = true;
-      Logger.debug(
-          '[BLE] _scanConnectDevice: ready within probe at ${DateTime.now().difference(t0).inMilliseconds}ms — skipping scan');
-    } catch (_) {
-      Logger.debug('[BLE] _scanConnectDevice: not ready in 5s — starting BLE scan in parallel');
-    }
-    if (!ready && !isConnected) {
-      unawaited(ServiceManager.instance().device.discover(timeout: 10));
-    }
-
-    // Wait for the device to be fully ready (services + MTU). 25s here on top of
-    // the 5s probe preserves the original ~30s budget; the underlying Dart
-    // completer has its own 30s backstop.
-    try {
-      if (!ready) await connectFuture.timeout(const Duration(seconds: 25));
+      await connectFuture.timeout(const Duration(seconds: 30));
       final elapsed = DateTime.now().difference(t0).inMilliseconds;
       Logger.debug('[BLE] _scanConnectDevice: device ready after ${elapsed}ms');
       device = await _getConnectedDevice();
@@ -1475,18 +1461,29 @@ class DeviceProvider extends ChangeNotifier
         }
       }
 
-      // Log the persisted BLE connect-failure counter on every connect so it
-      // lands in 'Save Diagnostic Logs to File'. The count survives a reboot, so
-      // after power-cycling to reconnect, this captures failures from before the
-      // reboot. See NOTES.md "BLE: advertising but won't connect". Skip if a sync
-      // is already transferring — a GATT read racing the storage stream throws
-      // Error 133 on Android (next connect logs it instead).
+      // Log the persisted BLE connect-failure counters on every connect so they land
+      // in 'Save Diagnostic Logs to File'. The counts survive a reboot, so after
+      // power-cycling to reconnect, this captures failures from before the reboot.
+      // See NOTES.md "BLE: advertising but won't connect". Skip if a sync is already
+      // transferring — a GATT read racing the storage stream throws Error 133 on
+      // Android (next connect logs it instead).
+      //
+      // Logged whatever the values are, including all-zero. Counters that did not move
+      // across an outage are the reading that acquits the peripheral — it never heard
+      // the CONNECT_INDs — and are exactly as diagnostic as counters that did. Gating
+      // on `> 0` made that case indistinguishable from a read that never happened.
+      // The counters are cumulative across boots, so only their movement between two
+      // consecutive lines means anything.
       final dropStats = conn.isStorageBusy ? null : await conn.getDropStats();
-      if (dropStats != null && dropStats.failedConnCount > 0) {
-        Logger.warning('Device BLE connect-fail counter: ${dropStats.failedConnCount} '
-            '(last failure during ${dropStats.lastFailedConnDuringSlowAdv ? "slow" : "fast"} advertising)');
+      if (dropStats != null) {
+        if (dropStats.failedConnCount > 0 || dropStats.estabFailCount > 0) {
+          Logger.warning('Device BLE connect-fail counters: conn=${dropStats.failedConnCount} '
+              'estab_0x3e=${dropStats.estabFailCount} '
+              '(last failure during ${dropStats.lastFailedConnDuringSlowAdv ? "slow" : "fast"} advertising)');
+        }
         await DebugLogManager.logEvent('device_conn_fail', {
           'failed_conn_count': dropStats.failedConnCount,
+          'estab_fail_count': dropStats.estabFailCount,
           'last_failure_adv_mode': dropStats.lastFailedConnDuringSlowAdv ? 'slow' : 'fast',
         });
       }

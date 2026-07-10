@@ -215,6 +215,8 @@ class OmiDeviceConnection extends DeviceConnection {
         // sd_msgq peak depth (32) + write-fairness activations (36), 40-byte firmware; 0 on older.
         msgqPeakDepth: data.length >= 36 ? data.getUint32LittleEndian(32) : 0,
         writeFairActivations: data.length >= 40 ? data.getUint32LittleEndian(36) : 0,
+        // establishment failures (0x3e) appended at offset 40 (44-byte firmware); 0 on older.
+        estabFailCount: data.length >= 44 ? data.getUint32LittleEndian(40) : 0,
         readAt: DateTime.now(),
       );
     } catch (e) {
