@@ -202,6 +202,95 @@ static inline void priority_record_arm_cap(void) {}
 static inline void priority_record_stop(void) {}
 #endif
 
+/* Start a recording from the button. Manual mode: force capture and persist the
+ * threshold (65535) so the offline start survives a reboot. Auto mode: open a
+ * force-captured Priority Recording (runtime 65535, NOT persisted) bracketed by
+ * a 0xFFFFFFF8 start marker, after rotating the bin so the prior auto recording
+ * owns the old bin. Caller must have already checked !is_muted. Returns true if
+ * it acted (false = auto priority recording already running). */
+static bool record_start(void)
+{
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    /* Mode is read from the PERSISTED threshold, not the runtime one: an
+     * auto-mode priority recording sets runtime 65535 without persisting it, so
+     * the persisted value still reflects the real mode (32769/65535 manual,
+     * < 32769 auto). */
+    uint16_t resting = app_settings_get_vad_threshold();
+    bool in_manual = (resting == 32769 || resting == 65535);
+    bool already_recording = (aad_get_threshold() == 65535);
+#else
+    bool in_manual = false;
+    bool already_recording = false;
+#endif
+    if (in_manual) {
+        /* Explicit manual-mode start, persisted so it survives a reboot. */
+        marker_flash_color = MARKER_FLASH_GREEN;
+        marker_flash_count = 2;
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+        aad_set_threshold(65535);
+        app_settings_save_vad_threshold(65535);
+#endif
+        return true;
+    } else if (already_recording) {
+        LOG_INF("Record start ignored (priority recording already active)");
+        return false;
+    }
+    /* Auto-mode Priority Recording: rotate first so the prior auto recording owns
+     * the old bin, then write 0xFFFFFFF8 as the first inline frame of the fresh
+     * bin and force continuous capture. */
+    marker_flash_color = MARKER_FLASH_RED;
+    marker_flash_count = 2;
+#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+    sd_write_pause(false);
+    create_new_audio_file();
+    write_priority_recording_marker_to_storage();
+#endif
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    /* Runtime force-capture only — NOT persisted, so a reboot mid-recording
+     * returns to the auto threshold. */
+    aad_set_threshold(65535);
+    aad_force_wake();
+#endif
+    priority_record_arm_cap();
+    return true;
+}
+
+/* Stop a recording from the button. Manual mode: persist the standby threshold
+ * (32769) so the offline stop survives a reboot. Auto mode: stop the active
+ * Priority Recording (emits the 0xFFFFFFFC session-end marker via the threshold
+ * restore). Caller must have already checked !is_muted. Returns true if it acted
+ * (false = nothing was recording). */
+static bool record_stop(void)
+{
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    uint16_t resting = app_settings_get_vad_threshold(); /* persisted → real mode */
+    bool in_manual = (resting == 32769 || resting == 65535);
+    bool force_recording = (aad_get_threshold() == 65535);
+#else
+    bool in_manual = false;
+    bool force_recording = false;
+#endif
+    if (in_manual) {
+        /* Explicit manual-mode stop, persisted so the offline stop survives a
+         * reboot. */
+        marker_flash_color = MARKER_FLASH_RED;
+        marker_flash_count = 2;
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+        aad_set_threshold(32769);
+        app_settings_save_vad_threshold(32769);
+#endif
+        return true;
+    } else if (force_recording) {
+        /* Auto-mode Priority Recording stop. */
+        marker_flash_color = MARKER_FLASH_RED;
+        marker_flash_count = 2;
+        priority_record_stop();
+        return true;
+    }
+    LOG_INF("Record stop ignored (no priority recording active)");
+    return false;
+}
+
 static void execute_button_action(uint8_t taps, bool is_hold)
 {
     if (taps < 1 || taps > 3)
@@ -261,87 +350,29 @@ static void execute_button_action(uint8_t taps, bool is_hold)
             LOG_INF("Record start ignored (muted)");
             break;
         }
-        {
-            /* Mode is read from the PERSISTED threshold, not the runtime one:
-             * an auto-mode priority recording sets runtime 65535 without
-             * persisting it, so the persisted value still reflects the real
-             * mode (32769/65535 manual, < 32769 auto). */
-#ifdef CONFIG_OMI_ENABLE_T5838_AAD
-            uint16_t resting = app_settings_get_vad_threshold();
-            bool in_manual = (resting == 32769 || resting == 65535);
-            bool already_recording = (aad_get_threshold() == 65535);
-#else
-            bool in_manual = false;
-            bool already_recording = false;
-#endif
-            if (in_manual) {
-                /* Explicit manual-mode start — same effect as today's MARKER
-                 * start, persisted so it survives a reboot. */
-                acted = true;
-                marker_flash_color = MARKER_FLASH_GREEN;
-                marker_flash_count = 2;
-#ifdef CONFIG_OMI_ENABLE_T5838_AAD
-                aad_set_threshold(65535);
-                app_settings_save_vad_threshold(65535);
-#endif
-            } else if (already_recording) {
-                LOG_INF("Record start ignored (priority recording already active)");
-            } else {
-                /* Auto-mode Priority Recording: rotate first so the prior auto
-                 * recording owns the old bin, then write 0xFFFFFFF8 as the first
-                 * inline frame of the fresh bin and force continuous capture. */
-                acted = true;
-                marker_flash_color = MARKER_FLASH_RED;
-                marker_flash_count = 2;
-#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
-                sd_write_pause(false);
-                create_new_audio_file();
-                write_priority_recording_marker_to_storage();
-#endif
-#ifdef CONFIG_OMI_ENABLE_T5838_AAD
-                /* Runtime force-capture only — NOT persisted, so a reboot
-                 * mid-recording returns to the auto threshold. */
-                aad_set_threshold(65535);
-                aad_force_wake();
-#endif
-                priority_record_arm_cap();
-            }
-        }
+        acted = record_start();
         break;
     case BUTTON_ACTION_RECORD_STOP:
         if (is_muted) {
             LOG_INF("Record stop ignored (muted)");
             break;
         }
-        {
-#ifdef CONFIG_OMI_ENABLE_T5838_AAD
-            uint16_t resting = app_settings_get_vad_threshold();
-            bool in_manual = (resting == 32769 || resting == 65535);
-            bool force_recording = (aad_get_threshold() == 65535);
-#else
-            bool in_manual = false;
-            bool force_recording = false;
-#endif
-            if (in_manual) {
-                /* Explicit manual-mode stop — same effect as today's MARKER
-                 * stop, persisted so the offline stop survives a reboot. */
-                acted = true;
-                marker_flash_color = MARKER_FLASH_RED;
-                marker_flash_count = 2;
-#ifdef CONFIG_OMI_ENABLE_T5838_AAD
-                aad_set_threshold(32769);
-                app_settings_save_vad_threshold(32769);
-#endif
-            } else if (force_recording) {
-                /* Auto-mode Priority Recording stop. */
-                acted = true;
-                marker_flash_color = MARKER_FLASH_RED;
-                marker_flash_count = 2;
-                priority_record_stop();
-            } else {
-                LOG_INF("Record stop ignored (no priority recording active)");
-            }
+        acted = record_stop();
+        break;
+    case BUTTON_ACTION_RECORD_TOGGLE:
+        if (is_muted) {
+            LOG_INF("Record toggle ignored (muted)");
+            break;
         }
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+        /* Runtime 65535 = actively recording in either mode (manual recording
+         * and auto priority-recording both hold it); anything else = idle. So
+         * one check picks the right direction without knowing the mode. */
+        acted = (aad_get_threshold() == 65535) ? record_stop() : record_start();
+#else
+        /* No AAD → no recording-state to read; a toggle can only start. */
+        acted = record_start();
+#endif
         break;
     case BUTTON_ACTION_NONE:
     default:
