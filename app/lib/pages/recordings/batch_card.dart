@@ -147,36 +147,30 @@ class MarkerSubEntry extends StatelessWidget {
   }
 }
 
-/// A discard whose start may sit slightly before an open draft's decoded end
-/// (inter-file gap padding / frame-duration rounding) is still the draft's
-/// immediate trailing neighbour. Tolerate this much backward slack when testing
-/// abutment. Mirrors DiscardStore.discardMergeGap's rationale — small enough to
-/// only absorb rounding, far below any real multi-minute gap.
-const Duration _ghostFoldAbutTolerance = Duration(seconds: 30);
-
 /// True when [d] abuts an open draft and is still inside the window where the
-/// draft-finalize/stitch pass could fold it back into that conversation (see
-/// RecordingsManager._stitchDraftRecordings, which stitches an intervening ghost
-/// when the accumulated non-speech to the next speech stays under
-/// vadSplitSeconds). Such a ghost is a not-yet-settled verdict, so surfacing it
-/// beneath the "Conversation in progress" banner reads as a contradiction.
+/// draft-finalize/stitch pass could fold it back into that conversation. Such a
+/// ghost is a not-yet-settled verdict, so surfacing it beneath the "Conversation
+/// in progress" banner reads as a contradiction.
+///
+/// Mirrors RecordingsManager._stitchDraftRecordings' fold test exactly:
+///  - it skips (`if (gap < 0) continue`) — and therefore never folds — any event
+///    that starts before the draft's decoded end, so a ghost with a negative gap
+///    must stay visible (it will remain a standalone row), and
+///  - it folds a ghost only while the gap to reach it PLUS the ghost's own
+///    wall-clock span stays under vadSplitSeconds; at/beyond that boundary the
+///    pass finalizes the draft instead, leaving the ghost a real standalone row.
+///
+/// [drafts] should be every open draft in view (globally, across date folders),
+/// because the stitch pass folds across midnight — a ghost just after midnight
+/// can still belong to a draft in the previous day's batch.
 ///
 /// Bin-less ghosts (muted stretches) are never folded, so they are always shown.
 bool _foldPendingTrailingGhost(DiscardRecord d, List<Conversation> drafts, Duration foldWindow) {
   if (d.relativeBins.isEmpty) return false;
   for (final draft in drafts) {
     final gap = d.startTime.difference(draft.endTime);
-    // Must trail the draft's decoded end; a small backward slack absorbs the
-    // draft's gap-padding / frame-rounding overshoot. Anything earlier is not the
-    // draft's trailing neighbour.
-    if (gap < -_ghostFoldAbutTolerance) continue;
-    // Mirror the finalize/stitch pass's fold boundary: a ghost is folded only
-    // while the non-speech to reach it PLUS the ghost's own wall-clock span stays
-    // under vadSplitSeconds. At/beyond that the pass finalizes the draft instead
-    // of folding, and the ghost becomes a real standalone row that must stay
-    // visible — so the duration, not just the start gap, has to clear the window.
-    final effectiveGap = gap.isNegative ? Duration.zero : gap;
-    if (effectiveGap + d.duration < foldWindow) return true;
+    if (gap.isNegative) continue;
+    if (gap + d.duration < foldWindow) return true;
   }
   return false;
 }
@@ -191,11 +185,17 @@ bool _foldPendingTrailingGhost(DiscardRecord d, List<Conversation> drafts, Durat
 /// still-pending one is never unreachable. The hidden data is untouched: it
 /// reappears on the next reload once the draft resolves (folded ⇒ the record is
 /// retired; finalized ⇒ the draft is gone and the ghost stands on its own).
+///
+/// [openDrafts] is the set of open drafts to test against; pass every draft in
+/// view (across all batches) so a cross-midnight ghost is matched against a draft
+/// in the previous day's batch, mirroring the stitch pass's global lookup. When
+/// null it falls back to this batch's own drafts (same-day only).
 ({List<Conversation> recordings, List<DiscardRecord> discards}) filterBatchRows(
   Batch batch,
   RecordingFilterMode filterMode,
   int minFilterSeconds, {
   Duration foldWindow = Duration.zero,
+  List<Conversation>? openDrafts,
 }) {
   final conversations = [...batch.finalizedRecordings]..sort((a, b) => b.startTime.compareTo(a.startTime));
   final recordings = minFilterSeconds > 0
@@ -214,10 +214,9 @@ bool _foldPendingTrailingGhost(DiscardRecord d, List<Conversation> drafts, Durat
           RecordingFilterMode.all => [...batch.discards],
         }
       : [...batch.discards];
-  if (foldWindow > Duration.zero &&
-      filterMode == RecordingFilterMode.visible &&
-      batch.draftRecordings.isNotEmpty) {
-    discards = discards.where((d) => !_foldPendingTrailingGhost(d, batch.draftRecordings, foldWindow)).toList();
+  final drafts = openDrafts ?? batch.draftRecordings;
+  if (foldWindow > Duration.zero && filterMode == RecordingFilterMode.visible && drafts.isNotEmpty) {
+    discards = discards.where((d) => !_foldPendingTrailingGhost(d, drafts, foldWindow)).toList();
   }
   return (recordings: recordings, discards: discards);
 }
@@ -571,6 +570,10 @@ class _DayMenuRow extends StatelessWidget {
 
 class BatchCard extends StatelessWidget {
   final Batch batch;
+  /// Every open draft in view (across all batches), so a cross-midnight trailing
+  /// ghost in this batch can be matched against a draft in an adjacent day's
+  /// batch — mirroring the stitch pass's global fold. Null ⇒ same-day only.
+  final List<Conversation>? openDrafts;
   final Map<String, List<MarkerConversation>> markerMap;
   final bool anyIntegrationEnabled;
   final RecordingFilterMode filterMode;
@@ -601,6 +604,7 @@ class BatchCard extends StatelessWidget {
   const BatchCard({
     super.key,
     required this.batch,
+    this.openDrafts,
     required this.markerMap,
     required this.anyIntegrationEnabled,
     required this.filterMode,
@@ -629,12 +633,14 @@ class BatchCard extends StatelessWidget {
     // rows. Ghosts get the same filter so short discards land in the hidden tab
     // alongside short recordings; with no minimum set, all discards show.
     // foldWindow hides a trailing ghost still eligible to be folded into an open
-    // draft (mirrors the finalize pass's vadSplitSeconds threshold).
+    // draft (mirrors the finalize pass's vadSplitSeconds threshold); openDrafts
+    // is the global draft set so cross-midnight ghosts are matched too.
     final rows = filterBatchRows(
       batch,
       filterMode,
       minFilterSeconds,
       foldWindow: Duration(seconds: SharedPreferencesUtil().vadSplitSeconds),
+      openDrafts: openDrafts,
     );
     final filtered = rows.recordings;
     final discards = rows.discards;
