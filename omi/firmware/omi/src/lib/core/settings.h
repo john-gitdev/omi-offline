@@ -152,19 +152,23 @@ int app_settings_save_crash_session_uptime(uint64_t uptime_ms);
 uint64_t app_settings_get_crash_session_uptime(void);
 
 /**
- * @brief Persist the cumulative BLE connection-establishment failure count.
+ * @brief Persist the cumulative BLE connection-failure counters.
  *
- * Survives a power-cycle so the count is still readable after the user reboots
- * the Omi to reconnect (the only way to read it, since a failing device can't
- * be connected to). See NOTES.md "BLE: advertising but won't connect".
- * @param count          cumulative failed establishments (across boots)
+ * Survives a power-cycle so the counts are still readable after the user reboots
+ * the Omi to reconnect. See NOTES.md "BLE: advertising but won't connect".
+ * @param count          cumulative HCI connect-callback failures (across boots).
+ *                       Only counts the peripheral host being told a connection
+ *                       attempt failed outright — see estab_count for the case
+ *                       this misses.
  * @param last_adv_slow  1 if the most recent failure occurred during slow (1 s)
  *                       advertising, 0 if during fast advertising
+ * @param estab_count    cumulative links that came up and then died at
+ *                       establishment (disconnect reason HCI 0x3e)
  */
-int app_settings_save_conn_fail(uint32_t count, uint8_t last_adv_slow);
+int app_settings_save_conn_fail(uint32_t count, uint8_t last_adv_slow, uint32_t estab_count);
 
-/** @brief Load the persisted connection-failure count + last-failure adv mode. */
-void app_settings_get_conn_fail(uint32_t *count, uint8_t *last_adv_slow);
+/** @brief Load the persisted connection-failure counts + last-failure adv mode. */
+void app_settings_get_conn_fail(uint32_t *count, uint8_t *last_adv_slow, uint32_t *estab_count);
 
 /**
  * @brief Save the button configuration.

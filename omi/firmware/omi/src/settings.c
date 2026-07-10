@@ -39,11 +39,17 @@ static uint64_t crash_session_uptime_ms = 0;
 
 /* BLE connection-establishment failure counter, persisted so it survives the
  * power-cycle the user must perform to reconnect and read it. */
+/* v1 was {count, last_adv_slow, _pad[3]} = 8 bytes. v2 appends estab_count.
+ * Loader accepts both sizes so an in-field device keeps its history across the
+ * firmware update that adds the field (v1 records load with estab_count = 0). */
 struct conn_fail_record {
     uint32_t count;
     uint8_t last_adv_slow;
     uint8_t _pad[3];
+    uint32_t estab_count;
 };
+
+#define CONN_FAIL_RECORD_V1_SIZE 8
 
 static struct conn_fail_record conn_fail = {0};
 
@@ -215,12 +221,17 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
     }
 
     if (settings_name_steq(name, "conn_fail", &next) && !next) {
-        if (len != sizeof(conn_fail)) {
+        if (len != sizeof(conn_fail) && len != CONN_FAIL_RECORD_V1_SIZE) {
             return -EINVAL;
         }
-        rc = read_cb(cb_arg, &conn_fail, sizeof(conn_fail));
+        /* Zero first so a short (v1) read leaves estab_count at 0 rather than stale. */
+        memset(&conn_fail, 0, sizeof(conn_fail));
+        rc = read_cb(cb_arg, &conn_fail, len);
         if (rc >= 0) {
-            LOG_INF("Loaded conn_fail: count=%u last_adv_slow=%u", conn_fail.count, conn_fail.last_adv_slow);
+            LOG_INF("Loaded conn_fail: count=%u last_adv_slow=%u estab_count=%u",
+                    conn_fail.count,
+                    conn_fail.last_adv_slow,
+                    conn_fail.estab_count);
             return 0;
         }
         return rc;
@@ -444,10 +455,11 @@ uint64_t app_settings_get_crash_session_uptime(void)
     return crash_session_uptime_ms;
 }
 
-int app_settings_save_conn_fail(uint32_t count, uint8_t last_adv_slow)
+int app_settings_save_conn_fail(uint32_t count, uint8_t last_adv_slow, uint32_t estab_count)
 {
     conn_fail.count = count;
     conn_fail.last_adv_slow = last_adv_slow;
+    conn_fail.estab_count = estab_count;
     int err = settings_save_one("omi/conn_fail", &conn_fail, sizeof(conn_fail));
     if (err) {
         LOG_ERR("Failed to save conn_fail (err %d)", err);
@@ -455,13 +467,16 @@ int app_settings_save_conn_fail(uint32_t count, uint8_t last_adv_slow)
     return err;
 }
 
-void app_settings_get_conn_fail(uint32_t *count, uint8_t *last_adv_slow)
+void app_settings_get_conn_fail(uint32_t *count, uint8_t *last_adv_slow, uint32_t *estab_count)
 {
     if (count) {
         *count = conn_fail.count;
     }
     if (last_adv_slow) {
         *last_adv_slow = conn_fail.last_adv_slow;
+    }
+    if (estab_count) {
+        *estab_count = conn_fail.estab_count;
     }
 }
 

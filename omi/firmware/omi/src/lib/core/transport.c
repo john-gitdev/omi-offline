@@ -351,26 +351,51 @@ static struct bt_gatt_service battery_detail_service = BT_GATT_SERVICE(battery_d
 static atomic_t storage_block_drops = ATOMIC_INIT(0);
 static atomic_t last_storage_drop_uptime_ms = ATOMIC_INIT(0);
 
-/* Diagnostics: BLE connection-establishment failures (NOTES.md: "BLE: advertising
- * but won't connect"). _transport_connected fires with err set when a central sent
- * CONNECT_IND but the link failed to establish (HCI 0x3e). Pairing the count with the
- * advertising mode in effect tells us whether the "visible but unconnectable until
- * reboot" failures correlate with slow (1 s) advertising vs a controller/RF wedge.
- * RTT/UART log only — no BLE characteristic. */
+/* Diagnostics: BLE connection failures (NOTES.md: "BLE: advertising but won't
+ * connect"). Two distinct counters, because the interesting failure does NOT
+ * take the path the first one watches:
+ *
+ *   failed_conn_count — _transport_connected fired with err set, i.e. the host
+ *     was told outright that a connection attempt failed.
+ *
+ *   estab_fail_count — a link came up normally (connected callback, err = 0) and
+ *     then died with HCI 0x3e CONN_FAIL_TO_ESTAB, meaning no data-channel packet
+ *     was exchanged in the first 6 connection events. This is what a central sees
+ *     during the "visible but unconnectable" outages, and it increments *here*,
+ *     not above: on a peripheral the controller reports LE Connection Complete
+ *     with success the moment it receives CONNECT_IND, so the host takes the
+ *     err = 0 path and only learns of the failure at disconnect.
+ *
+ * The pair is the discriminator, and only their *movement* discriminates: both are
+ * persisted to flash and re-seeded from it in transport_start(), so they accumulate
+ * for the life of the device and a nonzero absolute value says nothing about the
+ * outage in front of you. Compare a reading taken after the outage against one from
+ * before it (the app keeps such a baseline — see sync_page.dart's estab_fail_baseline,
+ * which likewise survives reboot).
+ *
+ * estab_fail_count *rose* across the outage: the Omi did receive the CONNECT_INDs and
+ * the link died at establishment (points at the peripheral controller / RF /
+ * coexistence). Both counters unchanged: the Omi never heard the CONNECT_INDs at all
+ * (deaf RX, or nothing usable reached the air), which puts the fault on the central.
+ * Pairing with the advertising mode in effect tells us whether either correlates with
+ * slow (1 s) advertising. */
 static atomic_t failed_conn_count = ATOMIC_INIT(0);
+static atomic_t estab_fail_count = ATOMIC_INIT(0);
 static const char *current_adv_mode = "fast"; /* boot + post-disconnect both start fast */
-static uint8_t last_failed_adv_slow = 0;      /* 1 if the most recent failure was during slow adv */
+static uint8_t last_failed_adv_slow = 0;      /* 1 if the most recent failure of either kind was during slow adv */
 
-/* Throttled flash persist of failed_conn_count (NOTES.md: "BLE: advertising but
+/* Throttled flash persist of both counters (NOTES.md: "BLE: advertising but
  * won't connect"). The failures accrue while disconnected, and the user must
- * power-cycle to reconnect and read them, so the count is persisted to survive
- * the reboot. k_work_schedule (not reschedule) coalesces a storm into one write
- * ~CONN_FAIL_PERSIST_DELAY after the first failure — bounding flash wear while
- * keeping the persisted count current to within that window. */
+ * power-cycle or toggle phone Bluetooth to reconnect and read them, so the counts
+ * are persisted to survive a reboot. k_work_schedule (not reschedule) coalesces a
+ * storm into one write ~CONN_FAIL_PERSIST_DELAY after the first failure — bounding
+ * flash wear while keeping the persisted counts current to within that window. */
 #define CONN_FAIL_PERSIST_DELAY_MS 10000
 static void conn_fail_persist_work_handler(struct k_work *work)
 {
-    app_settings_save_conn_fail((uint32_t) atomic_get(&failed_conn_count), last_failed_adv_slow);
+    app_settings_save_conn_fail((uint32_t) atomic_get(&failed_conn_count),
+                                last_failed_adv_slow,
+                                (uint32_t) atomic_get(&estab_fail_count));
 }
 static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_handler);
 
@@ -384,17 +409,20 @@ static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_ha
 //   uptime_seconds: how long the PREVIOUS session ran before it ended (crash or clean shutdown)
 //
 // Characteristic B:   19B10062-E8F2-537E-4F6C-D104768A1214
-// Returns 40 bytes LE (fields appended over time; older apps read a prefix):
+// Returns 44 bytes LE (fields appended over time; older apps read a prefix):
 //   [uint32 storage_block_drops]   storage_block_drops since boot (each = ~5 Opus frames lost)
 //   [uint32 last_drop_uptime_ms]   k_uptime_get() at the most recent block drop (0 = none)
 //   [uint32 sd_stream_drops]       stat_dropped_frames from sd_card.c (queue-full audio frame drops)
 //   [uint32 sd_boot_drops]         frames lost during SD mount/boot window
 //   [uint32 current_uptime_ms]     k_uptime_get() at the moment of read
-//   [uint32 conn_fails]            BLE connection-establishment failures (offset 20)
+//   [uint32 conn_fails]            connect attempts the host reported as failed outright,
+//                                  i.e. the connected callback fired with err != 0 (offset 20).
+//                                  NOT establishment failures — those are estab_fail_count.
 //   [uint32 last_failed_adv_slow]  1 if last conn fail was during slow adv (offset 24)
 //   [uint32 codec_drops]           PCM blocks dropped before encode, ring-full (offset 28)
 //   [uint32 sd_msgq_peak_depth]    high-water mark of sd_msgq occupancy / SD_REQ_QUEUE_MSGS (offset 32)
 //   [uint32 write_fair_activations] times write fairness forced a write over reads (offset 36)
+//   [uint32 estab_fail_count]      links that died at establishment, HCI 0x3e (offset 40)
 static struct bt_uuid_128 diagnostics_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10060, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 diagnostics_characteristic_uuid =
@@ -446,12 +474,13 @@ static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
     uint32_t codec_drops = codec_get_dropped_frames();
     uint32_t msgq_peak = sd_get_msgq_peak_depth();
     uint32_t fair_acts = sd_get_write_fair_activations();
+    uint32_t estab_fails = (uint32_t) atomic_get(&estab_fail_count);
 
-    /* 40 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
-     * codec_drops + sd_msgq peak depth + write-fairness activations. Each field
-     * is appended at the end so older app builds (which read only the first
-     * 20 / 28 / 32 bytes) keep working unchanged. */
-    uint8_t payload[40];
+    /* 44 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
+     * codec_drops + sd_msgq peak depth + write-fairness activations + establishment
+     * failures. Each field is appended at the end so older app builds (which read
+     * only the first 20 / 28 / 32 / 40 bytes) keep working unchanged. */
+    uint8_t payload[44];
     pack_u32_le(payload + 0, block_drops);
     pack_u32_le(payload + 4, last_drop_ms);
     pack_u32_le(payload + 8, sd_stream_drops);
@@ -462,6 +491,7 @@ static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
     pack_u32_le(payload + 28, codec_drops);
     pack_u32_le(payload + 32, msgq_peak);
     pack_u32_le(payload + 36, fair_acts);
+    pack_u32_le(payload + 40, estab_fails);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
 }
 
@@ -1244,6 +1274,18 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
 static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
 {
     is_connected = false;
+
+    /* A link that comes up and immediately dies with 0x3e never exchanged a
+     * data-channel packet. Count it separately from failed_conn_count (see the
+     * counter declarations) and record the advertising mode that was in effect —
+     * this must happen before current_adv_mode is reset to "fast" below. */
+    if (err == BT_HCI_ERR_CONN_FAIL_TO_ESTAB) {
+        uint32_t estab_fails = (uint32_t) atomic_inc(&estab_fail_count) + 1;
+        last_failed_adv_slow = (current_adv_mode[0] == 's') ? 1 : 0;
+        LOG_ERR("Link died at establishment (0x3e) adv_mode=%s estab_fail_count=%u", current_adv_mode, estab_fails);
+        k_work_schedule(&conn_fail_persist_work, K_MSEC(CONN_FAIL_PERSIST_DELAY_MS));
+    }
+
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     storage_is_on = false;
     storage_stop_sync_session();
@@ -1263,7 +1305,9 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
     k_work_cancel_delayable(&conn_param_recheck_work);
     k_work_cancel_delayable(&idle_disconnect_work);
 
-    LOG_INF("Transport disconnected");
+    /* Reason was previously discarded. 0x13 = our own idle-disconnect (REMOTE_USER_TERM),
+     * 0x08 = supervision timeout, 0x3e = died at establishment (counted above). */
+    LOG_INF("Transport disconnected (reason 0x%02x)", err);
 
     k_mutex_lock(&conn_mutex, K_FOREVER);
     if (current_connection != NULL) {
@@ -1889,13 +1933,15 @@ int transport_start()
     // Configure callbacks
     bt_conn_cb_register(&_callback_references);
 
-    /* Seed the connection-failure counter from flash (app_settings_init ran in
-     * main before transport_start) so it stays cumulative across reboots — the
-     * count is only readable after the user power-cycles to reconnect. */
+    /* Seed the connection-failure counters from flash (app_settings_init ran in
+     * main before transport_start) so they stay cumulative across reboots — the
+     * counts are only readable once the device is reachable again. */
     {
         uint32_t persisted = 0;
-        app_settings_get_conn_fail(&persisted, &last_failed_adv_slow);
+        uint32_t persisted_estab = 0;
+        app_settings_get_conn_fail(&persisted, &last_failed_adv_slow, &persisted_estab);
         atomic_set(&failed_conn_count, (atomic_val_t) persisted);
+        atomic_set(&estab_fail_count, (atomic_val_t) persisted_estab);
     }
 
     // Enable Bluetooth

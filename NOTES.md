@@ -789,9 +789,125 @@ static List<PassthroughIntegration> getIntegrations(SharedPreferencesUtil prefs)
 
 ---
 
-## BLE: "advertising but won't connect" (OPEN — instrumented, awaiting next occurrence)
+## BLE: "advertising but won't connect" (OPEN — central-side captured 2026-07-08; culprit side still undetermined)
 
-**Status:** root cause NOT yet determined. Firmware logging added 2026-06-08 to capture the answer on the next occurrence. Do **not** change battery-affecting advertising behavior until the instrumentation tells us which branch we're on (see decision tree).
+**Status:** the peripheral **is** advertising and the phone **is** seeing those advertisements and sending `CONNECT_IND`. Each resulting link dies ~165 ms later with `0x3e`, before any data-channel packet is exchanged. This rules out hypothesis (A) (slow-adv interval unconnectable) and the "stale OS link holds the single conn slot" theory. It does **not** yet identify which side goes silent — see "What 0x3e does and does not prove". Do **not** change battery-affecting advertising behavior — the adv path is exonerated.
+
+### Central-side capture (2026-07-08, `adb logcat` + `dumpsys bluetooth_manager`, OnePlus Open / CPH2551, Android 16)
+
+Captured live while wedged. Four consecutive attempts inside one 30 s app-level connect window:
+
+| ACL up | ACL down | alive |
+|---|---|---|
+| 22:37:42.609 (handle 4) | 22:37:42.765 | 156 ms |
+| 22:37:45.632 (handle 5) | 22:37:45.798 | 166 ms |
+| 22:37:55.672 (handle 6) | 22:37:55.844 | 172 ms |
+| 22:37:58.704 (handle 7) | 22:37:58.870 | 166 ms |
+
+Each one logs `OnLeConnectSuccess: Connection successful le remote:…a8:d5 handle:N initiator:local` → `btm_acl_created` → ~165 ms later `OnLeLinkDisconnected … reason:CONNECTION_FAILED_ESTABLISHMENT(0x3e)`. **Zero** SMP/encryption attempts in the whole buffer, so the link dies before bonding, before ATT, before anything reaches the Java layer.
+
+~165 ms ≈ 6 connection intervals at the negotiated ~27.5 ms. Per spec the connection-establishment timeout is exactly 6 connection events: the central exchanged no data-channel packet with the peripheral in any of them.
+
+### What `0x3e` does and does not prove
+
+**Do not read `OnLeConnectSuccess` as "the peripheral accepted the connection."** On the central, `HCI_LE_Connection_Complete` fires as soon as the local controller transmits `CONNECT_IND` and creates its link context; it is **not** an acknowledgment from the peer. So the capture proves only two things: the phone received the Omi's `ADV_IND` (an initiator only sends `CONNECT_IND` in response to one), and the phone then heard nothing back for six connection events.
+
+Three explanations remain, and the central's logs cannot separate them:
+1. **The Omi never received the `CONNECT_IND`** — its TX is healthy (we see the ADVs) but its RX is deaf.
+2. **The Omi received it but never transmitted** in the connection events (peripheral controller / netcore wedge). Note a *host* wedge cannot cause this: the peripheral's controller sends the empty LL PDU autonomously, no host involvement.
+3. **The phone's own controller never listened** during those six events — radio starvation from an existing LE ACL plus continuous scanners.
+
+The recovery evidence is split and is the strongest discriminator available:
+- 2026-06-08: **power-cycling the Omi** fixed it instantly → favors (1)/(2).
+- 2026-07-08 (and per NOTES §"Mitigation applied 2026-06-16"): **toggling the phone's Bluetooth** fixes it → favors (3), since cycling the phone's adapter cannot repair a wedged peripheral controller.
+
+These may be two distinct failure modes wearing the same `0x3e`. Phone-side contention at the time of the 2026-07-08 capture was substantial: a live LE ACL to a Garmin Instinct 2X Solar, plus five ongoing LE scans including `com.heytap.accessory` (36.6 M ms cumulative active scan) and `com.facebook.stella` (50.2 M ms).
+
+**`failed_conn_count` cannot settle it — the instrumentation is mis-targeted** (found 2026-07-08). It increments only in `_transport_connected`'s `err != 0` branch (`transport.c:1178-1194`). A peripheral hitting `0x3e` never takes that branch: its controller emits `LE Connection Complete` with *success* the moment it receives `CONNECT_IND`, so the host sees `connected(err=0)` and only afterwards `disconnected(0x3e)`. And `_transport_disconnected(conn, err)` (`transport.c:1244`) **discards `err`** — it does not even log the reason. So the counter reads 0 whether the Omi received 40 connect requests or none. Confirmed empirically: after the 2026-07-08 outage the app's `Device BLE connect-fail counter` line (`device_provider.dart:1485`) never printed, i.e. the counter was 0, despite 40+ `0x3e` on the phone.
+
+**The measurement that would settle it:** count and persist peripheral-side *disconnect* reasons — specifically `err == BT_HCI_ERR_CONN_FAIL_TO_ESTAB (0x3e)` — in `_transport_disconnected`, and expose it in the existing drops characteristic. Then, after an outage:
+- nonzero → the Omi **did** receive the `CONNECT_IND`s and the link died at establishment → (2), peripheral controller / RF / coex.
+- zero → the Omi **never heard them** → (1) deaf RX, or (3) the phone never put a usable `CONNECT_IND` on air.
+
+A **Bluetooth toggle is the preferred recovery for diagnostics** — it restores connectivity without resetting the Omi, so persisted counters keep their pre-outage values and device uptime is intact.
+
+**Things this rules out, with evidence:**
+- *Stale OS link holding the peripheral's single conn slot.* `dumpsys bluetooth_manager` shows `C3:94:71:EA:A8:D5` **only** in the bonded-device list — zero GATT connections, no ACL, not in any client's connection list. `com.heytap.accessory` holds a Scanner with `Connections: 0`; its GATT-server callbacks for the Omi are just passive `connected=false` notifications riding each failed link. Nothing on the phone holds a link. (This falsifies the comment at `OmiBleForegroundService.kt:50-52`.)
+- *GATT client-interface exhaustion in our app.* `com.omi.offline.dev` holds exactly one client interface (`app_if: 17`). The registered-client list has three entries total.
+- *Advertising stopped / slow-adv unconnectable.* ACLs form within 416 ms of `connectGatt`, four times in 16 s. The adv path works fine.
+
+**`gatt_status_-1` is a red herring.** It is synthesized by our own `handleDisconnection(addr, hash, -1)` (`OmiBleForegroundService.kt:575`) when the local connect timeout fires. Android *does* deliver a disconnect for every one of these links — but at the BTA layer, to `bta_gattc_conn_cback`, before a Java `onConnectionStateChange` for our in-flight `connectGatt` ever materializes. So "no callback at all" means "the link never lived long enough to become a GATT connection", **not** "the phone's stack is wedged". Do not read `-1` as host-stack silence.
+
+**Consequence for the recovery machinery:** `WEDGE_FORCE_PURGE_AFTER` / `purgeGhostGattForAddress(force=true)` and the "toggle Bluetooth" alert are firing on a ghost that provably does not exist here. The forced purge issues its own dummy `connectGatt` + immediate `disconnect()`/`close()` every 60 s, adding `cancelOpen` / accept-list churn on top of a peripheral that is already failing establishment. It cannot fix a 0x3e and should be re-scoped.
+
+### Contention experiment (2026-07-08) — explanation (3) reproduced
+
+Run live, mid-outage, after ~14 consecutive failed retries (#8 → #21), **without** a Bluetooth toggle and **without** touching the Omi:
+
+```
+adb shell am force-stop com.facebook.stella
+adb shell am force-stop com.garmin.android.apps.connectmobile
+```
+
+This dropped the phone's only live LE ACL (to a Garmin Instinct 2X Solar) and two continuous scanners. The **very next** automatic retry (`retry_22_postpurge`, 22:52:50) connected in 2.5 s: `GATT_CONN_OK` → SMP → MTU 498 → 14 services → 11 WALs synced and deleted. **Zero `0x3e` in the following 80 s**, versus 40 in the preceding buffer.
+
+So the Omi was never broken. Explanation **(3)** — central-side radio starvation — is the operative one for this outage.
+
+**Why this shape of failure:** connection *establishment* is fragile (the peer must be heard within 6 consecutive connection events, ~165 ms) while an *established* link is robust (seconds of supervision timeout, connection latency tolerated). A busy central can therefore fail every new connection while happily servicing the links it already has. That is exactly why a **phone Bluetooth toggle "fixes" it**: the toggle tears down the competing ACL, the Omi wins the now-empty establishment window, and once established it coexists with the watch and the scanners indefinitely. It looks like the toggle repaired the Omi. It didn't.
+
+**This result did NOT hold up.** Follow-up attempts the same evening (see "Failed reproduction" below) show contention alone does not cause the failure. Treat the force-stop recovery as coincidence until reproduced.
+
+### Failed reproduction (2026-07-08, same session)
+
+Two attempts to reproduce, both **invalid** — recorded so nobody repeats them:
+
+1. **Restore `stella` + `garmin`, force a fresh Omi connect.** Connected first try, zero `0x3e`. Invalid: `monkey`-launching the apps did not restore their scans/ACL within 50 s, so the contention was never actually present.
+2. **Drop the Omi link, re-establish with glasses + watch up.** Connected in 32 ms, zero `0x3e`. Invalid: `am force-stop com.omi.offline.dev` does **not** tear down the LE ACL (no `btm_acl_created` follows), so `connectGatt` merely reattached to the existing link. It never re-established.
+
+What *is* established: three concurrent LE ACLs (Meta Ray-Bans `7F:02:83:…`, Garmin `CD:65:…`, Omi) plus four ongoing scans coexist fine, and the Omi connects in 32–400 ms under that load. **Contention alone is not sufficient.** The trigger for the wedged state remains unidentified.
+
+Note also: after a sync completes and the firmware idle-drops the link (`reason=19`, `REMOTE_USER_TERM` — working as designed), the app makes **no** reconnect attempt until the next 30-minute sync tick. Any reproduction attempt must account for that or it will observe nothing.
+
+**Caveats on the force-stop result:** n=1; two apps were stopped at once; and our own `SCAN_MODE_LOW_LATENCY` scan stopped 11 s before the successful connect, so the recovery is confounded with our own scan ending.
+
+**Self-inflicted contention (worth fixing regardless):**
+- `device_provider.dart:621-625` starts a parallel BLE scan 5 s into every connect (`unawaited(discover(timeout: 10))`) — i.e. it adds a scanner precisely while establishment is most fragile.
+- `purgeGhostGattForAddress(force=true)` fires a dummy `connectGatt` + immediate `disconnect()`/`close()` 500 ms before each real connect, adding initiator/`cancelOpen`/accept-list churn. We now know there is no ghost to purge.
+- Our 15 s / 30 s local timeout fires before Android surfaces the real disconnect status, so the app logs the synthetic `-1` and **never sees the `0x3e`**. The wedge detector keyed on `-1` is therefore counting "we gave up early", not "the stack went silent".
+
+**Still open:** attribute the contention (Garmin ACL vs `stella` scan) by restoring one app at a time and forcing an Omi reconnect. Note that forcing a *real* re-establishment means waiting out the firmware's 15 s idle-drop or a sync tick — `am force-stop` will not do it (see above).
+
+### Capturing the next outage without adb (`WedgeDiagnostics.kt`, added 2026-07-09)
+
+The 2026-07-08 capture only happened because the outage was noticed while a cable was to hand. An outage that starts overnight is over before anyone can attach adb, so the app now snapshots one itself.
+
+Fires from `OmiBleForegroundService.handleRetryLogic` on the sixth consecutive failed connect, i.e. the same latch that posts the toggle-Bluetooth notification, once per outage. Written from **native**, not Dart: outages happen while backgrounded, where the Flutter isolate may be Doze-frozen and unable to service a platform channel. The foreground service is still running.
+
+Three events land in the `omi_debug_*.log` that `DebugLogManager` owns, in its own one-JSON-object-per-line `logEvent` shape, so the in-app viewer and "Save Diagnostic Logs to File" pick them up with no changes:
+
+| Event | When | Carries |
+|---|---|---|
+| `ble_wedge` | immediately at detection | failure/retry counts, last GATT status, adapter + bond state, every LE link the system holds, whether a stale GATT/ACL link to the Omi exists, screen + Doze state |
+| `ble_wedge_scan_probe` | 8 s later | `adv_packets`, RSSI min/max/last, `verdict` |
+| `ble_wedge_recovered` | on the next successful connect | how long the outage lasted, failures before recovery |
+
+`ble_wedge_scan_probe.verdict` is the point of the exercise:
+- `peripheral_advertising` → the phone can plainly hear the Omi while every connect dies at establishment. Its TX and our RX both work; the link dies in the handshake between them.
+- `no_advertisements_heard` → either the Omi's radio stopped or the phone's never listened. Cross-check against the device's `estab_fail_count`.
+
+**The verdict also gates the toggle-Bluetooth alert**, so the probe is load-bearing and runs even when file logging is off. Six failures alone do not mean a wedge — an out-of-range, powered-off, or otherwise-connected Omi produces the same streak, and Android reports the same generic `133` for a device that isn't there as for one whose links keep dying. Only `peripheral_advertising` means "present and unreachable", the one case where toggling Bluetooth is sensible advice. Every path where the probe cannot run reports `true`, preserving the pre-probe behaviour.
+
+**Two counter invariants, both load-bearing:**
+- The streak clears in `onGattServicesDiscovered`, **not** `onGattConnected`. `onGattConnected` fires on `newState == STATE_CONNECTED` with the GATT `status` ignored, so a link that comes up and dies — the exact failure being detected — would reset the streak on the way past and it could never reach `WEDGE_NOTIFY_AFTER`. The observed "connects, then service discovery times out at 30 s" loop does precisely this. Services discovered is the first point the link has demonstrably carried traffic.
+- `wedgeDetected` latches at *detection*, not at notification. It is what makes capture once-per-outage; whether an alert follows is the probe's call.
+
+The device's own counter cannot be read during an outage, by definition. Dart's `_finishDeviceSetup` logs it on the next successful connect, right after `ble_wedge_recovered` — which is why both halves of the picture end up in one file.
+
+**Constraints that shaped this, so nobody tries to "improve" it:**
+- The app **cannot** read `bt_stack` HCI logs or `dumpsys bluetooth_manager`. Those need `READ_LOGS` / `DUMP`, both `signature|privileged`. The phone-side `0x3e` count stays adb-only, permanently. The advertising probe is the reachable substitute, and it answers the same question.
+- The probe uses `SCAN_MODE_LOW_LATENCY` — the exact duty cycle just removed from the discovery path. Deliberate: it is bounded to 8 s, at most once per outage, and runs inside the ~30 s gap between backed-off retries (retry #6 backs off to the 30 s cap) so no connect is in flight. A lower duty cycle would let the 1 s slow-advertising tier fall between scan windows and report a false `no_advertisements_heard` — the one reading this probe exists to make trustworthy.
+- It never *creates* the log file, only appends to an existing one. `DebugLogManager.setEnabled(false)` deletes the files, so "no file" is the off switch. **Nothing is captured unless "Save Debug Logs to File" is on.**
+- `path_provider`'s `getApplicationDocumentsDirectory()` → `PathUtils.getDataDirectory()` → `getDir("flutter")` → `.../app_flutter` is engine-internal and undocumented, so `currentLogFile()` searches `filesDir` as a fallback instead of assuming it.
 
 ### Symptom (observed 2026-06-08, one data point)
 Phone could not connect to the Omi — every attempt failed with HCI `0x3e GATT_CONN_FAILED_ESTABLISHMENT` (`CONNECTION_FAILED_ESTABLISHMENT`), retrying through retry #3–#6 (15 s / 30 s timeouts). **Power-cycling the Omi fixed it instantly** — it connected on the first try afterward. So the device was at fault, and a reboot cleared whatever state it was in.
