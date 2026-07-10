@@ -118,7 +118,13 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
   ({List<Conversation> recordings, List<DiscardRecord> discards})? _activeRows(RecordingsController controller) {
     final b = _activeBatch(controller);
     if (b == null) return null;
-    return filterBatchRows(b, _filterMode, _prefs.filterMinDurationSeconds);
+    return filterBatchRows(
+      b,
+      _filterMode,
+      _prefs.filterMinDurationSeconds,
+      foldWindow: Duration(seconds: _prefs.vadSplitSeconds),
+      openDrafts: controller.batches.expand((batch) => batch.draftRecordings).toList(),
+    );
   }
 
   Future<void> _deleteSelectedRecordings(RecordingsController controller) async {
@@ -1201,6 +1207,11 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                                 final renderBatches = _inSelectionMode
                                     ? visibleBatches.where((b) => b.dateString == _selDate).toList()
                                     : visibleBatches;
+                                // Global open-draft set (across every batch), computed once so each
+                                // BatchCard can match a cross-midnight trailing ghost against a draft
+                                // in an adjacent day's batch — mirroring the stitch pass's global fold.
+                                final allOpenDrafts =
+                                    controller.batches.expand((b) => b.draftRecordings).toList();
                                 return RefreshIndicator(
                                   color: Colors.deepPurpleAccent,
                                   onRefresh: () {
@@ -1296,6 +1307,7 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                                                 PassthroughIntegration.hasAnyConfigured(_prefs);
                                             return BatchCard(
                                               batch: batch,
+                                              openDrafts: allOpenDrafts,
                                               markerMap: markerMap,
                                               anyIntegrationEnabled: anyIntegrationEnabled,
                                               filterMode: _filterMode,
