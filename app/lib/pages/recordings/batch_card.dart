@@ -147,14 +147,46 @@ class MarkerSubEntry extends StatelessWidget {
   }
 }
 
+/// A discard whose start may sit slightly before an open draft's decoded end
+/// (inter-file gap padding / frame-duration rounding) is still the draft's
+/// immediate trailing neighbour. Tolerate this much backward slack when testing
+/// abutment. Mirrors DiscardStore.discardMergeGap's rationale — small enough to
+/// only absorb rounding, far below any real multi-minute gap.
+const Duration _ghostFoldAbutTolerance = Duration(seconds: 30);
+
+/// True when [d] abuts an open draft and is still inside the window where the
+/// draft-finalize/stitch pass could fold it back into that conversation (see
+/// RecordingsManager._stitchDraftRecordings, which stitches an intervening ghost
+/// when the accumulated non-speech to the next speech stays under
+/// vadSplitSeconds). Such a ghost is a not-yet-settled verdict, so surfacing it
+/// beneath the "Conversation in progress" banner reads as a contradiction.
+///
+/// Bin-less ghosts (muted stretches) are never folded, so they are always shown.
+bool _foldPendingTrailingGhost(DiscardRecord d, List<Conversation> drafts, Duration foldWindow) {
+  if (d.relativeBins.isEmpty) return false;
+  for (final draft in drafts) {
+    final gap = d.startTime.difference(draft.endTime);
+    if (gap >= -_ghostFoldAbutTolerance && gap <= foldWindow) return true;
+  }
+  return false;
+}
+
 /// Applies the active filter to a batch, returning the recordings and discards
 /// actually visible in the current tab. Shared by [BatchCard] (to render) and
 /// the page's selection bar (so "Select All" sees exactly the rows on screen).
+///
+/// [foldWindow] (default off) hides a discard that trails an open draft and is
+/// still a fold candidate — see [_foldPendingTrailingGhost]. Applied only in the
+/// default `visible` tab; the Hidden/All tabs always surface every ghost so a
+/// still-pending one is never unreachable. The hidden data is untouched: it
+/// reappears on the next reload once the draft resolves (folded ⇒ the record is
+/// retired; finalized ⇒ the draft is gone and the ghost stands on its own).
 ({List<Conversation> recordings, List<DiscardRecord> discards}) filterBatchRows(
   Batch batch,
   RecordingFilterMode filterMode,
-  int minFilterSeconds,
-) {
+  int minFilterSeconds, {
+  Duration foldWindow = Duration.zero,
+}) {
   final conversations = [...batch.finalizedRecordings]..sort((a, b) => b.startTime.compareTo(a.startTime));
   final recordings = minFilterSeconds > 0
       ? switch (filterMode) {
@@ -163,7 +195,7 @@ class MarkerSubEntry extends StatelessWidget {
           RecordingFilterMode.all => conversations,
         }
       : conversations;
-  final discards = minFilterSeconds > 0
+  var discards = minFilterSeconds > 0
       ? switch (filterMode) {
           RecordingFilterMode.visible =>
             batch.discards.where((d) => d.audioDuration.inSeconds >= minFilterSeconds).toList(),
@@ -172,6 +204,11 @@ class MarkerSubEntry extends StatelessWidget {
           RecordingFilterMode.all => [...batch.discards],
         }
       : [...batch.discards];
+  if (foldWindow > Duration.zero &&
+      filterMode == RecordingFilterMode.visible &&
+      batch.draftRecordings.isNotEmpty) {
+    discards = discards.where((d) => !_foldPendingTrailingGhost(d, batch.draftRecordings, foldWindow)).toList();
+  }
   return (recordings: recordings, discards: discards);
 }
 
@@ -581,7 +618,14 @@ class BatchCard extends StatelessWidget {
     // Shared with the page's selection bar so "Select All" sees exactly these
     // rows. Ghosts get the same filter so short discards land in the hidden tab
     // alongside short recordings; with no minimum set, all discards show.
-    final rows = filterBatchRows(batch, filterMode, minFilterSeconds);
+    // foldWindow hides a trailing ghost still eligible to be folded into an open
+    // draft (mirrors the finalize pass's vadSplitSeconds threshold).
+    final rows = filterBatchRows(
+      batch,
+      filterMode,
+      minFilterSeconds,
+      foldWindow: Duration(seconds: SharedPreferencesUtil().vadSplitSeconds),
+    );
     final filtered = rows.recordings;
     final discards = rows.discards;
     if (filtered.isEmpty && discards.isEmpty) {
