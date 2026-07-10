@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/services.dart';
 
@@ -32,6 +33,22 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
   // into a single Record Toggle. Local mirror of the pref for instant UI.
   bool _combineRecord = SharedPreferencesUtil().combineRecordButton;
 
+  // Whether the connected firmware accepts the RECORD_TOGGLE action (byte 6).
+  // Older firmware rejects it, so we hide the switch + Toggle option there and
+  // fall back to split Start/Stop, exactly like the haptic / priority-cap gates.
+  bool _recordToggleSupported = false;
+
+  // True while a config write is in flight, so we can disable the switch and the
+  // dropdowns and serialize mutations — a second flip or a slot edit racing an
+  // in-flight flip could otherwise be clobbered by the flip's whole-config revert.
+  bool _busy = false;
+
+  // Combine is only in effect when the pref is on AND the device supports it;
+  // an unsupported device always shows split Start/Stop regardless of the pref.
+  bool get _combineActive => _combineRecord && _recordToggleSupported;
+
+  bool get _controlsEnabled => _editable && !_busy;
+
   List<int> get _config => _selectedManual ? _configManual : _configAuto;
 
   // Per-slot vibration pattern (0=Off, 1=Single, 2=Double, 3=Triple), same slot
@@ -61,7 +78,7 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
       2: 'Marker',
       3: 'Toggle LED',
     };
-    if (_combineRecord) {
+    if (_combineActive) {
       m[6] = _selectedManual ? 'Toggle Recording' : 'Toggle Prio Rec';
     } else {
       m[4] = _selectedManual ? 'Start Recording' : 'Start Prio Rec';
@@ -99,11 +116,16 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
       // Best-effort: older firmware lacks the haptic characteristic and returns
       // null, in which case we simply don't offer vibration patterns.
       final haptic = await connection.getHapticConfig();
+      // Capability gate for the Record Toggle action (byte 6): older firmware
+      // rejects it, so hide the switch / Toggle option there. A failed/zero read
+      // means unsupported (fail closed) — never offer a byte the device rejects.
+      final features = await connection.getFeatures();
       if (mounted) {
         setState(() {
           _configManual = prefs.buttonConfigManual;
           _configAuto = prefs.buttonConfigAuto;
           _combineRecord = prefs.combineRecordButton;
+          _recordToggleSupported = OmiFeatures.hasFeature(features, OmiFeatures.recordToggle);
           if (haptic != null && haptic.length == 6) {
             _hapticConfig = haptic;
             _hapticSupported = true;
@@ -179,18 +201,26 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
     final prevAuto = List<int>.of(_configAuto);
     final prevCombine = _combineRecord;
 
+    // _busy disables the switch + dropdowns for the duration of the push, so a
+    // second flip or a slot edit can't race this flip's whole-config revert.
+    setState(() {
+      _busy = true;
+      _combineRecord = on;
+    });
     _configManual = SharedPreferencesUtil.normalizeButtonConfigForCombine(_configManual, on);
     _configAuto = SharedPreferencesUtil.normalizeButtonConfigForCombine(_configAuto, on);
     prefs.buttonConfigManual = _configManual;
     prefs.buttonConfigAuto = _configAuto;
     prefs.combineRecordButton = on;
-    setState(() => _combineRecord = on);
 
     // The flip changed the active mode's config regardless of which tab is
     // shown, so push via the provider (which reads the active config fresh)
     // rather than the tab-gated per-slot path.
     final ok = await context.read<DeviceProvider>().pushActiveButtonConfig();
-    if (ok) return;
+    if (ok) {
+      if (mounted) setState(() => _busy = false);
+      return;
+    }
 
     // Push failed (e.g. the link dropped mid-flip). Revert the in-memory state
     // AND prefs UNCONDITIONALLY — even if we've since unmounted — so the flip is
@@ -205,7 +235,10 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
     prefs.buttonConfigAuto = prevAuto;
     prefs.combineRecordButton = prevCombine;
     if (!mounted) return;
-    setState(() => _status = _ConfigStatus.noDevice);
+    setState(() {
+      _busy = false;
+      _status = _ConfigStatus.noDevice;
+    });
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Device not connected — change not saved.')),
     );
@@ -229,6 +262,9 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
     // (DeviceProvider.pushActiveButtonConfig on the next mode switch / connect).
     if (_selectedManual != _activeIsManual) return;
 
+    // Serialize against a concurrent flip / slot edit while this write is pending
+    // (disables the switch + dropdowns) so overlapping mutations can't clobber.
+    setState(() => _busy = true);
     final pairedDevice = context.read<DeviceProvider>().pairedDevice;
     if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
       try {
@@ -238,6 +274,7 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
           // getter, wrong mode if the tab switched) and not the live `cfg` (whose
           // values can change under us while this await is pending).
           await connection.setButtonConfig(pending);
+          if (mounted) setState(() => _busy = false);
           return;
         }
       } catch (_) {
@@ -250,6 +287,7 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
     if (!mounted) return;
     setState(() {
       cfg[index] = previous;
+      _busy = false;
       _status = _ConfigStatus.noDevice;
     });
     _persistSelectedConfig();
@@ -316,7 +354,7 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
                 disabledHint:
                     Text(options[currentVal] ?? 'None', style: const TextStyle(color: Colors.white38, fontSize: 16)),
                 underline: Container(),
-                onChanged: _editable
+                onChanged: _controlsEnabled
                     ? (int? newValue) {
                         if (newValue != null) {
                           _updateConfig(index, newValue);
@@ -339,7 +377,7 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
   // fires in combined mode (a Toggle stops itself) or from the flip (the remap
   // never auto-creates a lone Start).
   Widget _buildNoStopWarning() {
-    if (_combineRecord) return const SizedBox.shrink();
+    if (_combineActive) return const SizedBox.shrink();
     final cfg = _config;
     final hasStart = cfg.contains(4);
     final hasStop = cfg.contains(5);
@@ -521,23 +559,27 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
                   _buildStatusBanner(),
                   const SizedBox(height: 16),
                 ],
-                Material(
-                  color: const Color(0xFF1C1C1E),
-                  borderRadius: BorderRadius.circular(12),
-                  clipBehavior: Clip.antiAlias,
-                  child: SwitchListTile(
-                    value: _combineRecord,
-                    onChanged: _editable ? (v) => _setCombineRecord(v) : null,
-                    title: const Text('Single recording button', style: TextStyle(color: Colors.white, fontSize: 16)),
-                    subtitle: const Text(
-                      'Use one button that toggles recording on/off, instead of separate Start and Stop actions. '
-                      'Applies to both modes.',
-                      style: TextStyle(color: Colors.white54, fontSize: 12),
+                // Only offered when the firmware accepts the Toggle action; on
+                // older firmware the switch is hidden and split Start/Stop stays.
+                if (_recordToggleSupported) ...[
+                  Material(
+                    color: const Color(0xFF1C1C1E),
+                    borderRadius: BorderRadius.circular(12),
+                    clipBehavior: Clip.antiAlias,
+                    child: SwitchListTile(
+                      value: _combineRecord,
+                      onChanged: _controlsEnabled ? (v) => _setCombineRecord(v) : null,
+                      title: const Text('Single recording button', style: TextStyle(color: Colors.white, fontSize: 16)),
+                      subtitle: const Text(
+                        'Use one button that toggles recording on/off, instead of separate Start and Stop actions. '
+                        'Applies to both modes.',
+                        style: TextStyle(color: Colors.white54, fontSize: 12),
+                      ),
+                      activeThumbColor: Colors.deepPurpleAccent,
                     ),
-                    activeThumbColor: Colors.deepPurpleAccent,
                   ),
-                ),
-                const SizedBox(height: 12),
+                  const SizedBox(height: 12),
+                ],
                 _buildModeSelector(),
                 Padding(
                   padding: const EdgeInsets.only(top: 8.0, bottom: 12.0, left: 4.0),
