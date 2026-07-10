@@ -461,11 +461,16 @@ class DeviceProvider extends ChangeNotifier
   /// On first run after upgrading to per-mode configs, the device's existing
   /// single config is preserved into the auto slot (its default already matched
   /// auto), and manual seeds from its default. Idempotent via [buttonConfigMigrated].
-  Future<void> pushActiveButtonConfig() async {
+  /// Returns true only if the active config was actually written to the
+  /// firmware, so callers doing an optimistic UI write (the combine-switch flip)
+  /// can revert and notify on a mid-push BLE drop. Existing callers that push on
+  /// connect / mode-switch ignore the result (a failure is retried on the next
+  /// connect).
+  Future<bool> pushActiveButtonConfig() async {
     final dev = connectedDevice;
-    if (dev == null) return;
+    if (dev == null) return false;
     final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
-    if (connection == null) return;
+    if (connection == null) return false;
     final prefs = SharedPreferencesUtil();
     try {
       if (!prefs.buttonConfigMigrated) {
@@ -476,7 +481,7 @@ class DeviceProvider extends ChangeNotifier
         // single failed first read would permanently skip preservation and
         // overwrite a customized firmware mapping with the app default. Retry on
         // the next connect.
-        if (existing == null) return;
+        if (existing == null) return false;
         // Preserve a pre-existing customized/old-firmware config into the auto
         // slot; skip a factory-fresh device on new firmware so it keeps the
         // proper auto default. Normalize to the current combine style so a
@@ -492,8 +497,10 @@ class DeviceProvider extends ChangeNotifier
       // style (idempotent when the stored config is already normalized).
       await connection.setButtonConfig(
           SharedPreferencesUtil.normalizeButtonConfigForCombine(prefs.activeButtonConfig, prefs.combineRecordButton));
+      return true;
     } catch (e) {
       Logger.error('DeviceProvider: pushActiveButtonConfig failed: $e');
+      return false;
     }
   }
 
