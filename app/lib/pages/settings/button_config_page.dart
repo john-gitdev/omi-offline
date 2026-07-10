@@ -190,21 +190,22 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
     // shown, so push via the provider (which reads the active config fresh)
     // rather than the tab-gated per-slot path.
     final ok = await context.read<DeviceProvider>().pushActiveButtonConfig();
-    if (ok || !mounted) return;
+    if (ok) return;
 
-    // Push failed (e.g. the link dropped mid-flip): revert prefs + UI so they
-    // keep matching the firmware, and tell the user it didn't save. On the next
-    // connect pushActiveButtonConfig re-pushes the (reverted) active config, so
-    // app and firmware converge either way.
+    // Push failed (e.g. the link dropped mid-flip). Revert the in-memory state
+    // AND prefs UNCONDITIONALLY — even if we've since unmounted — so the flip is
+    // all-or-nothing against the firmware write. Otherwise a failure after the
+    // page closed would leave prefs ahead of the device, and the next connect's
+    // pushActiveButtonConfig would push the un-reverted config. UI feedback is
+    // still mount-gated.
     _configManual = prevManual;
     _configAuto = prevAuto;
+    _combineRecord = prevCombine;
     prefs.buttonConfigManual = prevManual;
     prefs.buttonConfigAuto = prevAuto;
     prefs.combineRecordButton = prevCombine;
-    setState(() {
-      _combineRecord = prevCombine;
-      _status = _ConfigStatus.noDevice;
-    });
+    if (!mounted) return;
+    setState(() => _status = _ConfigStatus.noDevice);
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Device not connected — change not saved.')),
     );
