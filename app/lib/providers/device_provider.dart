@@ -479,13 +479,19 @@ class DeviceProvider extends ChangeNotifier
         if (existing == null) return;
         // Preserve a pre-existing customized/old-firmware config into the auto
         // slot; skip a factory-fresh device on new firmware so it keeps the
-        // proper auto default.
+        // proper auto default. Normalize to the current combine style so a
+        // preserved split (4/5) config can't leave the picker holding an action
+        // it no longer offers when Combine is on (and vice versa).
         if (SharedPreferencesUtil.shouldPreserveExistingButtonConfig(existing)) {
-          prefs.buttonConfigAuto = existing;
+          prefs.buttonConfigAuto =
+              SharedPreferencesUtil.normalizeButtonConfigForCombine(existing, prefs.combineRecordButton);
         }
         prefs.buttonConfigMigrated = true;
       }
-      await connection.setButtonConfig(prefs.activeButtonConfig);
+      // Belt-and-suspenders: never push a config inconsistent with the combine
+      // style (idempotent when the stored config is already normalized).
+      await connection.setButtonConfig(
+          SharedPreferencesUtil.normalizeButtonConfigForCombine(prefs.activeButtonConfig, prefs.combineRecordButton));
     } catch (e) {
       Logger.error('DeviceProvider: pushActiveButtonConfig failed: $e');
     }
