@@ -118,7 +118,12 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
   ({List<Conversation> recordings, List<DiscardRecord> discards})? _activeRows(RecordingsController controller) {
     final b = _activeBatch(controller);
     if (b == null) return null;
-    return filterBatchRows(b, _filterMode, _prefs.filterMinDurationSeconds);
+    return filterBatchRows(
+      b,
+      _filterMode,
+      _prefs.filterMinDurationSeconds,
+      foldWindow: Duration(seconds: _prefs.vadSplitSeconds),
+    );
   }
 
   Future<void> _deleteSelectedRecordings(RecordingsController controller) async {
