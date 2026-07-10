@@ -164,13 +164,31 @@ class MarkerSubEntry extends StatelessWidget {
 /// because the stitch pass folds across midnight — a ghost just after midnight
 /// can still belong to a draft in the previous day's batch.
 ///
+/// [recordings] are the finalized recordings that could sit between a draft and
+/// the ghost. The stitch pass stops folding at the first real recording after a
+/// draft (it stitches that recording in, then re-scans), so a ghost separated
+/// from the draft by a finalized recording is not the draft's trailing
+/// neighbour and must stay visible — otherwise a genuine standalone row would
+/// vanish. (A recording abutting the draft is absorbed into it, and the ghost
+/// re-tests against the now-extended draft on the next reload.)
+///
 /// Bin-less ghosts (muted stretches) are never folded, so they are always shown.
-bool _foldPendingTrailingGhost(DiscardRecord d, List<Conversation> drafts, Duration foldWindow) {
+bool _foldPendingTrailingGhost(
+  DiscardRecord d,
+  List<Conversation> drafts,
+  List<Conversation> recordings,
+  Duration foldWindow,
+) {
   if (d.relativeBins.isEmpty) return false;
   for (final draft in drafts) {
     final gap = d.startTime.difference(draft.endTime);
     if (gap.isNegative) continue;
-    if (gap + d.duration < foldWindow) return true;
+    if (gap + d.duration >= foldWindow) continue;
+    final separatedByRecording = recordings.any(
+      (r) => r.startTime.isAfter(draft.endTime) && r.startTime.isBefore(d.startTime),
+    );
+    if (separatedByRecording) continue;
+    return true;
   }
   return false;
 }
@@ -197,6 +215,15 @@ bool _foldPendingTrailingGhost(DiscardRecord d, List<Conversation> drafts, Durat
   Duration foldWindow = Duration.zero,
   List<Conversation>? openDrafts,
 }) {
+  // Enforce the contract: enabling suppression (foldWindow > 0) requires the
+  // global open-draft set, or cross-midnight ghosts silently fall back to
+  // same-day-only matching. Both production callers pass it; this traps a future
+  // caller that forgets. (A caller that deliberately wants same-day may pass
+  // batch.draftRecordings explicitly.)
+  assert(
+    foldWindow == Duration.zero || openDrafts != null,
+    'filterBatchRows: pass the global openDrafts set when foldWindow > 0.',
+  );
   final conversations = [...batch.finalizedRecordings]..sort((a, b) => b.startTime.compareTo(a.startTime));
   final recordings = minFilterSeconds > 0
       ? switch (filterMode) {
@@ -216,7 +243,9 @@ bool _foldPendingTrailingGhost(DiscardRecord d, List<Conversation> drafts, Durat
       : [...batch.discards];
   final drafts = openDrafts ?? batch.draftRecordings;
   if (foldWindow > Duration.zero && filterMode == RecordingFilterMode.visible && drafts.isNotEmpty) {
-    discards = discards.where((d) => !_foldPendingTrailingGhost(d, drafts, foldWindow)).toList();
+    discards = discards
+        .where((d) => !_foldPendingTrailingGhost(d, drafts, batch.finalizedRecordings, foldWindow))
+        .toList();
   }
   return (recordings: recordings, discards: discards);
 }
