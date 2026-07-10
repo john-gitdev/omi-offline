@@ -166,7 +166,17 @@ bool _foldPendingTrailingGhost(DiscardRecord d, List<Conversation> drafts, Durat
   if (d.relativeBins.isEmpty) return false;
   for (final draft in drafts) {
     final gap = d.startTime.difference(draft.endTime);
-    if (gap >= -_ghostFoldAbutTolerance && gap <= foldWindow) return true;
+    // Must trail the draft's decoded end; a small backward slack absorbs the
+    // draft's gap-padding / frame-rounding overshoot. Anything earlier is not the
+    // draft's trailing neighbour.
+    if (gap < -_ghostFoldAbutTolerance) continue;
+    // Mirror the finalize/stitch pass's fold boundary: a ghost is folded only
+    // while the non-speech to reach it PLUS the ghost's own wall-clock span stays
+    // under vadSplitSeconds. At/beyond that the pass finalizes the draft instead
+    // of folding, and the ghost becomes a real standalone row that must stay
+    // visible — so the duration, not just the start gap, has to clear the window.
+    final effectiveGap = gap.isNegative ? Duration.zero : gap;
+    if (effectiveGap + d.duration < foldWindow) return true;
   }
   return false;
 }
