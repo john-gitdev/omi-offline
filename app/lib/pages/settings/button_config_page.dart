@@ -172,6 +172,13 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
     if (!mounted) return;
 
     final prefs = SharedPreferencesUtil();
+    // Snapshot for revert-on-failure: the flip remaps BOTH mode configs and the
+    // pref, so a mid-push BLE drop must restore all of them (mirrors
+    // _updateConfig's optimistic-write-then-revert).
+    final prevManual = List<int>.of(_configManual);
+    final prevAuto = List<int>.of(_configAuto);
+    final prevCombine = _combineRecord;
+
     _configManual = SharedPreferencesUtil.normalizeButtonConfigForCombine(_configManual, on);
     _configAuto = SharedPreferencesUtil.normalizeButtonConfigForCombine(_configAuto, on);
     prefs.buttonConfigManual = _configManual;
@@ -182,7 +189,25 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
     // The flip changed the active mode's config regardless of which tab is
     // shown, so push via the provider (which reads the active config fresh)
     // rather than the tab-gated per-slot path.
-    await context.read<DeviceProvider>().pushActiveButtonConfig();
+    final ok = await context.read<DeviceProvider>().pushActiveButtonConfig();
+    if (ok || !mounted) return;
+
+    // Push failed (e.g. the link dropped mid-flip): revert prefs + UI so they
+    // keep matching the firmware, and tell the user it didn't save. On the next
+    // connect pushActiveButtonConfig re-pushes the (reverted) active config, so
+    // app and firmware converge either way.
+    _configManual = prevManual;
+    _configAuto = prevAuto;
+    prefs.buttonConfigManual = prevManual;
+    prefs.buttonConfigAuto = prevAuto;
+    prefs.combineRecordButton = prevCombine;
+    setState(() {
+      _combineRecord = prevCombine;
+      _status = _ConfigStatus.noDevice;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Device not connected — change not saved.')),
+    );
   }
 
   Future<void> _updateConfig(int index, int action) async {
