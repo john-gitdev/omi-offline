@@ -99,7 +99,9 @@ void main() {
       expect(rows.discards, [farGhost]);
     });
 
-    test('hides a ghost with slight backward overlap into the draft (rounding tolerance)', () {
+    test('shows a ghost that starts just before the draft end — the stitch pass skips it (never folds)', () {
+      // gap < 0: RecordingsManager._stitchDraftRecordings does `if (gap < 0)
+      // continue`, so this ghost is never folded and must remain a visible row.
       final overlapGhost = ghost(draftEnd.subtract(const Duration(seconds: 10)));
       final rows = filterBatchRows(
         batch(drafts: [draft(draftStart)], discards: [overlapGhost]),
@@ -107,7 +109,7 @@ void main() {
         0,
         foldWindow: twoMinWindow,
       );
-      expect(rows.discards, isEmpty);
+      expect(rows.discards, [overlapGhost]);
     });
 
     test('shows a long trailing ghost whose gap + duration reaches the fold window', () {
@@ -124,7 +126,7 @@ void main() {
       expect(rows.discards, [longGhost]);
     });
 
-    test("shows a ghost whose gap to the draft's end exceeds the backward tolerance", () {
+    test('shows a ghost that starts well before the draft end', () {
       final earlyGhost = ghost(draftEnd.subtract(const Duration(minutes: 2)));
       final rows = filterBatchRows(
         batch(drafts: [draft(draftStart)], discards: [earlyGhost]),
@@ -133,6 +135,36 @@ void main() {
         foldWindow: twoMinWindow,
       );
       expect(rows.discards, [earlyGhost]);
+    });
+
+    test('hides a cross-midnight trailing ghost matched against a draft supplied via openDrafts', () {
+      // The draft lives in the previous day's batch; the ghost sits in this
+      // (empty-draft) batch just after it. The stitch pass folds across date
+      // folders, so passing the global draft set must suppress it here too.
+      final crossDayDraft = draft(DateTime(2026, 7, 9, 23, 58), duration: const Duration(minutes: 1)); // ends 23:59
+      final afterMidnightGhost = ghost(DateTime(2026, 7, 10, 0, 0)); // gap 1m, +1m dur = 2m, < 2m? no → boundary
+      final nearGhost = ghost(DateTime(2026, 7, 9, 23, 59, 30), duration: const Duration(seconds: 20)); // gap 30s
+      final rows = filterBatchRows(
+        batch(discards: [nearGhost, afterMidnightGhost]), // batch has NO local drafts
+        RecordingFilterMode.visible,
+        0,
+        foldWindow: twoMinWindow,
+        openDrafts: [crossDayDraft],
+      );
+      // nearGhost: gap 30s + 20s = 50s < 120s → folded ⇒ hidden.
+      // afterMidnightGhost: gap 60s + 60s = 120s, not < 120s → shown.
+      expect(rows.discards, [afterMidnightGhost]);
+    });
+
+    test('openDrafts overrides batch drafts: an empty global set disables suppression', () {
+      final rows = filterBatchRows(
+        batch(drafts: [draft(draftStart)], discards: [abuttingGhost]),
+        RecordingFilterMode.visible,
+        0,
+        foldWindow: twoMinWindow,
+        openDrafts: const [],
+      );
+      expect(rows.discards, [abuttingGhost]);
     });
 
     test('never hides a bin-less (muted) ghost — those are never folded', () {
