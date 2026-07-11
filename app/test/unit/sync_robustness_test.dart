@@ -62,6 +62,7 @@ class MockWalSyncListener extends Fake implements IWalSyncListener {
 int globalCurrentFileNum = -1;
 int globalWriteCount = 0;
 int globalRequestedOffset = 0;
+List<int> globalDeletedTimestamps = [];
 
 class MockDeviceConnection implements DeviceConnection {
   final StreamController<List<int>> _controller = StreamController<List<int>>.broadcast();
@@ -115,7 +116,10 @@ class MockDeviceConnection implements DeviceConnection {
   Future<DeviceDropStats?> performGetDropStats() async => null;
 
   @override
-  Future<bool> deleteFile(StorageFile file, {int? timestamp}) async => true;
+  Future<bool> deleteFile(StorageFile file, {int? timestamp}) async {
+    globalDeletedTimestamps.add(file.timestamp);
+    return true;
+  }
 
   List<StorageFile> files = [];
 
@@ -495,6 +499,65 @@ void main() {
       // Exceeding that proves the batch advanced to the second file rather than aborting.
       expect(globalWriteCount, greaterThan(3));
     }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('syncAll does NOT delete a file that transferred incompletely (short read)', () async {
+      globalWriteCount = 0;
+      globalDeletedTimestamps = [];
+      final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      mockConn.files = [StorageFile(index: 1, timestamp: ts, size: 1000000)];
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await pump(10);
+
+      final syncFuture = sync.syncAll();
+      await mockConn.waitForWrite(1);
+      await pump(10);
+
+      // Firmware "completes" (clean EOT) after delivering only 5 of 1,000,000 bytes —
+      // the empty/short-read failure mode (stale cached size / rotated-under-read /
+      // read error). The completeness guard must treat this as incomplete.
+      mockConn.add(ackPacket(0x00));
+      await pump();
+      mockConn.add(dataPacket(0, List<int>.filled(5, 0xEE)));
+      await pump();
+      mockConn.add(eotPacket());
+      await pump(10);
+
+      final response = await syncFuture;
+      expect(response!.isPartial, isTrue);
+      // Critical: the device-side file must NOT be deleted — that would lose the
+      // recording permanently (this is how a Priority Recording vanished). It stays
+      // on the device so the next sync can retry.
+      expect(globalDeletedTimestamps, isEmpty);
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('syncAll eventually drops a persistently-unreadable (poison) file to unblock', () async {
+      globalDeletedTimestamps = [];
+      final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      mockConn.files = [StorageFile(index: 1, timestamp: ts, size: 1000000)];
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await pump(10);
+
+      // Every attempt delivers a short read + EOT. The guard retries without
+      // deleting until _maxSyncFailBeforeDrop (5) attempts, then deletes the file to
+      // unblock the index-0-only fast path (accepting the loss of that one file).
+      for (int attempt = 1; attempt <= 5; attempt++) {
+        final f = sync.syncAll();
+        await mockConn.waitForWrite(attempt);
+        await pump(10);
+        mockConn.add(ackPacket(0x00));
+        await pump();
+        mockConn.add(dataPacket(0, List<int>.filled(5, 0xEE)));
+        await pump();
+        mockConn.add(eotPacket());
+        await pump(10);
+        await f;
+        if (attempt < 5) {
+          expect(globalDeletedTimestamps, isEmpty,
+              reason: 'must not delete before the poison threshold (attempt $attempt)');
+        }
+      }
+      expect(globalDeletedTimestamps, contains(ts));
+    }, timeout: const Timeout(Duration(seconds: 60)));
 
     test('Crash Recovery (Syncing): resumes from last segment boundary after interruption', () async {
       globalCurrentFileNum = -1;
