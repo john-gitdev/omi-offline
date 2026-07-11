@@ -389,6 +389,33 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // Error banner shown after a failed/stalled install attempt; the update
+        // button below lets the user retry.
+        if (installErrorMessage != null) ...[
+          Container(
+            margin: const EdgeInsets.only(bottom: 16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF3D2A2A),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0xFF5A2D2D)),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  const FaIcon(FontAwesomeIcons.circleExclamation, color: Color(0xFFFF6B6B), size: 18),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Text(
+                      installErrorMessage!,
+                      style: TextStyle(color: Colors.red.shade200, fontSize: 14, height: 1.4),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
         // Up to date status (only when not needing update)
         if (!shouldUpdate) ...[
           Padding(
