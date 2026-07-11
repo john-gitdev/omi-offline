@@ -483,9 +483,6 @@ void storage_start_sync_session(void) {
 
 void storage_stop_sync_session(void) {
     storage_sync_session_active = false;
-    /* Apply any cache rebuild a rotation deferred while indices were frozen, so
-     * the next enumeration reflects files created during the session. */
-    sd_flush_deferred_cache_rebuild();
     LOG_INF("Storage Sync Session: ENDED (indices unfrozen)");
 }
 
@@ -829,11 +826,13 @@ void storage_write(void)
             }
 
             if (conn) {
-                /* Refresh cache before building the response — the cache may be stale
-                 * after a file rotation, time-sync rename, or deletion that called
-                 * invalidate_file_cache() since boot.  get_audio_file_stats() dispatches
-                 * REQ_GET_FILE_STATS to the SD worker which calls ensure_file_cache(),
-                 * so this is safe to call from the storage thread. */
+                /* Force a fresh enumeration before building the response. Rotations
+                 * during the previous session skip their invalidation to keep frozen
+                 * indices stable, so the cache (and get_audio_file_stats()'s 30 s TTL)
+                 * can be stale; this blocking SD-worker invalidate makes the list
+                 * authoritative. get_audio_file_stats() then dispatches
+                 * REQ_GET_FILE_STATS -> ensure_file_cache() to rebuild. */
+                sd_invalidate_file_cache_blocking();
                 uint32_t dummy_count;
                 uint64_t dummy_size;
                 get_audio_file_stats(&dummy_count, &dummy_size);
