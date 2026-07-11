@@ -416,6 +416,21 @@ void main() {
       await expectLater(syncFuture, completes);
     });
 
+    test('syncWal does NOT delete a device file on an incomplete (short) transfer', () async {
+      globalDeletedTimestamps = [];
+      final syncFuture = sync.syncWal(wal: makeWal(totalBytes: 1000));
+      await pump();
+      mockConn.add(ackPacket(0x00));
+      await pump();
+      // Clean EOT after only 5 of 1000 bytes — the single-WAL path must not delete.
+      mockConn.add(dataPacket(0, List<int>.filled(5, 0xEE)));
+      await pump();
+      mockConn.add(eotPacket());
+      final response = await syncFuture;
+      expect(response!.isPartial, isTrue);
+      expect(globalDeletedTimestamps, isEmpty);
+    });
+
     test('Gap in DATA sequence aborts the transfer with an exception', () async {
       final syncFuture = sync.syncWal(wal: makeWal(totalBytes: 30));
       for (int attempt = 0; attempt <= 3; attempt++) {
