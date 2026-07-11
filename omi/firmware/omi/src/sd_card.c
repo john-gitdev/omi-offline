@@ -347,8 +347,11 @@ static bool file_cache_valid = false;
  * defer the rebuild: the frozen indices stay stable for the running session and
  * ensure_file_cache() forces the rebuild once the session ends, so files created
  * during the sync are picked up on the next enumeration (no data loss). Deletes
- * still hard-invalidate immediately — they DO change index 0. */
-static bool file_cache_rebuild_deferred = false;
+ * still hard-invalidate immediately — they DO change index 0. Accessed from the
+ * SD worker and the transport/BLE thread (via sd_flush_deferred_cache_rebuild),
+ * so volatile — matching storage_sync_session_active — to avoid a stale cached
+ * read dropping a deferred rebuild. */
+static volatile bool file_cache_rebuild_deferred = false;
 static int cached_file_list_count = 0;
 static uint32_t cached_total_file_count = 0;
 static uint64_t cached_total_file_size = 0;
@@ -532,8 +535,22 @@ static void process_save_offset_req(const sd_req_t *req)
     sd_set_io_low_power(true);
 }
 
+/* SD-worker-thread-local guard: while true, process_write_data_req() must NOT
+ * auto-rotate (should_rotate_file()) mid-write. Only ever set/read on the SD
+ * worker thread inside drain_pending_write_queue_for_shutdown(), so a plain bool
+ * is sufficient (no cross-thread access). */
+static bool sd_suppress_auto_rotate = false;
+
 static void drain_pending_write_queue_for_shutdown(void)
 {
+    /* Frames drained here belong to the CURRENT file and must land in it. Callers
+     * drain immediately before an explicit rotate (REQ_CREATE_NEW_FILE) or an
+     * unmount, so any rotation process_write_data_req() would trigger on its own
+     * (5-min file age, or a pending BLE-connect rotate) is redundant AND harmful:
+     * it would push a queued frame — e.g. the 0xFFFFFFFC session-end marker a
+     * priority-record stop just enqueued — into a fresh bin instead of the
+     * current one. Suppress it for the duration of the drain. */
+    sd_suppress_auto_rotate = true;
     while (1) {
         sd_req_t pending_req;
         if (k_msgq_get(&sd_msgq, &pending_req, K_NO_WAIT) != 0) {
@@ -546,6 +563,7 @@ static void drain_pending_write_queue_for_shutdown(void)
             process_save_offset_req(&pending_req);
         }
     }
+    sd_suppress_auto_rotate = false;
 }
 
 #define FLUSH_CHUNK_SIZE 4096 
@@ -672,7 +690,7 @@ static void process_write_data_req(const sd_req_t *req)
         atomic_clear(&current_file_deleted);
     }
 
-    if (should_rotate_file()) {
+    if (!sd_suppress_auto_rotate && should_rotate_file()) {
         LOG_INF("[SD_WORK] Rotating file after %d min", (int)(FILE_ROTATION_INTERVAL_MS / 60000));
         if (!spi_woken) { sd_set_io_low_power(false); spi_woken = true; }
         int flush_res = flush_batch_buffer_chunked();
@@ -1697,6 +1715,7 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
      * (safe for LittleFS) and to save RAM (no large buffer of filenames).
      */
     bool file_renamed;
+    bool give_up = false;
     do {
         file_renamed = false;
         lfs_dir_t dir;
@@ -1750,7 +1769,17 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
                     build_file_path(new_fn, new_path, sizeof(new_path));
                 }
 
-                if (lfs_rename(&lfs_fs, old_path, new_path) == 0) {
+                if (lfs_stat(&lfs_fs, new_path, &existing) == 0) {
+                    /* No free UTC second within the bump budget — renaming would
+                     * OVERWRITE (destroy) an existing recording. Leave this file as
+                     * TMP_ (still syncable, just with a derived timestamp) and stop
+                     * the pass rather than clobber data. give_up (not file_renamed)
+                     * ends the outer loop, so we neither re-find/retry this file
+                     * forever nor double-close the dir. Needs 16 consecutive
+                     * occupied seconds — effectively unreachable in practice. */
+                    LOG_ERR("Retro-rename: no free UTC slot for %s within budget — leaving as TMP_", info.name);
+                    give_up = true;
+                } else if (lfs_rename(&lfs_fs, old_path, new_path) == 0) {
                     LOG_INF("Retroactive rename: %s -> %s", info.name, new_fn);
                 } else {
                     LOG_ERR("Failed to rename %s", info.name);
@@ -1768,7 +1797,7 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
         /* Yield to allow other prio-msgq requests (like get list) to be processed
          * between renames if there are many files. */
         k_yield();
-    } while (file_renamed);    
+    } while (file_renamed && !give_up);
     invalidate_file_cache();
 }
 
