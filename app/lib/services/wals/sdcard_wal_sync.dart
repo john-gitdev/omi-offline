@@ -997,15 +997,22 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             Logger.error('SDCardWalSync: ts=${wal.timerStart} still incomplete '
                 '(${wal.walOffset}/${wal.storageTotalBytes} B) after ${wal.syncFailCount} attempts — '
                 'deleting to unblock sync (DATA LOST for this file)');
+            bool deleted = false;
             try {
               await _deleteWalLocked(connection, wal, overrideFileNum: 0, skipSave: true);
               anyDeleted = true;
+              deleted = true;
               await Future.delayed(const Duration(milliseconds: 200));
             } catch (e) {
               Logger.error('SDCardWalSync: poison-file deletion failed for ts=${wal.timerStart}: $e');
             }
             WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
-            continue; // advance to the next queued file (this one is now gone)
+            // Only advance the snapshot loop when the head was actually removed. The
+            // fast path targets index 0, so continuing while the head is still present
+            // would operate on it with the NEXT WAL's identity (timestamp/offset). On a
+            // failed delete, break so the next cycle re-enumerates before touching index 0.
+            if (deleted) continue;
+            break;
           }
 
           Logger.error('SDCardWalSync: incomplete transfer for ts=${wal.timerStart} '
@@ -1054,6 +1061,35 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         await Future.delayed(const Duration(milliseconds: 100));
         if (!await connection.isConnected()) {
           Logger.debug('SDCardWalSync: Connection lost after failure, aborting syncAll');
+          break;
+        }
+
+        // Poison budget for THROWN terminal failures (a genuine per-file error, not the
+        // cancel/disconnect cases handled above). The clean-but-short guard increments
+        // syncFailCount; a file that instead consistently THROWS after exhausting the
+        // inner retries (ACK error, protocol gap, stall) would otherwise never reach the
+        // drop threshold — and since the fast path can't get past a bad index-0 head
+        // (a fatal ACK 7 even breaks the whole batch), it could block every newer
+        // recording forever. An attempt that made forward progress is a healthy
+        // slow/large transfer resuming (reset strikes); one that made none counts toward
+        // the budget, and once exhausted the file is dropped to unblock the queue.
+        if (_lastSegmentBoundaryOffset > initialOffset) {
+          wal.syncFailCount = 0;
+        } else {
+          wal.syncFailCount += 1;
+        }
+        WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
+        if (wal.syncFailCount >= _maxSyncFailBeforeDrop) {
+          Logger.error('SDCardWalSync: ts=${wal.timerStart} unreadable (throwing) after '
+              '${wal.syncFailCount} attempts — deleting to unblock sync (DATA LOST for this file)');
+          try {
+            await _deleteWalLocked(connection, wal, overrideFileNum: 0, skipSave: true);
+            anyDeleted = true;
+          } catch (delErr) {
+            Logger.error('SDCardWalSync: poison-file deletion failed for ts=${wal.timerStart}: $delErr');
+          }
+          // Re-enumerate next cycle before operating on index 0 again (whether or not
+          // the delete succeeded — a failed delete leaves the same head in place).
           break;
         }
 
