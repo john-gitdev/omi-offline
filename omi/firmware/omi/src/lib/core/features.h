@@ -18,6 +18,10 @@ typedef enum {
     OMI_FEATURE_MIC_GAIN = (1 << 8),
     OMI_FEATURE_VAD_THRESHOLD = (1 << 9),
     OMI_FEATURE_PRIORITY_RECORD_CAP = (1 << 10),
+    /* Firmware accepts the RECORD_TOGGLE button action (byte 6). Lets the app
+     * hide the "Single recording button" switch / Toggle option on older
+     * firmware that would reject byte 6. */
+    OMI_FEATURE_RECORD_TOGGLE = (1 << 11),
 } omi_feature_t;
 
 #endif // FEATURES_H

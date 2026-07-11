@@ -26,6 +26,11 @@ typedef enum {
      * the existing 0xFFFFFFFC session-end on stop; rendered high-priority (red). */
     BUTTON_ACTION_RECORD_START = 4,
     BUTTON_ACTION_RECORD_STOP = 5,
+    /* Single-gesture toggle: stop if a recording is currently active, else start
+     * one. "Active" is the runtime threshold == 65535 in either mode (manual
+     * recording and auto priority-recording both hold it). Dispatches into the
+     * same start/stop paths as RECORD_START / RECORD_STOP. */
+    BUTTON_ACTION_RECORD_TOGGLE = 6,
 } button_action_t;
 
 extern volatile marker_flash_color_t marker_flash_color;

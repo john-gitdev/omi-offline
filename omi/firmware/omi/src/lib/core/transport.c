@@ -550,7 +550,7 @@ static ssize_t button_config_write_handler(struct bt_conn *conn,
     // Reject out-of-range actions so we never persist a config the FSM can't map.
     const uint8_t *cfg = (const uint8_t *) buf;
     for (int i = 0; i < 6; i++) {
-        if (cfg[i] > BUTTON_ACTION_RECORD_STOP) {
+        if (cfg[i] > BUTTON_ACTION_RECORD_TOGGLE) {
             return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
         }
     }
@@ -925,6 +925,9 @@ features_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, voi
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
     // Priority Recording (and thus its configurable safety cap) exists only on AAD builds.
     features |= OMI_FEATURE_PRIORITY_RECORD_CAP;
+    // The RECORD_TOGGLE action toggles a manual recording / auto priority
+    // recording — both require AAD, so advertise it only on AAD builds.
+    features |= OMI_FEATURE_RECORD_TOGGLE;
 #endif
 
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &features, sizeof(features));

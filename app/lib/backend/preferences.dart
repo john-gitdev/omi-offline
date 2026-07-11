@@ -65,6 +65,34 @@ class SharedPreferencesUtil {
   // firmware right now).
   List<int> get activeButtonConfig => manualMode ? buttonConfigManual : buttonConfigAuto;
 
+  // Whether the two split recording actions (Record Start = 4 / Record Stop = 5)
+  // are collapsed into a single Record Toggle action (6) in the button mapping.
+  // App-only preference, one global switch for both mode configs. Default false =
+  // separate Start/Stop, matching existing behaviour with zero migration.
+  bool get combineRecordButton => getBool('combineRecordButton', defaultValue: false);
+  set combineRecordButton(bool v) => saveBool('combineRecordButton', v);
+
+  /// Make a 6-slot button config valid for the given recording-button style,
+  /// so the firmware and the picker only ever see in-range actions. Idempotent,
+  /// and the same rule serves both the switch-flip and the migration/defensive
+  /// paths (normalize-to-a-mode == remap-on-flip-into-that-mode):
+  /// - combine ON (single Toggle): Start(4) → Toggle(6) — preserve the gesture;
+  ///   Stop(5) → None(0) — redundant once a Toggle exists.
+  /// - combine OFF (split Start/Stop): Toggle(6) → None(0) — one gesture can't
+  ///   auto-split into two placed gestures, so blank it and let the user assign
+  ///   Start + Stop deliberately (never auto-creates a Start-without-Stop).
+  static List<int> normalizeButtonConfigForCombine(List<int> cfg, bool combine) {
+    return cfg.map((v) {
+      if (combine) {
+        if (v == 4) return 6;
+        if (v == 5) return 0;
+      } else {
+        if (v == 6) return 0;
+      }
+      return v;
+    }).toList();
+  }
+
   // One-time migration guard: when first upgrading to per-mode configs, the
   // device's existing single config is preserved into the auto slot.
   bool get buttonConfigMigrated => getBool('buttonConfigMigrated', defaultValue: false);

@@ -236,6 +236,36 @@ void main() {
       expect(prefsUtil.buttonConfigMigrated, true);
     });
 
+    test('combineRecordButton defaults off and round-trips', () {
+      expect(prefsUtil.combineRecordButton, false);
+      prefsUtil.combineRecordButton = true;
+      expect(prefsUtil.combineRecordButton, true);
+    });
+
+    test('normalizeButtonConfigForCombine: asymmetric remap, idempotent, non-recording untouched', () {
+      // Turning ON (split → combined): Start(4) preserved as Toggle(6),
+      // Stop(5) blanked; Mute/Marker/LED/None untouched.
+      expect(
+        SharedPreferencesUtil.normalizeButtonConfigForCombine([0, 2, 4, 3, 5, 1], true),
+        [0, 2, 6, 3, 0, 1],
+      );
+      // Turning OFF (combined → split): Toggle(6) blanked (never auto-created a
+      // lone Start); everything else untouched.
+      expect(
+        SharedPreferencesUtil.normalizeButtonConfigForCombine([0, 2, 6, 3, 0, 1], false),
+        [0, 2, 0, 3, 0, 1],
+      );
+      // Idempotent: normalizing to a mode a config already satisfies is a no-op.
+      expect(
+        SharedPreferencesUtil.normalizeButtonConfigForCombine([0, 2, 6, 3, 0, 1], true),
+        [0, 2, 6, 3, 0, 1],
+      );
+      expect(
+        SharedPreferencesUtil.normalizeButtonConfigForCombine([0, 2, 4, 3, 5, 1], false),
+        [0, 2, 4, 3, 5, 1],
+      );
+    });
+
     test('shouldPreserveExistingButtonConfig: migrate old/customized, skip fresh device', () {
       // Old factory default (double-tap=Marker) → preserve into auto.
       expect(SharedPreferencesUtil.shouldPreserveExistingButtonConfig([0, 0, 2, 1, 3, 0]), true);
