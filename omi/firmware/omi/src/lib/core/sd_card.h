@@ -279,6 +279,16 @@ int create_new_audio_file(void);
 void sd_notify_ble_state(bool connected);
 
 /**
+ * @brief Apply any file-cache rebuild that was deferred during a sync session.
+ *
+ * A file rotation that happens while a storage sync session is active defers its
+ * cache rebuild so it can't shift the session's frozen indices. Call this when
+ * the sync session ends so the next enumeration reflects files created during
+ * the session. Safe no-op when nothing was deferred.
+ */
+void sd_flush_deferred_cache_rebuild(void);
+
+/**
  * @brief Get file statistics
  *
  * @param file_count Pointer to store the number of audio files
