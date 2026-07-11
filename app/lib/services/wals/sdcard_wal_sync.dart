@@ -1225,6 +1225,29 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
       if (_isCancelled) throw Exception("Cancelled");
 
+      // Completeness guard, mirroring _syncAllLocked: a transfer can "complete"
+      // (clean EOT) having delivered fewer bytes than the device advertised in
+      // CMD_LIST_FILES — an empty/short read after a rotation, etc. Deleting the
+      // device-side file on a short read is permanent data loss, so only delete when
+      // the whole file arrived; otherwise leave the WAL `miss` so a later sync retries
+      // (the device copy is immutable until CMD_DELETE_FILE, so the retry is safe).
+      // Unlike the fast path there is no index-0 queue to unblock here, so no
+      // poison-drop — just skip the delete and report the sync as partial.
+      if (wal.storageTotalBytes > 0 && wal.walOffset < wal.storageTotalBytes) {
+        wal.syncFailCount += 1;
+        wal.status = WalStatus.miss;
+        wal.isSyncing = false;
+        listener.onWalUpdated();
+        Logger.error('SDCardWalSync: syncWal incomplete for ts=${wal.timerStart} '
+            '(${wal.walOffset}/${wal.storageTotalBytes} B) — NOT deleting; leaving on device to retry');
+        return SyncLocalFilesResponse(
+          newConversationIds: [],
+          updatedConversationIds: [],
+          isPartial: true,
+        );
+      }
+
+      wal.syncFailCount = 0;
       await _deleteWalLocked(connection, wal);
     } catch (e) {
       wal.walOffset = _lastSegmentBoundaryOffset;
