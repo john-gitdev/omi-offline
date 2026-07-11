@@ -483,6 +483,9 @@ void storage_start_sync_session(void) {
 
 void storage_stop_sync_session(void) {
     storage_sync_session_active = false;
+    /* Apply any cache rebuild a rotation deferred while indices were frozen, so
+     * the next enumeration reflects files created during the session. */
+    sd_flush_deferred_cache_rebuild();
     LOG_INF("Storage Sync Session: ENDED (indices unfrozen)");
 }
 
