@@ -134,6 +134,7 @@ void main() {
         'sessionId': 99,
         'storage': 'sdcard',
         'status': 'synced',
+        'syncFailCount': 0,
         'filePath': '/path/to/file',
         'seconds': 60,
         'sampleRate': 16000,
