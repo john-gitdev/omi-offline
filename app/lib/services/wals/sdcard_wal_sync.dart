@@ -1064,6 +1064,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           break;
         }
 
+        // Re-check cancellation after the awaits above: cancelSync() may have set
+        // _isCancelled during the delay / isConnected() window. Bail before the
+        // poison-budget logic so an in-flight user cancel neither spends a strike (a
+        // cancellation isn't the file's fault) nor deletes a recording.
+        if (_isCancelled) break;
+
         // Poison budget for THROWN terminal failures (a genuine per-file error, not the
         // cancel/disconnect cases handled above). The clean-but-short guard increments
         // syncFailCount; a file that instead consistently THROWS after exhausting the
