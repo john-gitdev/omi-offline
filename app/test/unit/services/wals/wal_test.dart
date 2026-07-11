@@ -155,6 +155,7 @@ void main() {
         'sessionId': 99,
         'storage': 'sdcard',
         'status': 'synced',
+        'syncFailCount': 3,
         'filePath': '/path/to/file',
         'seconds': 60,
         'sampleRate': 16000,
@@ -174,6 +175,7 @@ void main() {
       expect(wal.sessionId, 99);
       expect(wal.storage, WalStorage.sdcard);
       expect(wal.status, WalStatus.synced);
+      expect(wal.syncFailCount, 3);
       expect(wal.filePath, '/path/to/file');
       expect(wal.seconds, 60);
       expect(wal.sampleRate, 16000);
@@ -197,6 +199,7 @@ void main() {
       expect(wal.sessionId, isNull);
       expect(wal.storage, WalStorage.local);
       expect(wal.status, WalStatus.miss);
+      expect(wal.syncFailCount, 0);
       expect(wal.filePath, isNull);
       expect(wal.seconds, isNull);
       expect(wal.sampleRate, isNull);
