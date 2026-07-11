@@ -154,6 +154,12 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
   // OFF blanks the Toggle so no lone Start-without-Stop is ever auto-created),
   // persists them, and pushes the active one to the firmware.
   Future<void> _setCombineRecord(bool on) async {
+    // Acquire the write lock UP FRONT — before the async recording-state read +
+    // confirmation dialog below — so a slot edit or a second flip can't start its
+    // own config write during those pre-checks and race this flip. Released again
+    // on every early return.
+    setState(() => _busy = true);
+
     // Turning OFF blanks the Toggle, leaving no button to stop an in-progress
     // recording. If a MANUAL recording is live (persisted VAD threshold 65535 —
     // the only recording state the app can read; auto priority recordings read
@@ -184,10 +190,13 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
                 ],
               ),
             );
-            if (proceed != true) return; // leave the switch where it was
+            if (proceed != true) {
+              if (mounted) setState(() => _busy = false); // release; leave the switch where it was
+              return;
+            }
           }
         } catch (_) {
-          // Couldn't read the device state — proceed rather than block the flip.
+          // Couldn't read the device state — proceed (lock stays held).
         }
       }
     }
@@ -201,12 +210,8 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
     final prevAuto = List<int>.of(_configAuto);
     final prevCombine = _combineRecord;
 
-    // _busy disables the switch + dropdowns for the duration of the push, so a
-    // second flip or a slot edit can't race this flip's whole-config revert.
-    setState(() {
-      _busy = true;
-      _combineRecord = on;
-    });
+    // _busy is already held from the top; apply the optimistic flip.
+    setState(() => _combineRecord = on);
     _configManual = SharedPreferencesUtil.normalizeButtonConfigForCombine(_configManual, on);
     _configAuto = SharedPreferencesUtil.normalizeButtonConfigForCombine(_configAuto, on);
     prefs.buttonConfigManual = _configManual;
@@ -272,8 +277,12 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
         if (connection != null) {
           // Send the snapshot taken at call time — not `_config` (a tab-dependent
           // getter, wrong mode if the tab switched) and not the live `cfg` (whose
-          // values can change under us while this await is pending).
-          await connection.setButtonConfig(pending);
+          // values can change under us while this await is pending). Normalize
+          // against the effective combine style so an *untouched* slot still
+          // holding a Toggle byte (6) can't ship to firmware that rejects it —
+          // on an unsupported device `_combineActive` is false, mapping 6 → 0.
+          await connection
+              .setButtonConfig(SharedPreferencesUtil.normalizeButtonConfigForCombine(pending, _combineActive));
           if (mounted) setState(() => _busy = false);
           return;
         }
