@@ -338,20 +338,6 @@ static uint64_t cached_stats_total_size = 0;
 static uint32_t cached_free_bytes = 0;
 static int64_t cached_stats_valid_until_ms = 0;
 static bool file_cache_valid = false;
-/* Set when a rotation (create_audio_file_with_timestamp) or an active-file size
- * update wanted to invalidate the cache WHILE a storage sync session was active.
- * A rotation only ever adds the newest file / closes the active one — it never
- * touches index 0, which is all the fast-path sync reads — so rebuilding the
- * cache mid-session (which re-enumerates + re-sorts on the single SD worker,
- * stalling the in-flight BLE read) is both unnecessary and harmful. Instead we
- * defer the rebuild: the frozen indices stay stable for the running session and
- * ensure_file_cache() forces the rebuild once the session ends, so files created
- * during the sync are picked up on the next enumeration (no data loss). Deletes
- * still hard-invalidate immediately — they DO change index 0. Accessed from the
- * SD worker and the transport/BLE thread (via sd_flush_deferred_cache_rebuild),
- * so volatile — matching storage_sync_session_active — to avoid a stale cached
- * read dropping a deferred rebuild. */
-static volatile bool file_cache_rebuild_deferred = false;
 static int cached_file_list_count = 0;
 static uint32_t cached_total_file_count = 0;
 static uint64_t cached_total_file_size = 0;
@@ -1497,15 +1483,18 @@ static void invalidate_file_cache(void)
     cached_stats_valid_until_ms = 0;
 }
 
-/* Invalidate the cache, but defer the actual rebuild if a storage sync session
- * is active so we don't shift the frozen indices / stall the in-flight read (see
- * file_cache_rebuild_deferred). Used by the rotation and active-file size paths;
- * the delete path keeps the immediate invalidate_file_cache() since it changes
- * index 0. */
+/* Invalidate the cache UNLESS a storage sync session is active — used by the
+ * rotation and active-file size paths, which (unlike deletes) never touch index
+ * 0, all the fast-path sync reads. Rebuilding mid-session would re-enumerate +
+ * re-sort on the single SD worker and stall the in-flight BLE read, so during a
+ * session we simply skip the invalidation and leave the frozen indices intact.
+ * The dropped rebuild is not lost: the next CMD_LIST_FILES forces a fresh
+ * enumeration (sd_invalidate_file_cache_blocking) before handing the app a list,
+ * so a file this rotation created is picked up then. Delete keeps the immediate
+ * invalidate_file_cache() since it does change index 0. */
 static void invalidate_file_cache_deferrable(void)
 {
     if (is_storage_sync_active()) {
-        file_cache_rebuild_deferred = true;
         return;
     }
     invalidate_file_cache();
@@ -1585,10 +1574,6 @@ static int refresh_file_cache(void)
         LOG_DBG("refresh_file_cache: session active, skipping refresh to maintain stable indices");
         return 0;
     }
-
-    /* A full re-enumeration below reflects every on-disk change, so any deferred
-     * rotation rebuild is now satisfied. */
-    file_cache_rebuild_deferred = false;
 
     lfs_dir_t dir;
     struct lfs_info info;
@@ -1684,12 +1669,6 @@ static int refresh_file_cache(void)
 
 static int ensure_file_cache(void)
 {
-    /* A rotation deferred its rebuild because a sync session was active. Once the
-     * session ends, force the rebuild here so files created during the sync are
-     * enumerated (they were intentionally left out of the frozen indices). */
-    if (file_cache_rebuild_deferred && !is_storage_sync_active()) {
-        invalidate_file_cache();
-    }
     if (file_cache_valid) {
         return 0;
     }
@@ -1715,7 +1694,6 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
      * (safe for LittleFS) and to save RAM (no large buffer of filenames).
      */
     bool file_renamed;
-    bool give_up = false;
     do {
         file_renamed = false;
         lfs_dir_t dir;
@@ -1747,21 +1725,19 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
                 }
 
                 uint32_t correct_ts = (original_uptime_ms / 1000U) + rtc_offset;
-
                 snprintf(new_fn, MAX_FILENAME_LEN, "%08X_%08X.txt", correct_ts, session_id);
-                build_file_path(info.name, old_path, sizeof(old_path));
                 build_file_path(new_fn, new_path, sizeof(new_path));
-
-                lfs_dir_close(&lfs_fs, &dir);
 
                 /* Collision-proof the target. correct_ts is second-granular
                  * (uptime_ms / 1000), so two TMP_ files whose uptimes fall in the
                  * same second map to the same UTC name — and lfs_rename would
                  * OVERWRITE (destroy) the first. Bump the target second until it is
                  * free (also dodges a real UTC file created right after time-sync).
-                 * Bounded; the <=1s nudge is below the app's stitch threshold. This
-                 * is the rename-time analogue of the LFS_O_EXCL guard in
-                 * create_audio_file_with_timestamp(). */
+                 * lfs_stat is read-only, so probing here is safe while the dir cursor
+                 * is still open — only the lfs_rename below mutates this directory and
+                 * must be preceded by lfs_dir_close(). Bounded; the <=1s nudge is below
+                 * the app's stitch threshold. Rename-time analogue of the LFS_O_EXCL
+                 * guard in create_audio_file_with_timestamp(). */
                 struct lfs_info existing;
                 for (int bump = 0; bump < 16 && lfs_stat(&lfs_fs, new_path, &existing) == 0; bump++) {
                     correct_ts++;
@@ -1770,16 +1746,23 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
                 }
 
                 if (lfs_stat(&lfs_fs, new_path, &existing) == 0) {
-                    /* No free UTC second within the bump budget — renaming would
-                     * OVERWRITE (destroy) an existing recording. Leave this file as
-                     * TMP_ (still syncable, just with a derived timestamp) and stop
-                     * the pass rather than clobber data. give_up (not file_renamed)
-                     * ends the outer loop, so we neither re-find/retry this file
-                     * forever nor double-close the dir. Needs 16 consecutive
-                     * occupied seconds — effectively unreachable in practice. */
+                    /* No free UTC second within the budget — renaming would OVERWRITE
+                     * (destroy) an existing recording. Skip ONLY this file (leave it
+                     * as TMP_, still syncable with a derived timestamp) and keep
+                     * scanning, so one collision can't strand unrelated recordings.
+                     * The dir cursor is untouched (no mutation yet), so continue
+                     * iterating. Needs 16 consecutive occupied seconds — effectively
+                     * unreachable in practice. */
                     LOG_ERR("Retro-rename: no free UTC slot for %s within budget — leaving as TMP_", info.name);
-                    give_up = true;
-                } else if (lfs_rename(&lfs_fs, old_path, new_path) == 0) {
+                    continue;
+                }
+
+                /* Free slot found. lfs_rename mutates this directory, so close the
+                 * iteration cursor first (LittleFS-safe), then restart the scan. */
+                build_file_path(info.name, old_path, sizeof(old_path));
+                lfs_dir_close(&lfs_fs, &dir);
+
+                if (lfs_rename(&lfs_fs, old_path, new_path) == 0) {
                     LOG_INF("Retroactive rename: %s -> %s", info.name, new_fn);
                 } else {
                     LOG_ERR("Failed to rename %s", info.name);
@@ -1797,7 +1780,7 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
         /* Yield to allow other prio-msgq requests (like get list) to be processed
          * between renames if there are many files. */
         k_yield();
-    } while (file_renamed && !give_up);
+    } while (file_renamed);
     invalidate_file_cache();
 }
 
@@ -2364,6 +2347,20 @@ void sd_worker_thread(void)
             break;
         }
 
+        /* ---- Invalidate file cache (force a fresh enumeration) ---- */
+        case REQ_INVALIDATE_CACHE:
+            /* Runs on the SD worker, which owns all cache state — no cross-thread
+             * race. Posted synchronously from the CMD_LIST_FILES path so the list
+             * the app receives always reflects a fresh enumeration, including files
+             * a rotation created during the previous session (whose mid-session
+             * invalidation was intentionally skipped to keep indices frozen). */
+            invalidate_file_cache();
+            if (req.u.create_file.resp) {
+                req.u.create_file.resp->res = 0;
+                k_sem_give(&req.u.create_file.resp->sem);
+            }
+            break;
+
         /* ---- Time synced ---- */
         case REQ_TIME_SYNCED:
             if (current_filename[0] != '\0' && current_file_needs_rename) {
@@ -2591,20 +2588,57 @@ void sd_notify_ble_state(bool connected)
     atomic_set(&ble_connected, connected ? 1 : 0);
 }
 
-void sd_flush_deferred_cache_rebuild(void)
+void sd_invalidate_file_cache_blocking(void)
 {
-    /* Called at sync-session end (storage_stop_sync_session), so the session is
-     * no longer active. Invalidate UNCONDITIONALLY rather than gating on
-     * file_cache_rebuild_deferred: a rotation on the SD worker can set that flag
-     * immediately after a conditional read observed it false (its
-     * invalidate_file_cache_deferrable() saw the session still active), and the
-     * next CMD_LIST_FILES re-freezes the indices before ensure_file_cache()'s
-     * !is_storage_sync_active() belt can apply it — which would omit the rotated
-     * file from that listing. An unconditional invalidate forces the next
-     * enumeration to rebuild fresh regardless of the race. The flag clear is
-     * best-effort tidy-up (the invalidate is what guarantees correctness). */
-    file_cache_rebuild_deferred = false;
-    invalidate_file_cache();
+    /* Force the file cache to be re-enumerated on the SD worker before the next
+     * CMD_LIST_FILES response is built. Rotations during a sync session skip their
+     * invalidation to keep the frozen indices stable (invalidate_file_cache_
+     * deferrable), so the cache can be stale by the next session; this makes the
+     * list authoritative again. Marshalled to the SD worker — which owns all cache
+     * state — so there is no cross-thread mutation of file_cache_valid. Called from
+     * the storage thread (the CMD_LIST_FILES handler), which may block, so we wait
+     * for completion: that also guarantees cached_stats_valid_until_ms is cleared
+     * before get_audio_file_stats() runs next, defeating its 30 s TTL fast-path.
+     *
+     * The response object is STATIC (not stack) with an in-flight guard, matching
+     * create_new_audio_file()/get_audio_file_stats(): on a wait timeout the queued
+     * REQ still references &resp, so a stack object would dangle when the SD worker
+     * completes late. The next call reclaims the static once that late completion
+     * signals the sem. Only the single storage thread calls this, so the guard is
+     * just protecting against that late-completion reuse, not true concurrency. */
+    static struct read_resp resp;
+    static atomic_t invalidate_in_flight;
+
+    if (!atomic_cas(&invalidate_in_flight, 0, 1)) {
+        if (k_sem_take(&resp.sem, K_NO_WAIT) == 0) {
+            atomic_set(&invalidate_in_flight, 0); /* late completion drained */
+        } else {
+            LOG_WRN("Force cache invalidate: previous request still in-flight");
+            return;
+        }
+        if (!atomic_cas(&invalidate_in_flight, 0, 1)) {
+            return;
+        }
+    }
+    k_sem_init(&resp.sem, 0, 1);
+
+    sd_req_t req = {0};
+    req.type = REQ_INVALIDATE_CACHE;
+    req.u.create_file.resp = &resp;
+
+    if (k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000)) != 0) {
+        LOG_WRN("Force cache invalidate not queued; list may serve a stale enumeration");
+        atomic_set(&invalidate_in_flight, 0);
+        return;
+    }
+    if (k_sem_take(&resp.sem, K_MSEC(2000)) != 0) {
+        /* Leave invalidate_in_flight set — the REQ still owns &resp; the next call
+         * reclaims after the late k_sem_give. get_audio_file_stats() then still
+         * repairs the cache via its own REQ_GET_FILE_STATS round-trip. */
+        LOG_WRN("Force cache invalidate timed out; list may serve a stale enumeration");
+        return;
+    }
+    atomic_set(&invalidate_in_flight, 0);
 }
 
 /* Shared write path. retry_to is the bounded blocking timeout used on the
