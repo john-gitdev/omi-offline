@@ -43,6 +43,7 @@ typedef enum {
     REQ_TIME_SYNCED,
     REQ_UNMOUNT,
     REQ_PAUSE_IO,
+    REQ_INVALIDATE_CACHE,
 } sd_req_type_t;
 
 /* Read request response object */
@@ -279,14 +280,15 @@ int create_new_audio_file(void);
 void sd_notify_ble_state(bool connected);
 
 /**
- * @brief Apply any file-cache rebuild that was deferred during a sync session.
+ * @brief Force a fresh file-cache enumeration on the SD worker (blocking).
  *
- * A file rotation that happens while a storage sync session is active defers its
- * cache rebuild so it can't shift the session's frozen indices. Call this when
- * the sync session ends so the next enumeration reflects files created during
- * the session. Safe no-op when nothing was deferred.
+ * Rotations during a sync session skip their cache invalidation to keep the
+ * session's frozen indices stable, so the cache may be stale by the next session.
+ * Call this from the CMD_LIST_FILES path (storage thread) before building the
+ * list response so the app always receives a freshly enumerated list. Marshalled
+ * to the SD worker — which owns all cache state — and waits for completion.
  */
-void sd_flush_deferred_cache_rebuild(void);
+void sd_invalidate_file_cache_blocking(void);
 
 /**
  * @brief Get file statistics
