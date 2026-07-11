@@ -245,7 +245,14 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     final updateStream = updateManager.setup();
 
     updateStream.listen((state) {
+      // Once this attempt has ended (success or _handleDfuFailure), ignore any
+      // event still queued behind it: the state/progress streams and the
+      // watchdog timer are independent async sources, so a success event can
+      // arrive after teardown began (it must not resurrect the success screen)
+      // and stray state events must not re-arm a dead watchdog timer.
+      if (_dfuTerminated) return;
       if (state == mcumgr.FirmwareUpgradeState.success) {
+        _dfuTerminated = true; // success is terminal
         Logger.debug('update success');
         killMcuUpdateManager(); // also cancels the stall watchdog
         releaseUpdateWakelocks();
@@ -266,6 +273,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     });
 
     updateManager.progressStream.listen((progress) {
+      if (_dfuTerminated) return;
       Logger.debug('progress: $progress');
       _armDfuStallWatchdog();
       if (mounted) {
