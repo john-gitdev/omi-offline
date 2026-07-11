@@ -57,6 +57,14 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   double _currentSpeedKBps = 0.0;
   DateTime? _lastWalPersistAt;
   static const Duration _walPersistInterval = Duration(seconds: 1);
+
+  // How many consecutive incomplete transfers a single file may accumulate before
+  // the completeness guard gives up and deletes it to unblock the (index-0-only)
+  // fast path. Each attempt is one sync cycle, so this trades a few retries — which
+  // let a transient rotation-adjacent empty read self-heal — against never getting
+  // permanently stuck on a genuinely unreadable ("poison") file. Deleting a poison
+  // file loses only that one recording; leaving it would stall ALL further sync.
+  static const int _maxSyncFailBeforeDrop = 5;
   @override
   double get currentSpeedKBps => _currentSpeedKBps;
 
@@ -327,6 +335,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       if (isMatchValid && existing!.isSyncing) {
         wal.isSyncing = true;
         wal.syncStartedAt = existing.syncStartedAt;
+      }
+      // Carry the incomplete-transfer counter across list refreshes so a file that
+      // keeps reading short is eventually recognised as poison (see the completeness
+      // guard in _syncAllLocked). Only meaningful when the identity actually matches.
+      if (isMatchValid) {
+        wal.syncFailCount = existing!.syncFailCount;
       }
       wals.add(wal);
     }
@@ -955,6 +969,57 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
         if (_isCancelled) throw Exception("Cancelled");
 
+        // Completeness guard. The firmware advertised wal.storageTotalBytes for this
+        // file in CMD_LIST_FILES, but a transfer can "complete" (clean EOT / the
+        // native download returns) having delivered FEWER bytes — e.g. the firmware
+        // sent an empty EOT for a file whose cached size went stale after a rotation,
+        // returned res=0 / 0-bytes when the file rotated under the read handle, or hit
+        // a mid-file read error (see storage.c / sd_card.c). wal.walOffset now holds
+        // the bytes actually written to the local file (the native path sets it from
+        // the on-disk size). Marking such a short read "synced" and deleting the
+        // device-side copy turns a transient read glitch into PERMANENT data loss —
+        // this is exactly how a Priority Recording vanished (device had 468 KB, the
+        // read returned ~0, the file was deleted). Only accept + delete when the whole
+        // file arrived; otherwise leave it as `miss` so the next sync retries. The
+        // device copy is immutable until we send CMD_DELETE_FILE, so the retry is safe.
+        if (wal.storageTotalBytes > 0 && wal.walOffset < wal.storageTotalBytes) {
+          wal.syncFailCount += 1;
+          wal.status = WalStatus.miss;
+          wal.isSyncing = false;
+          listener.onWalUpdated();
+          anyPartial = true;
+
+          if (wal.syncFailCount >= _maxSyncFailBeforeDrop) {
+            // Poison file: it has read short on every attempt. The fast path can only
+            // read/delete index 0, so a file stuck at the head blocks the whole queue.
+            // Delete it to unblock — this ACCEPTS THE LOSS of this one file so newer
+            // recordings can keep syncing. Logged loudly so the loss is visible.
+            Logger.error('SDCardWalSync: ts=${wal.timerStart} still incomplete '
+                '(${wal.walOffset}/${wal.storageTotalBytes} B) after ${wal.syncFailCount} attempts — '
+                'deleting to unblock sync (DATA LOST for this file)');
+            try {
+              await _deleteWalLocked(connection, wal, overrideFileNum: 0, skipSave: true);
+              anyDeleted = true;
+              await Future.delayed(const Duration(milliseconds: 200));
+            } catch (e) {
+              Logger.error('SDCardWalSync: poison-file deletion failed for ts=${wal.timerStart}: $e');
+            }
+            WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
+            continue; // advance to the next queued file (this one is now gone)
+          }
+
+          Logger.error('SDCardWalSync: incomplete transfer for ts=${wal.timerStart} '
+              '(${wal.walOffset}/${wal.storageTotalBytes} B), attempt ${wal.syncFailCount}/'
+              '$_maxSyncFailBeforeDrop — NOT deleting; retrying on the next sync');
+          WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
+          // The fast path only ever reads index 0, so we can't skip past this file
+          // without deleting it. Stop here; the next sync cycle re-lists and retries
+          // from the head (giving the firmware time to settle after the rotation).
+          break;
+        }
+
+        // Full file received — clear any prior short-read strikes and finalize.
+        wal.syncFailCount = 0;
         wal.status = WalStatus.synced;
         wal.isSyncing = false;
         listener.onWalUpdated();
