@@ -2594,12 +2594,17 @@ void sd_notify_ble_state(bool connected)
 void sd_flush_deferred_cache_rebuild(void)
 {
     /* Called at sync-session end (storage_stop_sync_session), so the session is
-     * no longer active and a hard invalidate here forces the next enumeration to
-     * re-list files created by rotations during the session. */
-    if (file_cache_rebuild_deferred) {
-        file_cache_rebuild_deferred = false;
-        invalidate_file_cache();
-    }
+     * no longer active. Invalidate UNCONDITIONALLY rather than gating on
+     * file_cache_rebuild_deferred: a rotation on the SD worker can set that flag
+     * immediately after a conditional read observed it false (its
+     * invalidate_file_cache_deferrable() saw the session still active), and the
+     * next CMD_LIST_FILES re-freezes the indices before ensure_file_cache()'s
+     * !is_storage_sync_active() belt can apply it — which would omit the rotated
+     * file from that listing. An unconditional invalidate forces the next
+     * enumeration to rebuild fresh regardless of the race. The flag clear is
+     * best-effort tidy-up (the invalidate is what guarantees correctness). */
+    file_cache_rebuild_deferred = false;
+    invalidate_file_cache();
 }
 
 /* Shared write path. retry_to is the bounded blocking timeout used on the
