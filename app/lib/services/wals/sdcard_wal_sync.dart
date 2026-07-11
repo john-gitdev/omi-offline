@@ -1240,10 +1240,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         listener.onWalUpdated();
         Logger.error('SDCardWalSync: syncWal incomplete for ts=${wal.timerStart} '
             '(${wal.walOffset}/${wal.storageTotalBytes} B) — NOT deleting; leaving on device to retry');
-        // Persist the strike + offset (onWalUpdated is only a notification), mirroring
-        // _syncAllLocked, so the failure count survives a refresh/restart. The success
+        // Persist the strike + offset (onWalUpdated is only a notification) so the
+        // failure count survives a refresh/restart. Awaited (unlike the batch loop's
+        // throttled fire-and-forget saves) because this is a single terminal op that
+        // returns right after — the write must land before we hand back. The success
         // path persists via _deleteWalLocked.
-        WalFileManager.saveWals(_wals, deviceId: wal.device).catchError((_) => Future.value(false));
+        await WalFileManager.saveWals(_wals, deviceId: wal.device).catchError((_) => Future.value(false));
         return SyncLocalFilesResponse(
           newConversationIds: [],
           updatedConversationIds: [],
