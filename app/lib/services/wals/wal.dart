@@ -34,6 +34,12 @@ class Wal {
 
   WalStatus status;
   bool isSyncing;
+  // Number of consecutive sync attempts that ended with fewer bytes received than
+  // the device advertised in CMD_LIST_FILES (an incomplete/empty read). Used by the
+  // fast-path completeness guard to retry a short read instead of deleting the
+  // device-side file, and to eventually give up on a genuinely unreadable ("poison")
+  // file so it doesn't block the head-of-line forever. Reset to 0 on a full transfer.
+  int syncFailCount;
   DateTime? syncStartedAt;
   int? syncEtaSeconds;
   double? syncSpeedKBps;
@@ -59,6 +65,7 @@ class Wal {
     this.sessionId,
     this.status = WalStatus.miss,
     this.isSyncing = false,
+    this.syncFailCount = 0,
     this.syncMethod = SyncMethod.ble,
     this.filePath,
     this.data,
@@ -125,6 +132,7 @@ class Wal {
       'sessionId': sessionId,
       'storage': storage.name,
       'status': status.name,
+      'syncFailCount': syncFailCount,
       'filePath': filePath,
       'seconds': seconds,
       'sampleRate': sampleRate,
@@ -149,6 +157,7 @@ class Wal {
       sessionId: json['sessionId'],
       storage: WalStorage.values.firstWhere((e) => e.name == json['storage'], orElse: () => WalStorage.local),
       status: WalStatus.values.firstWhere((e) => e.name == json['status'], orElse: () => WalStatus.miss),
+      syncFailCount: json['syncFailCount'] ?? 0,
       filePath: json['filePath'],
       seconds: json['seconds'],
       sampleRate: json['sampleRate'],
@@ -169,6 +178,7 @@ class Wal {
     WalStorage? storage,
     WalStatus? status,
     bool? isSyncing,
+    int? syncFailCount,
     SyncMethod? syncMethod,
     String? filePath,
     List<int>? data,
@@ -189,6 +199,7 @@ class Wal {
       storage: storage ?? this.storage,
       status: status ?? this.status,
       isSyncing: isSyncing ?? this.isSyncing,
+      syncFailCount: syncFailCount ?? this.syncFailCount,
       syncMethod: syncMethod ?? this.syncMethod,
       filePath: filePath ?? this.filePath,
       data: data ?? this.data,
