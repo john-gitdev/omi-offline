@@ -559,6 +559,32 @@ void main() {
       expect(globalDeletedTimestamps, contains(ts));
     }, timeout: const Timeout(Duration(seconds: 60)));
 
+    test('syncAll drops a file that always THROWS a terminal error (thrown poison)', () async {
+      globalDeletedTimestamps = [];
+      final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      mockConn.files = [StorageFile(index: 1, timestamp: ts, size: 1000000)];
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await pump(10);
+
+      // Every attempt throws an error-ACK with no data — the *thrown* failure mode,
+      // not the clean-but-short one. A thrown poison file must also count toward the
+      // retry budget and be dropped; otherwise (fast path can't get past a bad index-0
+      // head) it blocks every newer recording forever.
+      for (int attempt = 1; attempt <= 5; attempt++) {
+        final f = sync.syncAll();
+        await mockConn.waitForWrite(attempt);
+        await pump(10);
+        mockConn.add(ackPacket(0x01)); // firmware error ACK (non-fatal, non-7)
+        await pump(10);
+        await f;
+        if (attempt < 5) {
+          expect(globalDeletedTimestamps, isEmpty,
+              reason: 'must not delete before the poison threshold (attempt $attempt)');
+        }
+      }
+      expect(globalDeletedTimestamps, contains(ts));
+    }, timeout: const Timeout(Duration(seconds: 60)));
+
     test('Crash Recovery (Syncing): resumes from last segment boundary after interruption', () async {
       globalCurrentFileNum = -1;
       globalWriteCount = 0;
