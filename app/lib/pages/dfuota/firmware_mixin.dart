@@ -76,6 +76,16 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   final mcumgr.FirmwareUpdateManagerFactory? managerFactory = mcumgr.FirmwareUpdateManagerFactory();
   mcumgr.FirmwareUpdateManager? _mcuUpdateManager;
 
+  // MCU/SMP DFU failure recovery. Unlike the legacy Nordic DFU path (which has an
+  // onError callback), the mcumgr state stream surfaces failures by emitting a
+  // stream *error*, and a wedged SMP connection can emit neither progress nor an
+  // error at all — so without these the UI can sit forever on "Installing
+  // firmware… 0%". `installErrorMessage` is surfaced by the update page.
+  Timer? _dfuStallTimer;
+  static const Duration _dfuStallTimeout = Duration(seconds: 45);
+  bool _dfuTerminated = false;
+  String? installErrorMessage;
+
   /// Process ZIP file and return firmware image list
   Future<List<mcumgr.Image>> processZipFile(Uint8List zipFileData) async {
     // Create temporary directory
@@ -154,6 +164,11 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   }
 
   Future<void> killMcuUpdateManager() async {
+    // Every DFU teardown path funnels through here (success, failure, page
+    // dispose, and the pre-flight kill before a fresh attempt), so cancel the
+    // stall watchdog here to guarantee no stray timer outlives the manager.
+    _dfuStallTimer?.cancel();
+    _dfuStallTimer = null;
     if (_mcuUpdateManager != null) {
       try {
         await _mcuUpdateManager!.kill();
@@ -164,9 +179,38 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     }
   }
 
+  /// (Re)arm the stall watchdog. Reset on every progress/state event; if nothing
+  /// advances for [_dfuStallTimeout] the update is force-failed so the UI never
+  /// sits forever on "Installing firmware… 0%" when the SMP transfer wedges
+  /// (e.g. the BLE link is still busy from a just-cancelled sync).
+  void _armDfuStallWatchdog() {
+    _dfuStallTimer?.cancel();
+    _dfuStallTimer = Timer(_dfuStallTimeout, () {
+      Logger.debug('DFU stalled: no progress for ${_dfuStallTimeout.inSeconds}s');
+      _handleDfuFailure('Firmware update stalled. Please try again.');
+    });
+  }
+
+  /// Terminal failure path for the MCU DFU — mirrors startLegacyDfu's onError.
+  /// Idempotent: the state-stream error and the stall watchdog can both fire.
+  void _handleDfuFailure(String message) {
+    if (_dfuTerminated) return;
+    _dfuTerminated = true;
+    killMcuUpdateManager(); // also cancels the stall watchdog
+    releaseUpdateWakelocks();
+    if (!mounted) return;
+    setState(() {
+      isInstalling = false;
+      installErrorMessage = message;
+    });
+    Provider.of<DeviceProvider>(context, listen: false).resetFirmwareUpdateState();
+  }
+
   Future<void> startMCUDfu(BtDevice btDevice, {bool fileInAssets = false, String? zipFilePath}) async {
+    _dfuTerminated = false;
     setState(() {
       isInstalling = true;
+      installErrorMessage = null;
     });
     await Provider.of<DeviceProvider>(context, listen: false).prepareDFU();
     await Future.delayed(const Duration(seconds: 2));
@@ -175,12 +219,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     final file = File(firmwareFile);
     if (!await file.exists()) {
       Logger.debug('Firmware file not found: $firmwareFile');
-      releaseUpdateWakelocks();
-      if (mounted) {
-        setState(() {
-          isInstalling = false;
-        });
-      }
+      _handleDfuFailure('Firmware file not found. Please try again.');
       return;
     }
     final bytes = await file.readAsBytes();
@@ -191,31 +230,49 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     );
 
     await killMcuUpdateManager();
-    final updateManager = await managerFactory!.getUpdateManager(btDevice.id);
-    _mcuUpdateManager = updateManager;
-    final images = await processZipFile(bytes);
+    final mcumgr.FirmwareUpdateManager updateManager;
+    final List<mcumgr.Image> images;
+    try {
+      updateManager = await managerFactory!.getUpdateManager(btDevice.id);
+      _mcuUpdateManager = updateManager;
+      images = await processZipFile(bytes);
+    } catch (e) {
+      Logger.debug('DFU setup failed: $e');
+      _handleDfuFailure('Could not start the update. Please try again.');
+      return;
+    }
 
     final updateStream = updateManager.setup();
 
     updateStream.listen((state) {
       if (state == mcumgr.FirmwareUpgradeState.success) {
         Logger.debug('update success');
-        killMcuUpdateManager();
+        killMcuUpdateManager(); // also cancels the stall watchdog
         releaseUpdateWakelocks();
-        setState(() {
-          isInstalling = false;
-          isInstalled = true;
-        });
+        if (mounted) {
+          setState(() {
+            isInstalling = false;
+            isInstalled = true;
+          });
+        }
       } else {
         Logger.debug('update state: $state');
+        _armDfuStallWatchdog(); // advancing through stages resets the watchdog
       }
+    }, onError: (Object e) {
+      // mcumgr surfaces DFU failures as a stream error (see DeviceUpdateManager).
+      Logger.debug('update error: $e');
+      _handleDfuFailure('Firmware update failed. Please try again.');
     });
 
     updateManager.progressStream.listen((progress) {
       Logger.debug('progress: $progress');
-      setState(() {
-        installProgress = (progress.bytesSent / progress.imageSize * 100).round();
-      });
+      _armDfuStallWatchdog();
+      if (mounted) {
+        setState(() {
+          installProgress = (progress.bytesSent / progress.imageSize * 100).round();
+        });
+      }
     });
 
     updateManager.logger.logMessageStream
@@ -224,7 +281,15 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       Logger.debug('dfu log: ${log.message}');
     });
 
-    await updateManager.update(images, configuration: configuration);
+    // Arm before kicking off the transfer: the initial SMP connect/setup is the
+    // most common place to wedge with progress stuck at 0%.
+    _armDfuStallWatchdog();
+    try {
+      await updateManager.update(images, configuration: configuration);
+    } catch (e) {
+      Logger.debug('DFU update kickoff failed: $e');
+      _handleDfuFailure('Firmware update failed. Please try again.');
+    }
   }
 
   Future<void> startLegacyDfu(BtDevice btDevice, {bool fileInAssets = false, String? zipFilePath}) async {
