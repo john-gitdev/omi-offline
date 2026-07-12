@@ -114,6 +114,15 @@ class SyncAlarmReceiver : BroadcastReceiver() {
         // "Connecting…" for the new attempt right below, harmlessly overwriting this.
         OmiBleForegroundService.instance?.settleStaleConnectingToIdle()
 
+        // Drive a native reconnect from this Doze-exempt alarm window, independent of
+        // the Flutter isolate. Native pauses its own retry loop once an outage is
+        // confirmed (AUTONOMOUS_RETRY_STOP_AFTER), so if Dart is frozen/dead this is
+        // the only thing that re-triggers the connect until the user opens the app.
+        // Idempotent: no-ops if already connected or the user disconnected. When the
+        // service was cold-started just above, `instance` isn't set yet — that path is
+        // covered by onStartCommand's persistent restore.
+        OmiBleForegroundService.instance?.ensureManagedReconnectFromAlarm()
+
         val flutterApi = if (OmiBleManager.isFlutterAlive) OmiBleManager.instance.flutterApi else null
         if (flutterApi != null) {
             Handler(Looper.getMainLooper()).post {
