@@ -18,6 +18,13 @@ class SyncAlarmReceiver : BroadcastReceiver() {
         // alarm's PendingIntent. Settles a stranded "Connecting…" notification when
         // Dart can't (frozen/torn-down engine); see OmiBleForegroundService.
         private const val ACTION_SETTLE = "com.omi.offline.SETTLE_NOTIFICATION"
+        // A tight, backing-off reconnect alarm that runs only during a *confirmed*
+        // outage — after native has paused its own retry loop (AUTONOMOUS_RETRY_STOP_AFTER)
+        // and handed reconnection to the sync schedule. Without it, a wedge that clears
+        // sits un-reconnected until the next sync alarm (up to one full sync interval).
+        // Self-terminates once its step reaches the sync interval; see
+        // OmiBleForegroundService.scheduleRecoveryProbe.
+        private const val ACTION_RECOVER = "com.omi.offline.RECOVER_CONNECTION"
 
         fun pendingIntent(context: Context): PendingIntent {
             val intent = Intent(ACTION).setPackage(context.packageName)
@@ -31,6 +38,14 @@ class SyncAlarmReceiver : BroadcastReceiver() {
             val intent = Intent(ACTION_SETTLE).setPackage(context.packageName)
             return PendingIntent.getBroadcast(
                 context, 1, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        }
+
+        private fun recoverPendingIntent(context: Context): PendingIntent {
+            val intent = Intent(ACTION_RECOVER).setPackage(context.packageName)
+            return PendingIntent.getBroadcast(
+                context, 2, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
         }
@@ -69,6 +84,30 @@ class SyncAlarmReceiver : BroadcastReceiver() {
                 Log.w(TAG, "cancelSettle: ${e.message}")
             }
         }
+
+        /// Arm the Doze-exempt outage-recovery alarm. Re-arming collapses onto the
+        /// single PendingIntent, so the service just pushes the next backed-off
+        /// timestamp each firing (see OmiBleForegroundService.scheduleRecoveryProbe).
+        fun scheduleRecover(context: Context, timestampMs: Long) {
+            try {
+                val am = context.getSystemService(AlarmManager::class.java)
+                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, timestampMs, recoverPendingIntent(context))
+                Log.d(TAG, "scheduleRecover: armed for ${java.util.Date(timestampMs)}")
+            } catch (e: Exception) {
+                // Non-critical: the periodic sync alarm still drives reconnection, just slower.
+                Log.w(TAG, "scheduleRecover: could not arm: ${e.message}")
+            }
+        }
+
+        /// Cancel the outage-recovery alarm — the link is back, or recovery is no longer
+        /// wanted (user disconnect / auto-sync off / self-terminated at the sync interval).
+        fun cancelRecover(context: Context) {
+            try {
+                context.getSystemService(AlarmManager::class.java).cancel(recoverPendingIntent(context))
+            } catch (e: Exception) {
+                Log.w(TAG, "cancelRecover: ${e.message}")
+            }
+        }
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -81,6 +120,23 @@ class SyncAlarmReceiver : BroadcastReceiver() {
                 OmiBleManager.initialize(context.applicationContext as android.app.Application)
             }
             OmiBleForegroundService.instance?.settleStaleConnectingToIdle()
+            return
+        }
+        // Outage-recovery alarm: drive a reconnect and re-arm the next backed-off step,
+        // independent of the Flutter isolate. Runs in this broadcast's Doze-exempt wakelock
+        // window, so it recovers a cleared wedge even when Dart is frozen. Unlike the sync
+        // alarm it does NOT cold-start the service (`instance?.`): it's an optimization for the
+        // common case where the service is alive (persistent during auto-sync), and only ever
+        // runs after that service armed it. If the process was killed, the pending recovery
+        // alarm no-ops here and the periodic sync alarm below is the reliable cold-start
+        // backstop — so recovery gracefully degrades to the sync cadence rather than spinning
+        // the whole FGS up every couple of minutes, which would undo the battery intent.
+        if (intent.action == ACTION_RECOVER) {
+            Log.d(TAG, "onReceive: recovery alarm fired")
+            if (!OmiBleManager.isInitialized) {
+                OmiBleManager.initialize(context.applicationContext as android.app.Application)
+            }
+            OmiBleForegroundService.instance?.onRecoveryProbeAlarm()
             return
         }
         if (intent.action != ACTION) return
