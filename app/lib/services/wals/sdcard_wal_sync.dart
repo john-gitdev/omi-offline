@@ -983,7 +983,24 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         // file arrived; otherwise leave it as `miss` so the next sync retries. The
         // device copy is immutable until we send CMD_DELETE_FILE, so the retry is safe.
         if (wal.storageTotalBytes > 0 && wal.walOffset < wal.storageTotalBytes) {
-          wal.syncFailCount += 1;
+          // Forward-progress guard on the poison-file drop. A short read that still
+          // ADVANCED the byte offset this attempt is a file that IS transferring —
+          // just interrupted (background BLE throttling, a mid-transfer link drop like
+          // "Stream closed without EOT"). It is NOT a genuinely unreadable file stuck
+          // at a byte the firmware can't deliver. The drop below ACCEPTS DATA LOSS to
+          // unblock the head of the queue; letting a *progressing* file accrue strikes
+          // toward it would delete a large recording mid-transfer and lose it for good,
+          // even though the very next sync would finish it (e.g. a 3 MB file that only
+          // syncs cleanly in the foreground could hit 5 background-throttled short reads
+          // first). So only a read that fails to advance past where it resumed counts
+          // as a strike; any forward progress resets the count. initialOffset is this
+          // attempt's resume point, captured before the read above.
+          final bool madeProgress = wal.walOffset > initialOffset;
+          if (madeProgress) {
+            wal.syncFailCount = 0;
+          } else {
+            wal.syncFailCount += 1;
+          }
           wal.status = WalStatus.miss;
           wal.isSyncing = false;
           listener.onWalUpdated();
@@ -1016,8 +1033,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           }
 
           Logger.error('SDCardWalSync: incomplete transfer for ts=${wal.timerStart} '
-              '(${wal.walOffset}/${wal.storageTotalBytes} B), attempt ${wal.syncFailCount}/'
-              '$_maxSyncFailBeforeDrop — NOT deleting; retrying on the next sync');
+              '(${wal.walOffset}/${wal.storageTotalBytes} B), '
+              '${madeProgress ? 'made progress from $initialOffset — strikes reset' : 'no progress'}, '
+              'strike ${wal.syncFailCount}/$_maxSyncFailBeforeDrop — NOT deleting; retrying on the next sync');
           WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
           // The fast path only ever reads index 0, so we can't skip past this file
           // without deleting it. Stop here; the next sync cycle re-lists and retries

@@ -1536,9 +1536,22 @@ class DeviceProvider extends ChangeNotifier
           !_pendingSyncResume &&
           !isFirmwareUpdateInProgress &&
           !_isOnFirmwareUpdatePage) {
-        Logger.debug('[BLE] _handleDeviceConnected: dropping — app is backgrounded and no sync was pending');
-        unawaited(ServiceManager.instance().device.disconnectDevice(isManual: true));
-        return;
+        // The link is up but nothing sanctioned it. Usually that's a foreground-initiated
+        // scan that landed after the app was backgrounded (drop it — the device is meant to
+        // stay disconnected in the background). But it's also how a native auto-reconnect
+        // that recovered a long outage arrives — e.g. a BLE wedge cleared after many minutes,
+        // with unsynced audio waiting. Tell the two apart by whether a sync is actually due:
+        // if it is, adopt this hard-won link as a background sync instead of discarding it.
+        // (See NOTES.md "BLE: advertising but won't connect" — the guard used to throw away
+        // 51-minute wedge recoveries, forcing another outage until the user toggled Bluetooth.)
+        if (_shouldSyncNow()) {
+          Logger.debug('[BLE] _handleDeviceConnected: backgrounded but sync is due — adopting link as background sync');
+          _pendingBackgroundSync = true;
+        } else {
+          Logger.debug('[BLE] _handleDeviceConnected: dropping — app is backgrounded and no sync was pending');
+          unawaited(ServiceManager.instance().device.disconnectDevice(isManual: true));
+          return;
+        }
       }
       Logger.debug('[BLE] _handleDeviceConnected: proceeding to setup for ${connection.device.id}');
       _onDeviceConnected(connection.device);

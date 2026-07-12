@@ -65,13 +65,25 @@ class OmiBleForegroundService : Service() {
         // the probe schedule all clear only once services are discovered.
         private const val WEDGE_NOTIFY_AFTER = 6
 
+        // Failures after which native stops its own fast reconnect loop and hands reconnection
+        // to the sync schedule. Set equal to WEDGE_NOTIFY_AFTER so the outage is already detected
+        // and the toggle-Bluetooth probe has fired before native steps back — and so a transient
+        // blip (which the fast backoff clears well inside 6 attempts) is never handed off. Past
+        // this point, reconnection is driven by Dart: the foreground connection-check timer, and
+        // in the background the sync timer / SyncAlarmReceiver at the auto-sync interval. This is
+        // what bounds a multi-hour wedge to ~one connect attempt per sync window instead of the
+        // ~120/hour that dominated the battery cost of an outage.
+        private const val AUTONOMOUS_RETRY_STOP_AFTER = WEDGE_NOTIFY_AFTER
+
         // A probe that heard no advertisements is repeated after this many further failures.
         // An Omi that was out of range when the outage began can walk back into range and
         // start failing at establishment, and nothing else would ever re-examine it: the
         // streak does not clear until services are discovered. The interval is far wider than
         // WEDGE_NOTIFY_AFTER because the common reason for silence is an Omi that is simply
-        // switched off or at home, and each probe is an 8 s full-duty scan. Once the retry
-        // backoff saturates at 30 s this works out to roughly one probe per 15 minutes.
+        // switched off or at home, and each probe is an 8 s full-duty scan. Past
+        // AUTONOMOUS_RETRY_STOP_AFTER native no longer drives the cadence, so reprobes for a
+        // still-silent device follow the sync-schedule reconnect interval; the common
+        // ADVERTISING/UNAVAILABLE verdict posts the alert at the first probe anyway.
         // No further probes run once the alert is posted — the verdict is in by then.
         private const val WEDGE_REPROBE_AFTER = 30
         private const val ALERT_CHANNEL_ID = "omi_ble_alerts"
@@ -204,6 +216,12 @@ class OmiBleForegroundService : Service() {
         // survives those, so resetting there would keep the count forever below the
         // notify threshold.
         var consecutiveConnectFailures: Int = 0,
+        // The most recent *real* GATT status Android delivered during the current outage —
+        // i.e. not our synthetic -1 connect-timeout backstop, and not 0 (a clean disconnect).
+        // Lets the wedge event tell "stack actively rejecting with a real code (e.g. 147)"
+        // apart from "initiator wedged solid, zero Android callbacks the whole outage (only
+        // our -1 timeouts)". Reset once services are discovered, i.e. the outage is over.
+        var lastRealGattStatus: Int? = null,
         // True once the current outage has been detected and captured. Note this latches at
         // *detection*, not at notification — whether the alert is posted depends on the
         // advertising probe. Cleared once services are discovered on a later connect.
@@ -347,6 +365,7 @@ class OmiBleForegroundService : Service() {
                 managed.wedgeAlertPosted = false
                 managed.nextWedgeProbeAt = WEDGE_NOTIFY_AFTER
                 managed.wedgeStartedAtMs = 0
+                managed.lastRealGattStatus = null
             }
 
             // Retire this device's toggle-Bluetooth alert if one is showing (no-op otherwise).
@@ -536,6 +555,48 @@ class OmiBleForegroundService : Service() {
         connectToDevice(addr, "manageDevice")
     }
 
+    /**
+     * Drive a reconnect for the bound device from a Doze-exempt context (the sync
+     * alarm / a persistent service restart), independent of the Flutter isolate.
+     *
+     * Native pauses its own fast retry loop once an outage is confirmed
+     * (AUTONOMOUS_RETRY_STOP_AFTER), leaving no pending reconnect. After that the only
+     * thing that re-triggers a connect is a manageDevice call — and every other caller
+     * routes through Dart (ensureConnection), which may be frozen or dead under Doze.
+     * Without this, a background outage that clears would sit un-reconnected until the
+     * next successful Dart wake or the user opening the app. The SyncAlarmReceiver's
+     * setExactAndAllowWhileIdle broadcast runs even when Dart is frozen, so re-managing
+     * from here restores the reliable, Flutter-independent reconnect trigger native's
+     * own retry loop used to provide — but at the battery-friendly sync cadence rather
+     * than the ~120/hour storm.
+     *
+     * No-ops if auto-sync is off ("Manual Only"), if the user manually disconnected, if
+     * Bluetooth is off, if already connected, or if a connect is already in flight
+     * (manageDevice's guard handles the last two idempotently). The auto-sync gate keeps
+     * every background-reconnect path interval-consistent: the alarm only fires when
+     * auto-sync is on, and this guards the sticky-relaunch path (below) against a stale
+     * persistent flag left by an auto-sync→Manual-Only switch within the same process.
+     */
+    fun ensureManagedReconnectFromAlarm() {
+        val cfg = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        if (cfg.getBoolean(PREFS_USER_DISCONNECTED, false)) return
+        // Only background-reconnect when auto-sync is enabled; Manual Only syncs on
+        // demand (app open / manual), so it must not hold a background link. Read from
+        // Flutter's prefs, same source the sync alarm's interval comes from.
+        val intervalMinutes = applicationContext
+            .getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
+            .getLong("flutter.backgroundSyncIntervalMinutes", 30L)
+        if (intervalMinutes <= 0) return
+        val managed = cfg.getString(PREFS_KEY, null) ?: return
+        val parts = managed.split("|")
+        val addr = parts.getOrNull(0)?.uppercase()?.takeIf { it.isNotEmpty() } ?: return
+        val bond = parts.getOrNull(1)?.toBoolean() ?: false
+        if (!isBluetoothEnabled) return
+        if (bleManager.isPeripheralConnected(addr)) return
+        Log.i(TAG, "Sync alarm: driving native reconnect for $addr (Flutter-independent)")
+        manageDevice(addr, bond)
+    }
+
     fun unmanageDevice(address: String) {
         val addr = address.uppercase()
         val managed = managedDevices.remove(addr) ?: return
@@ -710,6 +771,19 @@ class OmiBleForegroundService : Service() {
             Log.w(TAG, "Device $addr disconnected before ever connecting (status=$status)")
         }
 
+        // Remember the last real Android status of this outage for the wedge diagnostics.
+        // -1 is our own timeout backstop and 0 is a clean disconnect; neither is a failure
+        // code worth surfacing, so an all-timeout outage keeps this null (itself the signal).
+        // Written under syncLock — the same lock onGattServicesDiscovered clears it under and
+        // handleRetryLogic snapshots it under — so a disconnect callback on one binder thread
+        // can't clobber a recovery that just reset it to null on another (both run off the
+        // GATT binder pool).
+        if (managed != null && status != -1 && status != 0) {
+            synchronized(syncLock) {
+                managed.lastRealGattStatus = status
+            }
+        }
+
         // Reflect the drop on the notification immediately instead of leaving the
         // stale "Connected" text until the delayed retry's connectToDevice flips
         // it (see connectToDevice's source != "manageDevice" branch). This path
@@ -852,6 +926,8 @@ class OmiBleForegroundService : Service() {
         var failures = 0
         var retries = 0
         var backoffDelay = 0L
+        var willRetry = false
+        var lastRealStatus: Int? = null
         synchronized(syncLock) {
             // Any failed attempt counts. The previous rule (only status -1) keyed the outage
             // detector on our own local timeout, which fired before Android could deliver a
@@ -878,7 +954,21 @@ class OmiBleForegroundService : Service() {
             // stacks. retryCount resets once services are discovered, so the backoff resets
             // with the streak rather than on a link that merely came up.
             backoffDelay = minOf(RECONNECT_DELAY_MS shl minOf(managed.retryCount - 1, 5), 30_000L)
-            managed.pendingReconnect = runnable
+            // Keep native's own fast retry loop only through the first AUTONOMOUS_RETRY_STOP_AFTER
+            // failures; past that the outage is confirmed and native steps back (see the constant).
+            // Critically, when we stop we must leave NO pending retry: pendingReconnect and the
+            // posted runnable move together. Setting pendingReconnect here without posting it would
+            // wedge reconnection permanently — manageDevice's guard treats a non-null
+            // pendingReconnect as "native is handling it" and skips, so every foreground /
+            // sync-window connect request would be dropped and the device would never reconnect.
+            // Leaving both null is the correct resting state: the next manageDevice falls through
+            // to triggerReconnection().
+            willRetry = failures < AUTONOMOUS_RETRY_STOP_AFTER
+            if (willRetry) managed.pendingReconnect = runnable
+            // Snapshot the real GATT status under the lock so the captureWedge call below
+            // reports a value consistent with this streak, not one a concurrent recovery
+            // (onGattServicesDiscovered) or a later disconnect could reset/overwrite mid-read.
+            lastRealStatus = managed.lastRealGattStatus
         }
 
         if (startProbe) {
@@ -893,6 +983,7 @@ class OmiBleForegroundService : Service() {
                 consecutiveFailures = failures,
                 retryCount = retries,
                 lastStatus = status,
+                lastRealStatus = lastRealStatus,
             ) { verdict ->
                 // The alert tells the user to toggle Bluetooth, which only helps when the Omi
                 // is present and reachable. Six failures alone don't mean that: an Omi that is
@@ -945,8 +1036,16 @@ class OmiBleForegroundService : Service() {
             }
         }
 
-        Log.i(TAG, "Retry #$retries for $addr in ${backoffDelay}ms (status=$status)")
-        handler.postDelayed(runnable, backoffDelay)
+        if (willRetry) {
+            Log.i(TAG, "Retry #$retries for $addr in ${backoffDelay}ms (status=$status)")
+            handler.postDelayed(runnable, backoffDelay)
+        } else {
+            // Outage confirmed: native pauses its own retries and lets the sync schedule drive
+            // reconnection (foreground: Dart's connection-check timer; background: the sync timer /
+            // SyncAlarmReceiver). No pending retry is left behind, so the next manageDevice
+            // triggerReconnection()s a fresh attempt rather than being skipped by the guard.
+            Log.i(TAG, "Outage on $addr past $AUTONOMOUS_RETRY_STOP_AFTER failures ($failures) — pausing native retries; sync schedule now drives reconnection")
+        }
     }
 
     /** The delayed reconnect attempt. Installed as `pendingReconnect` before it is posted. */
@@ -1139,12 +1238,26 @@ class OmiBleForegroundService : Service() {
         }
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // A null intent is Android relaunching a previously-START_STICKY service after a
+        // process kill (the app always starts us WITH an intent — device_address or
+        // persistent_only). We only return START_STICKY when persistent, so a null intent
+        // unambiguously means the service was persistent: restore the flag so the restore
+        // branch below reconnects and we return START_STICKY again rather than stopping.
+        if (intent == null) persistent = true
         val address = intent?.getStringExtra("device_address")
         if (intent?.getBooleanExtra("persistent_only", false) == true) persistent = true
 
         if (address != null) {
             val requiresBond = intent.getBooleanExtra("requires_bond", false)
             manageDevice(address, requiresBond)
+        } else if (persistent && managedDevices.isEmpty()) {
+            // Persistent restart with no explicit device — the sync alarm's
+            // startServicePersistent path (persistent_only intent), or a START_STICKY
+            // relaunch after a kill (null intent, handled just above). Restore the bound
+            // device from prefs and reconnect natively so recovery doesn't depend on the
+            // Flutter isolate (which may be frozen/dead under Doze). No-ops if auto-sync
+            // is off, the user disconnected, or nothing is bound.
+            ensureManagedReconnectFromAlarm()
         } else if (!persistent && managedDevices.isEmpty()) {
             // No device and not pinned persistent — nothing to keep alive.
             Log.i(TAG, "onStartCommand: no device address and no managed devices, stopping")
