@@ -570,13 +570,23 @@ class OmiBleForegroundService : Service() {
      * own retry loop used to provide — but at the battery-friendly sync cadence rather
      * than the ~120/hour storm.
      *
-     * No-ops if the user manually disconnected, if Bluetooth is off, if already
-     * connected, or if a connect is already in flight (manageDevice's guard handles the
-     * last two idempotently).
+     * No-ops if auto-sync is off ("Manual Only"), if the user manually disconnected, if
+     * Bluetooth is off, if already connected, or if a connect is already in flight
+     * (manageDevice's guard handles the last two idempotently). The auto-sync gate keeps
+     * every background-reconnect path interval-consistent: the alarm only fires when
+     * auto-sync is on, and this guards the sticky-relaunch path (below) against a stale
+     * persistent flag left by an auto-sync→Manual-Only switch within the same process.
      */
     fun ensureManagedReconnectFromAlarm() {
         val cfg = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         if (cfg.getBoolean(PREFS_USER_DISCONNECTED, false)) return
+        // Only background-reconnect when auto-sync is enabled; Manual Only syncs on
+        // demand (app open / manual), so it must not hold a background link. Read from
+        // Flutter's prefs, same source the sync alarm's interval comes from.
+        val intervalMinutes = applicationContext
+            .getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
+            .getLong("flutter.backgroundSyncIntervalMinutes", 30L)
+        if (intervalMinutes <= 0) return
         val managed = cfg.getString(PREFS_KEY, null) ?: return
         val parts = managed.split("|")
         val addr = parts.getOrNull(0)?.uppercase()?.takeIf { it.isNotEmpty() } ?: return
@@ -1217,6 +1227,12 @@ class OmiBleForegroundService : Service() {
         }
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // A null intent is Android relaunching a previously-START_STICKY service after a
+        // process kill (the app always starts us WITH an intent — device_address or
+        // persistent_only). We only return START_STICKY when persistent, so a null intent
+        // unambiguously means the service was persistent: restore the flag so the restore
+        // branch below reconnects and we return START_STICKY again rather than stopping.
+        if (intent == null) persistent = true
         val address = intent?.getStringExtra("device_address")
         if (intent?.getBooleanExtra("persistent_only", false) == true) persistent = true
 
@@ -1225,10 +1241,11 @@ class OmiBleForegroundService : Service() {
             manageDevice(address, requiresBond)
         } else if (persistent && managedDevices.isEmpty()) {
             // Persistent restart with no explicit device — the sync alarm's
-            // startServicePersistent path, or a START_STICKY relaunch after a kill.
-            // Restore the bound device from prefs and reconnect natively so recovery
-            // doesn't depend on the Flutter isolate (which may be frozen/dead under
-            // Doze). No-ops if the user disconnected or nothing is bound.
+            // startServicePersistent path (persistent_only intent), or a START_STICKY
+            // relaunch after a kill (null intent, handled just above). Restore the bound
+            // device from prefs and reconnect natively so recovery doesn't depend on the
+            // Flutter isolate (which may be frozen/dead under Doze). No-ops if auto-sync
+            // is off, the user disconnected, or nothing is bound.
             ensureManagedReconnectFromAlarm()
         } else if (!persistent && managedDevices.isEmpty()) {
             // No device and not pinned persistent — nothing to keep alive.
