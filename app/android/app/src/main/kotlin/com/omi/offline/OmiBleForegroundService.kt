@@ -75,17 +75,25 @@ class OmiBleForegroundService : Service() {
         // ~120/hour that dominated the battery cost of an outage.
         private const val AUTONOMOUS_RETRY_STOP_AFTER = WEDGE_NOTIFY_AFTER
 
-        // A probe that heard no advertisements is repeated after this wall-clock interval. An
-        // Omi that was out of range when the outage began can walk back into range and start
-        // failing at establishment, and nothing else would ever re-examine it: the streak does
-        // not clear until services are discovered. Keyed on wall-clock time, not failure count,
-        // because once native hands reconnection to the sync schedule (AUTONOMOUS_RETRY_STOP_AFTER)
+        // Eligibility floor for repeating a probe that heard no advertisements. An Omi that was
+        // out of range when the outage began can walk back into range and start failing at
+        // establishment, and nothing else would ever re-examine it: the streak does not clear
+        // until services are discovered. Keyed on wall-clock time, not failure count, because
+        // once native hands reconnection to the sync schedule (AUTONOMOUS_RETRY_STOP_AFTER)
         // failures accrue only once per sync interval — a failure-count schedule (the old
-        // WEDGE_REPROBE_AFTER = 30) would stretch re-examination to ~15 h. The interval is wide
-        // (15 min) because the common reason for silence is an Omi simply switched off or at
-        // home, and each probe is an 8 s full-duty scan; the common ADVERTISING/UNAVAILABLE
-        // verdict posts the alert at the *first* (failure-count-gated) probe anyway, and no
-        // further probes run once the alert is posted — the verdict is in by then.
+        // WEDGE_REPROBE_AFTER = 30) would stretch re-examination to ~15 h.
+        //
+        // This is a *floor*, not a self-scheduled timer: a probe is an 8 s full-duty scan and
+        // only runs alongside a reconnect attempt (handleRetryLogic), so the re-probe rides the
+        // next attempt at/after the floor rather than arming its own wake. Effective cadence is
+        // therefore max(15 min, next-attempt), which converges toward the sync interval as the
+        // recovery backoff relaxes — deliberately: this only fires for a device the first probe
+        // found *absent* (switched off / at home), and polling that every 15 min all day would
+        // re-add the battery cost AUTONOMOUS_RETRY_STOP_AFTER exists to remove. The point here is
+        // to kill the ~15 h pathology, not to guarantee a 15 min beat; a device that returns
+        // *reachable* is picked up by the recovery/sync attempts regardless of this probe. The
+        // common ADVERTISING/UNAVAILABLE verdict posts the alert at the *first* (failure-count-
+        // gated) probe anyway, and no further probes run once the alert is posted.
         private const val WEDGE_REPROBE_INTERVAL_MS = 15 * 60_000L
         // Outage-recovery alarm cadence. When native pauses its retry loop, the first recovery
         // alarm fires this long after the handoff, then doubles each step (2 → 4 → 8 → 16 min)
@@ -1027,10 +1035,12 @@ class OmiBleForegroundService : Service() {
             // posted the verdict is in, and further 8 s low-latency scans would add radio load
             // to an outage this service is otherwise trying to stop aggravating.
             val nowMs = android.os.SystemClock.elapsedRealtime()
-            // First probe: failure-count-gated (outage confirmation, while failures still
-            // accrue fast). Subsequent re-probes: wall-clock-gated, because after native hands
-            // off, failures accrue only once per sync interval and a failure-count schedule
-            // would stretch re-examination of a returned device to ~15 h. See WEDGE_REPROBE_INTERVAL_MS.
+            // First probe: failure-count-gated (outage confirmation, while failures still accrue
+            // fast). Subsequent re-probes: gated by a wall-clock *floor* (nextWedgeReprobeAtMs) —
+            // this runs on the next attempt at/after the floor, it does not arm its own wake, so
+            // effective cadence is max(15 min, next-attempt). That's deliberate; see
+            // WEDGE_REPROBE_INTERVAL_MS for why it rides the attempt schedule rather than the 15 h
+            // a failure-count schedule would cost once native hands off.
             val probeDue = if (managed.nextWedgeReprobeAtMs == 0L) {
                 managed.consecutiveConnectFailures >= managed.nextWedgeProbeAt
             } else {
@@ -1254,6 +1264,10 @@ class OmiBleForegroundService : Service() {
                 BluetoothAdapter.STATE_TURNING_OFF -> {
                     Log.i(TAG, "Bluetooth turning off, cleaning up GATT")
                     isBluetoothEnabled = false
+                    // Nothing can reconnect with the radio off; cancel the outage-recovery alarm
+                    // rather than leaving it armed to fire once and self-cancel (a needless wake).
+                    // STATE_ON re-arms nothing here — a real outage re-triggers the handoff.
+                    cancelRecoveryProbe()
                     bleManager.mainHandler.post {
                         bleManager.flutterApi?.onBluetoothStateChanged("off") {}
                     }
@@ -1418,6 +1432,11 @@ class OmiBleForegroundService : Service() {
         syncTimerActive = timestampMs > 0
         nextSyncTimeMs = timestampMs
         SyncAlarmReceiver.schedule(this, timestampMs)
+        // timestampMs <= 0 is Dart turning the sync schedule off — i.e. Manual Only
+        // (device_provider setNextSyncTime(0)). The recovery alarm exists only to bridge a
+        // confirmed outage back onto that schedule, so cancel it now rather than leaving an
+        // armed exact alarm to fire once and self-cancel (a needless Doze wake).
+        if (timestampMs <= 0) cancelRecoveryProbe()
     }
 
     fun setDeviceBattery(level: Int, timestampMs: Long) {
