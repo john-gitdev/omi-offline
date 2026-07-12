@@ -674,6 +674,30 @@ class OmiBleForegroundService : Service() {
     }
 
     /**
+     * Cancel recovery AND reset each managed device's outage streak. For state changes that
+     * abandon recovery while the outage may still be open — the radio turning off, or the sync
+     * schedule being turned off (Manual Only). Resetting the streak preserves the invariant that
+     * recovery arms exactly when `consecutiveConnectFailures` *crosses* AUTONOMOUS_RETRY_STOP_AFTER
+     * (the handoff's `== ` guard, which fires once per detection episode since the streak clears
+     * only on a successful connect). Without the reset the streak stays past the threshold, so
+     * after the radio/schedule returns the next failure is threshold+1, the `==` handoff never
+     * re-fires, and the fast recovery burst is lost for the rest of the outage (Bluetooth-toggle
+     * regression). A toggle/mode-flip is a fresh intervention, so re-detecting from zero is also
+     * the right semantics. NOT used by: onGattServicesDiscovered (already zeroes the streak on
+     * success), unmanageDevice (device removed), or the convergence path (must keep the streak so
+     * the sync alarm keeps driving without re-arming the burst).
+     */
+    private fun cancelRecoveryProbeAndResetStreak() {
+        cancelRecoveryProbe()
+        synchronized(syncLock) {
+            for ((_, managed) in managedDevices) {
+                managed.consecutiveConnectFailures = 0
+                managed.retryCount = 0
+            }
+        }
+    }
+
+    /**
      * Outage-recovery alarm fired (SyncAlarmReceiver, Doze-exempt). Drive one reconnect and
      * re-arm the next backed-off step, until the link is back (onGattServicesDiscovered cancels
      * us) or recovery is no longer wanted.
@@ -1266,8 +1290,10 @@ class OmiBleForegroundService : Service() {
                     isBluetoothEnabled = false
                     // Nothing can reconnect with the radio off; cancel the outage-recovery alarm
                     // rather than leaving it armed to fire once and self-cancel (a needless wake).
-                    // STATE_ON re-arms nothing here — a real outage re-triggers the handoff.
-                    cancelRecoveryProbe()
+                    // Reset the streak too, so once BT returns the re-detected outage crosses the
+                    // handoff threshold again and re-arms recovery — otherwise a toggle mid-outage
+                    // would strand recovery at the sync cadence for the rest of it.
+                    cancelRecoveryProbeAndResetStreak()
                     bleManager.mainHandler.post {
                         bleManager.flutterApi?.onBluetoothStateChanged("off") {}
                     }
@@ -1435,8 +1461,9 @@ class OmiBleForegroundService : Service() {
         // timestampMs <= 0 is Dart turning the sync schedule off — i.e. Manual Only
         // (device_provider setNextSyncTime(0)). The recovery alarm exists only to bridge a
         // confirmed outage back onto that schedule, so cancel it now rather than leaving an
-        // armed exact alarm to fire once and self-cancel (a needless Doze wake).
-        if (timestampMs <= 0) cancelRecoveryProbe()
+        // armed exact alarm to fire once and self-cancel (a needless Doze wake). Reset the streak
+        // too so a later switch back to auto-sync while still wedged re-arms recovery cleanly.
+        if (timestampMs <= 0) cancelRecoveryProbeAndResetStreak()
     }
 
     fun setDeviceBattery(level: Int, timestampMs: Long) {
