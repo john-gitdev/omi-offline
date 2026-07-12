@@ -545,25 +545,28 @@ void main() {
       expect(globalDeletedTimestamps, isEmpty);
     }, timeout: const Timeout(Duration(seconds: 30)));
 
-    test('syncAll eventually drops a persistently-unreadable (poison) file to unblock', () async {
+    test('syncAll eventually drops a persistently-unreadable (zero-progress) file to unblock', () async {
       globalDeletedTimestamps = [];
       final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       mockConn.files = [StorageFile(index: 1, timestamp: ts, size: 1000000)];
       await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
       await pump(10);
 
-      // Every attempt delivers a short read + EOT. The guard retries without
-      // deleting until _maxSyncFailBeforeDrop (5) attempts, then deletes the file to
+      // Every attempt "completes" (clean EOT) having delivered ZERO bytes — the file
+      // the firmware genuinely can't read (rotated-under-read / stale cached size /
+      // an empty read error). No attempt makes forward progress, so the guard counts
+      // each as a strike and, after _maxSyncFailBeforeDrop (5), deletes the file to
       // unblock the index-0-only fast path (accepting the loss of that one file).
+      // Contrast the progressing-file test below: the drop keys on *no progress*, not
+      // on "short read" — a file that keeps advancing is never dropped because it will
+      // eventually complete.
       for (int attempt = 1; attempt <= 5; attempt++) {
         final f = sync.syncAll();
         await mockConn.waitForWrite(attempt);
         await pump(10);
         mockConn.add(ackPacket(0x00));
         await pump();
-        mockConn.add(dataPacket(0, List<int>.filled(5, 0xEE)));
-        await pump();
-        mockConn.add(eotPacket());
+        mockConn.add(eotPacket()); // EOT with no data packet → zero bytes, no progress
         await pump(10);
         await f;
         if (attempt < 5) {
@@ -572,6 +575,42 @@ void main() {
         }
       }
       expect(globalDeletedTimestamps, contains(ts));
+    }, timeout: const Timeout(Duration(seconds: 60)));
+
+    test('syncAll never drops a file that keeps making forward progress', () async {
+      // Forward-progress guard (#2b): a large recording that only comes down in
+      // pieces — background BLE throttling, or the link dropping mid-transfer
+      // ("Stream closed without EOT") — must NOT be dropped as poison. Each attempt
+      // advances the byte offset, so the file will finish on a later sync (typically
+      // once the app is foregrounded). Prove it survives well past
+      // _maxSyncFailBeforeDrop (5) attempts as long as it keeps progressing —
+      // deleting it would lose the recording for good just short of completion.
+      globalDeletedTimestamps = [];
+      final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      mockConn.files = [StorageFile(index: 1, timestamp: ts, size: 1000000)];
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await pump(10);
+
+      // 8 attempts, each delivering a fresh 50 KB chunk AT the resumed offset then
+      // EOT — always short of the 1 MB total (never completes), but always advancing.
+      // The chunk must start at the offset the sync asked to resume from
+      // (globalRequestedOffset); a packet before that is treated as already-have and
+      // makes no progress (see the read handler's incomingOffset < expectedOffset
+      // branch), which is why a fixed dataPacket(0, …) would plateau after attempt 1.
+      for (int attempt = 1; attempt <= 8; attempt++) {
+        final f = sync.syncAll();
+        await mockConn.waitForWrite(attempt);
+        await pump(10);
+        final resumeOffset = globalRequestedOffset;
+        mockConn.add(ackPacket(0x00));
+        await pump();
+        mockConn.add(dataPacket(resumeOffset, List<int>.filled(50000, 0xEE)));
+        await pump();
+        mockConn.add(eotPacket());
+        await pump(10);
+        await f;
+        expect(globalDeletedTimestamps, isEmpty, reason: 'a progressing file must never be dropped (attempt $attempt)');
+      }
     }, timeout: const Timeout(Duration(seconds: 60)));
 
     test('syncAll drops a file that always THROWS a terminal error (thrown poison)', () async {
