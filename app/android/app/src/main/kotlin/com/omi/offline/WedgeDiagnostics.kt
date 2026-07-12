@@ -238,6 +238,7 @@ object WedgeDiagnostics {
         consecutiveFailures: Int,
         retryCount: Int,
         lastStatus: Int,
+        lastRealStatus: Int?,
         onProbeComplete: (verdict: ProbeVerdict) -> Unit,
     ) {
         val addr = address.uppercase()
@@ -277,6 +278,11 @@ object WedgeDiagnostics {
                 // -1 is our own connect backstop firing, i.e. Android never reported a
                 // status. Any other value is the framework's, and is the useful one.
                 "last_gatt_status" to lastStatus,
+                // The most recent status Android actually delivered this outage (null if it
+                // never did — an all-timeout outage where the initiator wedged with zero
+                // callbacks). This is what survives the -1 masking: `-1` + `147` means the
+                // stack was rejecting, `-1` + null means it went completely silent.
+                "last_real_gatt_status" to lastRealStatus,
                 "adapter_state" to (adapter?.let { adapterStateName(it.state) } ?: "no_adapter"),
                 "bond_state" to bondState,
                 // Both false means no stale link is holding the peripheral's single
