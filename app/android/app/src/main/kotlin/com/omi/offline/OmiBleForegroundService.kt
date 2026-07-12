@@ -65,13 +65,25 @@ class OmiBleForegroundService : Service() {
         // the probe schedule all clear only once services are discovered.
         private const val WEDGE_NOTIFY_AFTER = 6
 
+        // Failures after which native stops its own fast reconnect loop and hands reconnection
+        // to the sync schedule. Set equal to WEDGE_NOTIFY_AFTER so the outage is already detected
+        // and the toggle-Bluetooth probe has fired before native steps back — and so a transient
+        // blip (which the fast backoff clears well inside 6 attempts) is never handed off. Past
+        // this point, reconnection is driven by Dart: the foreground connection-check timer, and
+        // in the background the sync timer / SyncAlarmReceiver at the auto-sync interval. This is
+        // what bounds a multi-hour wedge to ~one connect attempt per sync window instead of the
+        // ~120/hour that dominated the battery cost of an outage.
+        private const val AUTONOMOUS_RETRY_STOP_AFTER = WEDGE_NOTIFY_AFTER
+
         // A probe that heard no advertisements is repeated after this many further failures.
         // An Omi that was out of range when the outage began can walk back into range and
         // start failing at establishment, and nothing else would ever re-examine it: the
         // streak does not clear until services are discovered. The interval is far wider than
         // WEDGE_NOTIFY_AFTER because the common reason for silence is an Omi that is simply
-        // switched off or at home, and each probe is an 8 s full-duty scan. Once the retry
-        // backoff saturates at 30 s this works out to roughly one probe per 15 minutes.
+        // switched off or at home, and each probe is an 8 s full-duty scan. Past
+        // AUTONOMOUS_RETRY_STOP_AFTER native no longer drives the cadence, so reprobes for a
+        // still-silent device follow the sync-schedule reconnect interval; the common
+        // ADVERTISING/UNAVAILABLE verdict posts the alert at the first probe anyway.
         // No further probes run once the alert is posted — the verdict is in by then.
         private const val WEDGE_REPROBE_AFTER = 30
         private const val ALERT_CHANNEL_ID = "omi_ble_alerts"
@@ -866,6 +878,7 @@ class OmiBleForegroundService : Service() {
         var failures = 0
         var retries = 0
         var backoffDelay = 0L
+        var willRetry = false
         synchronized(syncLock) {
             // Any failed attempt counts. The previous rule (only status -1) keyed the outage
             // detector on our own local timeout, which fired before Android could deliver a
@@ -892,7 +905,17 @@ class OmiBleForegroundService : Service() {
             // stacks. retryCount resets once services are discovered, so the backoff resets
             // with the streak rather than on a link that merely came up.
             backoffDelay = minOf(RECONNECT_DELAY_MS shl minOf(managed.retryCount - 1, 5), 30_000L)
-            managed.pendingReconnect = runnable
+            // Keep native's own fast retry loop only through the first AUTONOMOUS_RETRY_STOP_AFTER
+            // failures; past that the outage is confirmed and native steps back (see the constant).
+            // Critically, when we stop we must leave NO pending retry: pendingReconnect and the
+            // posted runnable move together. Setting pendingReconnect here without posting it would
+            // wedge reconnection permanently — manageDevice's guard treats a non-null
+            // pendingReconnect as "native is handling it" and skips, so every foreground /
+            // sync-window connect request would be dropped and the device would never reconnect.
+            // Leaving both null is the correct resting state: the next manageDevice falls through
+            // to triggerReconnection().
+            willRetry = failures < AUTONOMOUS_RETRY_STOP_AFTER
+            if (willRetry) managed.pendingReconnect = runnable
         }
 
         if (startProbe) {
@@ -960,8 +983,16 @@ class OmiBleForegroundService : Service() {
             }
         }
 
-        Log.i(TAG, "Retry #$retries for $addr in ${backoffDelay}ms (status=$status)")
-        handler.postDelayed(runnable, backoffDelay)
+        if (willRetry) {
+            Log.i(TAG, "Retry #$retries for $addr in ${backoffDelay}ms (status=$status)")
+            handler.postDelayed(runnable, backoffDelay)
+        } else {
+            // Outage confirmed: native pauses its own retries and lets the sync schedule drive
+            // reconnection (foreground: Dart's connection-check timer; background: the sync timer /
+            // SyncAlarmReceiver). No pending retry is left behind, so the next manageDevice
+            // triggerReconnection()s a fresh attempt rather than being skipped by the guard.
+            Log.i(TAG, "Outage on $addr past $AUTONOMOUS_RETRY_STOP_AFTER failures ($failures) — pausing native retries; sync schedule now drives reconnection")
+        }
     }
 
     /** The delayed reconnect attempt. Installed as `pendingReconnect` before it is posted. */
