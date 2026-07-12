@@ -699,15 +699,22 @@ class OmiBleForegroundService : Service() {
 
     /**
      * Outage-recovery alarm fired (SyncAlarmReceiver, Doze-exempt). Drive one reconnect and
-     * re-arm the next backed-off step, until the link is back (onGattServicesDiscovered cancels
-     * us) or recovery is no longer wanted.
+     * re-arm the next backed-off step, until the link is back or recovery is no longer wanted.
+     *
+     * "The link is back" is signalled by onGattServicesDiscovered (which cancels us), NOT by a
+     * link-layer poll here: isPeripheralConnected() goes true the instant GATT connects, before
+     * services are discovered, and a link that comes up and dies before discovery is the exact
+     * wedge this service detects. Cancelling on that transient half-connection would strand
+     * recovery — the streak is already past AUTONOMOUS_RETRY_STOP_AFTER, so the pre-discovery
+     * disconnect lands as failure 7+ and the `==` handoff never re-arms. So don't cancel on it;
+     * ensureManagedReconnectFromAlarm's own isPeripheralConnected guard already avoids tearing
+     * down an in-flight link, and we keep the cadence alive until discovery proves the link usable.
      */
     fun onRecoveryProbeAlarm() {
         val cfg = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         val addr = cfg.getString(PREFS_KEY, null)?.split("|")?.getOrNull(0)?.uppercase()
         if (cfg.getBoolean(PREFS_USER_DISCONNECTED, false) ||
-            autoSyncIntervalMinutes() <= 0 || !isBluetoothEnabled ||
-            addr == null || bleManager.isPeripheralConnected(addr)
+            autoSyncIntervalMinutes() <= 0 || !isBluetoothEnabled || addr == null
         ) {
             cancelRecoveryProbe()
             return
