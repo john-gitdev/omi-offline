@@ -648,8 +648,12 @@ class OmiBleForegroundService : Service() {
      */
     private fun scheduleRecoveryProbe(reset: Boolean) {
         if (reset) recoveryProbeAttempts = 0
+        // Re-validate on the main thread before every arm. The reset=true call is posted from the
+        // failure-AUTONOMOUS_RETRY_STOP_AFTER handoff (a binder thread), so a user-disconnect /
+        // BT-off / Manual-Only cancellation can land between the post and here; recoveryWanted()
+        // keeps that cancellation final instead of letting the in-flight sixth failure re-arm a wake.
+        if (!recoveryWanted()) { cancelRecoveryProbe(); return }
         val intervalMs = autoSyncIntervalMinutes() * 60_000L
-        if (intervalMs <= 0) { cancelRecoveryProbe(); return }
         // Double each step (2, 4, 8, 16 min …). The shift is capped only to keep a corrupt
         // interval pref from overflowing; convergence below stops it well before that for any
         // real interval (60 min → converges at the 64 min step).
@@ -671,6 +675,21 @@ class OmiBleForegroundService : Service() {
     private fun cancelRecoveryProbe() {
         recoveryProbeAttempts = 0
         SyncAlarmReceiver.cancelRecover(this)
+    }
+
+    /**
+     * Whether the outage-recovery alarm should be running right now: auto-sync on, the user hasn't
+     * disconnected, Bluetooth is on, and a managed device still has an open (wedgeDetected) outage.
+     * The single source of truth for the recovery lifecycle — consulted by the alarm handler,
+     * before each (re)arm in scheduleRecoveryProbe (so a cancellation stays final against a
+     * concurrently posted handoff), and on the auto-sync inactive→active transition. Main thread.
+     */
+    private fun recoveryWanted(): Boolean {
+        val cfg = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        if (cfg.getBoolean(PREFS_USER_DISCONNECTED, false)) return false
+        if (autoSyncIntervalMinutes() <= 0 || !isBluetoothEnabled) return false
+        val addr = cfg.getString(PREFS_KEY, null)?.split("|")?.getOrNull(0)?.uppercase() ?: return false
+        return synchronized(syncLock) { managedDevices[addr]?.wedgeDetected == true }
     }
 
     /**
@@ -713,12 +732,7 @@ class OmiBleForegroundService : Service() {
      * after the outage ended and wake needlessly until convergence.
      */
     fun onRecoveryProbeAlarm() {
-        val cfg = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        val addr = cfg.getString(PREFS_KEY, null)?.split("|")?.getOrNull(0)?.uppercase()
-        val outageOpen = addr != null && synchronized(syncLock) { managedDevices[addr]?.wedgeDetected == true }
-        if (cfg.getBoolean(PREFS_USER_DISCONNECTED, false) ||
-            autoSyncIntervalMinutes() <= 0 || !isBluetoothEnabled || addr == null || !outageOpen
-        ) {
+        if (!recoveryWanted()) {
             cancelRecoveryProbe()
             return
         }
@@ -1471,6 +1485,7 @@ class OmiBleForegroundService : Service() {
     // ── Notification ──
 
     fun setNextSyncTime(timestampMs: Long) {
+        val wasActive = syncTimerActive
         syncTimerActive = timestampMs > 0
         nextSyncTimeMs = timestampMs
         SyncAlarmReceiver.schedule(this, timestampMs)
@@ -1479,7 +1494,15 @@ class OmiBleForegroundService : Service() {
         // confirmed outage back onto that schedule, so cancel it now rather than leaving an
         // armed exact alarm to fire once and self-cancel (a needless Doze wake). Reset the streak
         // too so a later switch back to auto-sync while still wedged re-arms recovery cleanly.
-        if (timestampMs <= 0) cancelRecoveryProbeAndResetStreak()
+        if (timestampMs <= 0) {
+            cancelRecoveryProbeAndResetStreak()
+        } else if (!wasActive && recoveryWanted()) {
+            // Auto-sync just went inactive→active (e.g. Manual Only → 15/30/60 min) while an outage
+            // is still open. The Manual-Only switch reset the streak, so without this the fast
+            // recovery path would only re-arm after the streak crawls back to the handoff threshold
+            // over slow sync-interval attempts — potentially hours. Restart it now.
+            scheduleRecoveryProbe(reset = true)
+        }
     }
 
     fun setDeviceBattery(level: Int, timestampMs: Long) {
