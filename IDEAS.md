@@ -7,7 +7,7 @@
 ### PENDING
 - [2. Device-driven BLE wake (firmware + iOS) [large] [Pending]](#2-device-driven-ble-wake-firmware-ios-large-pending)
 - [4. Streaming WAV stitch — fix OOM on long-recording merge [small] [Pending]](#4-streaming-wav-stitch--fix-oom-on-long-recording-merge-small-pending)
-- [5. Background reconnect recovery latency after native retry back-off [small] [Pending]](#5-background-reconnect-recovery-latency-after-native-retry-back-off-small-pending)
+- [5. Background reconnect recovery latency after native retry back-off [small] [Implemented — validate on device]](#5-background-reconnect-recovery-latency-after-native-retry-back-off-small-implemented--validate-on-device)
 ### DEFERRED
 - [3. iOS code signing & non-jailbroken distribution [medium] [Deferred]](#3-ios-code-signing-non-jailbroken-distribution-medium-deferred)
 
@@ -237,28 +237,40 @@ Same pattern applies to `_stitchBinIfPresent` (`:1528`), which reads the whole n
 
 ---
 
-### 5. Background reconnect recovery latency after native retry back-off [small] [Pending]
+### 5. Background reconnect recovery latency after native retry back-off [small] [Implemented — validate on device]
 
 Fallout from the "stop hammering reconnect during outages" change (PR #337, `handleRetryLogic` →
-`AUTONOMOUS_RETRY_STOP_AFTER`). Native now pauses its own retry loop once an outage is confirmed
-(6 failures) and hands reconnection to the sync schedule. This is a deliberate battery trade, but it
-regresses two latencies that are worth revisiting once the change has real device time:
+`AUTONOMOUS_RETRY_STOP_AFTER`). Native pauses its own retry loop once an outage is confirmed
+(6 failures) and hands reconnection to the sync schedule — a deliberate battery trade that regressed
+two latencies. **Both are now fixed** (implemented, build-verified; **not yet device-validated**):
 
-- **Recovery after a wedge clears: ~30 s → up to one sync interval** (default 30 min). No data loss
-  (recordings are safe on SD), but the recent BLE work was all about *shrinking* outages. The F1 fix
-  (native re-manage from the Doze-exempt `SyncAlarmReceiver`, `ensureManagedReconnectFromAlarm`)
-  bounds this to the alarm cadence reliably — but the cadence itself is still the sync interval. If
-  users report "device took ages to come back", consider a shorter dedicated reconnect-probe alarm
-  during a *confirmed* outage (distinct from the sync alarm), e.g. one every few minutes until the
-  first successful reconnect, then back off.
-- **Re-probe for a device that walked back into range: ~15 min → ~15 h.** `nextWedgeProbeAt` advances
-  by `WEDGE_REPROBE_AFTER` (30) *failures*, which now accrue at the sync interval instead of every
-  30 s. The first probe (at failure 6, before native steps back) still fires promptly, so the common
-  ADVERTISING alert is unaffected — only re-examination of an initially-absent device that returns is
-  slowed. Consider keying the re-probe schedule on wall-clock time rather than failure count.
+- **Recovery after a wedge clears: ~30 s → up to one sync interval** (default 30 min) → **now a
+  few minutes.** Added a dedicated **outage-recovery alarm** (`SyncAlarmReceiver` `ACTION_RECOVER`,
+  requestCode 2), armed exactly once at the native handoff (`handleRetryLogic`, at
+  `failures == AUTONOMOUS_RETRY_STOP_AFTER`). It fires on a backing-off cadence (2 → 4 → 8 → 16 min,
+  `RECOVERY_PROBE_MIN_MS`), driving `ensureManagedReconnectFromAlarm` each time, then **self-terminates
+  once its step reaches the sync interval** (`scheduleRecoveryProbe`) so the periodic sync alarm carries
+  on — ~4 extra attempts for a genuinely-absent device, then convergence to the battery-friendly
+  cadence. Cancelled + reset on reconnect (`onGattServicesDiscovered`), unmanage, user-disconnect,
+  BT-off, or Manual Only. Under deep Doze the OS ~9 min `setExactAndAllowWhileIdle` floor caps the real
+  frequency; the tight early steps mainly help when the phone is awake (being carried back into range).
+- **Re-probe for a device that walked back into range: ~15 min → ~15 h → back to ~15 min.** The
+  wedge re-probe is now keyed on **wall-clock time** (`WEDGE_REPROBE_INTERVAL_MS = 15 min`,
+  `nextWedgeReprobeAtMs`) instead of a failure count (retired `WEDGE_REPROBE_AFTER`). The *first*
+  probe stays failure-count-gated (`nextWedgeProbeAt`, outage confirmation while failures still accrue
+  fast); every re-probe after it fires on the 15 min wall-clock, so slow attempt accrual no longer
+  stretches it. INCONCLUSIVE pulls the next re-probe in to the following attempt.
 
-Relevant: `OmiBleForegroundService.kt` — `AUTONOMOUS_RETRY_STOP_AFTER`, `WEDGE_REPROBE_AFTER`,
-`handleRetryLogic`, `ensureManagedReconnectFromAlarm`; `SyncAlarmReceiver.kt`.
+**Remaining: on-device validation** — confirm (a) a wedge that clears mid-outage reconnects within
+the recovery-alarm cadence, not the sync interval; (b) the recovery alarm self-terminates (no
+indefinite tight polling) for a genuinely-absent device; (c) Doze throttling behaves as expected; and
+(d) measure the real battery cost of the ~4 extra attempts vs. the recovery-latency win.
+
+Relevant: `OmiBleForegroundService.kt` — `RECOVERY_PROBE_MIN_MS`, `WEDGE_REPROBE_INTERVAL_MS`,
+`scheduleRecoveryProbe`/`cancelRecoveryProbe`/`onRecoveryProbeAlarm`, `recoveryProbeAttempts`,
+`nextWedgeReprobeAtMs`, `AUTONOMOUS_RETRY_STOP_AFTER`, `handleRetryLogic`,
+`ensureManagedReconnectFromAlarm`; `SyncAlarmReceiver.kt` (`ACTION_RECOVER`, `scheduleRecover`/
+`cancelRecover`); `AndroidManifest.xml` (`RECOVER_CONNECTION` intent-filter).
 
 ---
 
