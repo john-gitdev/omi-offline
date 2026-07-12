@@ -555,6 +555,38 @@ class OmiBleForegroundService : Service() {
         connectToDevice(addr, "manageDevice")
     }
 
+    /**
+     * Drive a reconnect for the bound device from a Doze-exempt context (the sync
+     * alarm / a persistent service restart), independent of the Flutter isolate.
+     *
+     * Native pauses its own fast retry loop once an outage is confirmed
+     * (AUTONOMOUS_RETRY_STOP_AFTER), leaving no pending reconnect. After that the only
+     * thing that re-triggers a connect is a manageDevice call — and every other caller
+     * routes through Dart (ensureConnection), which may be frozen or dead under Doze.
+     * Without this, a background outage that clears would sit un-reconnected until the
+     * next successful Dart wake or the user opening the app. The SyncAlarmReceiver's
+     * setExactAndAllowWhileIdle broadcast runs even when Dart is frozen, so re-managing
+     * from here restores the reliable, Flutter-independent reconnect trigger native's
+     * own retry loop used to provide — but at the battery-friendly sync cadence rather
+     * than the ~120/hour storm.
+     *
+     * No-ops if the user manually disconnected, if Bluetooth is off, if already
+     * connected, or if a connect is already in flight (manageDevice's guard handles the
+     * last two idempotently).
+     */
+    fun ensureManagedReconnectFromAlarm() {
+        val cfg = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        if (cfg.getBoolean(PREFS_USER_DISCONNECTED, false)) return
+        val managed = cfg.getString(PREFS_KEY, null) ?: return
+        val parts = managed.split("|")
+        val addr = parts.getOrNull(0)?.uppercase()?.takeIf { it.isNotEmpty() } ?: return
+        val bond = parts.getOrNull(1)?.toBoolean() ?: false
+        if (!isBluetoothEnabled) return
+        if (bleManager.isPeripheralConnected(addr)) return
+        Log.i(TAG, "Sync alarm: driving native reconnect for $addr (Flutter-independent)")
+        manageDevice(addr, bond)
+    }
+
     fun unmanageDevice(address: String) {
         val addr = address.uppercase()
         val managed = managedDevices.remove(addr) ?: return
@@ -1191,6 +1223,13 @@ class OmiBleForegroundService : Service() {
         if (address != null) {
             val requiresBond = intent.getBooleanExtra("requires_bond", false)
             manageDevice(address, requiresBond)
+        } else if (persistent && managedDevices.isEmpty()) {
+            // Persistent restart with no explicit device — the sync alarm's
+            // startServicePersistent path, or a START_STICKY relaunch after a kill.
+            // Restore the bound device from prefs and reconnect natively so recovery
+            // doesn't depend on the Flutter isolate (which may be frozen/dead under
+            // Doze). No-ops if the user disconnected or nothing is bound.
+            ensureManagedReconnectFromAlarm()
         } else if (!persistent && managedDevices.isEmpty()) {
             // No device and not pinned persistent — nothing to keep alive.
             Log.i(TAG, "onStartCommand: no device address and no managed devices, stopping")
