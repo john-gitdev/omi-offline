@@ -204,6 +204,12 @@ class OmiBleForegroundService : Service() {
         // survives those, so resetting there would keep the count forever below the
         // notify threshold.
         var consecutiveConnectFailures: Int = 0,
+        // The most recent *real* GATT status Android delivered during the current outage —
+        // i.e. not our synthetic -1 connect-timeout backstop, and not 0 (a clean disconnect).
+        // Lets the wedge event tell "stack actively rejecting with a real code (e.g. 147)"
+        // apart from "initiator wedged solid, zero Android callbacks the whole outage (only
+        // our -1 timeouts)". Reset once services are discovered, i.e. the outage is over.
+        var lastRealGattStatus: Int? = null,
         // True once the current outage has been detected and captured. Note this latches at
         // *detection*, not at notification — whether the alert is posted depends on the
         // advertising probe. Cleared once services are discovered on a later connect.
@@ -347,6 +353,7 @@ class OmiBleForegroundService : Service() {
                 managed.wedgeAlertPosted = false
                 managed.nextWedgeProbeAt = WEDGE_NOTIFY_AFTER
                 managed.wedgeStartedAtMs = 0
+                managed.lastRealGattStatus = null
             }
 
             // Retire this device's toggle-Bluetooth alert if one is showing (no-op otherwise).
@@ -710,6 +717,13 @@ class OmiBleForegroundService : Service() {
             Log.w(TAG, "Device $addr disconnected before ever connecting (status=$status)")
         }
 
+        // Remember the last real Android status of this outage for the wedge diagnostics.
+        // -1 is our own timeout backstop and 0 is a clean disconnect; neither is a failure
+        // code worth surfacing, so an all-timeout outage keeps this null (itself the signal).
+        if (managed != null && status != -1 && status != 0) {
+            managed.lastRealGattStatus = status
+        }
+
         // Reflect the drop on the notification immediately instead of leaving the
         // stale "Connected" text until the delayed retry's connectToDevice flips
         // it (see connectToDevice's source != "manageDevice" branch). This path
@@ -893,6 +907,7 @@ class OmiBleForegroundService : Service() {
                 consecutiveFailures = failures,
                 retryCount = retries,
                 lastStatus = status,
+                lastRealStatus = managed.lastRealGattStatus,
             ) { verdict ->
                 // The alert tells the user to toggle Bluetooth, which only helps when the Omi
                 // is present and reachable. Six failures alone don't mean that: an Omi that is
