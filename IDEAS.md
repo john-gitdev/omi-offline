@@ -7,6 +7,8 @@
 ### PENDING
 - [2. Device-driven BLE wake (firmware + iOS) [large] [Pending]](#2-device-driven-ble-wake-firmware-ios-large-pending)
 - [4. Streaming WAV stitch — fix OOM on long-recording merge [small] [Pending]](#4-streaming-wav-stitch--fix-oom-on-long-recording-merge-small-pending)
+- [5. Background reconnect recovery latency after native retry back-off [small] [Pending]](#5-background-reconnect-recovery-latency-after-native-retry-back-off-small-pending)
+- [6. `lastRealGattStatus` has inconsistent locking [tiny] [Pending]](#6-lastrealgattstatus-has-inconsistent-locking-tiny-pending)
 ### DEFERRED
 - [3. iOS code signing & non-jailbroken distribution [medium] [Deferred]](#3-ios-code-signing-non-jailbroken-distribution-medium-deferred)
 
@@ -233,6 +235,44 @@ Same pattern applies to `_stitchBinIfPresent` (`:1528`), which reads the whole n
 #### Relevant files
 - `app/lib/services/recordings_manager.dart` — `_stitchWav` (`:1465`, the in-memory read/combine/write), `_performStitch` (`:1441`, catch → `_finalizeDraft` fallback to keep), `_stitchSilence` (`:1236`, already appends without a header patch — fix in the same helper), `_stitchBinIfPresent` (`:1528`, whole-bin `readAsBytes` append), `_finalizeDraft` (`:1271`, unchanged fallback — renames only, no header rewrite), `_generateWavHeader` (`:1632`, offsets 4/40 for the patch), `_transcodeWavToM4a` (`:1409`, same whole-file read, 1× peak), `_mergeMeta` / `_reanchorMarkerEdls` (post-write steps that must gate on verified append).
 - `app/lib/backend/preferences.dart` — `audioSaveFormat` (`:153`, defaults to `'wav'`; why the header patch is load-bearing).
+
+---
+
+### 5. Background reconnect recovery latency after native retry back-off [small] [Pending]
+
+Fallout from the "stop hammering reconnect during outages" change (PR #337, `handleRetryLogic` →
+`AUTONOMOUS_RETRY_STOP_AFTER`). Native now pauses its own retry loop once an outage is confirmed
+(6 failures) and hands reconnection to the sync schedule. This is a deliberate battery trade, but it
+regresses two latencies that are worth revisiting once the change has real device time:
+
+- **Recovery after a wedge clears: ~30 s → up to one sync interval** (default 30 min). No data loss
+  (recordings are safe on SD), but the recent BLE work was all about *shrinking* outages. The F1 fix
+  (native re-manage from the Doze-exempt `SyncAlarmReceiver`, `ensureManagedReconnectFromAlarm`)
+  bounds this to the alarm cadence reliably — but the cadence itself is still the sync interval. If
+  users report "device took ages to come back", consider a shorter dedicated reconnect-probe alarm
+  during a *confirmed* outage (distinct from the sync alarm), e.g. one every few minutes until the
+  first successful reconnect, then back off.
+- **Re-probe for a device that walked back into range: ~15 min → ~15 h.** `nextWedgeProbeAt` advances
+  by `WEDGE_REPROBE_AFTER` (30) *failures*, which now accrue at the sync interval instead of every
+  30 s. The first probe (at failure 6, before native steps back) still fires promptly, so the common
+  ADVERTISING alert is unaffected — only re-examination of an initially-absent device that returns is
+  slowed. Consider keying the re-probe schedule on wall-clock time rather than failure count.
+
+Relevant: `OmiBleForegroundService.kt` — `AUTONOMOUS_RETRY_STOP_AFTER`, `WEDGE_REPROBE_AFTER`,
+`handleRetryLogic`, `ensureManagedReconnectFromAlarm`; `SyncAlarmReceiver.kt`.
+
+### 6. `lastRealGattStatus` has inconsistent locking [tiny] [Pending]
+
+`ManagedDevice.lastRealGattStatus` (added in PR #337 for the `ble_wedge` diagnostics) is **written
+outside `syncLock`** in `handleDisconnection` (after the synchronized block closes) but **reset inside
+it** in `onGattServicesDiscovered`, on a plain non-`@Volatile` `var Int?`. Reads/writes cross binder
+threads, so cross-event visibility isn't guaranteed. It's diagnostics-only — a stale or missed value
+only mislabels a logged field, never affects reconnect logic — so this is low priority. Fix: move the
+write under the existing lock, or mark the field `@Volatile`, to match how the rest of `managed.*` is
+handled in that file.
+
+Relevant: `OmiBleForegroundService.kt` — `ManagedDevice.lastRealGattStatus` (write ~`:735`, reset
+~`:368`).
 
 ---
 
