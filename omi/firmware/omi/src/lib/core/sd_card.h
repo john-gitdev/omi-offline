@@ -43,6 +43,7 @@ typedef enum {
     REQ_TIME_SYNCED,
     REQ_UNMOUNT,
     REQ_PAUSE_IO,
+    REQ_INVALIDATE_CACHE,
 } sd_req_type_t;
 
 /* Read request response object */
@@ -277,6 +278,17 @@ int create_new_audio_file(void);
  * @param connected true if BLE is now connected, false if disconnected
  */
 void sd_notify_ble_state(bool connected);
+
+/**
+ * @brief Force a fresh file-cache enumeration on the SD worker (blocking).
+ *
+ * Rotations during a sync session skip their cache invalidation to keep the
+ * session's frozen indices stable, so the cache may be stale by the next session.
+ * Call this from the CMD_LIST_FILES path (storage thread) before building the
+ * list response so the app always receives a freshly enumerated list. Marshalled
+ * to the SD worker — which owns all cache state — and waits for completion.
+ */
+void sd_invalidate_file_cache_blocking(void);
 
 /**
  * @brief Get file statistics
