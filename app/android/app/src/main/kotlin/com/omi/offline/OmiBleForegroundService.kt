@@ -75,17 +75,35 @@ class OmiBleForegroundService : Service() {
         // ~120/hour that dominated the battery cost of an outage.
         private const val AUTONOMOUS_RETRY_STOP_AFTER = WEDGE_NOTIFY_AFTER
 
-        // A probe that heard no advertisements is repeated after this many further failures.
-        // An Omi that was out of range when the outage began can walk back into range and
-        // start failing at establishment, and nothing else would ever re-examine it: the
-        // streak does not clear until services are discovered. The interval is far wider than
-        // WEDGE_NOTIFY_AFTER because the common reason for silence is an Omi that is simply
-        // switched off or at home, and each probe is an 8 s full-duty scan. Past
-        // AUTONOMOUS_RETRY_STOP_AFTER native no longer drives the cadence, so reprobes for a
-        // still-silent device follow the sync-schedule reconnect interval; the common
-        // ADVERTISING/UNAVAILABLE verdict posts the alert at the first probe anyway.
-        // No further probes run once the alert is posted — the verdict is in by then.
-        private const val WEDGE_REPROBE_AFTER = 30
+        // Eligibility floor for repeating a probe that heard no advertisements. An Omi that was
+        // out of range when the outage began can walk back into range and start failing at
+        // establishment, and nothing else would ever re-examine it: the streak does not clear
+        // until services are discovered. Keyed on wall-clock time, not failure count, because
+        // once native hands reconnection to the sync schedule (AUTONOMOUS_RETRY_STOP_AFTER)
+        // failures accrue only once per sync interval — a failure-count schedule (the old
+        // WEDGE_REPROBE_AFTER = 30) would stretch re-examination to ~15 h.
+        //
+        // This is a *floor*, not a self-scheduled timer: a probe is an 8 s full-duty scan and
+        // only runs alongside a reconnect attempt (handleRetryLogic), so the re-probe rides the
+        // next attempt at/after the floor rather than arming its own wake. Effective cadence is
+        // therefore max(15 min, next-attempt), which converges toward the sync interval as the
+        // recovery backoff relaxes — deliberately: this only fires for a device the first probe
+        // found *absent* (switched off / at home), and polling that every 15 min all day would
+        // re-add the battery cost AUTONOMOUS_RETRY_STOP_AFTER exists to remove. The point here is
+        // to kill the ~15 h pathology, not to guarantee a 15 min beat; a device that returns
+        // *reachable* is picked up by the recovery/sync attempts regardless of this probe. The
+        // common ADVERTISING/UNAVAILABLE verdict posts the alert at the *first* (failure-count-
+        // gated) probe anyway, and no further probes run once the alert is posted.
+        private const val WEDGE_REPROBE_INTERVAL_MS = 15 * 60_000L
+        // Outage-recovery alarm cadence. When native pauses its retry loop, the first recovery
+        // alarm fires this long after the handoff, then doubles each step (2 → 4 → 8 → 16 min)
+        // until the step would reach the sync interval, at which point it self-terminates and
+        // the periodic sync alarm carries on. Bounds recovery of a *cleared* wedge to a few
+        // minutes instead of a full sync interval, while a genuinely-absent device converges to
+        // the battery-friendly sync cadence. Under deep Doze the OS ~9 min setExactAndAllowWhileIdle
+        // floor caps the real frequency anyway; the tight steps mainly help when the phone is
+        // awake (being carried back into range) — exactly when fast recovery matters most.
+        private const val RECOVERY_PROBE_MIN_MS = 2 * 60_000L
         private const val ALERT_CHANNEL_ID = "omi_ble_alerts"
         private const val ALERT_NOTIFICATION_ID = 2002
         private const val COMPANION_RATE_LIMIT_MS = 15_000L
@@ -226,11 +244,13 @@ class OmiBleForegroundService : Service() {
         // *detection*, not at notification — whether the alert is posted depends on the
         // advertising probe. Cleared once services are discovered on a later connect.
         var wedgeDetected: Boolean = false,
-        // Failure count at which the next advertising probe runs: WEDGE_NOTIFY_AFTER for the
-        // first, then every WEDGE_REPROBE_AFTER further failures until the probe hears the
-        // Omi and the alert goes out. A probe that hears nothing must not mute the outage
-        // forever — see WEDGE_REPROBE_AFTER.
+        // Failure count at which the *first* advertising probe runs (WEDGE_NOTIFY_AFTER):
+        // outage confirmation, while failures still accrue fast under native's own retry loop.
         var nextWedgeProbeAt: Int = WEDGE_NOTIFY_AFTER,
+        // elapsedRealtime() at/after which the next *re*-probe runs, once the first probe has
+        // fired. 0 until then. Wall-clock-keyed (WEDGE_REPROBE_INTERVAL_MS) because after native
+        // hands off, failures accrue too slowly for a failure-count schedule — see the constant.
+        var nextWedgeReprobeAtMs: Long = 0,
         // True once the toggle-Bluetooth alert has been posted for the current outage, so a
         // re-probe that confirms the same wedge doesn't re-raise a notification the user
         // already dismissed.
@@ -255,6 +275,14 @@ class OmiBleForegroundService : Service() {
     // text updates so the "Next sync at…" label stays stable through the brief
     // connect→sync→disconnect cycle.
     private var syncTimerActive = false
+
+    // How many outage-recovery alarms have been armed in the current confirmed outage.
+    // Drives the 2 → 4 → 8 → 16 min backed-off cadence; reset to 0 on reconnect or when
+    // recovery is cancelled. Only one Omi is managed and the recovery alarm is a single
+    // app-wide PendingIntent, so this is service-level, not per-device. Touched only on the
+    // main thread: the alarm broadcast is delivered there, and the handleRetryLogic handoff
+    // (a binder thread) posts its schedule call to `handler`, so there's no cross-thread race.
+    private var recoveryProbeAttempts = 0
 
     // ── Single-notification / persistent mode ──
     // When persistent, the service is the app's one foreground notification and
@@ -364,9 +392,14 @@ class OmiBleForegroundService : Service() {
                 managed.wedgeDetected = false
                 managed.wedgeAlertPosted = false
                 managed.nextWedgeProbeAt = WEDGE_NOTIFY_AFTER
+                managed.nextWedgeReprobeAtMs = 0
                 managed.wedgeStartedAtMs = 0
                 managed.lastRealGattStatus = null
             }
+
+            // The outage is over — stop the tight recovery alarm and reset its backoff. Posted
+            // to the main handler where recoveryProbeAttempts lives (we're on a binder thread).
+            handler.post { cancelRecoveryProbe() }
 
             // Retire this device's toggle-Bluetooth alert if one is showing (no-op otherwise).
             cancelWedgeAlert(addr)
@@ -581,12 +614,8 @@ class OmiBleForegroundService : Service() {
         val cfg = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         if (cfg.getBoolean(PREFS_USER_DISCONNECTED, false)) return
         // Only background-reconnect when auto-sync is enabled; Manual Only syncs on
-        // demand (app open / manual), so it must not hold a background link. Read from
-        // Flutter's prefs, same source the sync alarm's interval comes from.
-        val intervalMinutes = applicationContext
-            .getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
-            .getLong("flutter.backgroundSyncIntervalMinutes", 30L)
-        if (intervalMinutes <= 0) return
+        // demand (app open / manual), so it must not hold a background link.
+        if (autoSyncIntervalMinutes() <= 0) return
         val managed = cfg.getString(PREFS_KEY, null) ?: return
         val parts = managed.split("|")
         val addr = parts.getOrNull(0)?.uppercase()?.takeIf { it.isNotEmpty() } ?: return
@@ -595,6 +624,120 @@ class OmiBleForegroundService : Service() {
         if (bleManager.isPeripheralConnected(addr)) return
         Log.i(TAG, "Sync alarm: driving native reconnect for $addr (Flutter-independent)")
         manageDevice(addr, bond)
+    }
+
+    /** The auto-sync interval in minutes (Flutter's pref; ≤ 0 = "Manual Only"). Same source
+     *  the sync alarm's cadence comes from. */
+    private fun autoSyncIntervalMinutes(): Long = applicationContext
+        .getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
+        .getLong("flutter.backgroundSyncIntervalMinutes", 30L)
+
+    /**
+     * Arm the next outage-recovery alarm during a confirmed outage. Called with reset=true at
+     * the native handoff (handleRetryLogic stops its own retries), and reset=false from each
+     * recovery firing to schedule the next backed-off step.
+     *
+     * Cadence doubles from RECOVERY_PROBE_MIN_MS (2 → 4 → 8 → 16 min). Once the next step would
+     * reach the sync interval the alarm self-terminates: past that point it's redundant with the
+     * periodic sync alarm, which already drives ensureManagedReconnectFromAlarm at that cadence.
+     * So a cleared wedge reconnects within a few minutes, while a genuinely-absent device costs
+     * only ~4 extra attempts before converging to the battery-friendly sync cadence.
+     *
+     * Main-thread only (see recoveryProbeAttempts). No-op in Manual Only — there's no background
+     * link to recover; the next firing's ensureManagedReconnectFromAlarm would no-op anyway.
+     */
+    private fun scheduleRecoveryProbe(reset: Boolean) {
+        if (reset) recoveryProbeAttempts = 0
+        // Re-validate on the main thread before every arm. The reset=true call is posted from the
+        // failure-AUTONOMOUS_RETRY_STOP_AFTER handoff (a binder thread), so a user-disconnect /
+        // BT-off / Manual-Only cancellation can land between the post and here; recoveryWanted()
+        // keeps that cancellation final instead of letting the in-flight sixth failure re-arm a wake.
+        if (!recoveryWanted()) { cancelRecoveryProbe(); return }
+        val intervalMs = autoSyncIntervalMinutes() * 60_000L
+        // Double each step (2, 4, 8, 16 min …). The shift is capped only to keep a corrupt
+        // interval pref from overflowing; convergence below stops it well before that for any
+        // real interval (60 min → converges at the 64 min step).
+        val stepMs = RECOVERY_PROBE_MIN_MS shl minOf(recoveryProbeAttempts, 10)
+        if (stepMs >= intervalMs) {
+            // Converged on the sync cadence: hand back to the periodic sync alarm, which already
+            // drives ensureManagedReconnectFromAlarm at this interval, so the recovery alarm is
+            // now redundant. cancelRecoveryProbe() only clears the alarm + backoff counter — the
+            // outage itself is still open; onGattServicesDiscovered is what ends it.
+            Log.i(TAG, "Recovery probe reached sync interval — sync alarm now drives reconnection")
+            cancelRecoveryProbe()
+            return
+        }
+        recoveryProbeAttempts++
+        SyncAlarmReceiver.scheduleRecover(this, System.currentTimeMillis() + stepMs)
+        Log.i(TAG, "Recovery probe #$recoveryProbeAttempts armed in ${stepMs}ms")
+    }
+
+    private fun cancelRecoveryProbe() {
+        recoveryProbeAttempts = 0
+        SyncAlarmReceiver.cancelRecover(this)
+    }
+
+    /**
+     * Whether the outage-recovery alarm should be running right now: auto-sync on, the user hasn't
+     * disconnected, Bluetooth is on, and a managed device still has an open (wedgeDetected) outage.
+     * The single source of truth for the recovery lifecycle — consulted by the alarm handler,
+     * before each (re)arm in scheduleRecoveryProbe (so a cancellation stays final against a
+     * concurrently posted handoff), and on the auto-sync inactive→active transition. Main thread.
+     */
+    private fun recoveryWanted(): Boolean {
+        val cfg = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        if (cfg.getBoolean(PREFS_USER_DISCONNECTED, false)) return false
+        if (autoSyncIntervalMinutes() <= 0 || !isBluetoothEnabled) return false
+        val addr = cfg.getString(PREFS_KEY, null)?.split("|")?.getOrNull(0)?.uppercase() ?: return false
+        return synchronized(syncLock) { managedDevices[addr]?.wedgeDetected == true }
+    }
+
+    /**
+     * Cancel recovery AND reset each managed device's outage streak. For state changes that
+     * abandon recovery while the outage may still be open — the radio turning off, or the sync
+     * schedule being turned off (Manual Only). Resetting the streak preserves the invariant that
+     * recovery arms exactly when `consecutiveConnectFailures` *crosses* AUTONOMOUS_RETRY_STOP_AFTER
+     * (the handoff's `== ` guard, which fires once per detection episode since the streak clears
+     * only on a successful connect). Without the reset the streak stays past the threshold, so
+     * after the radio/schedule returns the next failure is threshold+1, the `==` handoff never
+     * re-fires, and the fast recovery burst is lost for the rest of the outage (Bluetooth-toggle
+     * regression). A toggle/mode-flip is a fresh intervention, so re-detecting from zero is also
+     * the right semantics. NOT used by: onGattServicesDiscovered (already zeroes the streak on
+     * success), unmanageDevice (device removed), or the convergence path (must keep the streak so
+     * the sync alarm keeps driving without re-arming the burst).
+     */
+    private fun cancelRecoveryProbeAndResetStreak() {
+        cancelRecoveryProbe()
+        synchronized(syncLock) {
+            for ((_, managed) in managedDevices) {
+                managed.consecutiveConnectFailures = 0
+                managed.retryCount = 0
+            }
+        }
+    }
+
+    /**
+     * Outage-recovery alarm fired (SyncAlarmReceiver, Doze-exempt). Drive one reconnect and
+     * re-arm the next backed-off step, until the link is back or recovery is no longer wanted.
+     *
+     * The "outage is still open" test is wedgeDetected, NOT a link-layer poll: isPeripheralConnected()
+     * goes true the instant GATT connects, before services are discovered, and a link that comes up
+     * and dies before discovery is the exact wedge this service detects — cancelling on that transient
+     * half-connection would strand recovery (the streak is already past AUTONOMOUS_RETRY_STOP_AFTER, so
+     * the pre-discovery disconnect lands as failure 7+ and the `==` handoff never re-arms). wedgeDetected
+     * is set with the recovery handoff at failure AUTONOMOUS_RETRY_STOP_AFTER and cleared only by
+     * onGattServicesDiscovered (the link proven usable), so it stays true across a transient half-
+     * connection yet flips false the moment the outage genuinely ends. Keying on it also closes the
+     * race where a recovery alarm delivered concurrently with service discovery would otherwise re-arm
+     * after the outage ended and wake needlessly until convergence.
+     */
+    fun onRecoveryProbeAlarm() {
+        if (!recoveryWanted()) {
+            cancelRecoveryProbe()
+            return
+        }
+        ensureManagedReconnectFromAlarm()
+        scheduleRecoveryProbe(reset = false)
     }
 
     fun unmanageDevice(address: String) {
@@ -608,6 +751,8 @@ class OmiBleForegroundService : Service() {
 
         // Intentional disconnect ends the outage this device's alert was about.
         cancelWedgeAlert(addr)
+        // ...and its recovery alarm; the user asked to be off, so stop background reconnects.
+        cancelRecoveryProbe()
 
         // Stop OS-level presence observation BEFORE closing the GATT. Without
         // this, OnePlus/Xiaomi stacks immediately re-establish a passive LE link
@@ -937,11 +1082,23 @@ class OmiBleForegroundService : Service() {
             // Re-probe only while the probe still has something to decide. Once the alert is
             // posted the verdict is in, and further 8 s low-latency scans would add radio load
             // to an outage this service is otherwise trying to stop aggravating.
-            if (managed.consecutiveConnectFailures >= managed.nextWedgeProbeAt && !managed.wedgeAlertPosted) {
-                managed.nextWedgeProbeAt = managed.consecutiveConnectFailures + WEDGE_REPROBE_AFTER
+            val nowMs = android.os.SystemClock.elapsedRealtime()
+            // First probe: failure-count-gated (outage confirmation, while failures still accrue
+            // fast). Subsequent re-probes: gated by a wall-clock *floor* (nextWedgeReprobeAtMs) —
+            // this runs on the next attempt at/after the floor, it does not arm its own wake, so
+            // effective cadence is max(15 min, next-attempt). That's deliberate; see
+            // WEDGE_REPROBE_INTERVAL_MS for why it rides the attempt schedule rather than the 15 h
+            // a failure-count schedule would cost once native hands off.
+            val probeDue = if (managed.nextWedgeReprobeAtMs == 0L) {
+                managed.consecutiveConnectFailures >= managed.nextWedgeProbeAt
+            } else {
+                nowMs >= managed.nextWedgeReprobeAtMs
+            }
+            if (probeDue && !managed.wedgeAlertPosted) {
+                managed.nextWedgeReprobeAtMs = nowMs + WEDGE_REPROBE_INTERVAL_MS
                 if (!managed.wedgeDetected) {
                     managed.wedgeDetected = true
-                    managed.wedgeStartedAtMs = android.os.SystemClock.elapsedRealtime()
+                    managed.wedgeStartedAtMs = nowMs
                 }
                 startProbe = true
             }
@@ -1007,10 +1164,16 @@ class OmiBleForegroundService : Service() {
                         Log.i(TAG, "Outage on $addr but the probe could not run — no verdict; will re-probe")
                         synchronized(syncLock) {
                             val m = managedDevices[addr] ?: return@synchronized
-                            // Pull the schedule in: the wide interval is priced for a device we
-                            // established is absent, and we established nothing.
-                            m.nextWedgeProbeAt =
-                                minOf(m.nextWedgeProbeAt, m.consecutiveConnectFailures + WEDGE_NOTIFY_AFTER)
+                            // Only pull the schedule in if this outage is still open — same
+                            // wedgeDetected guard the alert path below uses. The probe is async
+                            // (~8 s scan), so onGattServicesDiscovered may have ended the outage and
+                            // reset nextWedgeReprobeAtMs to 0 meanwhile; overwriting it here with a
+                            // past timestamp would make the *next* unrelated disconnect fire a wedge
+                            // probe on its first failure (the wall-clock branch treats a stale
+                            // past deadline as immediately due). The wide interval is priced for a
+                            // device we established is absent, and we established nothing — re-probe
+                            // on the very next attempt (attempts are slow now, so this is soon enough).
+                            if (m.wedgeDetected) m.nextWedgeReprobeAtMs = android.os.SystemClock.elapsedRealtime()
                         }
                         return@captureWedge
                     }
@@ -1045,6 +1208,17 @@ class OmiBleForegroundService : Service() {
             // SyncAlarmReceiver). No pending retry is left behind, so the next manageDevice
             // triggerReconnection()s a fresh attempt rather than being skipped by the guard.
             Log.i(TAG, "Outage on $addr past $AUTONOMOUS_RETRY_STOP_AFTER failures ($failures) — pausing native retries; sync schedule now drives reconnection")
+            // But bound the recovery latency: without this, a wedge that clears seconds later
+            // sits un-reconnected until the next sync alarm (up to a full interval). Kick off the
+            // tight, backing-off recovery alarm — but exactly ONCE per outage, at the transition
+            // failure. consecutiveConnectFailures increments by 1 per call and resets only on
+            // reconnect, so `== AUTONOMOUS_RETRY_STOP_AFTER` fires here just once; the later
+            // failures the recovery loop itself produces (7, 8, …) fall through without restarting
+            // the backoff (which would otherwise pin it at the 2 min floor forever). Posted to the
+            // main handler — we're on a binder thread and recoveryProbeAttempts lives there.
+            if (failures == AUTONOMOUS_RETRY_STOP_AFTER) {
+                handler.post { scheduleRecoveryProbe(reset = true) }
+            }
         }
     }
 
@@ -1144,6 +1318,12 @@ class OmiBleForegroundService : Service() {
                 BluetoothAdapter.STATE_TURNING_OFF -> {
                     Log.i(TAG, "Bluetooth turning off, cleaning up GATT")
                     isBluetoothEnabled = false
+                    // Nothing can reconnect with the radio off; cancel the outage-recovery alarm
+                    // rather than leaving it armed to fire once and self-cancel (a needless wake).
+                    // Reset the streak too, so once BT returns the re-detected outage crosses the
+                    // handoff threshold again and re-arms recovery — otherwise a toggle mid-outage
+                    // would strand recovery at the sync cadence for the rest of it.
+                    cancelRecoveryProbeAndResetStreak()
                     bleManager.mainHandler.post {
                         bleManager.flutterApi?.onBluetoothStateChanged("off") {}
                     }
@@ -1305,9 +1485,24 @@ class OmiBleForegroundService : Service() {
     // ── Notification ──
 
     fun setNextSyncTime(timestampMs: Long) {
+        val wasActive = syncTimerActive
         syncTimerActive = timestampMs > 0
         nextSyncTimeMs = timestampMs
         SyncAlarmReceiver.schedule(this, timestampMs)
+        // timestampMs <= 0 is Dart turning the sync schedule off — i.e. Manual Only
+        // (device_provider setNextSyncTime(0)). The recovery alarm exists only to bridge a
+        // confirmed outage back onto that schedule, so cancel it now rather than leaving an
+        // armed exact alarm to fire once and self-cancel (a needless Doze wake). Reset the streak
+        // too so a later switch back to auto-sync while still wedged re-arms recovery cleanly.
+        if (timestampMs <= 0) {
+            cancelRecoveryProbeAndResetStreak()
+        } else if (!wasActive && recoveryWanted()) {
+            // Auto-sync just went inactive→active (e.g. Manual Only → 15/30/60 min) while an outage
+            // is still open. The Manual-Only switch reset the streak, so without this the fast
+            // recovery path would only re-arm after the streak crawls back to the handoff threshold
+            // over slow sync-interval attempts — potentially hours. Restart it now.
+            scheduleRecoveryProbe(reset = true)
+        }
     }
 
     fun setDeviceBattery(level: Int, timestampMs: Long) {
