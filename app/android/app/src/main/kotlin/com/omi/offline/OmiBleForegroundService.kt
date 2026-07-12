@@ -701,20 +701,23 @@ class OmiBleForegroundService : Service() {
      * Outage-recovery alarm fired (SyncAlarmReceiver, Doze-exempt). Drive one reconnect and
      * re-arm the next backed-off step, until the link is back or recovery is no longer wanted.
      *
-     * "The link is back" is signalled by onGattServicesDiscovered (which cancels us), NOT by a
-     * link-layer poll here: isPeripheralConnected() goes true the instant GATT connects, before
-     * services are discovered, and a link that comes up and dies before discovery is the exact
-     * wedge this service detects. Cancelling on that transient half-connection would strand
-     * recovery — the streak is already past AUTONOMOUS_RETRY_STOP_AFTER, so the pre-discovery
-     * disconnect lands as failure 7+ and the `==` handoff never re-arms. So don't cancel on it;
-     * ensureManagedReconnectFromAlarm's own isPeripheralConnected guard already avoids tearing
-     * down an in-flight link, and we keep the cadence alive until discovery proves the link usable.
+     * The "outage is still open" test is wedgeDetected, NOT a link-layer poll: isPeripheralConnected()
+     * goes true the instant GATT connects, before services are discovered, and a link that comes up
+     * and dies before discovery is the exact wedge this service detects — cancelling on that transient
+     * half-connection would strand recovery (the streak is already past AUTONOMOUS_RETRY_STOP_AFTER, so
+     * the pre-discovery disconnect lands as failure 7+ and the `==` handoff never re-arms). wedgeDetected
+     * is set with the recovery handoff at failure AUTONOMOUS_RETRY_STOP_AFTER and cleared only by
+     * onGattServicesDiscovered (the link proven usable), so it stays true across a transient half-
+     * connection yet flips false the moment the outage genuinely ends. Keying on it also closes the
+     * race where a recovery alarm delivered concurrently with service discovery would otherwise re-arm
+     * after the outage ended and wake needlessly until convergence.
      */
     fun onRecoveryProbeAlarm() {
         val cfg = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         val addr = cfg.getString(PREFS_KEY, null)?.split("|")?.getOrNull(0)?.uppercase()
+        val outageOpen = addr != null && synchronized(syncLock) { managedDevices[addr]?.wedgeDetected == true }
         if (cfg.getBoolean(PREFS_USER_DISCONNECTED, false) ||
-            autoSyncIntervalMinutes() <= 0 || !isBluetoothEnabled || addr == null
+            autoSyncIntervalMinutes() <= 0 || !isBluetoothEnabled || addr == null || !outageOpen
         ) {
             cancelRecoveryProbe()
             return
@@ -1147,10 +1150,16 @@ class OmiBleForegroundService : Service() {
                         Log.i(TAG, "Outage on $addr but the probe could not run — no verdict; will re-probe")
                         synchronized(syncLock) {
                             val m = managedDevices[addr] ?: return@synchronized
-                            // Pull the schedule in: the wide interval is priced for a device we
-                            // established is absent, and we established nothing — re-probe on the
-                            // very next attempt (attempts are slow now, so this is soon enough).
-                            m.nextWedgeReprobeAtMs = android.os.SystemClock.elapsedRealtime()
+                            // Only pull the schedule in if this outage is still open — same
+                            // wedgeDetected guard the alert path below uses. The probe is async
+                            // (~8 s scan), so onGattServicesDiscovered may have ended the outage and
+                            // reset nextWedgeReprobeAtMs to 0 meanwhile; overwriting it here with a
+                            // past timestamp would make the *next* unrelated disconnect fire a wedge
+                            // probe on its first failure (the wall-clock branch treats a stale
+                            // past deadline as immediately due). The wide interval is priced for a
+                            // device we established is absent, and we established nothing — re-probe
+                            // on the very next attempt (attempts are slow now, so this is soon enough).
+                            if (m.wedgeDetected) m.nextWedgeReprobeAtMs = android.os.SystemClock.elapsedRealtime()
                         }
                         return@captureWedge
                     }
