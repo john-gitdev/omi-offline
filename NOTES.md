@@ -4,6 +4,28 @@ Running log of investigated bugs, deferred decisions, and findings that don't fi
 
 ---
 
+## Diagnostics `uptime` is the PREVIOUS session's length — a red herring for live health
+
+**Status:** not a bug (2026-07-12) — clarified while reviewing a "sync failed then crawled" log.
+
+**Symptom that looks alarming.** The `Device diagnostics: software reset (uptime: 12h 40m)` line logs the *identical* value on every reconnect across a session — e.g. 12h 40m at 01:55, 02:07, and 02:11 in the same night. It's tempting to read a frozen uptime as a wedged RTOS / stuck `k_uptime`.
+
+**It is neither live nor stuck — it's a static historical record.** The Diagnostics char `0061` returns `[uint32 reset_cause][uint32 uptime_seconds]`, where `uptime_seconds` is **how long the *previous* session ran before it ended**, not the current session's uptime (`transport.c` `diagnostics_read_handler` → `app_settings_get_crash_session_uptime()`, transport.c:409). It's snapshotted once into NVS at boot (`main.c:327-330`, `app_settings_save_crash_session_uptime(prev_uptime)`) and never changes during the session — so reading the same value across reconnects is *correct*, not a wedge.
+
+**`reset_cause` here is also last-boot, and `software reset` (0x02) is benign.** `RESET_SOFTWARE` is a deliberate `sys_reboot()` (OTA swap, clean restart), *not* a crash — crashes set `RESET_WATCHDOG` (0x10) or `RESET_CPU_LOCKUP` (0x100) and log `CRASH —` (`main.c` `log_reset_cause`, `device_crash_log.dart` `isCrash`). So "software reset (uptime: 12h 40m)" means only "the last reboot was deliberate and happened 12h 40m into that prior run." It carries **zero** signal about the current session's transfer health.
+
+**Consequence for diagnosis.** Do not treat this field as a live-health or wedge indicator (same trap as the `low power wake` red herring below). For *current*-session liveness use char `0062` offset 16 (`current_uptime_ms`, `k_uptime_get()` at read time) — that one is live. A slow/failing sync in the same log is better explained by background BLE throttling + an unstable background link than by any firmware stall.
+
+---
+
+## Change 2 (PR #337) adopts an unsanctioned background reconnect via `_shouldSyncNow()` — intentionally eager
+
+**Status:** by design (2026-07-12) — noted during the PR #337 review (F4).
+
+`_handleDeviceConnected`'s background drop-guard now keeps an unsanctioned reconnect (native auto-reconnect / BT-toggle recovery landing while backgrounded) instead of dropping it, **when `_shouldSyncNow()` is true** (`device_provider.dart` ~`:1547`). `_shouldSyncNow()` is deliberately eager — it returns true on `lastSyncSkipped`, on `lastSyncCompletedMs <= 0`, or once the interval has elapsed (`:1080`). So after a long outage (always "due") the link is adopted and a sync runs; the sync stamps `lastSyncCompletedMs` **even on the failure path** (`_doBackgroundSync` catch, `:888`), so the *next* unsanctioned landing sees "not due" and drops. Net effect: at most one adopt-per-interval, self-correcting — not a reconnect loop. Manual-Only (interval ≤ 0) never adopts. This is the intended behavior; documented here so a future reader doesn't mistake the eagerness for a bug.
+
+---
+
 ## iOS: BLE transfer stops "randomly" mid-sync → native storage keep-alive
 
 **Status:** fixed (2026-06-17) — native iOS storage keep-alive added in `app/ios/Runner/OmiBleManager.swift`.
