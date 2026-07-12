@@ -8,7 +8,6 @@
 - [2. Device-driven BLE wake (firmware + iOS) [large] [Pending]](#2-device-driven-ble-wake-firmware-ios-large-pending)
 - [4. Streaming WAV stitch — fix OOM on long-recording merge [small] [Pending]](#4-streaming-wav-stitch--fix-oom-on-long-recording-merge-small-pending)
 - [5. Background reconnect recovery latency after native retry back-off [small] [Pending]](#5-background-reconnect-recovery-latency-after-native-retry-back-off-small-pending)
-- [6. `lastRealGattStatus` has inconsistent locking [tiny] [Pending]](#6-lastrealgattstatus-has-inconsistent-locking-tiny-pending)
 ### DEFERRED
 - [3. iOS code signing & non-jailbroken distribution [medium] [Deferred]](#3-ios-code-signing-non-jailbroken-distribution-medium-deferred)
 
@@ -260,19 +259,6 @@ regresses two latencies that are worth revisiting once the change has real devic
 
 Relevant: `OmiBleForegroundService.kt` — `AUTONOMOUS_RETRY_STOP_AFTER`, `WEDGE_REPROBE_AFTER`,
 `handleRetryLogic`, `ensureManagedReconnectFromAlarm`; `SyncAlarmReceiver.kt`.
-
-### 6. `lastRealGattStatus` has inconsistent locking [tiny] [Pending]
-
-`ManagedDevice.lastRealGattStatus` (added in PR #337 for the `ble_wedge` diagnostics) is **written
-outside `syncLock`** in `handleDisconnection` (after the synchronized block closes) but **reset inside
-it** in `onGattServicesDiscovered`, on a plain non-`@Volatile` `var Int?`. Reads/writes cross binder
-threads, so cross-event visibility isn't guaranteed. It's diagnostics-only — a stale or missed value
-only mislabels a logged field, never affects reconnect logic — so this is low priority. Fix: move the
-write under the existing lock, or mark the field `@Volatile`, to match how the rest of `managed.*` is
-handled in that file.
-
-Relevant: `OmiBleForegroundService.kt` — `ManagedDevice.lastRealGattStatus` (write ~`:735`, reset
-~`:368`).
 
 ---
 
