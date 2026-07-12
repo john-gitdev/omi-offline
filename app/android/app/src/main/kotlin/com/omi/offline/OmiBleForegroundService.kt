@@ -774,8 +774,14 @@ class OmiBleForegroundService : Service() {
         // Remember the last real Android status of this outage for the wedge diagnostics.
         // -1 is our own timeout backstop and 0 is a clean disconnect; neither is a failure
         // code worth surfacing, so an all-timeout outage keeps this null (itself the signal).
+        // Written under syncLock — the same lock onGattServicesDiscovered clears it under and
+        // handleRetryLogic snapshots it under — so a disconnect callback on one binder thread
+        // can't clobber a recovery that just reset it to null on another (both run off the
+        // GATT binder pool).
         if (managed != null && status != -1 && status != 0) {
-            managed.lastRealGattStatus = status
+            synchronized(syncLock) {
+                managed.lastRealGattStatus = status
+            }
         }
 
         // Reflect the drop on the notification immediately instead of leaving the
@@ -921,6 +927,7 @@ class OmiBleForegroundService : Service() {
         var retries = 0
         var backoffDelay = 0L
         var willRetry = false
+        var lastRealStatus: Int? = null
         synchronized(syncLock) {
             // Any failed attempt counts. The previous rule (only status -1) keyed the outage
             // detector on our own local timeout, which fired before Android could deliver a
@@ -958,6 +965,10 @@ class OmiBleForegroundService : Service() {
             // to triggerReconnection().
             willRetry = failures < AUTONOMOUS_RETRY_STOP_AFTER
             if (willRetry) managed.pendingReconnect = runnable
+            // Snapshot the real GATT status under the lock so the captureWedge call below
+            // reports a value consistent with this streak, not one a concurrent recovery
+            // (onGattServicesDiscovered) or a later disconnect could reset/overwrite mid-read.
+            lastRealStatus = managed.lastRealGattStatus
         }
 
         if (startProbe) {
@@ -972,7 +983,7 @@ class OmiBleForegroundService : Service() {
                 consecutiveFailures = failures,
                 retryCount = retries,
                 lastStatus = status,
-                lastRealStatus = managed.lastRealGattStatus,
+                lastRealStatus = lastRealStatus,
             ) { verdict ->
                 // The alert tells the user to toggle Bluetooth, which only helps when the Omi
                 // is present and reachable. Six failures alone don't mean that: an Omi that is
