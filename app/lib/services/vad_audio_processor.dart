@@ -437,12 +437,15 @@ class VadAudioProcessor {
         await f.delete();
         return;
       }
-      // Bounded recovery: a latch older than the ceiling means the 0xFFFFFFFC stop was
-      // almost certainly dropped (else it would have closed by now). Drop it rather
-      // than force-capture same-session auto audio indefinitely.
-      final openedAtMs = data['openedAtMs'] as int?;
-      if (openedAtMs != null && DateTime.now().millisecondsSinceEpoch - openedAtMs > _maxRestoredPriorityAgeMs) {
-        Logger.debug('VadAudioProcessor: Priority latch older than '
+      // Bounded recovery: an open time is REQUIRED so the latch can always be aged
+      // out — otherwise a dropped 0xFFFFFFFC would force-capture same-session auto
+      // audio indefinitely. Prefer openedAtMs; fall back to the persist 'ts' for a
+      // legacy sentinel written before the field existed. If neither is present, or
+      // the span is older than the ceiling (stop marker almost certainly dropped),
+      // fail closed and delete the sentinel.
+      final openedAtMs = (data['openedAtMs'] ?? data['ts']) as int?;
+      if (openedAtMs == null || DateTime.now().millisecondsSinceEpoch - openedAtMs > _maxRestoredPriorityAgeMs) {
+        Logger.debug('VadAudioProcessor: Priority latch unbounded or older than '
             '${_maxRestoredPriorityAgeMs ~/ 3600000}h (opened $openedAtMs) — dropping (stop marker likely lost).');
         await f.delete();
         return;
@@ -547,12 +550,13 @@ class VadAudioProcessor {
     _inPriorityRecording = (s['ipr'] as bool?) ?? false;
     _priorityRecordingSessionId = s['prs'] as int?;
     _priorityOpenedAtMs = s['poa'] as int?;
-    // Fail closed: an open priority span with no session id can't be reboot-guarded
-    // (the header-block guard needs a session to compare against), so it could run
-    // unbounded across a reboot. A legacy checkpoint from before this field existed,
-    // or a start seen in a pre-time-sync bin, lands here — drop force-capture rather
-    // than risk an unbounded recording. Worst case is one resume losing force-capture.
-    if (_inPriorityRecording && _priorityRecordingSessionId == null) {
+    // Fail closed on a restored open priority span we can't bound: no session id (the
+    // header-block reboot guard needs one to compare against) OR no open time (the age
+    // ceiling needs one), either of which would let it run unbounded across a reboot /
+    // dropped stop. A legacy checkpoint from before these fields existed, or a start in
+    // a pre-time-sync bin, lands here — drop force-capture rather than risk an unbounded
+    // recording. Worst case is one resume losing force-capture.
+    if (_inPriorityRecording && (_priorityRecordingSessionId == null || _priorityOpenedAtMs == null)) {
       _inPriorityRecording = false;
     }
     _priorityOpenBinPath = s['pob'] as String?;
