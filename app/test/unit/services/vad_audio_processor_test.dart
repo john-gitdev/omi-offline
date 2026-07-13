@@ -1233,7 +1233,8 @@ void main() {
       test('restored latch keeps the continuation force-captured across a splitting gap', () async {
         final latchPath = '${tempDir.path}/latch_behavior.json';
         // Sentinel as if run 1 left a priority recording open in session 1.
-        File(latchPath).writeAsStringSync(jsonEncode({'sessionId': 1, 'ts': 0}));
+        File(latchPath).writeAsStringSync(
+            jsonEncode({'sessionId': 1, 'openedAtMs': DateTime.now().millisecondsSinceEpoch, 'ts': 0}));
 
         final p = VadAudioProcessor.fromSettings(
             settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
@@ -1275,7 +1276,8 @@ void main() {
 
       test('reboot guard: a session change on the continuation drops the restored latch', () async {
         final latchPath = '${tempDir.path}/latch_reboot.json';
-        File(latchPath).writeAsStringSync(jsonEncode({'sessionId': 1, 'ts': 0}));
+        File(latchPath).writeAsStringSync(
+            jsonEncode({'sessionId': 1, 'openedAtMs': DateTime.now().millisecondsSinceEpoch, 'ts': 0}));
 
         final p = VadAudioProcessor.fromSettings(
             settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
@@ -1296,7 +1298,8 @@ void main() {
 
       test('reboot guard ends force-capture on a HEADERLESS bin from a new session', () async {
         final latchPath = '${tempDir.path}/latch_reboot_hl.json';
-        File(latchPath).writeAsStringSync(jsonEncode({'sessionId': 1, 'ts': 0}));
+        File(latchPath).writeAsStringSync(
+            jsonEncode({'sessionId': 1, 'openedAtMs': DateTime.now().millisecondsSinceEpoch, 'ts': 0}));
         final p = VadAudioProcessor.fromSettings(
             settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
         await p.restorePriorityLatch();
@@ -1378,6 +1381,25 @@ void main() {
         await p2.destroy();
       });
 
+      test('restoreState fails closed on an open priority span with no open time (no poa)', () async {
+        // Strip 'poa' to mimic a checkpoint from an intermediate build that had the
+        // session id but not the open time. Without an open time the age ceiling can't
+        // bound it, so force-capture must NOT be restored.
+        final p1 = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+        await p1.processSegmentFile(
+            priorityBin('failclosed_poa.bin', frames: 10), DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+        final state = (await p1.serializeState())!;
+        await p1.destroy();
+        expect(state['ipr'], isTrue);
+        expect(state['poa'], kBase + 200, reason: 'new state carries the open time');
+        state.remove('poa');
+
+        final p2 = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+        await p2.restoreState(state);
+        expect(p2.inPriorityRecording, isFalse, reason: 'no open time to age-bound → fail closed');
+        await p2.destroy();
+      });
+
       test('restorePriorityLatch fails closed and clears a sentinel with no session id', () async {
         final latchPath = '${tempDir.path}/latch_nosession.json';
         File(latchPath).writeAsStringSync(jsonEncode({'ts': 0})); // no sessionId
@@ -1386,6 +1408,28 @@ void main() {
         await p.restorePriorityLatch();
         expect(p.inPriorityRecording, isFalse, reason: 'no session id → do not re-arm force-capture');
         expect(File(latchPath).existsSync(), isFalse, reason: 'the un-guardable sentinel is removed');
+        await p.destroy();
+      });
+
+      test('restorePriorityLatch fails closed on a sentinel with a session id but no timestamp', () async {
+        final latchPath = '${tempDir.path}/latch_nots.json';
+        File(latchPath).writeAsStringSync(jsonEncode({'sessionId': 1})); // no openedAtMs, no ts
+        final p = VadAudioProcessor.fromSettings(
+            settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
+        await p.restorePriorityLatch();
+        expect(p.inPriorityRecording, isFalse, reason: 'no open time to age-bound → fail closed');
+        expect(File(latchPath).existsSync(), isFalse);
+        await p.destroy();
+      });
+
+      test('restorePriorityLatch restores a legacy sentinel via the recent ts fallback', () async {
+        final latchPath = '${tempDir.path}/latch_tsfallback.json';
+        // Legacy sentinel: session id + a recent persist 'ts', but no openedAtMs.
+        File(latchPath).writeAsStringSync(jsonEncode({'sessionId': 1, 'ts': DateTime.now().millisecondsSinceEpoch}));
+        final p = VadAudioProcessor.fromSettings(
+            settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
+        await p.restorePriorityLatch();
+        expect(p.inPriorityRecording, isTrue, reason: 'recent ts bounds the latch → safe to restore');
         await p.destroy();
       });
     });
