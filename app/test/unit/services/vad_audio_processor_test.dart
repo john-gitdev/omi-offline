@@ -1187,7 +1187,7 @@ void main() {
       // sentinel carries _inPriorityRecording into the next run — otherwise the
       // continuation is re-VAD'd as normal auto mode and loses force-capture.
 
-      test('latch round-trips through the sentinel file across runs', () async {
+      test('persist writes {sessionId, openedAtMs}; a fresh sentinel restores force-capture', () async {
         final latchPath = '${tempDir.path}/latch_rt.json';
 
         // Run 1: open a priority recording, then the run ends before the stop.
@@ -1200,16 +1200,34 @@ void main() {
         await p1.persistPriorityLatch();
         await p1.destroy();
 
-        expect(File(latchPath).existsSync(), isTrue, reason: 'an open priority recording persists a latch');
-        expect((jsonDecode(File(latchPath).readAsStringSync()) as Map)['sessionId'], 1);
+        final written = jsonDecode(File(latchPath).readAsStringSync()) as Map<String, dynamic>;
+        expect(written['sessionId'], 1);
+        expect(written['openedAtMs'], kBase + 200, reason: 'the 0xFFFFFFF8 wall time, preserved for the age bound');
 
-        // Run 2: a fresh processor restores the latch and resumes force-capture.
+        // Run 2: a fresh (recent) sentinel restores force-capture. Rewritten with a
+        // current openedAtMs because kBase is historical — a real recording's marker
+        // time is ~now, so the age ceiling does not trip.
+        File(latchPath).writeAsStringSync(
+            jsonEncode({'sessionId': 1, 'openedAtMs': DateTime.now().millisecondsSinceEpoch, 'ts': 0}));
         final p2 = VadAudioProcessor.fromSettings(
             settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
         expect(p2.inPriorityRecording, isFalse, reason: 'fresh processor starts outside a priority recording');
         await p2.restorePriorityLatch();
         expect(p2.inPriorityRecording, isTrue, reason: 'latch restored → force-capture continues');
         await p2.destroy();
+      });
+
+      test('restorePriorityLatch drops a latch older than the age ceiling (dropped stop marker)', () async {
+        final latchPath = '${tempDir.path}/latch_stale.json';
+        final sevenHoursAgo = DateTime.now().millisecondsSinceEpoch - (7 * 60 * 60 * 1000);
+        File(latchPath)
+            .writeAsStringSync(jsonEncode({'sessionId': 1, 'openedAtMs': sevenHoursAgo, 'ts': sevenHoursAgo}));
+        final p = VadAudioProcessor.fromSettings(
+            settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
+        await p.restorePriorityLatch();
+        expect(p.inPriorityRecording, isFalse, reason: 'a >6h-open latch means the 0xFFFFFFFC was lost → drop it');
+        expect(File(latchPath).existsSync(), isFalse, reason: 'the stuck sentinel is cleared');
+        await p.destroy();
       });
 
       test('restored latch keeps the continuation force-captured across a splitting gap', () async {
@@ -1276,15 +1294,59 @@ void main() {
         await p.destroy();
       });
 
-      test('stop marker clears the latch and removes the sentinel', () async {
-        final latchPath = '${tempDir.path}/latch_stop.json';
+      test('reboot guard ends force-capture on a HEADERLESS bin from a new session', () async {
+        final latchPath = '${tempDir.path}/latch_reboot_hl.json';
+        File(latchPath).writeAsStringSync(jsonEncode({'sessionId': 1, 'ts': 0}));
         final p = VadAudioProcessor.fromSettings(
             settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
-        await p.processSegmentFile(
-            priorityBin('rtstop.bin', frames: 10, stop: true), DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+        await p.restorePriorityLatch();
+        expect(p.inPriorityRecording, isTrue);
+
+        // A headerless bin (no 0xFFFFFFFB) whose session id comes from the CALLER
+        // (filename metadata), not a header. The resolved-sessionId guard must still
+        // fire so the new session's audio isn't force-captured into the priority span.
+        final headerless = _makeBinFile(tempDir, 10, name: 'headerless_reboot.bin');
+        await p.processSegmentFile(headerless, DateTime.fromMillisecondsSinceEpoch(kBase + 300000, isUtc: true),
+            sessionId: 2);
+        expect(p.inPriorityRecording, isFalse, reason: 'headerless bin from a new session ends the span too');
+        await p.destroy();
+      });
+
+      test('a 0xFFFFFFFC clears the sentinel mid-run (robust to an abrupt exit)', () async {
+        final latchPath = '${tempDir.path}/latch_stop.json';
+        // A latch left open by a prior run (recent, so the age ceiling doesn't trip).
+        File(latchPath).writeAsStringSync(
+            jsonEncode({'sessionId': 1, 'openedAtMs': DateTime.now().millisecondsSinceEpoch, 'ts': 0}));
+        final p = VadAudioProcessor.fromSettings(
+            settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
+        await p.restorePriorityLatch();
+        expect(p.inPriorityRecording, isTrue);
+        expect(File(latchPath).existsSync(), isTrue);
+
+        // Continuation bin (session 1): header + 10 frames + the 0xFFFFFFFC stop.
+        final b = BytesBuilder();
+        b.add((ByteData(36)
+              ..setUint32(0, 0xFFFFFFFB, Endian.little)
+              ..setUint32(4, 28, Endian.little)
+              ..setUint64(8, kBase, Endian.little)
+              ..setUint64(16, 0, Endian.little)
+              ..setUint32(24, 0, Endian.little)
+              ..setUint32(28, 1, Endian.little))
+            .buffer
+            .asUint8List());
+        final fhdr = ByteData(4)..setUint32(0, 4, Endian.little);
+        for (int i = 0; i < 10; i++) {
+          b.add(fhdr.buffer.asUint8List());
+          b.add(List.filled(4, 0));
+        }
+        b.add((ByteData(20)..setUint32(0, 0xFFFFFFFC, Endian.little)).buffer.asUint8List());
+        final contStop = File('${tempDir.path}/cont_stop.bin')..writeAsBytesSync(b.toBytes());
+
+        // The stop clears the sentinel immediately — no end-of-run persist call here.
+        await p.processSegmentFile(contStop, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
         expect(p.inPriorityRecording, isFalse, reason: 'the 0xFFFFFFFC stop closed the priority recording');
-        await p.persistPriorityLatch();
-        expect(File(latchPath).existsSync(), isFalse, reason: 'no sentinel once the recording is closed');
+        expect(File(latchPath).existsSync(), isFalse,
+            reason: 'sentinel cleared AT the stop, not deferred to end of run');
         await p.destroy();
       });
 
