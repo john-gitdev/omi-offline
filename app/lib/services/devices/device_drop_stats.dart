@@ -55,6 +55,24 @@ class DeviceDropStats {
   /// with the central logging 0x3e → the Omi never heard them, so the fault is on
   /// the central. Appended at offset 40; 0 on older firmware.
   final int estabFailCount;
+
+  /// Priority Recording lifecycle counters, appended at offsets 44–56 (60-byte
+  /// firmware); 0 on older builds. These make a lost Priority Recording traceable
+  /// from the app log alone, no RTT capture:
+  ///
+  /// `priorityRecordStarts`: 0xFFFFFFF8 start-marker writes attempted (a priority
+  /// recording opened). `priorityRecordStops`: priority recordings ended —
+  /// `starts > stops` means one was left open. `markerWriteDrops`: inline markers
+  /// (start/stop/tap/mute) that failed to persist to SD. `emptyBinRotations`:
+  /// rotations that closed a bin holding no audio.
+  ///
+  /// The tell-tale for the vanished-priority-recording bug is `priorityRecordStarts`
+  /// moving while `emptyBinRotations` (and/or `markerWriteDrops`) also moves and no
+  /// high-priority recording surfaces — the marker + audio were dropped on-device.
+  final int priorityRecordStarts;
+  final int priorityRecordStops;
+  final int markerWriteDrops;
+  final int emptyBinRotations;
   final DateTime readAt;
 
   const DeviceDropStats({
@@ -69,6 +87,10 @@ class DeviceDropStats {
     this.msgqPeakDepth = 0,
     this.writeFairActivations = 0,
     this.estabFailCount = 0,
+    this.priorityRecordStarts = 0,
+    this.priorityRecordStops = 0,
+    this.markerWriteDrops = 0,
+    this.emptyBinRotations = 0,
     required this.readAt,
   });
 
