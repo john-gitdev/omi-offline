@@ -1296,6 +1296,36 @@ void main() {
         expect(File(latchPath).existsSync(), isFalse);
         await p.destroy();
       });
+
+      test('restoreState fails closed on an open priority span with no session id (legacy checkpoint)', () async {
+        // Real mid-priority state, then strip 'prs' to mimic a checkpoint written
+        // before the session-id field existed. Without a session id the reboot guard
+        // can't fire, so force-capture must NOT be restored.
+        final p1 = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+        await p1.processSegmentFile(
+            priorityBin('failclosed.bin', frames: 10), DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+        final state = (await p1.serializeState())!;
+        await p1.destroy();
+        expect(state['ipr'], isTrue);
+        expect(state['prs'], 1, reason: 'new state carries the session id');
+        state.remove('prs');
+
+        final p2 = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+        await p2.restoreState(state);
+        expect(p2.inPriorityRecording, isFalse, reason: 'no session id to reboot-guard → fail closed');
+        await p2.destroy();
+      });
+
+      test('restorePriorityLatch fails closed and clears a sentinel with no session id', () async {
+        final latchPath = '${tempDir.path}/latch_nosession.json';
+        File(latchPath).writeAsStringSync(jsonEncode({'ts': 0})); // no sessionId
+        final p = VadAudioProcessor.fromSettings(
+            settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
+        await p.restorePriorityLatch();
+        expect(p.inPriorityRecording, isFalse, reason: 'no session id → do not re-arm force-capture');
+        expect(File(latchPath).existsSync(), isFalse, reason: 'the un-guardable sentinel is removed');
+        await p.destroy();
+      });
     });
 
     group('Marker Protection Window', () {
