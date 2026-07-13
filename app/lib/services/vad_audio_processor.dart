@@ -550,13 +550,17 @@ class VadAudioProcessor {
     _inPriorityRecording = (s['ipr'] as bool?) ?? false;
     _priorityRecordingSessionId = s['prs'] as int?;
     _priorityOpenedAtMs = s['poa'] as int?;
-    // Fail closed on a restored open priority span we can't bound: no session id (the
-    // header-block reboot guard needs one to compare against) OR no open time (the age
-    // ceiling needs one), either of which would let it run unbounded across a reboot /
-    // dropped stop. A legacy checkpoint from before these fields existed, or a start in
-    // a pre-time-sync bin, lands here — drop force-capture rather than risk an unbounded
+    // Fail closed on a restored open priority span we can't safely keep: no session id
+    // (the header-block reboot guard needs one to compare against), no open time (the
+    // age ceiling needs one), OR already older than the ceiling (a dropped 0xFFFFFFFC —
+    // mirrors restorePriorityLatch so a resumed checkpoint can't outlive the sentinel's
+    // bound). A legacy checkpoint from before these fields existed, or a start in a
+    // pre-time-sync bin, lands here — drop force-capture rather than risk an unbounded
     // recording. Worst case is one resume losing force-capture.
-    if (_inPriorityRecording && (_priorityRecordingSessionId == null || _priorityOpenedAtMs == null)) {
+    if (_inPriorityRecording &&
+        (_priorityRecordingSessionId == null ||
+            _priorityOpenedAtMs == null ||
+            DateTime.now().millisecondsSinceEpoch - _priorityOpenedAtMs! > _maxRestoredPriorityAgeMs)) {
       _inPriorityRecording = false;
     }
     _priorityOpenBinPath = s['pob'] as String?;
@@ -1129,9 +1133,14 @@ class VadAudioProcessor {
             _inPriorityRecording = true;
             // Remember the session so the next run (or an in-run reboot) can tell a
             // genuine continuation from a restarted device — see the reboot guard and
-            // persistPriorityLatch(). Stamp the open time (preserved across runs) so a
-            // dropped stop can't keep this latch open past _maxRestoredPriorityAgeMs.
-            _priorityRecordingSessionId = _currentSessionId ?? sessionId;
+            // persistPriorityLatch(). Prefer THIS bin's resolved session id: when the
+            // priority recording opens in the first bin after a reboot, _currentSessionId
+            // still holds the pre-reboot recording (it's updated as frames are consumed,
+            // which for a marker at the bin head happens after this), so anchoring to it
+            // would make the next same-session bin falsely end the span. Stamp the open
+            // time (preserved across runs) so a dropped stop can't keep this latch open
+            // past _maxRestoredPriorityAgeMs.
+            _priorityRecordingSessionId = sessionId ?? _currentSessionId;
             _priorityOpenedAtMs = markerMs;
             // Pin this bin on disk until the priority recording buffers audio or
             // finalizes, so a marker that arrived with no trailing frames isn't
