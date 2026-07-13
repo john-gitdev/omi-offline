@@ -384,6 +384,21 @@ static atomic_t estab_fail_count = ATOMIC_INIT(0);
 static const char *current_adv_mode = "fast"; /* boot + post-disconnect both start fast */
 static uint8_t last_failed_adv_slow = 0;      /* 1 if the most recent failure of either kind was during slow adv */
 
+/* Diagnostics: Priority Recording lifecycle, appended to 0x19B10062. These make a
+ * lost Priority Recording traceable from the app log alone (no RTT/serial capture):
+ *   priority_record_starts — a 0xFFFFFFF8 start marker write was attempted, i.e.
+ *     record_start() opened an auto-mode priority recording (counted even if the
+ *     write below is then dropped — that pairing is the whole diagnosis).
+ *   priority_record_stops  — priority_record_stop() ended one (starts > stops means
+ *     a priority recording was left open — the "open-draft banner" case).
+ *   marker_write_drops     — an inline marker (0xFFFFFFF8 / 0xFFFFFFFC / 0xFFFFFFFE /
+ *     mute) failed to persist to SD (queue full / write reject); the marker is lost.
+ * empty_bin_rotations lives in sd_card.c (see sd_get_empty_bin_rotations()). All are
+ * monotonic since boot — only movement between two reads is meaningful. */
+static atomic_t priority_record_starts = ATOMIC_INIT(0);
+static atomic_t priority_record_stops = ATOMIC_INIT(0);
+static atomic_t marker_write_drops = ATOMIC_INIT(0);
+
 /* Throttled flash persist of both counters (NOTES.md: "BLE: advertising but
  * won't connect"). The failures accrue while disconnected, and the user must
  * power-cycle or toggle phone Bluetooth to reconnect and read them, so the counts
@@ -409,7 +424,7 @@ static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_ha
 //   uptime_seconds: how long the PREVIOUS session ran before it ended (crash or clean shutdown)
 //
 // Characteristic B:   19B10062-E8F2-537E-4F6C-D104768A1214
-// Returns 44 bytes LE (fields appended over time; older apps read a prefix):
+// Returns 60 bytes LE (fields appended over time; older apps read a prefix):
 //   [uint32 storage_block_drops]   storage_block_drops since boot (each = ~5 Opus frames lost)
 //   [uint32 last_drop_uptime_ms]   k_uptime_get() at the most recent block drop (0 = none)
 //   [uint32 sd_stream_drops]       stat_dropped_frames from sd_card.c (queue-full audio frame drops)
@@ -423,6 +438,10 @@ static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_ha
 //   [uint32 sd_msgq_peak_depth]    high-water mark of sd_msgq occupancy / SD_REQ_QUEUE_MSGS (offset 32)
 //   [uint32 write_fair_activations] times write fairness forced a write over reads (offset 36)
 //   [uint32 estab_fail_count]      links that died at establishment, HCI 0x3e (offset 40)
+//   [uint32 priority_record_starts] 0xFFFFFFF8 priority-start writes attempted (offset 44)
+//   [uint32 priority_record_stops]  priority recordings ended; starts>stops = left open (offset 48)
+//   [uint32 marker_write_drops]     inline markers that failed to persist to SD (offset 52)
+//   [uint32 empty_bin_rotations]    rotations that closed a bin holding no audio (offset 56)
 static struct bt_uuid_128 diagnostics_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10060, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 diagnostics_characteristic_uuid =
@@ -475,12 +494,17 @@ static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
     uint32_t msgq_peak = sd_get_msgq_peak_depth();
     uint32_t fair_acts = sd_get_write_fair_activations();
     uint32_t estab_fails = (uint32_t) atomic_get(&estab_fail_count);
+    uint32_t prio_starts = (uint32_t) atomic_get(&priority_record_starts);
+    uint32_t prio_stops = (uint32_t) atomic_get(&priority_record_stops);
+    uint32_t mk_drops = (uint32_t) atomic_get(&marker_write_drops);
+    uint32_t empty_rots = sd_get_empty_bin_rotations();
 
-    /* 44 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
+    /* 60 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
      * codec_drops + sd_msgq peak depth + write-fairness activations + establishment
-     * failures. Each field is appended at the end so older app builds (which read
-     * only the first 20 / 28 / 32 / 40 bytes) keep working unchanged. */
-    uint8_t payload[44];
+     * failures + Priority Recording lifecycle (starts / stops / marker drops /
+     * empty-bin rotations). Each field is appended at the end so older app builds
+     * (which read only the first 20 / 28 / 32 / 40 / 44 bytes) keep working unchanged. */
+    uint8_t payload[60];
     pack_u32_le(payload + 0, block_drops);
     pack_u32_le(payload + 4, last_drop_ms);
     pack_u32_le(payload + 8, sd_stream_drops);
@@ -492,6 +516,10 @@ static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
     pack_u32_le(payload + 32, msgq_peak);
     pack_u32_le(payload + 36, fair_acts);
     pack_u32_le(payload + 40, estab_fails);
+    pack_u32_le(payload + 44, prio_starts);
+    pack_u32_le(payload + 48, prio_stops);
+    pack_u32_le(payload + 52, mk_drops);
+    pack_u32_le(payload + 56, empty_rots);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
 }
 
@@ -1750,6 +1778,14 @@ static bool write_marker_header_to_storage(uint32_t header, const char *label)
     }
     k_mutex_unlock(&storage_temp_mutex);
 
+    /* Diagnostics: a marker that failed to persist (initial write reject or the
+     * SD-queue-full flush drop above) is a lost inline frame — for a priority
+     * start/stop that means the recording silently reverts to plain auto VAD.
+     * Surfaced over BLE (0x19B10062) so it's visible without an RTT capture. */
+    if (!ok) {
+        atomic_inc(&marker_write_drops);
+    }
+
     return ok;
 }
 
@@ -1775,7 +1811,19 @@ bool write_mute_off_marker_to_storage(void)
 
 bool write_priority_recording_marker_to_storage(void)
 {
+    /* Count the start attempt here (not in button.c) so it's tallied exactly once
+     * per real priority start — record_start() reaches this only after its
+     * already-recording guard. Counted even if the write is dropped below, so a
+     * (starts=1, marker_write_drops=1) reading pins a lost priority marker. */
+    atomic_inc(&priority_record_starts);
     return write_marker_header_to_storage(0xFFFFFFF8, "priority-record");
+}
+
+/* Called from button.c priority_record_stop() once a force-capture actually ends
+ * (after its threshold guard), so priority_record_starts vs _stops pair up. */
+void transport_note_priority_record_stop(void)
+{
+    atomic_inc(&priority_record_stops);
 }
 #endif
 
