@@ -192,6 +192,7 @@ static void priority_record_stop(void)
     if (aad_get_threshold() != 65535) {
         return;
     }
+    transport_note_priority_record_stop(); /* diagnostics: pairs with the start count (0x19B10062) */
     uint16_t resting = app_settings_get_vad_threshold(); /* persisted auto value */
     aad_set_threshold(resting);
     create_new_audio_file();

@@ -129,6 +129,11 @@ class VadAudioProcessor {
 
   @visibleForTesting
   int? get currentSessionId => _currentSessionId;
+
+  /// True while inside a Priority Recording force-capture span. Test-only hook
+  /// for the cross-run priority-latch tests.
+  @visibleForTesting
+  bool get inPriorityRecording => _inPriorityRecording;
   // Marker-forced recording state
   bool _forcedByMarker = false;
   // Wall-clock timestamp (ms) after which normal gap-splitting resumes.
@@ -145,9 +150,35 @@ class VadAudioProcessor {
   // start marker and its 0xFFFFFFFC stop. The firmware force-captures every
   // frame across this span (runtime VAD threshold 65535), so the app must NOT
   // split it on silence — every frame is treated as speech and the recording
-  // finalizes only at the stop marker. Persisted so a priority recording that
-  // spans a sync boundary keeps capturing without splitting on the next run.
+  // finalizes only at the stop marker. Carried across runs two ways: the
+  // checkpoint ('ipr') for an interrupted/resumed run, and the priority-latch
+  // sentinel (see [_priorityStatePath]) for a run that COMPLETES mid-recording —
+  // e.g. a force-sync between start and stop, where the checkpoint is deleted on
+  // clean completion. Without the sentinel the continuation is re-VAD'd as normal
+  // auto mode and loses force-capture (silence gets split/dropped).
   bool _inPriorityRecording = false;
+
+  // Device session id of the currently-open Priority Recording (from the marker's
+  // bin header). Persisted with the latch so the next run can tell a genuine
+  // continuation (same session) from a reboot (new session): the firmware never
+  // carries force-capture across a reboot — the 65535 threshold is runtime-only —
+  // so a session change ends the priority span. Null when not in a priority rec.
+  int? _priorityRecordingSessionId;
+
+  // Wall-clock ms of the 0xFFFFFFF8 that opened the current Priority Recording,
+  // preserved (NOT refreshed) across runs. Bounds a latch whose 0xFFFFFFFC stop was
+  // dropped: without an upper limit such a latch would force-capture same-session
+  // auto audio indefinitely across clean syncs. restorePriorityLatch fails closed
+  // once the span exceeds [_maxRestoredPriorityAgeMs]. Null when not in a priority rec.
+  int? _priorityOpenedAtMs;
+
+  // Path of the priority-latch sentinel file, or null (main-isolate / tests that
+  // don't exercise cross-run priority). Holds {sessionId} while a Priority
+  // Recording is open so it survives a clean run completion (which deletes the
+  // checkpoint) or a shifted segment list (which discards checkpoint VAD state).
+  // Written/cleared at run boundaries by persistPriorityLatch(); read at run start
+  // by restorePriorityLatch(). See the [_inPriorityRecording] doc.
+  final String? _priorityStatePath;
 
   // Path of the bin holding the 0xFFFFFFF8 start marker of an open Priority
   // Recording. Kept so consumeSafeToDeletePaths never releases that bin while
@@ -205,6 +236,20 @@ class VadAudioProcessor {
   // they drift, the app's protection window won't line up with the audio the
   // firmware actually forced on.
   static const int _markerProtectionWindowMs = 50000;
+
+  // Upper bound on a priority-latch restored across sync boundaries. A dropped
+  // 0xFFFFFFFC stop would otherwise keep force-capture on forever (until a reboot);
+  // once a restored span is older than this, restorePriorityLatch fails closed and
+  // the audio is processed as normal auto mode. Generous vs. the firmware priority
+  // safety cap (0x19B10014, default 120 min) so it only trips on a genuinely stuck
+  // latch, not a long legitimate recording the firmware would have stopped first.
+  static const int _maxRestoredPriorityAgeMs = 6 * 60 * 60 * 1000; // 6 hours
+
+  // Tolerance for a restored latch's open time landing slightly in the FUTURE.
+  // openedAtMs is a device-RTC wall time (time-synced from the phone), so a small
+  // skew is normal; anything beyond this is a bogus/corrupt stamp that must not
+  // defeat the age ceiling (a negative age would otherwise pass the > ceiling test).
+  static const int _priorityClockSkewToleranceMs = 5 * 60 * 1000; // 5 minutes
 
   /// Creates a processor in the main isolate, reading settings from SharedPreferences.
   static Future<VadAudioProcessor> create({String? outputDir, SimpleOpusDecoder? decoder}) async {
@@ -279,6 +324,7 @@ class VadAudioProcessor {
     void Function()? onLiveness,
     bool Function()? isCancelled,
     VadBatchRunnerChannel? batchRunner,
+    String? priorityStatePath,
   }) : this._(
             outputDir: outputDir,
             decoder: decoder,
@@ -286,7 +332,8 @@ class VadAudioProcessor {
             settings: settings,
             onLiveness: onLiveness,
             isCancelled: isCancelled,
-            batchRunner: batchRunner);
+            batchRunner: batchRunner,
+            priorityStatePath: priorityStatePath);
 
   VadAudioProcessor._(
       {String? outputDir,
@@ -295,8 +342,10 @@ class VadAudioProcessor {
       required ProcessingSettings settings,
       void Function()? onLiveness,
       bool Function()? isCancelled,
-      VadBatchRunnerChannel? batchRunner})
+      VadBatchRunnerChannel? batchRunner,
+      String? priorityStatePath})
       : _session = session,
+        _priorityStatePath = priorityStatePath,
         _batchRunner = batchRunner,
         _onLiveness = onLiveness,
         _isCancelled = isCancelled,
@@ -329,6 +378,107 @@ class VadAudioProcessor {
     // ignore: unawaited_futures, discarded_futures
     _cachedSrValue?.dispose();
     _cachedSrValue = null;
+  }
+
+  /// Whether a restored priority latch's open time is within the restorable window:
+  /// present, not implausibly in the future (a bogus/corrupt stamp — a negative age
+  /// would otherwise slip past the `> ceiling` test), and not older than the
+  /// stale-latch bound (a dropped 0xFFFFFFFC). Shared by both restore paths so a
+  /// future-dated marker can't keep force-capture on. A small clock skew is tolerated.
+  bool _restoredPriorityAgeOk(int? openedAtMs) {
+    if (openedAtMs == null) return false;
+    final ageMs = DateTime.now().millisecondsSinceEpoch - openedAtMs;
+    return ageMs >= -_priorityClockSkewToleranceMs && ageMs <= _maxRestoredPriorityAgeMs;
+  }
+
+  /// Removes the priority-latch sentinel. Called at the 0xFFFFFFFC stop boundary
+  /// (so an abrupt exit can't resurrect force-capture) and when the latch closes.
+  /// No-op when there's no sentinel path or no file. Safe to fire-and-forget.
+  Future<void> _clearPriorityLatchFile() async {
+    final path = _priorityStatePath;
+    if (path == null) return;
+    try {
+      final f = File(path);
+      if (await f.exists()) await f.delete();
+    } catch (e) {
+      Logger.error('VadAudioProcessor: priority latch clear failed ($e)');
+    }
+  }
+
+  /// Persists the "a Priority Recording is currently open" latch so force-capture
+  /// survives a run boundary the checkpoint can't bridge — a run that COMPLETES
+  /// mid-recording (checkpoint deleted on clean completion) or a shifted segment
+  /// list (checkpoint VAD state discarded). Called by the isolate worker at end of
+  /// run: writes {sessionId, openedAtMs} while open, removes the sentinel once
+  /// closed. openedAtMs is the ORIGINAL open time preserved across runs (not
+  /// refreshed), so restore can bound a stuck latch. No-op when [_priorityStatePath]
+  /// is null (main isolate / Recover Discard / tests).
+  Future<void> persistPriorityLatch() async {
+    final path = _priorityStatePath;
+    if (path == null) return;
+    if (!_inPriorityRecording) {
+      await _clearPriorityLatchFile();
+      return;
+    }
+    try {
+      await File(path).writeAsString(jsonEncode({
+        'sessionId': _priorityRecordingSessionId,
+        'openedAtMs': _priorityOpenedAtMs,
+        'ts': DateTime.now().millisecondsSinceEpoch,
+      }));
+    } catch (e) {
+      Logger.error('VadAudioProcessor: priority latch persist failed ($e)');
+    }
+  }
+
+  /// Restores the open-Priority-Recording latch written by a prior run's
+  /// [persistPriorityLatch], so the continuation of a priority recording that
+  /// spanned a sync keeps force-capturing (no silence split). Called by the isolate
+  /// worker at run start ONLY when no checkpoint was restored (a checkpoint is newer,
+  /// authoritative state for its resume position). Fails closed — removing the
+  /// sentinel — when it can't be safely re-armed: no session id (can't reboot-guard),
+  /// or the span is older than [_maxRestoredPriorityAgeMs] (a dropped 0xFFFFFFFC stop
+  /// that would otherwise force-capture forever). The reboot guard drops the restored
+  /// latch too if the incoming bins belong to a different session.
+  Future<void> restorePriorityLatch() async {
+    final path = _priorityStatePath;
+    if (path == null || _inPriorityRecording) return;
+    try {
+      final f = File(path);
+      if (!await f.exists()) return;
+      final data = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
+      final sessionId = data['sessionId'] as int?;
+      // Fail closed (mirrors restoreState): without a session id the reboot guard
+      // can't fire, so a stale sentinel could force-capture unbounded across a reboot.
+      if (sessionId == null) {
+        await f.delete();
+        return;
+      }
+      // Bounded recovery: an open time is REQUIRED so the latch can always be aged
+      // out — otherwise a dropped 0xFFFFFFFC would force-capture same-session auto
+      // audio indefinitely. Prefer openedAtMs; fall back to the persist 'ts' for a
+      // legacy sentinel written before the field existed. If neither is present, or
+      // the span is older than the ceiling (stop marker almost certainly dropped),
+      // fail closed and delete the sentinel.
+      final openedAtMs = (data['openedAtMs'] ?? data['ts']) as int?;
+      if (!_restoredPriorityAgeOk(openedAtMs)) {
+        Logger.debug('VadAudioProcessor: Priority latch unbounded / future-dated / older than '
+            '${_maxRestoredPriorityAgeMs ~/ 3600000}h (opened $openedAtMs) — dropping (stop marker likely lost).');
+        await f.delete();
+        return;
+      }
+      _inPriorityRecording = true;
+      _priorityRecordingSessionId = sessionId;
+      _priorityOpenedAtMs = openedAtMs;
+      // Intentionally NOT restoring _priorityOpenBinPath: the marker bin belonged to
+      // the prior run (consumed into its draft, or re-processed via its own pin), so
+      // there is no marker-only bin to protect here — the continuation carries audio,
+      // and hasOpenPriorityWithoutAudio staying false is correct.
+      Logger.debug('VadAudioProcessor: Restored open Priority Recording latch '
+          '(session=$_priorityRecordingSessionId) — continuation will force-capture until 0xFFFFFFFC.');
+    } catch (e) {
+      Logger.error('VadAudioProcessor: priority latch restore failed ($e)');
+    }
   }
 
   /// Serializes all conversation and VAD model state to a JSON-compatible map
@@ -367,6 +517,8 @@ class VadAudioProcessor {
       'mpu': _markerProtectedUntilMs,
       'sep': _sessionEndPendingResume,
       'ipr': _inPriorityRecording,
+      'prs': _priorityRecordingSessionId,
+      'poa': _priorityOpenedAtMs,
       'pob': _priorityOpenBinPath,
       'mtd': _muted,
       'mts': _muteStartMs,
@@ -413,6 +565,18 @@ class VadAudioProcessor {
     _markerProtectedUntilMs = s['mpu'] as int?;
     _sessionEndPendingResume = s['sep'] as bool;
     _inPriorityRecording = (s['ipr'] as bool?) ?? false;
+    _priorityRecordingSessionId = s['prs'] as int?;
+    _priorityOpenedAtMs = s['poa'] as int?;
+    // Fail closed on a restored open priority span we can't safely keep: no session id
+    // (the header-block reboot guard needs one to compare against), no open time (the
+    // age ceiling needs one), OR already older than the ceiling (a dropped 0xFFFFFFFC —
+    // mirrors restorePriorityLatch so a resumed checkpoint can't outlive the sentinel's
+    // bound). A legacy checkpoint from before these fields existed, or a start in a
+    // pre-time-sync bin, lands here — drop force-capture rather than risk an unbounded
+    // recording. Worst case is one resume losing force-capture.
+    if (_inPriorityRecording && (_priorityRecordingSessionId == null || !_restoredPriorityAgeOk(_priorityOpenedAtMs))) {
+      _inPriorityRecording = false;
+    }
     _priorityOpenBinPath = s['pob'] as String?;
     _muted = (s['mtd'] as bool?) ?? false;
     _muteStartMs = s['mts'] as int?;
@@ -608,6 +772,26 @@ class VadAudioProcessor {
           lastFrameWallTime = segmentStartTime;
           _isDerivedTimestamp = false;
         }
+      }
+
+      // Priority Recording reboot guard: force-capture never survives a reboot on the
+      // device (the 65535 threshold is runtime-only), so a bin from a DIFFERENT session
+      // than the open priority recording means the recording ended (device restarted).
+      // Uses the RESOLVED session id — the header value when present, else the caller's
+      // (from the filename) — so a headerless bin from a new session ends the span too.
+      // Runs before the split logic so the new session's audio is handled as normal
+      // auto mode. Catches a latch restored from the sentinel across a reboot and a
+      // reboot that lands mid-run.
+      if (_inPriorityRecording &&
+          _priorityRecordingSessionId != null &&
+          sessionId != null &&
+          sessionId != _priorityRecordingSessionId) {
+        Logger.debug('VadAudioProcessor: Priority Recording session changed '
+            '($_priorityRecordingSessionId → $sessionId) — ending force-capture (device rebooted).');
+        _inPriorityRecording = false;
+        _priorityRecordingSessionId = null;
+        _priorityOpenedAtMs = null;
+        await _clearPriorityLatchFile();
       }
 
       if (_lastSegmentEndTime != null) {
@@ -894,7 +1078,15 @@ class VadAudioProcessor {
             // restores the auto threshold, which the firmware finalizes by
             // emitting this same 0xFFFFFFFC). Leaving the force-capture span.
             _inPriorityRecording = false;
+            _priorityRecordingSessionId = null;
+            _priorityOpenedAtMs = null;
             _priorityOpenBinPath = null;
+            // Clear the durable latch AT the stop boundary, not just at end of run:
+            // a termination (force-kill, no finally) after parsing a valid stop would
+            // otherwise leave a stale open sentinel that the next run resurrects into
+            // force-capture. Awaited so it completes before processing continues (rare
+            // — once per stop). No-op when no sentinel exists (e.g. manual-mode stop).
+            await _clearPriorityLatchFile();
             // Manual-mode stop is a hard end, not a silence/file split: the
             // protected recording is finalized and the tap consumed, so the
             // guaranteed-save window is done. Clear it so a tap-then-stop-then-
@@ -934,6 +1126,14 @@ class VadAudioProcessor {
                 ? DateTime.fromMillisecondsSinceEpoch(markerUtcMs, isUtc: true)
                 : lastFrameWallTime;
             final markerMs = markerFrameTime.millisecondsSinceEpoch;
+            // Symmetric with the 0xFFFFFFFC session-end log: record that a priority
+            // start marker was actually parsed, so its presence (or absence) is
+            // visible in the app log without an RTT capture. If a recording renders
+            // without the priority flag and this line never appears for it, the
+            // marker never reached the processor (see the empty-bin warning in
+            // SDCardWalSync) rather than being mishandled here.
+            Logger.debug('VadAudioProcessor: Priority Recording start marker (0xFFFFFFF8) at '
+                '$markerFrameTime — opening high-priority recording (prior refs=${_currentRefs.length}).');
             // 3) Finalize the current auto recording (if any) at this boundary.
             if (_currentRefs.isNotEmpty) {
               _forcedByMarker = true;
@@ -945,6 +1145,17 @@ class VadAudioProcessor {
             // 4) Enter force-capture: every frame is speech, no silence split,
             // until the 0xFFFFFFFC stop.
             _inPriorityRecording = true;
+            // Remember the session so the next run (or an in-run reboot) can tell a
+            // genuine continuation from a restarted device — see the reboot guard and
+            // persistPriorityLatch(). Prefer THIS bin's resolved session id: when the
+            // priority recording opens in the first bin after a reboot, _currentSessionId
+            // still holds the pre-reboot recording (it's updated as frames are consumed,
+            // which for a marker at the bin head happens after this), so anchoring to it
+            // would make the next same-session bin falsely end the span. Stamp the open
+            // time (preserved across runs) so a dropped stop can't keep this latch open
+            // past _maxRestoredPriorityAgeMs.
+            _priorityRecordingSessionId = sessionId ?? _currentSessionId;
+            _priorityOpenedAtMs = markerMs;
             // Pin this bin on disk until the priority recording buffers audio or
             // finalizes, so a marker that arrived with no trailing frames isn't
             // freed (and re-seen / re-captured on the next run). See field doc.

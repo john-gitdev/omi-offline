@@ -73,6 +73,15 @@ bool write_mute_off_marker_to_storage(void);
 bool write_priority_recording_marker_to_storage(void);
 
 /**
+ * @brief Note that a Priority Recording just stopped (diagnostics counter).
+ *
+ * Called from button.c priority_record_stop() once a force-capture actually ends,
+ * so the priority_record_starts / _stops pair (read via 0x19B10062) balances.
+ * starts > stops means a priority recording was left open.
+ */
+void transport_note_priority_record_stop(void);
+
+/**
  * @brief Broadcast audio packets over BLE
  *
  * @param buffer Buffer containing audio data
