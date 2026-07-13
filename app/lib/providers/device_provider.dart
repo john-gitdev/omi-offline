@@ -1499,6 +1499,33 @@ class DeviceProvider extends ChangeNotifier
           'estab_fail_count': dropStats.estabFailCount,
           'last_failure_adv_mode': dropStats.lastFailedConnDuringSlowAdv ? 'slow' : 'fast',
         });
+
+        // Priority Recording diagnostics (0x0062, offsets 44–56). A start with no
+        // matching stop, a dropped marker write, or an empty-bin rotation is the
+        // on-device fingerprint of a lost Priority Recording — surfaced here so it's
+        // traceable from the app log without an RTT capture. Counters are cumulative
+        // since boot; only movement between two readings means anything. Skip the noise
+        // when all zero (older firmware, or no priority recording has run).
+        final bool priorityActivity = dropStats.priorityRecordStarts > 0 ||
+            dropStats.priorityRecordStops > 0 ||
+            dropStats.markerWriteDrops > 0 ||
+            dropStats.emptyBinRotations > 0;
+        if (priorityActivity) {
+          final priorityMsg = 'Device priority-record counters: starts=${dropStats.priorityRecordStarts} '
+              'stops=${dropStats.priorityRecordStops} markerDrops=${dropStats.markerWriteDrops} '
+              'emptyBinRotations=${dropStats.emptyBinRotations}';
+          if (dropStats.markerWriteDrops > 0 || dropStats.emptyBinRotations > 0) {
+            Logger.warning('$priorityMsg — possible lost Priority Recording (marker/audio dropped on-device)');
+          } else {
+            Logger.debug(priorityMsg);
+          }
+          await DebugLogManager.logEvent('device_priority_stats', {
+            'priority_starts': dropStats.priorityRecordStarts,
+            'priority_stops': dropStats.priorityRecordStops,
+            'marker_write_drops': dropStats.markerWriteDrops,
+            'empty_bin_rotations': dropStats.emptyBinRotations,
+          });
+        }
       }
     }
 
