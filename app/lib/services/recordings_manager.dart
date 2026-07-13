@@ -602,6 +602,11 @@ class RecordingsManager {
         int checkpointResumeIndex = 0;
         List<String> checkpointPendingDeletes = [];
         final checkpointFile = File('${directory.path}/vad_checkpoint.json');
+        // Priority-latch sentinel (see VadAudioProcessor.persistPriorityLatch). Lives
+        // beside the checkpoint in the stable app-documents dir so it outlives a run;
+        // unlike the checkpoint it is NOT deleted on clean completion, which is exactly
+        // what lets a Priority Recording keep force-capturing across a sync boundary.
+        final priorityLatchFile = File('${directory.path}/vad_priority_latch.json');
         try {
           if (await checkpointFile.exists()) {
             final content = await checkpointFile.readAsString();
@@ -700,6 +705,9 @@ class RecordingsManager {
               checkpointResumeIndex: checkpointResumeIndex,
               checkpointPath: checkpointFile.path,
               checkpointPendingDeletes: checkpointPendingDeletes,
+              // Disabled for Recover Discard: a recovered slice is a self-contained
+              // clip and must not read or write live priority state.
+              priorityStatePath: finalizeRemainingDirectly ? null : priorityLatchFile.path,
             ),
             onExit: exitPort.sendPort,
           );

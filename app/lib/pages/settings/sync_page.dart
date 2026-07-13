@@ -1263,6 +1263,20 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
             padding: EdgeInsets.symmetric(vertical: 6),
             child: Divider(color: Color(0xFF2C2C2E), height: 1),
           ),
+          // Priority Recording lifecycle (0x0062, since boot; not baseline-adjusted).
+          // starts > stops means a recording was left open; marker-write drops and
+          // empty-bin rotations are the on-device fingerprint of a lost Priority
+          // Recording (0xFFFFFFF8 marker + audio dropped at the rotate). Amber when a
+          // start has no matching stop or either loss counter is nonzero.
+          _dropStatRow('Priority recordings started', stats.priorityRecordStarts.toString(), false),
+          _dropStatRow('Priority recordings stopped', stats.priorityRecordStops.toString(),
+              stats.priorityRecordStarts > stats.priorityRecordStops),
+          _dropStatRow('Marker writes dropped', stats.markerWriteDrops.toString(), stats.markerWriteDrops > 0),
+          _dropStatRow('Empty bin rotations', stats.emptyBinRotations.toString(), stats.emptyBinRotations > 0),
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 6),
+            child: Divider(color: Color(0xFF2C2C2E), height: 1),
+          ),
           // BLE connect failures. The firmware counters are persisted across
           // reboots; these baselines are too, unlike the SD-drop baseline.
           // "Died at establishment" is the one that identifies a "visible but

@@ -171,6 +171,16 @@ uint32_t sd_get_msgq_peak_depth(void);
 uint32_t sd_get_write_fair_activations(void);
 
 /**
+ * @brief Get the number of rotations that closed a bin holding no audio.
+ *
+ * Incremented when create_audio_file_with_timestamp() closes a file whose size is
+ * at most the inline metadata header — i.e. a bin that was opened and rotated with
+ * nothing (or only the 0xFFFFFFFB header) persisted. A lost Priority Recording
+ * leaves exactly this residue. Monotonic since boot. Safe to call from any thread.
+ */
+uint32_t sd_get_empty_bin_rotations(void);
+
+/**
  * @brief Put the SD card interface (controller) into a low-power (suspend) state.
  *        Note: This typically suspends the SPI controller managing the SD card slot.
  *

@@ -1049,6 +1049,19 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         wal.isSyncing = false;
         listener.onWalUpdated();
 
+        // Diagnostic: a bin the DEVICE itself advertised as 0 bytes in CMD_LIST_FILES
+        // means the firmware opened+rotated the file but never persisted a single
+        // frame into it. That is the signature of a lost Priority Recording — the
+        // 0xFFFFFFF8 start marker and its force-captured audio were dropped at the
+        // rotation, so an empty bin rotates through here and is deleted as "synced".
+        // Surface it loudly so this is traceable from the app log alone, with no
+        // RTT/serial capture. storageTotalBytes = device-advertised size; walOffset =
+        // bytes actually received (both ~0 here → the loss is on-device, not in transit).
+        if (wal.storageTotalBytes == 0) {
+          Logger.warning('SDCardWalSync: ts=${wal.timerStart} synced EMPTY — device advertised 0 B '
+              '(firmware wrote nothing to this bin; a lost priority marker/recording rotates through here)');
+        }
+
         // Delete immediately so a disconnect won't re-sync this file next session.
         try {
           await _deleteWalLocked(connection, wal, overrideFileNum: 0, skipSave: true);
