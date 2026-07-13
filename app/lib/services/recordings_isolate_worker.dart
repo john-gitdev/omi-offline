@@ -191,12 +191,16 @@ Future<void> processingIsolateEntry(IsolateParams params) async {
       await processor.restoreState(params.checkpointState!);
       Logger.debug(
           'RecordingsManager isolate: restored checkpoint state, resuming from segment ${params.checkpointResumeIndex}/${params.segmentPaths.length}.');
+    } else {
+      // Restore the open-Priority-Recording latch ONLY when no checkpoint was
+      // restored. A restored checkpoint is newer, authoritative state for its resume
+      // position — it already reflects any 0xFFFFFFFC processed before the
+      // interruption — so a stale sentinel must not override it. When there is no
+      // checkpoint (clean completion) or its VAD state was discarded (shifted segment
+      // list → checkpointState null), the sentinel bridges force-capture across the
+      // sync boundary (e.g. a force-sync between RECORD_START and STOP).
+      await processor.restorePriorityLatch();
     }
-    // Restore the open-Priority-Recording latch (no-op if the checkpoint above
-    // already set it, or there's no sentinel path). Bridges force-capture across a
-    // run that completed mid-recording — e.g. a force-sync between RECORD_START and
-    // STOP — where the checkpoint was deleted / its VAD state discarded.
-    await processor.restorePriorityLatch();
     // Re-send pending deletes from the prior run — delete handler checks existence first so this is idempotent.
     if (params.checkpointPendingDeletes.isNotEmpty) {
       params.sendPort.send({'type': 'delete_segments', 'paths': params.checkpointPendingDeletes});
