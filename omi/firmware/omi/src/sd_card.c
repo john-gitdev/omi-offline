@@ -282,6 +282,13 @@ static atomic_t stat_dropped_frames;
 static atomic_t sd_msgq_peak_depth;
 static atomic_t write_fair_activations;
 
+/* Diagnostics: rotations that closed a bin holding no audio (size <= the inline
+ * metadata header, i.e. only the 0xFFFFFFFB header or nothing at all persisted).
+ * A Priority Recording whose 0xFFFFFFF8 marker + force-captured frames were lost
+ * at the rotate leaves exactly this empty-bin residue, so a nonzero delta across a
+ * priority attempt is the on-device fingerprint of that loss. Read via 0x19B10062. */
+static atomic_t empty_bin_rotations;
+
 /* Protects current_filename / current_file_path across threads.
  * The SD worker updates these during file creation and TMP→hex rename;
  * the storage thread reads them via sd_is_current_recording_file(). */
@@ -1309,6 +1316,15 @@ static int create_audio_file_with_timestamp(void)
 
     /* Close current file if open */
     if (current_filename[0] != '\0') {
+        /* Diagnostics: a bin closed with no audio beyond the inline metadata header
+         * (0xFFFFFFFB) means the file was opened+rotated but nothing landed in it —
+         * the on-device signature of a lost Priority Recording (0xFFFFFFF8 marker +
+         * force-captured frames dropped at the rotate). current_file_size is still the
+         * OLD file's size here (it's reset for the new file further below). Surface it
+         * over BLE (0x19B10062) so it's visible without an RTT capture. */
+        if (current_file_size <= sizeof(RecordingHeader_v1_t)) {
+            atomic_inc(&empty_bin_rotations);
+        }
         flush_batch_buffer_chunked();
         lfs_file_close(&lfs_fs, &lfs_fil_data);
         k_mutex_lock(&current_filename_lock, K_FOREVER);
@@ -2429,6 +2445,11 @@ uint32_t sd_get_msgq_peak_depth(void)
 uint32_t sd_get_write_fair_activations(void)
 {
     return (uint32_t)atomic_get(&write_fair_activations);
+}
+
+uint32_t sd_get_empty_bin_rotations(void)
+{
+    return (uint32_t)atomic_get(&empty_bin_rotations);
 }
 
 int app_sd_init(void)
