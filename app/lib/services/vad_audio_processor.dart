@@ -397,8 +397,20 @@ class VadAudioProcessor {
       final f = File(path);
       if (!await f.exists()) return;
       final data = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
+      final sessionId = data['sessionId'] as int?;
+      // Fail closed (mirrors restoreState): without a session id the reboot guard
+      // can't fire, so a stale sentinel could force-capture unbounded across a
+      // reboot. Only re-arm force-capture when we can guard it.
+      if (sessionId == null) {
+        await f.delete();
+        return;
+      }
       _inPriorityRecording = true;
-      _priorityRecordingSessionId = data['sessionId'] as int?;
+      _priorityRecordingSessionId = sessionId;
+      // Intentionally NOT restoring _priorityOpenBinPath: the marker bin belonged to
+      // the prior run (consumed into its draft, or re-processed via its own pin), so
+      // there is no marker-only bin to protect here — the continuation carries audio,
+      // and hasOpenPriorityWithoutAudio staying false is correct.
       Logger.debug('VadAudioProcessor: Restored open Priority Recording latch '
           '(session=$_priorityRecordingSessionId) — continuation will force-capture until 0xFFFFFFFC.');
     } catch (e) {
@@ -490,6 +502,14 @@ class VadAudioProcessor {
     _sessionEndPendingResume = s['sep'] as bool;
     _inPriorityRecording = (s['ipr'] as bool?) ?? false;
     _priorityRecordingSessionId = s['prs'] as int?;
+    // Fail closed: an open priority span with no session id can't be reboot-guarded
+    // (the header-block guard needs a session to compare against), so it could run
+    // unbounded across a reboot. A legacy checkpoint from before this field existed,
+    // or a start seen in a pre-time-sync bin, lands here — drop force-capture rather
+    // than risk an unbounded recording. Worst case is one resume losing force-capture.
+    if (_inPriorityRecording && _priorityRecordingSessionId == null) {
+      _inPriorityRecording = false;
+    }
     _priorityOpenBinPath = s['pob'] as String?;
     _muted = (s['mtd'] as bool?) ?? false;
     _muteStartMs = s['mts'] as int?;
