@@ -1455,6 +1455,31 @@ void main() {
         await p2.destroy();
       });
 
+      test('restorePriorityLatch drops a future-dated latch (negative age must not bypass the bound)', () async {
+        final latchPath = '${tempDir.path}/latch_future.json';
+        final oneDayFuture = DateTime.now().millisecondsSinceEpoch + (24 * 60 * 60 * 1000);
+        File(latchPath).writeAsStringSync(jsonEncode({'sessionId': 1, 'openedAtMs': oneDayFuture, 'ts': oneDayFuture}));
+        final p = VadAudioProcessor.fromSettings(
+            settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
+        await p.restorePriorityLatch();
+        expect(p.inPriorityRecording, isFalse, reason: 'a future openedAtMs is bogus → fail closed, not force-capture');
+        expect(File(latchPath).existsSync(), isFalse);
+        await p.destroy();
+      });
+
+      test('restoreState fails closed on a future-dated checkpoint span', () async {
+        final p1 = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+        await p1.processSegmentFile(
+            priorityBin('failclosed_future.bin', frames: 10), DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+        final state = (await p1.serializeState())!;
+        await p1.destroy();
+        state['poa'] = DateTime.now().millisecondsSinceEpoch + (24 * 60 * 60 * 1000); // 1 day in the future
+        final p2 = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+        await p2.restoreState(state);
+        expect(p2.inPriorityRecording, isFalse, reason: 'a future open time is bogus → fail closed');
+        await p2.destroy();
+      });
+
       test('a Priority Recording opening in the first bin after a reboot adopts the NEW session', () async {
         final p = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
         // Bin A: ordinary auto audio in session 1 (sets _currentSessionId = 1).
