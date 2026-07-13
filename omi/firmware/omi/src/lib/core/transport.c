@@ -1642,8 +1642,9 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
         memset(storage_temp_data + buffer_offset, 0, MAX_WRITE_SIZE - buffer_offset);
         /* If the block being flushed carries a marker, use the blocking enqueue
          * so it isn't dropped on transient saturation. */
-        uint32_t wrote = storage_block_has_marker ? write_to_file_blocking(storage_temp_data, MAX_WRITE_SIZE)
-                                                  : write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        bool had_marker = storage_block_has_marker;
+        uint32_t wrote = had_marker ? write_to_file_blocking(storage_temp_data, MAX_WRITE_SIZE)
+                                    : write_to_file(storage_temp_data, MAX_WRITE_SIZE);
         storage_block_has_marker = false;
         if (wrote != MAX_WRITE_SIZE) {
             /* SD queue rejected the block — the buffered bytes (up to one
@@ -1654,6 +1655,12 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
              * loss via the return value. */
             LOG_WRN("Storage rollover flush dropped block (wrote=%u/%u)", wrote, (uint32_t) MAX_WRITE_SIZE);
             atomic_inc(&storage_block_drops);
+            /* Diagnostics (0x19B10062): the dropped block carried an inline marker,
+             * so this is a genuine lost marker (e.g. a 0xFFFFFFF8/FFFFFFFC that would
+             * make a priority recording revert to plain auto VAD). */
+            if (had_marker) {
+                atomic_inc(&marker_write_drops);
+            }
             atomic_set(&last_storage_drop_uptime_ms, (atomic_val_t) k_uptime_get());
             ok = false;
         }
@@ -1684,14 +1691,19 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
     }
 
     if (buffer_offset == MAX_WRITE_SIZE) {
-        uint32_t wrote = storage_block_has_marker ? write_to_file_blocking(storage_temp_data, MAX_WRITE_SIZE)
-                                                  : write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        bool had_marker = storage_block_has_marker;
+        uint32_t wrote = had_marker ? write_to_file_blocking(storage_temp_data, MAX_WRITE_SIZE)
+                                    : write_to_file(storage_temp_data, MAX_WRITE_SIZE);
         storage_block_has_marker = false;
         if (wrote != MAX_WRITE_SIZE) {
             /* Full-buffer flush rejected. Same trade-off as above: reset
              * so subsequent writes can proceed, but report the loss. */
             LOG_WRN("Storage full-block flush dropped (wrote=%u/%u)", wrote, (uint32_t) MAX_WRITE_SIZE);
             atomic_inc(&storage_block_drops);
+            /* Diagnostics (0x19B10062): a dropped marker-bearing block = lost marker. */
+            if (had_marker) {
+                atomic_inc(&marker_write_drops);
+            }
             atomic_set(&last_storage_drop_uptime_ms, (atomic_val_t) k_uptime_get());
             ok = false;
         }
@@ -1778,14 +1790,11 @@ static bool write_marker_header_to_storage(uint32_t header, const char *label)
     }
     k_mutex_unlock(&storage_temp_mutex);
 
-    /* Diagnostics: a marker that failed to persist (initial write reject or the
-     * SD-queue-full flush drop above) is a lost inline frame — for a priority
-     * start/stop that means the recording silently reverts to plain auto VAD.
-     * Surfaced over BLE (0x19B10062) so it's visible without an RTT capture. */
-    if (!ok) {
-        atomic_inc(&marker_write_drops);
-    }
-
+    /* NOTE: marker_write_drops is NOT counted here. This flush-drop path RETAINS the
+     * buffer (marker kept for the next write to retry), and `ok` also folds in a
+     * prior-block rollover that may have carried only audio. A marker is only truly
+     * lost when a block that CONTAINS it is rejected and reset — counted at the two
+     * flush sites in write_custom_packet_to_storage() (gated on storage_block_has_marker). */
     return ok;
 }
 
