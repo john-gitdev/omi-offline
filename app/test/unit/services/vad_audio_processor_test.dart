@@ -1073,13 +1073,16 @@ void main() {
       expect(edls[0]['filename'], '');
     });
 
-    test('Priority Recording does not split across a session change between bins', () async {
+    test('Priority Recording ends at a session change between bins (device rebooted)', () async {
       // Bin A: priority start + 10 force-captured frames, session 1, NO stop.
       final binA = priorityBin('priority_splitA.bin', frames: 10);
-      // Bin B: a fresh session (id 2), 10 min later, + 10 frames + the 0xFFFFFFFC
-      // stop. A session change / large gap normally forces an inter-file split;
-      // inside a Priority Recording it must be suppressed so RECORD_START/STOP
-      // stay the only boundaries.
+      // Bin B: a fresh session (id 2), 10 min later, + 10 frames + a 0xFFFFFFFC.
+      // A session-id change can ONLY mean the device rebooted — device_session_id is
+      // a per-boot random value (firmware transport.c) — and the firmware never
+      // resumes a Priority Recording after a reboot (the 65535 threshold is
+      // runtime-only, button.c), so no 0xFFFFFFFC ever follows for the abandoned
+      // recording. Force-capturing across the boundary would run unbounded, so the
+      // priority span MUST end at the reboot; the post-reboot audio is normal auto.
       final bBuilder = BytesBuilder();
       final bHdr = ByteData(36);
       bHdr.setUint32(0, 0xFFFFFFFB, Endian.little);
@@ -1101,14 +1104,21 @@ void main() {
       final savedA = await proc.processSegmentFile(binA, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
       final savedB =
           await proc.processSegmentFile(binB, DateTime.fromMillisecondsSinceEpoch(kBase + 600000, isUtc: true));
+      final inPriorityAfterReboot = proc.inPriorityRecording;
       final flushed = await proc.flushRemaining();
+      final edls = proc.consumePendingEdlData();
       await proc.destroy();
 
       expect(savedA.length, 0, reason: 'no boundary inside bin A (no stop yet)');
-      // Without the _inPriorityRecording guard the session change would split the
-      // span into two recordings; the guard keeps it as one.
-      expect(savedB.length, 1, reason: 'FC stop finalizes the single spanning priority recording');
+      // The reboot guard clears force-capture at the session change, so the priority
+      // portion (bin A) finalizes at the reboot boundary and bin B's FC finalizes the
+      // post-reboot auto recording — two recordings, not one unbounded span.
+      expect(inPriorityAfterReboot, isFalse, reason: 'a session change (reboot) ends the priority force-capture span');
+      expect(savedB.length, 2, reason: 'priority portion closes at the reboot; bin B closes at its FC');
       expect(flushed, isNull);
+      // The high-priority flag survives on bin A's finalized portion.
+      expect(edls.where((e) => e['isHighPriority'] == true).length, 1,
+          reason: 'the pre-reboot priority portion keeps its red marker');
     });
 
     test('open priority marker bin with no buffered audio is retained for the next run', () async {
@@ -1168,6 +1178,124 @@ void main() {
       expect(proc.hasOpenPriorityWithoutAudio, isFalse, reason: 'forced audio buffered → safe to advance checkpoint');
 
       await proc.destroy();
+    });
+
+    group('Priority latch across a sync boundary (force-sync mid-recording)', () {
+      // A Priority Recording that spans a force-sync is processed in two separate
+      // runs (fresh isolate each time). The checkpoint is deleted on clean
+      // completion / discarded on a shifted segment list, so a priority-latch
+      // sentinel carries _inPriorityRecording into the next run — otherwise the
+      // continuation is re-VAD'd as normal auto mode and loses force-capture.
+
+      test('latch round-trips through the sentinel file across runs', () async {
+        final latchPath = '${tempDir.path}/latch_rt.json';
+
+        // Run 1: open a priority recording, then the run ends before the stop.
+        final p1 = VadAudioProcessor.fromSettings(
+            settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
+        await p1.processSegmentFile(
+            priorityBin('rt1.bin', frames: 10), DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+        expect(p1.inPriorityRecording, isTrue);
+        expect(p1.currentSessionId, 1);
+        await p1.persistPriorityLatch();
+        await p1.destroy();
+
+        expect(File(latchPath).existsSync(), isTrue, reason: 'an open priority recording persists a latch');
+        expect((jsonDecode(File(latchPath).readAsStringSync()) as Map)['sessionId'], 1);
+
+        // Run 2: a fresh processor restores the latch and resumes force-capture.
+        final p2 = VadAudioProcessor.fromSettings(
+            settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
+        expect(p2.inPriorityRecording, isFalse, reason: 'fresh processor starts outside a priority recording');
+        await p2.restorePriorityLatch();
+        expect(p2.inPriorityRecording, isTrue, reason: 'latch restored → force-capture continues');
+        await p2.destroy();
+      });
+
+      test('restored latch keeps the continuation force-captured across a splitting gap', () async {
+        final latchPath = '${tempDir.path}/latch_behavior.json';
+        // Sentinel as if run 1 left a priority recording open in session 1.
+        File(latchPath).writeAsStringSync(jsonEncode({'sessionId': 1, 'ts': 0}));
+
+        final p = VadAudioProcessor.fromSettings(
+            settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
+        await p.restorePriorityLatch();
+        expect(p.inPriorityRecording, isTrue);
+
+        // Two continuation bins, SAME session (1), 5 min apart. The 5-min inter-file
+        // gap far exceeds the 110 s split threshold (and advancing uptimes keep it a
+        // genuine silence, not a clock jump), so normal auto mode would split. Inside
+        // the restored priority span it must NOT split.
+        final c1 = _makeBinFileWithHeader(tempDir, 10,
+            name: 'fs_c1.bin', utcStartMs: kBase + 300000, uptimeStartMs: 300000, imuTicks: 0, sessionId: 1);
+        await p.processSegmentFile(c1, DateTime.fromMillisecondsSinceEpoch(kBase + 300000, isUtc: true));
+        final c2 = _makeBinFileWithHeader(tempDir, 10,
+            name: 'fs_c2.bin', utcStartMs: kBase + 600000, uptimeStartMs: 600000, imuTicks: 0, sessionId: 1);
+        final savedC2 =
+            await p.processSegmentFile(c2, DateTime.fromMillisecondsSinceEpoch(kBase + 600000, isUtc: true));
+
+        expect(savedC2, isEmpty, reason: 'force-capture: the 5-min gap must not split the priority continuation');
+        expect(p.inPriorityRecording, isTrue, reason: 'still open — no stop marker yet');
+        await p.destroy();
+      });
+
+      test('control: WITHOUT the latch the same continuation gap splits', () async {
+        // Identical bins, but no latch → normal auto mode, so the gap splits.
+        final p = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+        final c1 = _makeBinFileWithHeader(tempDir, 10,
+            name: 'ctl_c1.bin', utcStartMs: kBase + 300000, uptimeStartMs: 300000, imuTicks: 0, sessionId: 1);
+        await p.processSegmentFile(c1, DateTime.fromMillisecondsSinceEpoch(kBase + 300000, isUtc: true));
+        final c2 = _makeBinFileWithHeader(tempDir, 10,
+            name: 'ctl_c2.bin', utcStartMs: kBase + 600000, uptimeStartMs: 600000, imuTicks: 0, sessionId: 1);
+        final savedC2 =
+            await p.processSegmentFile(c2, DateTime.fromMillisecondsSinceEpoch(kBase + 600000, isUtc: true));
+
+        expect(savedC2, isNotEmpty, reason: 'normal auto mode: the 5-min gap splits, finalizing the prior chunk');
+        expect(p.inPriorityRecording, isFalse);
+        await p.destroy();
+      });
+
+      test('reboot guard: a session change on the continuation drops the restored latch', () async {
+        final latchPath = '${tempDir.path}/latch_reboot.json';
+        File(latchPath).writeAsStringSync(jsonEncode({'sessionId': 1, 'ts': 0}));
+
+        final p = VadAudioProcessor.fromSettings(
+            settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
+        await p.restorePriorityLatch();
+        expect(p.inPriorityRecording, isTrue);
+
+        // Continuation from a DIFFERENT session → the device rebooted while the
+        // recording was open; the firmware abandoned it, so force-capture must end.
+        final rebooted = _makeBinFileWithHeader(tempDir, 10,
+            name: 'latch_reboot.bin', utcStartMs: kBase + 300000, uptimeStartMs: 300000, imuTicks: 0, sessionId: 2);
+        await p.processSegmentFile(rebooted, DateTime.fromMillisecondsSinceEpoch(kBase + 300000, isUtc: true));
+        expect(p.inPriorityRecording, isFalse, reason: 'session change (reboot) ends the restored priority span');
+
+        await p.persistPriorityLatch();
+        expect(File(latchPath).existsSync(), isFalse, reason: 'the stale latch is removed once the reboot is detected');
+        await p.destroy();
+      });
+
+      test('stop marker clears the latch and removes the sentinel', () async {
+        final latchPath = '${tempDir.path}/latch_stop.json';
+        final p = VadAudioProcessor.fromSettings(
+            settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
+        await p.processSegmentFile(
+            priorityBin('rtstop.bin', frames: 10, stop: true), DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+        expect(p.inPriorityRecording, isFalse, reason: 'the 0xFFFFFFFC stop closed the priority recording');
+        await p.persistPriorityLatch();
+        expect(File(latchPath).existsSync(), isFalse, reason: 'no sentinel once the recording is closed');
+        await p.destroy();
+      });
+
+      test('persistPriorityLatch writes nothing when no priority recording is open', () async {
+        final latchPath = '${tempDir.path}/latch_none.json';
+        final p = VadAudioProcessor.fromSettings(
+            settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
+        await p.persistPriorityLatch();
+        expect(File(latchPath).existsSync(), isFalse);
+        await p.destroy();
+      });
     });
 
     group('Marker Protection Window', () {
