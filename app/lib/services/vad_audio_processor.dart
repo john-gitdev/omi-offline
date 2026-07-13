@@ -245,6 +245,12 @@ class VadAudioProcessor {
   // latch, not a long legitimate recording the firmware would have stopped first.
   static const int _maxRestoredPriorityAgeMs = 6 * 60 * 60 * 1000; // 6 hours
 
+  // Tolerance for a restored latch's open time landing slightly in the FUTURE.
+  // openedAtMs is a device-RTC wall time (time-synced from the phone), so a small
+  // skew is normal; anything beyond this is a bogus/corrupt stamp that must not
+  // defeat the age ceiling (a negative age would otherwise pass the > ceiling test).
+  static const int _priorityClockSkewToleranceMs = 5 * 60 * 1000; // 5 minutes
+
   /// Creates a processor in the main isolate, reading settings from SharedPreferences.
   static Future<VadAudioProcessor> create({String? outputDir, SimpleOpusDecoder? decoder}) async {
     final settings = ProcessingSettings.fromPrefs();
@@ -374,6 +380,17 @@ class VadAudioProcessor {
     _cachedSrValue = null;
   }
 
+  /// Whether a restored priority latch's open time is within the restorable window:
+  /// present, not implausibly in the future (a bogus/corrupt stamp — a negative age
+  /// would otherwise slip past the `> ceiling` test), and not older than the
+  /// stale-latch bound (a dropped 0xFFFFFFFC). Shared by both restore paths so a
+  /// future-dated marker can't keep force-capture on. A small clock skew is tolerated.
+  bool _restoredPriorityAgeOk(int? openedAtMs) {
+    if (openedAtMs == null) return false;
+    final ageMs = DateTime.now().millisecondsSinceEpoch - openedAtMs;
+    return ageMs >= -_priorityClockSkewToleranceMs && ageMs <= _maxRestoredPriorityAgeMs;
+  }
+
   /// Removes the priority-latch sentinel. Called at the 0xFFFFFFFC stop boundary
   /// (so an abrupt exit can't resurrect force-capture) and when the latch closes.
   /// No-op when there's no sentinel path or no file. Safe to fire-and-forget.
@@ -444,8 +461,8 @@ class VadAudioProcessor {
       // the span is older than the ceiling (stop marker almost certainly dropped),
       // fail closed and delete the sentinel.
       final openedAtMs = (data['openedAtMs'] ?? data['ts']) as int?;
-      if (openedAtMs == null || DateTime.now().millisecondsSinceEpoch - openedAtMs > _maxRestoredPriorityAgeMs) {
-        Logger.debug('VadAudioProcessor: Priority latch unbounded or older than '
+      if (!_restoredPriorityAgeOk(openedAtMs)) {
+        Logger.debug('VadAudioProcessor: Priority latch unbounded / future-dated / older than '
             '${_maxRestoredPriorityAgeMs ~/ 3600000}h (opened $openedAtMs) — dropping (stop marker likely lost).');
         await f.delete();
         return;
@@ -557,10 +574,7 @@ class VadAudioProcessor {
     // bound). A legacy checkpoint from before these fields existed, or a start in a
     // pre-time-sync bin, lands here — drop force-capture rather than risk an unbounded
     // recording. Worst case is one resume losing force-capture.
-    if (_inPriorityRecording &&
-        (_priorityRecordingSessionId == null ||
-            _priorityOpenedAtMs == null ||
-            DateTime.now().millisecondsSinceEpoch - _priorityOpenedAtMs! > _maxRestoredPriorityAgeMs)) {
+    if (_inPriorityRecording && (_priorityRecordingSessionId == null || !_restoredPriorityAgeOk(_priorityOpenedAtMs))) {
       _inPriorityRecording = false;
     }
     _priorityOpenBinPath = s['pob'] as String?;
