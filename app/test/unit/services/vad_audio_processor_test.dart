@@ -1030,10 +1030,15 @@ void main() {
 
       expect(state, isNotNull);
       expect(state!['ipr'], isTrue, reason: '_inPriorityRecording must survive serialization');
+      expect(state['poa'], kBase + 200, reason: 'open time is serialized');
       final pm = (state['pm'] as List).cast<Map<String, dynamic>>();
       expect(pm.any((m) => m['hp'] == true), isTrue, reason: 'queued high-priority marker must survive');
 
-      // Round-trip into a fresh processor and re-serialize — state must persist.
+      // Round-trip into a fresh processor and re-serialize — state must persist. Give
+      // the span a recent open time first: kBase is historical, so restoreState's age
+      // ceiling would (correctly) drop a >6h-old span. A real recording's open time is
+      // ~now, so this reflects production.
+      state['poa'] = DateTime.now().millisecondsSinceEpoch;
       final proc2 = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
       await proc2.restoreState(state);
       final state2 = await proc2.serializeState();
@@ -1430,6 +1435,69 @@ void main() {
             settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
         await p.restorePriorityLatch();
         expect(p.inPriorityRecording, isTrue, reason: 'recent ts bounds the latch → safe to restore');
+        await p.destroy();
+      });
+
+      test('restoreState fails closed on a checkpoint older than the age ceiling', () async {
+        final p1 = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+        await p1.processSegmentFile(
+            priorityBin('failclosed_stale.bin', frames: 10), DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+        final state = (await p1.serializeState())!;
+        await p1.destroy();
+        expect(state['ipr'], isTrue);
+        // Age the open time past the ceiling (7h) — mirrors the sentinel's stale bound.
+        state['poa'] = DateTime.now().millisecondsSinceEpoch - (7 * 60 * 60 * 1000);
+
+        final p2 = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+        await p2.restoreState(state);
+        expect(p2.inPriorityRecording, isFalse,
+            reason: 'a >6h-old resumed checkpoint span → fail closed (stop marker likely lost)');
+        await p2.destroy();
+      });
+
+      test('a Priority Recording opening in the first bin after a reboot adopts the NEW session', () async {
+        final p = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+        // Bin A: ordinary auto audio in session 1 (sets _currentSessionId = 1).
+        final a = _makeBinFileWithHeader(tempDir, 10,
+            name: 'reb_a.bin', utcStartMs: kBase, uptimeStartMs: 1000, imuTicks: 0, sessionId: 1);
+        await p.processSegmentFile(a, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+
+        // Bin B: a fresh session (2, reboot) whose FIRST frame is the 0xFFFFFFF8 start —
+        // so _currentSessionId is still 1 when the marker is handled. The priority span
+        // must anchor to session 2 (this bin), not the stale 1.
+        final bb = BytesBuilder();
+        bb.add((ByteData(36)
+              ..setUint32(0, 0xFFFFFFFB, Endian.little)
+              ..setUint32(4, 28, Endian.little)
+              ..setUint64(8, kBase + 300000, Endian.little)
+              ..setUint64(16, 300000, Endian.little)
+              ..setUint32(24, 0, Endian.little)
+              ..setUint32(28, 2, Endian.little))
+            .buffer
+            .asUint8List());
+        bb.add((ByteData(20)
+              ..setUint32(0, 0xFFFFFFF8, Endian.little)
+              ..setUint64(4, kBase + 300000, Endian.little)
+              ..setUint32(12, 300000, Endian.little)
+              ..setUint32(16, 2, Endian.little))
+            .buffer
+            .asUint8List());
+        final fh = ByteData(4)..setUint32(0, 4, Endian.little);
+        for (int i = 0; i < 10; i++) {
+          bb.add(fh.buffer.asUint8List());
+          bb.add(List.filled(4, 0));
+        }
+        final binB = File('${tempDir.path}/reb_b.bin')..writeAsBytesSync(bb.toBytes());
+        await p.processSegmentFile(binB, DateTime.fromMillisecondsSinceEpoch(kBase + 300000, isUtc: true));
+        expect(p.inPriorityRecording, isTrue, reason: 'priority opened in the new session');
+
+        // Bin C: continuation in the SAME new session (2). The reboot guard must NOT
+        // fire — it would if the span had wrongly anchored to session 1.
+        final c = _makeBinFileWithHeader(tempDir, 10,
+            name: 'reb_c.bin', utcStartMs: kBase + 600000, uptimeStartMs: 600000, imuTicks: 0, sessionId: 2);
+        await p.processSegmentFile(c, DateTime.fromMillisecondsSinceEpoch(kBase + 600000, isUtc: true));
+        expect(p.inPriorityRecording, isTrue,
+            reason: 'same-session continuation must not be ended by a stale session anchor');
         await p.destroy();
       });
     });
