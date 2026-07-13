@@ -50,6 +50,11 @@ class IsolateParams {
   final int checkpointResumeIndex;
   final String? checkpointPath;
   final List<String> checkpointPendingDeletes;
+  // Priority-latch sentinel path. Survives clean run completion / a shifted
+  // segment list (unlike the checkpoint), so a Priority Recording that spans a
+  // sync boundary keeps force-capturing on the next run. Null disables the latch
+  // (Recover Discard passes null).
+  final String? priorityStatePath;
 
   const IsolateParams({
     required this.sendPort,
@@ -71,6 +76,7 @@ class IsolateParams {
     this.checkpointResumeIndex = 0,
     this.checkpointPath,
     this.checkpointPendingDeletes = const [],
+    this.priorityStatePath,
   });
 }
 
@@ -165,6 +171,7 @@ Future<void> processingIsolateEntry(IsolateParams params) async {
     // ONNX/Opus FFI call.
     isCancelled: () => cancelled,
     batchRunner: batchRunner,
+    priorityStatePath: params.priorityStatePath,
   );
 
   int lastSeenLivenessTick = -1;
@@ -185,6 +192,11 @@ Future<void> processingIsolateEntry(IsolateParams params) async {
       Logger.debug(
           'RecordingsManager isolate: restored checkpoint state, resuming from segment ${params.checkpointResumeIndex}/${params.segmentPaths.length}.');
     }
+    // Restore the open-Priority-Recording latch (no-op if the checkpoint above
+    // already set it, or there's no sentinel path). Bridges force-capture across a
+    // run that completed mid-recording — e.g. a force-sync between RECORD_START and
+    // STOP — where the checkpoint was deleted / its VAD state discarded.
+    await processor.restorePriorityLatch();
     // Re-send pending deletes from the prior run — delete handler checks existence first so this is idempotent.
     if (params.checkpointPendingDeletes.isNotEmpty) {
       params.sendPort.send({'type': 'delete_segments', 'paths': params.checkpointPendingDeletes});
@@ -344,6 +356,12 @@ Future<void> processingIsolateEntry(IsolateParams params) async {
         });
       }
     }
+
+    // Persist the priority latch regardless of clean/cancel: _inPriorityRecording is
+    // the current truth and must outlive this isolate (torn down after every run).
+    // Writes the sentinel while a Priority Recording is still open; removes it once
+    // the 0xFFFFFFFC stop has been processed.
+    await processor.persistPriorityLatch();
 
     runStopwatch.stop();
     final totalBytes = params.segmentFileSizes.fold<int>(0, (a, b) => a + b);
