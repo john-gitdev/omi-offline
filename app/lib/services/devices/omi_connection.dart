@@ -217,6 +217,12 @@ class OmiDeviceConnection extends DeviceConnection {
         writeFairActivations: data.length >= 40 ? data.getUint32LittleEndian(36) : 0,
         // establishment failures (0x3e) appended at offset 40 (44-byte firmware); 0 on older.
         estabFailCount: data.length >= 44 ? data.getUint32LittleEndian(40) : 0,
+        // Priority Recording lifecycle appended at offsets 44/48/52/56 (60-byte firmware);
+        // 0 on older builds that return only the first 44 bytes.
+        priorityRecordStarts: data.length >= 48 ? data.getUint32LittleEndian(44) : 0,
+        priorityRecordStops: data.length >= 52 ? data.getUint32LittleEndian(48) : 0,
+        markerWriteDrops: data.length >= 56 ? data.getUint32LittleEndian(52) : 0,
+        emptyBinRotations: data.length >= 60 ? data.getUint32LittleEndian(56) : 0,
         readAt: DateTime.now(),
       );
     } catch (e) {
