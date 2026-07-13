@@ -357,12 +357,6 @@ Future<void> processingIsolateEntry(IsolateParams params) async {
       }
     }
 
-    // Persist the priority latch regardless of clean/cancel: _inPriorityRecording is
-    // the current truth and must outlive this isolate (torn down after every run).
-    // Writes the sentinel while a Priority Recording is still open; removes it once
-    // the 0xFFFFFFFC stop has been processed.
-    await processor.persistPriorityLatch();
-
     runStopwatch.stop();
     final totalBytes = params.segmentFileSizes.fold<int>(0, (a, b) => a + b);
     Logger.debug('RecordingsManager isolate: processing run ${cancelled ? 'cancelled' : 'finished'} — '
@@ -373,6 +367,13 @@ Future<void> processingIsolateEntry(IsolateParams params) async {
     params.sendPort.send({'type': 'error', 'message': '$e\n$st'});
   } finally {
     heartbeatTimer.cancel();
+    // Persist the priority latch on EVERY exit (clean / cancel / error):
+    // _inPriorityRecording is the current truth and must outlive this isolate
+    // (torn down after every run). In finally so an error thrown after the
+    // 0xFFFFFFFC stop still clears the sentinel — otherwise the checkpoint is
+    // deleted and the next run would restore a false open Priority Recording.
+    // Runs before destroy(); the latch write is independent of the ORT session.
+    await processor.persistPriorityLatch();
     await batchRunner.dispose();
     await processor.destroy();
     controlPort.close();
