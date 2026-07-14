@@ -1464,12 +1464,21 @@ class DeviceProvider extends ChangeNotifier
           crashLogs.insert(0, log);
           if (crashLogs.length > 50) crashLogs.removeLast();
           await _saveCrashLogs();
+          // Log once per NEW reading (deduped above), not on every connect. The
+          // uptime here is the PREVIOUS session's runtime before the last reset,
+          // not current uptime — so word it that way to avoid the "why is uptime
+          // stuck at 44h?" confusion.
           if (log.isCrash) {
+            Logger.warning(
+                'Device diagnostics: CRASH — ${log.causeLabel}; prior boot ran ${log.uptimeStr} before this reset (not current uptime)');
             await DebugLogManager.logEvent('device_crash', {
               ...log.toJson(),
               'cause_label': log.causeLabel,
-              'uptime_label': log.uptimeStr,
+              'prior_boot_run_label': log.uptimeStr,
             });
+          } else {
+            Logger.debug(
+                'Device diagnostics: last reset = ${log.causeLabel}; prior boot ran ${log.uptimeStr} before it (not current uptime)');
           }
         }
       }
@@ -1498,6 +1507,33 @@ class DeviceProvider extends ChangeNotifier
           'failed_conn_count': dropStats.failedConnCount,
           'estab_fail_count': dropStats.estabFailCount,
           'last_failure_adv_mode': dropStats.lastFailedConnDuringSlowAdv ? 'slow' : 'fast',
+        });
+
+        // SD-write drop counters + LIVE uptime (0x0062). These distinguish "audio was
+        // dropped on-device" from "audio was never captured" — the exact fields a
+        // vanished-recording post-mortem needs, previously read and discarded.
+        // currentUptimeMs is the device's REAL current uptime (unlike the latched
+        // prior-boot value from 0x0061 above). Counters are cumulative since boot, so
+        // only movement between two readings means anything.
+        final int liveUptimeS = dropStats.currentUptimeMs ~/ 1000;
+        final String liveUptimeStr = '${liveUptimeS ~/ 3600}h ${(liveUptimeS % 3600) ~/ 60}m';
+        final String dropMsg = 'Device SD-drop counters: blocks=${dropStats.blockDrops} '
+            'streamFrames=${dropStats.streamFrameDrops} bootFrames=${dropStats.bootFrameDrops} '
+            'codecFrames=${dropStats.codecFrameDrops} msgqPeak=${dropStats.msgqPeakDepth} '
+            'writeFair=${dropStats.writeFairActivations} liveUptime=$liveUptimeStr';
+        if (dropStats.hasAnyDrops) {
+          Logger.warning('$dropMsg — on-device audio drops since boot');
+        } else {
+          Logger.debug(dropMsg);
+        }
+        await DebugLogManager.logEvent('device_drop_stats', {
+          'block_drops': dropStats.blockDrops,
+          'stream_frame_drops': dropStats.streamFrameDrops,
+          'boot_frame_drops': dropStats.bootFrameDrops,
+          'codec_frame_drops': dropStats.codecFrameDrops,
+          'msgq_peak_depth': dropStats.msgqPeakDepth,
+          'write_fair_activations': dropStats.writeFairActivations,
+          'live_uptime_ms': dropStats.currentUptimeMs,
         });
 
         // Priority Recording diagnostics (0x0062, offsets 44–56). A start with no
