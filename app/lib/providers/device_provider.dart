@@ -1464,12 +1464,21 @@ class DeviceProvider extends ChangeNotifier
           crashLogs.insert(0, log);
           if (crashLogs.length > 50) crashLogs.removeLast();
           await _saveCrashLogs();
+          // Log once per NEW reading (deduped above), not on every connect. The
+          // uptime here is the PREVIOUS session's runtime before the last reset,
+          // not current uptime — so word it that way to avoid the "why is uptime
+          // stuck at 44h?" confusion.
           if (log.isCrash) {
+            Logger.warning(
+                'Device diagnostics: CRASH — ${log.causeLabel}; prior boot ran ${log.uptimeStr} before this reset (not current uptime)');
             await DebugLogManager.logEvent('device_crash', {
               ...log.toJson(),
               'cause_label': log.causeLabel,
-              'uptime_label': log.uptimeStr,
+              'prior_boot_run_label': log.uptimeStr,
             });
+          } else {
+            Logger.debug(
+                'Device diagnostics: last reset = ${log.causeLabel}; prior boot ran ${log.uptimeStr} before it (not current uptime)');
           }
         }
       }
