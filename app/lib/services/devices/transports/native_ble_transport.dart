@@ -154,6 +154,24 @@ class NativeBleTransport extends DeviceTransport {
   }
 
   @override
+  Future<void> softDisconnect() async {
+    // Drop just the current GATT/link WITHOUT unmanaging the device (unlike
+    // disconnect(), which calls unmanageDevice → USER_DISCONNECTED, cancels native
+    // recovery, and can stop the foreground service). Android: gatt.disconnect() —
+    // the device stays managed, so native tears down the stale gatt (disconnect +
+    // refresh + close) and rebuilds a fresh one on its own. iOS: cancelPeripheral-
+    // Connection — marks it manually-disconnected, so the caller MUST follow with an
+    // explicit reconnect (which clears that flag). The native disconnect callback
+    // drives our state to disconnected.
+    if (_state == DeviceTransportState.disconnected) return;
+    try {
+      await _hostApi.disconnectPeripheral(_peripheralUuid);
+    } catch (e) {
+      Logger.debug('[NativeBleTransport] softDisconnect failed: $e');
+    }
+  }
+
+  @override
   Future<bool> isConnected() async {
     try {
       final nativeConnected = await _hostApi.isPeripheralConnected(_peripheralUuid);
@@ -234,6 +252,15 @@ class NativeBleTransport extends DeviceTransport {
       final data =
           await _hostApi.readCharacteristic(_peripheralUuid, serviceUuid, characteristicUuid).timeout(_gattOpTimeout);
       return data.toList();
+    } on TimeoutException catch (_) {
+      // A read that never gets its onCharacteristicRead callback is the wedged-GATT
+      // signature (link up, GATT ops dead) — NOT an empty characteristic. Surface it
+      // distinctly (still returning [] to preserve the callers' empty-on-failure
+      // contract) so a wedge isn't silently read as "device returned nothing".
+      Logger.warning(
+          '[NativeBleTransport] readCharacteristic $serviceUuid:$characteristicUuid TIMED OUT after '
+          '${_gattOpTimeout.inSeconds}s — likely a wedged GATT (returning empty)');
+      return [];
     } catch (e) {
       Logger.debug('[NativeBleTransport] Failed to read $serviceUuid:$characteristicUuid: $e');
       return [];
