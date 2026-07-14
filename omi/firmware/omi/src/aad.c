@@ -250,6 +250,17 @@ static void aad_thread_fn(void *p1, void *p2, void *p3)
              * once force-capture ends and vad_threshold drops back below 65535. */
             if (vad_threshold != 65535) {
                 sd_write_pause(true);
+                /* The check above and this apply are not atomic with record_start()
+                 * on the button thread: it may have entered force-capture
+                 * (vad_threshold=65535) in between, so the pause we just applied would
+                 * land after record_start()'s own sd_write_pause(false) and strand the
+                 * 0xFFFFFFF8 marker. Re-read and undo if so. Between this re-check and
+                 * record_start()'s sd_write_pause(false), one of the two clears the
+                 * flag in every interleaving, so writes are always enabled once
+                 * force-capture is on. */
+                if (vad_threshold == 65535) {
+                    sd_write_pause(false);
+                }
             } else {
                 LOG_INF("AAD: pause skipped (force-capture active)");
             }
