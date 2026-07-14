@@ -708,9 +708,12 @@ class DeviceProvider extends ChangeNotifier
       // activity), but never force-disconnect — that would abort an otherwise
       // healthy firmware update. The DFU layer owns connection health here.
       if (_consecutiveKeepAliveFails >= 2 && !isFirmwareUpdateInProgress) {
-        Logger.debug('KeepAlive: 2 consecutive failures, force-disconnecting to resync state');
+        Logger.debug('KeepAlive: 2 consecutive failures, recycling connection to resync state');
         _consecutiveKeepAliveFails = 0;
-        await ServiceManager.instance().device.disconnectDevice(isManual: false);
+        // Recycle (soft-disconnect → fresh GATT, device stays managed) rather than the
+        // heavy disconnectDevice/unmanage path, which sets USER_DISCONNECTED, cancels
+        // native background recovery, and can stop the foreground service.
+        await ServiceManager.instance().device.recycleConnection();
       }
     });
   }
