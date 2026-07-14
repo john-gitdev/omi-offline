@@ -405,8 +405,10 @@ class DeviceService implements IDeviceService {
       // Reuses _connection == conn (same device id). Mirrors ensureConnection(force)'s
       // body, but atomically after the guard so a swallowed-disconnect wedge can't leave
       // ensureConnection's connected fast-path handing back the same wedged connection.
+      // requiresBond: false matches ensureConnection(force)'s default — a background /
+      // keep-alive recovery must not trigger a pairing flow the prior path never did.
       try {
-        await _connectToDevice(deviceId);
+        await _connectToDevice(deviceId, requiresBond: false);
         _firstConnectedAt ??= DateTime.now();
       } catch (e) {
         Logger.debug('[DeviceService] recycleConnection: reconnect failed (native/schedule retries): $e');
@@ -424,6 +426,10 @@ class DeviceService implements IDeviceService {
     await _mutex.acquire();
     try {
       if (_connection != null) {
+        // Capture the transport before _disconnectLocked nulls _connection — otherwise
+        // the dispose() below short-circuits on the connected path and leaks the
+        // BleBridge registration + connection-state stream controller.
+        final transport = _connection!.transport;
         if (_connection!.status == DeviceConnectionState.connected) {
           try {
             await _connection?.sendUnpairCommand();
@@ -441,7 +447,7 @@ class DeviceService implements IDeviceService {
         }
 
         try {
-          await _connection?.transport.dispose();
+          await transport.dispose();
         } catch (e) {
           Logger.debug("DeviceService: transport dispose during forget failed: $e");
         }
