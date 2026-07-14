@@ -1101,13 +1101,39 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         // cancellation isn't the file's fault) nor deletes a recording.
         if (_isCancelled) break;
 
+        // A DEFINITE transport/GATT error (op timeout, missing characteristic, mid-
+        // download drop) is a wedged (connected-but-dead) GATT — the ACL link is up so
+        // the isConnected() check above doesn't catch it, but GATT ops are dead. It is
+        // NOT this file's fault, so charging the per-file poison budget for it would
+        // delete a good recording. Recycle the link so the next cycle rides a FRESH GATT
+        // instead of hammering the wedge, and abort the batch WITHOUT a strike (the
+        // persisted offset resumes this file next cycle). An ambiguous 15s "Transfer
+        // stalled" is intentionally NOT treated here: it may be a single unreadable file
+        // (must still drop via the budget below to unblock the head), and a link-wide
+        // stall wedge is already recovered by the pipeline stall watchdog, which recycles.
+        final errStr = e.toString();
+        final bool definiteTransportError = e is TimeoutException ||
+            errStr.contains('Future not completed') ||
+            errStr.contains('Stream closed without EOT') ||
+            errStr.contains('Not found') ||
+            errStr.contains('Characteristic not available');
+        if (definiteTransportError) {
+          // _connectionProvider != null only in tests, which have no real DeviceService.
+          if (_connectionProvider == null) {
+            Logger.warning('SDCardWalSync: transfer failed with a transport-wedge signal ($e) — '
+                'recycling connection, not charging file ts=${wal.timerStart}');
+            unawaited(ServiceManager.instance().device.recycleConnection());
+          }
+          break;
+        }
+
         // Poison budget for THROWN terminal failures (a genuine per-file error, not the
-        // cancel/disconnect cases handled above). The clean-but-short guard increments
-        // syncFailCount; a file that instead consistently THROWS after exhausting the
-        // inner retries (ACK error, protocol gap, stall) would otherwise never reach the
-        // drop threshold — and since the fast path can't get past a bad index-0 head
-        // (a fatal ACK 7 even breaks the whole batch), it could block every newer
-        // recording forever. An attempt that made forward progress is a healthy
+        // cancel/disconnect/transport cases handled above). The clean-but-short guard
+        // increments syncFailCount; a file that instead consistently THROWS after
+        // exhausting the inner retries (ACK error, protocol gap, stall) would otherwise
+        // never reach the drop threshold — and since the fast path can't get past a bad
+        // index-0 head (a fatal ACK 7 even breaks the whole batch), it could block every
+        // newer recording forever. An attempt that made forward progress is a healthy
         // slow/large transfer resuming (reset strikes); one that made none counts toward
         // the budget, and once exhausted the file is dropped to unblock the queue.
         if (_lastSegmentBoundaryOffset > initialOffset) {
@@ -1131,16 +1157,16 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         }
 
         // Fatal errors (ACK 7, "could not start SD card read") stop the batch — continuing
-        // after these is unlikely to succeed. Stalls are recoverable per-file: they're retried
-        // above and, if still failing, the file is skipped while the batch continues.
-        final errStr = e.toString();
+        // after these is unlikely to succeed.
         if (errStr.contains('Error ACK: 7') || errStr.contains('Could not start SD card read')) {
           Logger.debug('SDCardWalSync: Fatal error, stopping batch sync');
           break;
         }
 
-        // After a stall failure (after retries), try the next file if it was just one bad file,
-        // but if we've had too many failures, abort the batch.
+        // After a stall failure (after retries), try the next file if it was just one bad
+        // file, but if we've had too many failures, abort the batch. A link-wide stall
+        // wedge (rather than one bad file) is caught by the pipeline stall watchdog, which
+        // recycles the connection.
         if (errStr.contains('Transfer stalled')) {
           Logger.debug('SDCardWalSync: Transfer stalled after retries, skipping this file.');
         }
