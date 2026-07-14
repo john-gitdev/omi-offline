@@ -239,10 +239,22 @@ static void aad_thread_fn(void *p1, void *p2, void *p3)
         }
 
         int pause_cmd = atomic_cas(&sd_pause_pending, 1, 0) ? 1 : atomic_cas(&sd_pause_pending, 2, 0) ? 2 : 0;
-        if (pause_cmd == 1)
-            sd_write_pause(true);
-        else if (pause_cmd == 2)
+        if (pause_cmd == 1) {
+            /* Honor a queued pause only if we're genuinely idle. A RECORD_START /
+             * force-wake that raced a just-queued silence pause has since turned on
+             * force-capture (vad_threshold==65535) or opened a force-wake window;
+             * applying the stale pause now would re-pause SD writes and silently drop
+             * the 0xFFFFFFF8 priority marker and first audio frames at the
+             * sd_write_paused gate (sd_card.c). Skip it — the next real silence
+             * re-queues a pause once force-capture ends. */
+            if (vad_threshold != 65535 && k_uptime_get() >= force_wake_until_ms) {
+                sd_write_pause(true);
+            } else {
+                LOG_INF("AAD: stale pause skipped (force-capture/force-wake active)");
+            }
+        } else if (pause_cmd == 2) {
             sd_write_pause(false);
+        }
 
         if (atomic_cas(&adv_slow_req, 1, 0))
             transport_set_adv_slow();
