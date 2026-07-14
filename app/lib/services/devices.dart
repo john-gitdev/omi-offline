@@ -351,6 +351,38 @@ class DeviceService implements IDeviceService {
       while (conn.status == DeviceConnectionState.connected && DateTime.now().isBefore(deadline)) {
         await Future.delayed(const Duration(milliseconds: 150));
       }
+
+      // A manual disconnect/forget (or a different device connecting) during the wait
+      // replaces _connection; reconnecting here would resurrect a device the user just
+      // tore down. Bail if our captured connection is no longer the active one.
+      if (!identical(_connection, conn)) {
+        Logger.debug('[DeviceService] recycleConnection: connection superseded during wait — not reconnecting');
+        return;
+      }
+
+      // If the soft-disconnect produced no disconnect callback (a deep wedge / OEM stack
+      // that swallows gatt.disconnect), our status is still "connected" — and
+      // ensureConnection consults `force` only AFTER its connected fast-path, so it would
+      // hand back the SAME wedged connection. Escalate to a full disconnect, which force-
+      // closes the gatt (refresh + close) and synchronously flips our state to
+      // disconnected, so the reconnect below actually rebuilds a fresh link. Heavier than
+      // the soft path (it unmanages), but only reached as a fallback when the soft path
+      // failed; the immediate re-manage below clears USER_DISCONNECTED and re-arms.
+      if (conn.status == DeviceConnectionState.connected) {
+        Logger.warning('[DeviceService] recycleConnection: soft-disconnect left status connected '
+            'after 5s — escalating to a full disconnect');
+        try {
+          await conn.disconnect(isManual: false);
+        } catch (e) {
+          Logger.debug('[DeviceService] recycleConnection: escalated disconnect failed: $e');
+        }
+        // The escalation yields; re-check nothing tore us down in the meantime.
+        if (!identical(_connection, conn)) {
+          Logger.debug('[DeviceService] recycleConnection: connection superseded during escalation — not reconnecting');
+          return;
+        }
+      }
+
       // Fresh connect. Android: the re-manage no-ops if native is already reconnecting.
       // iOS: manageDevice → connectPeripheral clears the manually-disconnected flag.
       try {
