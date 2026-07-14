@@ -177,18 +177,17 @@ class OmiDeviceConnection extends DeviceConnection {
       final data = await transport.readCharacteristic(diagnosticsServiceUuid, diagnosticsCharacteristicUuid);
       if (data.length < 8) return null;
 
+      // uptimeSeconds is the PREVIOUS session's runtime before the last reset
+      // (transport.c returns app_settings_get_crash_session_uptime), NOT current
+      // uptime — it stays constant until the device resets again. Logging is left to
+      // the caller (device_provider), which dedupes on (cause, uptime) so this static
+      // historical value isn't re-logged on every connect. Live uptime is on 0x0062.
       final log = DeviceCrashLog(
         deviceId: device.id,
         connectedAt: DateTime.now(),
         resetCause: data.getUint32LittleEndian(0),
         uptimeSeconds: data.getUint32LittleEndian(4),
       );
-
-      if (log.isCrash) {
-        Logger.warning('Device diagnostics: CRASH — ${log.causeLabel} (uptime: ${log.uptimeStr})');
-      } else {
-        Logger.debug('Device diagnostics: ${log.causeLabel} (uptime: ${log.uptimeStr})');
-      }
       return log;
     } catch (e) {
       Logger.debug('Device diagnostics not available (older firmware): $e');

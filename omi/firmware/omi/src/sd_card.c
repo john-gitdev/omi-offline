@@ -528,11 +528,13 @@ static void process_save_offset_req(const sd_req_t *req)
     sd_set_io_low_power(true);
 }
 
-/* SD-worker-thread-local guard: while true, process_write_data_req() must NOT
- * auto-rotate (should_rotate_file()) mid-write. Only ever set/read on the SD
- * worker thread inside drain_pending_write_queue_for_shutdown(), so a plain bool
- * is sufficient (no cross-thread access). */
+/* SD-worker-thread-local guards: while true, process_write_data_req() must NOT
+ * (sd_suppress_auto_rotate) auto-rotate (should_rotate_file()) mid-write, and
+ * (sd_draining) must NOT discard a frame on sd_write_paused. Only ever set/read on
+ * the SD worker thread inside drain_pending_write_queue_for_shutdown(), so plain
+ * bools are sufficient (no cross-thread access). */
 static bool sd_suppress_auto_rotate = false;
+static bool sd_draining = false;
 
 static void drain_pending_write_queue_for_shutdown(void)
 {
@@ -542,9 +544,25 @@ static void drain_pending_write_queue_for_shutdown(void)
      * (5-min file age, or a pending BLE-connect rotate) is redundant AND harmful:
      * it would push a queued frame — e.g. the 0xFFFFFFFC session-end marker a
      * priority-record stop just enqueued — into a fresh bin instead of the
-     * current one. Suppress it for the duration of the drain. */
+     * current one. Suppress it for the duration of the drain.
+     *
+     * sd_draining also bypasses the sd_write_paused gate below: a stop that ends a
+     * recording (aad_set_threshold finalize) enqueues the 0xFFFFFFFC marker and then
+     * queues a pause; the higher-priority AAD handler flips sd_write_paused=1 before
+     * this drain runs, so without the bypass the drain would discard the marker (and
+     * any tail audio) it is meant to persist — the on-device "0 of N stops" loss.
+     * These frames were accepted into sd_msgq before the pause and belong to the
+     * current file; drain them regardless of the paused flag. */
     sd_suppress_auto_rotate = true;
-    while (1) {
+    sd_draining = true;
+    /* Bound the drain to the frames already queued at entry. The audio producer
+     * stops when a recording ends / goes silent (aad_process_audio forwards nothing
+     * while !vad_is_recording), so in practice nothing new is enqueued here — but
+     * snapshotting the depth keeps the pause-gate bypass from ever persisting a frame
+     * that arrived after the pause. The SD worker is the only consumer of sd_msgq, so
+     * these `queued` items are all present now. */
+    uint32_t queued = k_msgq_num_used_get(&sd_msgq);
+    while (queued-- > 0) {
         sd_req_t pending_req;
         if (k_msgq_get(&sd_msgq, &pending_req, K_NO_WAIT) != 0) {
             break;
@@ -556,6 +574,7 @@ static void drain_pending_write_queue_for_shutdown(void)
             process_save_offset_req(&pending_req);
         }
     }
+    sd_draining = false;
     sd_suppress_auto_rotate = false;
 }
 
@@ -665,7 +684,13 @@ static void process_write_data_req(const sd_req_t *req)
         }
     }
 
-    if (atomic_get(&sd_write_paused)) {
+    /* Skip the pause gate while draining: drain_pending_write_queue_for_shutdown()
+     * persists frames already accepted into sd_msgq before a concurrent pause (e.g.
+     * the 0xFFFFFFFC a priority-record stop just enqueued right before it queued the
+     * pause and rotated the bin). Dropping them here is the deterministic stop-marker
+     * loss. (Manual-mode stop doesn't rotate, so its marker never reaches this drain
+     * — that path is unchanged here.) */
+    if (!sd_draining && atomic_get(&sd_write_paused)) {
         if (spi_woken) {
             sd_set_io_low_power(true);
         }

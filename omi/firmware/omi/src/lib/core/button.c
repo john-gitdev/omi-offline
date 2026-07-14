@@ -236,21 +236,28 @@ static bool record_start(void)
         LOG_INF("Record start ignored (priority recording already active)");
         return false;
     }
-    /* Auto-mode Priority Recording: rotate first so the prior auto recording owns
-     * the old bin, then write 0xFFFFFFF8 as the first inline frame of the fresh
-     * bin and force continuous capture. */
+    /* Auto-mode Priority Recording. Enter force-capture (runtime 65535 + force-wake)
+     * BEFORE the rotate + 0xFFFFFFF8 marker. If the button was tapped just as a
+     * silence gap ended, a pause request may still be queued (sd_pause_pending=1)
+     * that the AAD handler hasn't applied yet; sd_write_pause(false) only clears the
+     * live flag, not that queued request, so the handler would re-pause SD writes a
+     * moment later and the still-paused SD worker would silently drop the marker and
+     * first audio frames at the sd_write_paused gate (sd_card.c). Setting the
+     * force-capture state first lets the AAD handler recognise the queued pause as
+     * stale and skip it. Then rotate so the prior auto recording owns the old bin,
+     * and write 0xFFFFFFF8 as the first inline frame of the fresh bin. */
     marker_flash_color = MARKER_FLASH_RED;
     marker_flash_count = 2;
-#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
-    sd_write_pause(false);
-    create_new_audio_file();
-    write_priority_recording_marker_to_storage();
-#endif
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
     /* Runtime force-capture only — NOT persisted, so a reboot mid-recording
      * returns to the auto threshold. */
     aad_set_threshold(65535);
     aad_force_wake();
+#endif
+#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+    sd_write_pause(false);
+    create_new_audio_file();
+    write_priority_recording_marker_to_storage();
 #endif
     priority_record_arm_cap();
     return true;

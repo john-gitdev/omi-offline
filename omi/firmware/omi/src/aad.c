@@ -52,7 +52,13 @@ static atomic_t sd_pause_pending = ATOMIC_INIT(0); /* 1=pause, 2=resume */
 static atomic_t adv_slow_req = ATOMIC_INIT(0);
 static atomic_t adv_fast_req = ATOMIC_INIT(0);
 
-static uint16_t vad_threshold = 250;
+/* volatile: written on the button/mic threads (aad_set_threshold) and read on the
+ * AAD handler thread — notably the re-read in aad_thread_fn that undoes a pause
+ * applied into a racing force-capture. Without volatile the compiler may cache the
+ * first read (this static is invisible to sd_write_pause's translation unit, so it
+ * can't be assumed to clobber it), making that "re-read" stale. Aligned 16-bit
+ * loads/stores are atomic on this Cortex-M33, so a plain volatile is sufficient. */
+static volatile uint16_t vad_threshold = 250;
 
 
 /* ---- Force-wake (button press) ---- */
@@ -239,10 +245,34 @@ static void aad_thread_fn(void *p1, void *p2, void *p3)
         }
 
         int pause_cmd = atomic_cas(&sd_pause_pending, 1, 0) ? 1 : atomic_cas(&sd_pause_pending, 2, 0) ? 2 : 0;
-        if (pause_cmd == 1)
-            sd_write_pause(true);
-        else if (pause_cmd == 2)
+        if (pause_cmd == 1) {
+            /* Honor a queued pause only when NOT force-capturing. A RECORD_START that
+             * raced a just-queued silence pause (sd_pause_pending=1, not yet applied
+             * by this handler) has since set vad_threshold=65535; applying that stale
+             * pause now would re-pause SD writes and the still-paused SD worker would
+             * silently drop the 0xFFFFFFF8 priority marker and first audio frames at
+             * the sd_write_paused gate (sd_card.c). We never want to pause mid
+             * force-capture anyway, so skip it; the next real silence re-queues a pause
+             * once force-capture ends and vad_threshold drops back below 65535. */
+            if (vad_threshold != 65535) {
+                sd_write_pause(true);
+                /* The check above and this apply are not atomic with record_start()
+                 * on the button thread: it may have entered force-capture
+                 * (vad_threshold=65535) in between, so the pause we just applied would
+                 * land after record_start()'s own sd_write_pause(false) and strand the
+                 * 0xFFFFFFF8 marker. Re-read and undo if so. Between this re-check and
+                 * record_start()'s sd_write_pause(false), one of the two clears the
+                 * flag in every interleaving, so writes are always enabled once
+                 * force-capture is on. */
+                if (vad_threshold == 65535) {
+                    sd_write_pause(false);
+                }
+            } else {
+                LOG_INF("AAD: pause skipped (force-capture active)");
+            }
+        } else if (pause_cmd == 2) {
             sd_write_pause(false);
+        }
 
         if (atomic_cas(&adv_slow_req, 1, 0))
             transport_set_adv_slow();
