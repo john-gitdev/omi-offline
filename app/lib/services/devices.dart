@@ -31,6 +31,13 @@ abstract class IDeviceService {
 
   Future<void> disconnectDevice({bool isManual = true});
 
+  /// Recover a wedged (connected-but-dead) GATT on the CURRENT connection by
+  /// dropping just that GATT and reconnecting fresh — the automatic equivalent of
+  /// toggling Bluetooth. Keeps the device managed (unlike [disconnectDevice], which
+  /// unmanages, signalling user-intent-off and cancelling native recovery). No-op if
+  /// nothing is connected.
+  Future<void> recycleConnection();
+
   /// Fully tear down connection + transport for a device being forgotten/unpaired.
   Future<void> forgetDevice(String deviceId);
 
@@ -76,6 +83,9 @@ class DeviceService implements IDeviceService {
   final Map<Object, IDeviceServiceSubscription> _subscriptions = {};
 
   DeviceConnection? _connection;
+  // Guards against concurrent recycleConnection() calls (the stall watchdog, the WAL
+  // sync catch, and the keep-alive can all trip on the same wedge at once).
+  bool _recycling = false;
   @override
   List<BtDevice> get devices => _devices;
 
@@ -308,6 +318,48 @@ class DeviceService implements IDeviceService {
       Logger.debug("DeviceService: Disconnecting device (isManual: $isManual)...");
       await _connection?.disconnect(isManual: isManual);
       _connection = null;
+    }
+  }
+
+  @override
+  Future<void> recycleConnection() async {
+    if (_recycling) {
+      Logger.debug('[DeviceService] recycleConnection: already in progress, skipping');
+      return;
+    }
+    final conn = _connection;
+    if (conn == null) {
+      Logger.debug('[DeviceService] recycleConnection: no active connection, skipping');
+      return;
+    }
+    _recycling = true;
+    final deviceId = conn.device.id;
+    Logger.warning('[DeviceService] recycleConnection: dropping current GATT for $deviceId '
+        'and reconnecting fresh (wedge recovery)');
+    try {
+      // Soft-disconnect the CURRENT (possibly wedged) GATT without unmanaging the
+      // device. Android: it stays managed → native rebuilds a fresh gatt on its own.
+      // iOS: marks it manually-disconnected → the ensureConnection below reconnects.
+      try {
+        await conn.transport.softDisconnect();
+      } catch (e) {
+        Logger.debug('[DeviceService] recycleConnection: softDisconnect failed: $e');
+      }
+      // Wait (bounded) for the native disconnect callback to flip our status, so the
+      // ensureConnection below doesn't short-circuit on a stale "connected".
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      while (conn.status == DeviceConnectionState.connected && DateTime.now().isBefore(deadline)) {
+        await Future.delayed(const Duration(milliseconds: 150));
+      }
+      // Fresh connect. Android: the re-manage no-ops if native is already reconnecting.
+      // iOS: manageDevice → connectPeripheral clears the manually-disconnected flag.
+      try {
+        await ensureConnection(deviceId, force: true);
+      } catch (e) {
+        Logger.debug('[DeviceService] recycleConnection: reconnect failed (native/schedule retries): $e');
+      }
+    } finally {
+      _recycling = false;
     }
   }
 
