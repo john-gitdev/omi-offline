@@ -555,7 +555,14 @@ static void drain_pending_write_queue_for_shutdown(void)
      * current file; drain them regardless of the paused flag. */
     sd_suppress_auto_rotate = true;
     sd_draining = true;
-    while (1) {
+    /* Bound the drain to the frames already queued at entry. The audio producer
+     * stops when a recording ends / goes silent (aad_process_audio forwards nothing
+     * while !vad_is_recording), so in practice nothing new is enqueued here — but
+     * snapshotting the depth keeps the pause-gate bypass from ever persisting a frame
+     * that arrived after the pause. The SD worker is the only consumer of sd_msgq, so
+     * these `queued` items are all present now. */
+    uint32_t queued = k_msgq_num_used_get(&sd_msgq);
+    while (queued-- > 0) {
         sd_req_t pending_req;
         if (k_msgq_get(&sd_msgq, &pending_req, K_NO_WAIT) != 0) {
             break;
