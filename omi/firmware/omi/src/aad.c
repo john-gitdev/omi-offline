@@ -52,7 +52,13 @@ static atomic_t sd_pause_pending = ATOMIC_INIT(0); /* 1=pause, 2=resume */
 static atomic_t adv_slow_req = ATOMIC_INIT(0);
 static atomic_t adv_fast_req = ATOMIC_INIT(0);
 
-static uint16_t vad_threshold = 250;
+/* volatile: written on the button/mic threads (aad_set_threshold) and read on the
+ * AAD handler thread — notably the re-read in aad_thread_fn that undoes a pause
+ * applied into a racing force-capture. Without volatile the compiler may cache the
+ * first read (this static is invisible to sd_write_pause's translation unit, so it
+ * can't be assumed to clobber it), making that "re-read" stale. Aligned 16-bit
+ * loads/stores are atomic on this Cortex-M33, so a plain volatile is sufficient. */
+static volatile uint16_t vad_threshold = 250;
 
 
 /* ---- Force-wake (button press) ---- */
