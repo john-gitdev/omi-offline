@@ -679,8 +679,10 @@ static void process_write_data_req(const sd_req_t *req)
 
     /* Skip the pause gate while draining: drain_pending_write_queue_for_shutdown()
      * persists frames already accepted into sd_msgq before a concurrent pause (e.g.
-     * the 0xFFFFFFFC a priority/manual stop just enqueued right before it queued the
-     * pause). Dropping them here is the deterministic stop-marker loss. */
+     * the 0xFFFFFFFC a priority-record stop just enqueued right before it queued the
+     * pause and rotated the bin). Dropping them here is the deterministic stop-marker
+     * loss. (Manual-mode stop doesn't rotate, so its marker never reaches this drain
+     * — that path is unchanged here.) */
     if (!sd_draining && atomic_get(&sd_write_paused)) {
         if (spi_woken) {
             sd_set_io_low_power(true);
