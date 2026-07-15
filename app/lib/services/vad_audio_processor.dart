@@ -218,6 +218,9 @@ class VadAudioProcessor {
   final String _deviceId;
   final String _audioSaveFormat;
   final bool _omiEnabled;
+  // Firmware Priority Recording safety cap in minutes (0x19B10014); 0 = no cap.
+  // Drives the restored-latch age ceiling (see [_maxRestoredPriorityAgeMs]).
+  final int _priorityRecordCapMinutes;
 
   static const int sampleRate = 16000;
   static const int channels = 1;
@@ -237,13 +240,32 @@ class VadAudioProcessor {
   // firmware actually forced on.
   static const int _markerProtectionWindowMs = 50000;
 
+  // Absolute fallback ceiling on a restored priority latch when the firmware cap is
+  // 0 (no cap): there is no firmware-side stop to derive a bound from, so a lost
+  // 0xFFFFFFFC would force-capture until a reboot. 6 h caps the runaway while still
+  // clearing a genuinely long unlimited recording in the common case.
+  static const int _absoluteMaxRestoredPriorityAgeMs = 6 * 60 * 60 * 1000; // 6 hours
+
+  // Slack added over the firmware priority safety cap when deriving the restored-
+  // latch ceiling. The firmware stops a legitimate recording exactly at `cap` and
+  // emits 0xFFFFFFFC, but the app processes bins later (sync lag) — so the ceiling
+  // must sit above `cap` by enough to cover that lag plus the firmware VAD-hold
+  // tail, or a legit full-cap recording synced late would have its pre-stop tail
+  // dropped from force-capture before the run reaches its real stop marker.
+  static const int _priorityCapSlackMs = 30 * 60 * 1000; // 30 minutes
+
   // Upper bound on a priority-latch restored across sync boundaries. A dropped
-  // 0xFFFFFFFC stop would otherwise keep force-capture on forever (until a reboot);
-  // once a restored span is older than this, restorePriorityLatch fails closed and
-  // the audio is processed as normal auto mode. Generous vs. the firmware priority
-  // safety cap (0x19B10014, default 120 min) so it only trips on a genuinely stuck
-  // latch, not a long legitimate recording the firmware would have stopped first.
-  static const int _maxRestoredPriorityAgeMs = 6 * 60 * 60 * 1000; // 6 hours
+  // 0xFFFFFFFC stop would otherwise keep force-capture on forever (until a reboot),
+  // swallowing every following auto recording into one runaway span; once a restored
+  // span is older than this, restorePriorityLatch fails closed and the audio is
+  // processed as normal auto mode. Derived from the user's firmware priority safety
+  // cap (0x19B10014) + slack so it tracks how long a priority recording can actually
+  // run: tighter than a fixed 6 h for small caps (default 120 min), but ALSO able to
+  // grow past 6 h for large caps (e.g. 480 min) that a fixed ceiling would wrongly
+  // truncate. cap == 0 (no firmware cap) falls back to the absolute 6 h ceiling.
+  int get _maxRestoredPriorityAgeMs => _priorityRecordCapMinutes <= 0
+      ? _absoluteMaxRestoredPriorityAgeMs
+      : _priorityRecordCapMinutes * 60 * 1000 + _priorityCapSlackMs;
 
   // Tolerance for a restored latch's open time landing slightly in the FUTURE.
   // openedAtMs is a device-RTC wall time (time-synced from the phone), so a small
@@ -361,7 +383,8 @@ class VadAudioProcessor {
         _maxChunkMs = settings.maxChunkMs,
         _deviceId = settings.deviceId,
         _audioSaveFormat = settings.audioSaveFormat,
-        _omiEnabled = settings.omiEnabled;
+        _omiEnabled = settings.omiEnabled,
+        _priorityRecordCapMinutes = settings.priorityRecordCapMinutes;
 
   /// Whether the native batch runner is available for this processor instance.
   /// When true, processSegmentFile uses the two-pass batched VAD path.
@@ -463,7 +486,8 @@ class VadAudioProcessor {
       final openedAtMs = (data['openedAtMs'] ?? data['ts']) as int?;
       if (!_restoredPriorityAgeOk(openedAtMs)) {
         Logger.debug('VadAudioProcessor: Priority latch unbounded / future-dated / older than '
-            '${_maxRestoredPriorityAgeMs ~/ 3600000}h (opened $openedAtMs) — dropping (stop marker likely lost).');
+            '${_maxRestoredPriorityAgeMs ~/ 60000}min ceiling (cap=${_priorityRecordCapMinutes}min, opened '
+            '$openedAtMs) — dropping (stop marker likely lost).');
         await f.delete();
         return;
       }
