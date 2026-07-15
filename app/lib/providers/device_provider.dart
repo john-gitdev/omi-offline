@@ -1550,16 +1550,17 @@ class DeviceProvider extends ChangeNotifier
             dropStats.markerWriteDrops > 0 ||
             dropStats.emptyBinRotations > 0 ||
             dropStats.sessionEndMarkerEmits > 0 ||
-            dropStats.markerPauseGateDrops > 0;
+            dropStats.markerPauseGateSaves > 0;
         if (priorityActivity) {
-          // seEmits vs pauseGateDrops pins a lost 0xFFFFFFFC: emits moving with the
-          // app seeing no marker = emitted-then-dropped (pauseGateDrops locates it at
-          // the SD pause gate); emits flat = the firmware finalize path never fired.
+          // seEmits + pauseGateSaves confirm the pause-gate fix: a stop emits the
+          // 0xFFFFFFFC (seEmits moves) and it's kept through the pause (pauseGateSaves
+          // moves) rather than lost. emits flat = the firmware finalize path never
+          // fired. pauseGateSaves is a rescue, so it is NOT a loss warning.
           final priorityMsg = 'Device priority-record counters: starts=${dropStats.priorityRecordStarts} '
               'stops=${dropStats.priorityRecordStops} markerDrops=${dropStats.markerWriteDrops} '
               'emptyBinRotations=${dropStats.emptyBinRotations} seEmits=${dropStats.sessionEndMarkerEmits} '
-              'pauseGateDrops=${dropStats.markerPauseGateDrops}';
-          if (dropStats.markerWriteDrops > 0 || dropStats.emptyBinRotations > 0 || dropStats.markerPauseGateDrops > 0) {
+              'pauseGateSaves=${dropStats.markerPauseGateSaves}';
+          if (dropStats.markerWriteDrops > 0 || dropStats.emptyBinRotations > 0) {
             Logger.warning('$priorityMsg — possible lost Priority Recording (marker/audio dropped on-device)');
           } else {
             Logger.debug(priorityMsg);
@@ -1570,7 +1571,7 @@ class DeviceProvider extends ChangeNotifier
             'marker_write_drops': dropStats.markerWriteDrops,
             'empty_bin_rotations': dropStats.emptyBinRotations,
             'session_end_marker_emits': dropStats.sessionEndMarkerEmits,
-            'marker_pause_gate_drops': dropStats.markerPauseGateDrops,
+            'marker_pause_gate_saves': dropStats.markerPauseGateSaves,
           });
         }
       }
