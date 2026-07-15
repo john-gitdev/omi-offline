@@ -172,6 +172,15 @@ class VadAudioProcessor {
   // once the span exceeds [_maxRestoredPriorityAgeMs]. Null when not in a priority rec.
   int? _priorityOpenedAtMs;
 
+  // Firmware priority safety cap (minutes) in effect when the CURRENT priority
+  // recording OPENED, snapshotted so a mid-recording cap change in Settings can't
+  // retroactively shrink an already-open recording's age ceiling and drop it on a
+  // later cross-run restore — the firmware armed the running recording under the cap
+  // at start, not the new value. Persisted with the latch sentinel and the checkpoint.
+  // Null when not in a priority rec; falls back to the live pref for a legacy
+  // sentinel/checkpoint written before this field existed.
+  int? _priorityCapAtOpenMinutes;
+
   // Path of the priority-latch sentinel file, or null (main-isolate / tests that
   // don't exercise cross-run priority). Holds {sessionId} while a Priority
   // Recording is open so it survives a clean run completion (which deletes the
@@ -254,18 +263,24 @@ class VadAudioProcessor {
   // dropped from force-capture before the run reaches its real stop marker.
   static const int _priorityCapSlackMs = 30 * 60 * 1000; // 30 minutes
 
+  // Restored-latch age ceiling for a given firmware priority cap (minutes): cap +
+  // slack, or the absolute 6 h fallback when cap == 0 (no firmware cap to derive from).
+  int _ceilingForCap(int capMinutes) =>
+      capMinutes <= 0 ? _absoluteMaxRestoredPriorityAgeMs : capMinutes * 60 * 1000 + _priorityCapSlackMs;
+
   // Upper bound on a priority-latch restored across sync boundaries. A dropped
   // 0xFFFFFFFC stop would otherwise keep force-capture on forever (until a reboot),
   // swallowing every following auto recording into one runaway span; once a restored
   // span is older than this, restorePriorityLatch fails closed and the audio is
-  // processed as normal auto mode. Derived from the user's firmware priority safety
-  // cap (0x19B10014) + slack so it tracks how long a priority recording can actually
-  // run: tighter than a fixed 6 h for small caps (default 120 min), but ALSO able to
-  // grow past 6 h for large caps (e.g. 480 min) that a fixed ceiling would wrongly
-  // truncate. cap == 0 (no firmware cap) falls back to the absolute 6 h ceiling.
-  int get _maxRestoredPriorityAgeMs => _priorityRecordCapMinutes <= 0
-      ? _absoluteMaxRestoredPriorityAgeMs
-      : _priorityRecordCapMinutes * 60 * 1000 + _priorityCapSlackMs;
+  // processed as normal auto mode. Derived from the priority safety cap (0x19B10014)
+  // + slack so it tracks how long a priority recording can actually run: tighter than
+  // a fixed 6 h for small caps (default 120 min), but ALSO able to grow past 6 h for
+  // large caps (e.g. 480 min) that a fixed ceiling would wrongly truncate. Uses the
+  // cap SNAPSHOTTED when the recording opened ([_priorityCapAtOpenMinutes]) so a
+  // mid-recording Settings change can't move the ceiling under an already-open
+  // recording; falls back to the live pref for a fresh open in this run or a legacy
+  // sentinel. cap == 0 (no firmware cap) falls back to the absolute 6 h ceiling.
+  int get _maxRestoredPriorityAgeMs => _ceilingForCap(_priorityCapAtOpenMinutes ?? _priorityRecordCapMinutes);
 
   // Tolerance for a restored latch's open time landing slightly in the FUTURE.
   // openedAtMs is a device-RTC wall time (time-synced from the phone), so a small
@@ -447,6 +462,7 @@ class VadAudioProcessor {
       await File(path).writeAsString(jsonEncode({
         'sessionId': _priorityRecordingSessionId,
         'openedAtMs': _priorityOpenedAtMs,
+        'capMinutes': _priorityCapAtOpenMinutes,
         'ts': DateTime.now().millisecondsSinceEpoch,
       }));
     } catch (e) {
@@ -484,10 +500,15 @@ class VadAudioProcessor {
       // the span is older than the ceiling (stop marker almost certainly dropped),
       // fail closed and delete the sentinel.
       final openedAtMs = (data['openedAtMs'] ?? data['ts']) as int?;
+      // Cap snapshotted when the recording opened; a legacy sentinel without it falls
+      // back to the live pref. Set BEFORE the age check so the ceiling reflects the
+      // recording's OWN cap, not a value the user changed after it started.
+      _priorityCapAtOpenMinutes = data['capMinutes'] as int?;
       if (!_restoredPriorityAgeOk(openedAtMs)) {
         Logger.debug('VadAudioProcessor: Priority latch unbounded / future-dated / older than '
-            '${_maxRestoredPriorityAgeMs ~/ 60000}min ceiling (cap=${_priorityRecordCapMinutes}min, opened '
-            '$openedAtMs) — dropping (stop marker likely lost).');
+            '${_maxRestoredPriorityAgeMs ~/ 60000}min ceiling (cap=${_priorityCapAtOpenMinutes ?? _priorityRecordCapMinutes}min, '
+            'opened $openedAtMs) — dropping (stop marker likely lost).');
+        _priorityCapAtOpenMinutes = null;
         await f.delete();
         return;
       }
@@ -543,6 +564,7 @@ class VadAudioProcessor {
       'ipr': _inPriorityRecording,
       'prs': _priorityRecordingSessionId,
       'poa': _priorityOpenedAtMs,
+      'pca': _priorityCapAtOpenMinutes,
       'pob': _priorityOpenBinPath,
       'mtd': _muted,
       'mts': _muteStartMs,
@@ -591,6 +613,9 @@ class VadAudioProcessor {
     _inPriorityRecording = (s['ipr'] as bool?) ?? false;
     _priorityRecordingSessionId = s['prs'] as int?;
     _priorityOpenedAtMs = s['poa'] as int?;
+    // Restore the cap snapshotted at open (before the age check below consults it);
+    // a legacy checkpoint without it falls back to the live pref.
+    _priorityCapAtOpenMinutes = s['pca'] as int?;
     // Fail closed on a restored open priority span we can't safely keep: no session id
     // (the header-block reboot guard needs one to compare against), no open time (the
     // age ceiling needs one), OR already older than the ceiling (a dropped 0xFFFFFFFC —
@@ -600,6 +625,7 @@ class VadAudioProcessor {
     // recording. Worst case is one resume losing force-capture.
     if (_inPriorityRecording && (_priorityRecordingSessionId == null || !_restoredPriorityAgeOk(_priorityOpenedAtMs))) {
       _inPriorityRecording = false;
+      _priorityCapAtOpenMinutes = null;
     }
     _priorityOpenBinPath = s['pob'] as String?;
     _muted = (s['mtd'] as bool?) ?? false;
@@ -815,6 +841,7 @@ class VadAudioProcessor {
         _inPriorityRecording = false;
         _priorityRecordingSessionId = null;
         _priorityOpenedAtMs = null;
+        _priorityCapAtOpenMinutes = null;
         await _clearPriorityLatchFile();
       }
 
@@ -1104,6 +1131,7 @@ class VadAudioProcessor {
             _inPriorityRecording = false;
             _priorityRecordingSessionId = null;
             _priorityOpenedAtMs = null;
+            _priorityCapAtOpenMinutes = null;
             _priorityOpenBinPath = null;
             // Clear the durable latch AT the stop boundary, not just at end of run:
             // a termination (force-kill, no finally) after parsing a valid stop would
@@ -1180,6 +1208,9 @@ class VadAudioProcessor {
             // past _maxRestoredPriorityAgeMs.
             _priorityRecordingSessionId = sessionId ?? _currentSessionId;
             _priorityOpenedAtMs = markerMs;
+            // Snapshot the cap armed for THIS recording so a later Settings change
+            // can't move its age ceiling on a cross-run restore (see the field doc).
+            _priorityCapAtOpenMinutes = _priorityRecordCapMinutes;
             // Pin this bin on disk until the priority recording buffers audio or
             // finalizes, so a marker that arrived with no trailing frames isn't
             // freed (and re-seen / re-captured on the next run). See field doc.
