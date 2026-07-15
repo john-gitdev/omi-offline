@@ -14,9 +14,7 @@ import 'package:omi/backend/preferences.dart';
 // Helpers (mirrors the patterns in vad_audio_processor_test.dart)
 // ---------------------------------------------------------------------------
 
-class MockPathProviderPlatform extends Fake
-    with MockPlatformInterfaceMixin
-    implements PathProviderPlatform {
+class MockPathProviderPlatform extends Fake with MockPlatformInterfaceMixin implements PathProviderPlatform {
   late String tempPath;
 
   MockPathProviderPlatform() {
@@ -61,6 +59,7 @@ ProcessingSettings _settings({
     deviceId: 'test-device',
     audioSaveFormat: 'm4a',
     omiEnabled: false,
+    priorityRecordCapMinutes: 0,
   );
 }
 
@@ -92,8 +91,7 @@ void main() {
     TestWidgetsFlutterBinding.ensureInitialized();
 
     // Mock flutter_secure_storage
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
       const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
       (MethodCall methodCall) async {
         if (methodCall.method == 'read') return null;
@@ -106,8 +104,7 @@ void main() {
     );
 
     // Mock flutter_onnxruntime so fake OrtSession's close/dispose are no-ops.
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
       const MethodChannel('flutter_onnxruntime'),
       (MethodCall methodCall) async => null,
     );
@@ -269,8 +266,7 @@ void main() {
 
       final firstStart = discards[0]['startMs'] as int;
       final secondStart = discards[1]['startMs'] as int;
-      expect(secondStart, greaterThan(firstStart),
-          reason: 'second discard must not reuse the file-start timestamp');
+      expect(secondStart, greaterThan(firstStart), reason: 'second discard must not reuse the file-start timestamp');
       await processor.destroy();
     });
   });
