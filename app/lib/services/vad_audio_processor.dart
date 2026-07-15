@@ -181,6 +181,14 @@ class VadAudioProcessor {
   // sentinel/checkpoint written before this field existed.
   int? _priorityCapAtOpenMinutes;
 
+  // True while the current force-capture latch was RESTORED from a prior run
+  // (sentinel or checkpoint) rather than opened by a 0xFFFFFFF8 in THIS run. Only a
+  // restored latch is eligible for the stale-latch auto-close (a large resume gap):
+  // a latch opened this run still has its 0xFFFFFFFC ahead of it in the stream, and
+  // the start-adjacent resume marker is expected. Not persisted — re-derived at each
+  // restore. Cleared when the latch opens fresh or closes.
+  bool _priorityLatchRestored = false;
+
   // Path of the priority-latch sentinel file, or null (main-isolate / tests that
   // don't exercise cross-run priority). Holds {sessionId} while a Priority
   // Recording is open so it survives a clean run completion (which deletes the
@@ -262,6 +270,16 @@ class VadAudioProcessor {
   // tail, or a legit full-cap recording synced late would have its pre-stop tail
   // dropped from force-capture before the run reaches its real stop marker.
   static const int _priorityCapSlackMs = 30 * 60 * 1000; // 30 minutes
+
+  // A resume gap (0xFFFFFFFD) at or beyond this, seen while a RESTORED priority latch
+  // is open, means the device already left force-capture and the 0xFFFFFFFC stop was
+  // lost: genuine force-capture writes continuous audio and never sleeps, so its only
+  // resume markers come from a hardware WAKE re-arming after a couple of debounce
+  // frames (sub-second gap). Comfortably above the firmware VAD-hold (10 s) so it
+  // can't trip on that tail, well under any real conversation. Closes the stale latch
+  // so the stuck "in progress" recording finalizes instead of force-capturing every
+  // following auto recording into one runaway span.
+  static const int _priorityStaleResumeGapMs = 15 * 1000; // 15 seconds
 
   // Restored-latch age ceiling for a given firmware priority cap (minutes): cap +
   // slack, or the absolute 6 h fallback when cap == 0 (no firmware cap to derive from).
@@ -513,6 +531,7 @@ class VadAudioProcessor {
         return;
       }
       _inPriorityRecording = true;
+      _priorityLatchRestored = true;
       _priorityRecordingSessionId = sessionId;
       _priorityOpenedAtMs = openedAtMs;
       // Intentionally NOT restoring _priorityOpenBinPath: the marker bin belonged to
@@ -627,6 +646,9 @@ class VadAudioProcessor {
       _inPriorityRecording = false;
       _priorityCapAtOpenMinutes = null;
     }
+    // A checkpoint-restored latch is inherited from a prior run, so it's eligible for
+    // the stale-latch auto-close (see [_priorityStaleResumeGapMs]).
+    _priorityLatchRestored = _inPriorityRecording;
     _priorityOpenBinPath = s['pob'] as String?;
     _muted = (s['mtd'] as bool?) ?? false;
     _muteStartMs = s['mts'] as int?;
@@ -839,6 +861,7 @@ class VadAudioProcessor {
         Logger.debug('VadAudioProcessor: Priority Recording session changed '
             '($_priorityRecordingSessionId → $sessionId) — ending force-capture (device rebooted).');
         _inPriorityRecording = false;
+        _priorityLatchRestored = false;
         _priorityRecordingSessionId = null;
         _priorityOpenedAtMs = null;
         _priorityCapAtOpenMinutes = null;
@@ -1129,6 +1152,7 @@ class VadAudioProcessor {
             // restores the auto threshold, which the firmware finalizes by
             // emitting this same 0xFFFFFFFC). Leaving the force-capture span.
             _inPriorityRecording = false;
+            _priorityLatchRestored = false;
             _priorityRecordingSessionId = null;
             _priorityOpenedAtMs = null;
             _priorityCapAtOpenMinutes = null;
@@ -1208,6 +1232,9 @@ class VadAudioProcessor {
             // past _maxRestoredPriorityAgeMs.
             _priorityRecordingSessionId = sessionId ?? _currentSessionId;
             _priorityOpenedAtMs = markerMs;
+            // Opened fresh this run — its 0xFFFFFFFC is still ahead in the stream, so
+            // it is NOT eligible for the stale-latch resume-gap auto-close.
+            _priorityLatchRestored = false;
             // Snapshot the cap armed for THIS recording so a later Settings change
             // can't move its age ceiling on a cross-run restore (see the field doc).
             _priorityCapAtOpenMinutes = _priorityRecordCapMinutes;
@@ -1333,8 +1360,33 @@ class VadAudioProcessor {
             final bool withinMarkerWindow =
                 _markerProtectedUntilMs != null && newResumeTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
 
-            final bool wouldSplit =
-                !withinMarkerWindow && gapMs >= max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) && !isClockJump;
+            // Stale-latch auto-close: a restored priority latch that sees a large resume
+            // gap means the device already left force-capture on its own (its 0xFFFFFFFC
+            // stop was lost) — genuine force-capture writes continuous audio and never
+            // sleeps, so it can't produce a gap this large. Close the stale latch and
+            // FORCE a split here so the stuck "in progress" priority recording finalizes
+            // instead of swallowing every following auto recording. See the field/const
+            // docs; a WAKE-induced resume mid-force-capture stays sub-second so it can't
+            // trip this.
+            final bool staleLatchBreak =
+                _inPriorityRecording && _priorityLatchRestored && gapMs >= _priorityStaleResumeGapMs;
+            if (staleLatchBreak) {
+              Logger.debug('VadAudioProcessor: Restored priority latch saw a ${gapMs}ms resume gap '
+                  '(>= ${_priorityStaleResumeGapMs}ms) — device already left force-capture; closing stale '
+                  'latch and finalizing the priority recording here (lost 0xFFFFFFFC).');
+              _inPriorityRecording = false;
+              _priorityLatchRestored = false;
+              _priorityRecordingSessionId = null;
+              _priorityOpenedAtMs = null;
+              _priorityCapAtOpenMinutes = null;
+              _priorityOpenBinPath = null;
+              await _clearPriorityLatchFile();
+            }
+
+            final bool wouldSplit = staleLatchBreak ||
+                (!withinMarkerWindow &&
+                    gapMs >= max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) &&
+                    !isClockJump);
 
             // AAD flood guard: a bogus large gap (clock-anchor mismatch) on every
             // resume marker would spray a flood of tiny junk recordings. While
