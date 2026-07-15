@@ -1548,12 +1548,18 @@ class DeviceProvider extends ChangeNotifier
         final bool priorityActivity = dropStats.priorityRecordStarts > 0 ||
             dropStats.priorityRecordStops > 0 ||
             dropStats.markerWriteDrops > 0 ||
-            dropStats.emptyBinRotations > 0;
+            dropStats.emptyBinRotations > 0 ||
+            dropStats.sessionEndMarkerEmits > 0 ||
+            dropStats.markerPauseGateDrops > 0;
         if (priorityActivity) {
+          // seEmits vs pauseGateDrops pins a lost 0xFFFFFFFC: emits moving with the
+          // app seeing no marker = emitted-then-dropped (pauseGateDrops locates it at
+          // the SD pause gate); emits flat = the firmware finalize path never fired.
           final priorityMsg = 'Device priority-record counters: starts=${dropStats.priorityRecordStarts} '
               'stops=${dropStats.priorityRecordStops} markerDrops=${dropStats.markerWriteDrops} '
-              'emptyBinRotations=${dropStats.emptyBinRotations}';
-          if (dropStats.markerWriteDrops > 0 || dropStats.emptyBinRotations > 0) {
+              'emptyBinRotations=${dropStats.emptyBinRotations} seEmits=${dropStats.sessionEndMarkerEmits} '
+              'pauseGateDrops=${dropStats.markerPauseGateDrops}';
+          if (dropStats.markerWriteDrops > 0 || dropStats.emptyBinRotations > 0 || dropStats.markerPauseGateDrops > 0) {
             Logger.warning('$priorityMsg — possible lost Priority Recording (marker/audio dropped on-device)');
           } else {
             Logger.debug(priorityMsg);
@@ -1563,6 +1569,8 @@ class DeviceProvider extends ChangeNotifier
             'priority_stops': dropStats.priorityRecordStops,
             'marker_write_drops': dropStats.markerWriteDrops,
             'empty_bin_rotations': dropStats.emptyBinRotations,
+            'session_end_marker_emits': dropStats.sessionEndMarkerEmits,
+            'marker_pause_gate_drops': dropStats.markerPauseGateDrops,
           });
         }
       }
