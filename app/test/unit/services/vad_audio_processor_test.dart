@@ -1210,6 +1210,8 @@ void main() {
         final written = jsonDecode(File(latchPath).readAsStringSync()) as Map<String, dynamic>;
         expect(written['sessionId'], 1);
         expect(written['openedAtMs'], kBase + 200, reason: 'the 0xFFFFFFF8 wall time, preserved for the age bound');
+        expect(written.containsKey('capMinutes'), isTrue,
+            reason: 'the cap armed at open is snapshotted so a later Settings change cannot move the ceiling');
 
         // Run 2: a fresh (recent) sentinel restores force-capture. Rewritten with a
         // current openedAtMs because kBase is historical — a real recording's marker
@@ -1281,6 +1283,39 @@ void main() {
         expect(pLoose.inPriorityRecording, isTrue,
             reason: '90-min-old latch under a 120-min cap is within the 150-min ceiling → kept');
         await pLoose.destroy();
+      });
+
+      test('restore uses the cap snapshotted at open, not the current pref (mid-recording cap change)', () async {
+        final ninetyMinAgo = DateTime.now().millisecondsSinceEpoch - (90 * 60 * 1000);
+        String writeSentinel(String name, int capMinutes) {
+          final path = '${tempDir.path}/$name';
+          File(path).writeAsStringSync(
+              jsonEncode({'sessionId': 1, 'openedAtMs': ninetyMinAgo, 'capMinutes': capMinutes, 'ts': ninetyMinAgo}));
+          return path;
+        }
+
+        // Recording opened under a 120-min cap (snapshot → ceiling 150 min); user then
+        // shrank the cap to 30. Live pref would age it out at 60 min < 90, but the
+        // snapshot must win → keep the legit recording.
+        final keepPath = writeSentinel('latch_snap120_pref30.json', 120);
+        final pKeep = VadAudioProcessor.fromSettings(
+            settings: capSettings(30), outputDir: tempDir.path, priorityStatePath: keepPath);
+        await pKeep.restorePriorityLatch();
+        expect(pKeep.inPriorityRecording, isTrue,
+            reason: 'snapshot cap 120 (ceiling 150) overrides the shrunk 30-min pref → kept');
+        await pKeep.destroy();
+
+        // Symmetric: opened under a 30-min cap (ceiling 60 < 90), user then raised it
+        // to 120. The snapshot still ages it out — the recording the firmware armed
+        // was the 30-min one.
+        final dropPath = writeSentinel('latch_snap30_pref120.json', 30);
+        final pDrop = VadAudioProcessor.fromSettings(
+            settings: capSettings(120), outputDir: tempDir.path, priorityStatePath: dropPath);
+        await pDrop.restorePriorityLatch();
+        expect(pDrop.inPriorityRecording, isFalse,
+            reason: 'snapshot cap 30 (ceiling 60) overrides the raised 120-min pref → dropped');
+        expect(File(dropPath).existsSync(), isFalse);
+        await pDrop.destroy();
       });
 
       test('restored latch keeps the continuation force-captured across a splitting gap', () async {
