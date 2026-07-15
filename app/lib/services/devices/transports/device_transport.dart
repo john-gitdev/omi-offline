@@ -7,6 +7,14 @@ abstract class DeviceTransport {
 
   Future<void> connect({bool requiresBond = false});
   Future<void> disconnect();
+
+  /// Drop the CURRENT link/GATT without unmanaging the device, so the platform
+  /// rebuilds a fresh GATT on the next connect. Used to clear a wedged
+  /// (connected-but-dead) GATT where [disconnect] would be too heavy (it
+  /// unmanages, signalling user-intent-off and cancelling background recovery).
+  /// Default falls back to a full [disconnect]; native transports override it.
+  Future<void> softDisconnect() => disconnect();
+
   Future<bool> isConnected();
   Future<bool> ping();
   Future<bool> requestBond() async => true;

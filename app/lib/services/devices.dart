@@ -31,6 +31,13 @@ abstract class IDeviceService {
 
   Future<void> disconnectDevice({bool isManual = true});
 
+  /// Recover a wedged (connected-but-dead) GATT on the CURRENT connection by
+  /// dropping just that GATT and reconnecting fresh — the automatic equivalent of
+  /// toggling Bluetooth. Keeps the device managed (unlike [disconnectDevice], which
+  /// unmanages, signalling user-intent-off and cancelling native recovery). No-op if
+  /// nothing is connected.
+  Future<void> recycleConnection();
+
   /// Fully tear down connection + transport for a device being forgotten/unpaired.
   Future<void> forgetDevice(String deviceId);
 
@@ -76,6 +83,9 @@ class DeviceService implements IDeviceService {
   final Map<Object, IDeviceServiceSubscription> _subscriptions = {};
 
   DeviceConnection? _connection;
+  // Guards against concurrent recycleConnection() calls (the stall watchdog, the WAL
+  // sync catch, and the keep-alive can all trip on the same wedge at once).
+  bool _recycling = false;
   @override
   List<BtDevice> get devices => _devices;
 
@@ -304,6 +314,19 @@ class DeviceService implements IDeviceService {
 
   @override
   Future<void> disconnectDevice({bool isManual = true}) async {
+    await _mutex.acquire();
+    try {
+      await _disconnectLocked(isManual: isManual);
+    } finally {
+      _mutex.release();
+    }
+  }
+
+  // Assumes [_mutex] is held. Teardown runs under the same lock ensureConnection and the
+  // recycle reconnect use, so "is _connection still ours?" checks are atomic w.r.t. a
+  // racing disconnect/forget (a teardown either lands fully before a reconnect's guard —
+  // which then bails — or fully after it, re-tearing down; it can't interleave).
+  Future<void> _disconnectLocked({bool isManual = true}) async {
     if (_connection != null) {
       Logger.debug("DeviceService: Disconnecting device (isManual: $isManual)...");
       await _connection?.disconnect(isManual: isManual);
@@ -312,34 +335,129 @@ class DeviceService implements IDeviceService {
   }
 
   @override
+  Future<void> recycleConnection() async {
+    if (_recycling) {
+      Logger.debug('[DeviceService] recycleConnection: already in progress, skipping');
+      return;
+    }
+    final conn = _connection;
+    if (conn == null) {
+      Logger.debug('[DeviceService] recycleConnection: no active connection, skipping');
+      return;
+    }
+    _recycling = true;
+    final deviceId = conn.device.id;
+    Logger.warning('[DeviceService] recycleConnection: dropping current GATT for $deviceId '
+        'and reconnecting fresh (wedge recovery)');
+    try {
+      // Soft-disconnect the CURRENT (possibly wedged) GATT without unmanaging the
+      // device. Android: it stays managed → native rebuilds a fresh gatt on its own.
+      // iOS: marks it manually-disconnected → the ensureConnection below reconnects.
+      try {
+        await conn.transport.softDisconnect();
+      } catch (e) {
+        Logger.debug('[DeviceService] recycleConnection: softDisconnect failed: $e');
+      }
+      // Wait (bounded, OUTSIDE the mutex — we won't hold it for 5s) for the native
+      // disconnect callback to flip our status before escalating/reconnecting.
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      while (conn.status == DeviceConnectionState.connected && DateTime.now().isBefore(deadline)) {
+        await Future.delayed(const Duration(milliseconds: 150));
+      }
+      // Escalate (if the soft-disconnect was swallowed) and reconnect UNDER the mutex, so
+      // the "is _connection still ours?" guard is atomic with a racing disconnect/forget
+      // (both now take the same lock). Without that, a manual teardown could complete
+      // between the guard and the reconnect and be undone.
+      await _recycleReconnectLocked(conn, deviceId);
+    } finally {
+      _recycling = false;
+    }
+  }
+
+  /// Escalate (if the soft-disconnect left a stale "connected" status) and reconnect
+  /// [conn]'s device under [_mutex] — the same lock disconnectDevice/forgetDevice/
+  /// ensureConnection hold. Holding it across the guard AND the reconnect makes them
+  /// atomic w.r.t. a racing manual teardown: the teardown lands either fully before
+  /// (guard bails) or fully after (it re-tears down). Called only from recycleConnection.
+  Future<void> _recycleReconnectLocked(DeviceConnection conn, String deviceId) async {
+    await _mutex.acquire();
+    try {
+      // A manual disconnect/forget (or a different device connecting) replaced our
+      // captured connection — don't resurrect a device the user just tore down.
+      if (!identical(_connection, conn)) {
+        Logger.debug('[DeviceService] recycleConnection: connection superseded — not reconnecting');
+        return;
+      }
+      // If the soft-disconnect produced no disconnect callback (deep wedge / OEM stack
+      // that swallows gatt.disconnect), status is still "connected". Escalate to a full
+      // disconnect: it force-closes the gatt (refresh + close) and flips state to
+      // disconnected. Heavier (it unmanages), but only a fallback; the reconnect below
+      // re-manages and clears USER_DISCONNECTED.
+      if (conn.status == DeviceConnectionState.connected) {
+        Logger.warning('[DeviceService] recycleConnection: soft-disconnect left status connected '
+            'after 5s — escalating to a full disconnect');
+        try {
+          await conn.disconnect(isManual: false);
+        } catch (e) {
+          Logger.debug('[DeviceService] recycleConnection: escalated disconnect failed: $e');
+        }
+      }
+      // Reuses _connection == conn (same device id). Mirrors ensureConnection(force)'s
+      // body, but atomically after the guard so a swallowed-disconnect wedge can't leave
+      // ensureConnection's connected fast-path handing back the same wedged connection.
+      // requiresBond: false matches ensureConnection(force)'s default — a background /
+      // keep-alive recovery must not trigger a pairing flow the prior path never did.
+      try {
+        await _connectToDevice(deviceId, requiresBond: false);
+        _firstConnectedAt ??= DateTime.now();
+      } catch (e) {
+        Logger.debug('[DeviceService] recycleConnection: reconnect failed (native/schedule retries): $e');
+      }
+    } finally {
+      _mutex.release();
+    }
+  }
+
+  @override
   Future<void> forgetDevice(String deviceId) async {
     Logger.debug("DeviceService: Forgetting device $deviceId");
-    if (_connection != null) {
-      if (_connection!.status == DeviceConnectionState.connected) {
-        try {
-          await _connection?.sendUnpairCommand();
-          // Give the Omi a moment to process the command before we sever the link
-          await Future.delayed(const Duration(milliseconds: 500));
-        } catch (e) {
-          Logger.debug("DeviceService: Failed to send unpair command to Omi: $e");
+    // Under the mutex so a concurrent recycle reconnect can't resurrect the device
+    // between this teardown and its guard (uses _disconnectLocked to avoid re-acquiring).
+    await _mutex.acquire();
+    try {
+      if (_connection != null) {
+        // Capture the transport before _disconnectLocked nulls _connection — otherwise
+        // the dispose() below short-circuits on the connected path and leaks the
+        // BleBridge registration + connection-state stream controller.
+        final transport = _connection!.transport;
+        if (_connection!.status == DeviceConnectionState.connected) {
+          try {
+            await _connection?.sendUnpairCommand();
+            // Give the Omi a moment to process the command before we sever the link
+            await Future.delayed(const Duration(milliseconds: 500));
+          } catch (e) {
+            Logger.debug("DeviceService: Failed to send unpair command to Omi: $e");
+          }
+
+          try {
+            await _disconnectLocked(isManual: true);
+          } catch (e) {
+            Logger.debug("DeviceService: disconnect during forget failed: $e");
+          }
         }
 
         try {
-          await disconnectDevice(isManual: true);
+          await transport.dispose();
         } catch (e) {
-          Logger.debug("DeviceService: disconnect during forget failed: $e");
+          Logger.debug("DeviceService: transport dispose during forget failed: $e");
         }
+        _connection = null;
       }
 
-      try {
-        await _connection?.transport.dispose();
-      } catch (e) {
-        Logger.debug("DeviceService: transport dispose during forget failed: $e");
-      }
-      _connection = null;
+      _devices.removeWhere((d) => d.id == deviceId);
+    } finally {
+      _mutex.release();
     }
-
-    _devices.removeWhere((d) => d.id == deviceId);
 
     try {
       await BleHostApi().removeBond(deviceId);

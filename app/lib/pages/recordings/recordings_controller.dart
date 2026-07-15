@@ -1270,6 +1270,15 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (!serviceIsProcessing || serviceIsSyncing) {
       _settleNotification();
     }
+    // A syncing-phase stall is a transport wedge: the native link still reports
+    // connected but GATT ops are dead (writes time out / return "Not found"), so the
+    // pipeline can neither list nor read. Clearing our flags alone leaves that wedged
+    // GATT in place — the next run just reports "no new segments" against it until a
+    // write happens to throw. Recycle the connection (soft-disconnect → fresh GATT) so
+    // the wedge actually clears. Processing-only stalls leave the link untouched.
+    if (serviceIsSyncing) {
+      unawaited(ServiceManager.instance().device.recycleConnection());
+    }
     _transitionTo(SyncProcessState.idle);
     unawaited(reloadBatchesSilently());
   }
