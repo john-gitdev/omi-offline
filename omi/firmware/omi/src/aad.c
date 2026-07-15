@@ -478,16 +478,33 @@ void aad_set_threshold(uint16_t threshold)
      * short recording. Marker first, then state flip, so the marker lands inside
      * the active recording region while AAD frames are still flowing.
      *
-     * Three cases, all while vad_is_recording and not re-entering force-capture:
+     * Two finalize cases (an auto→auto sensitivity tweak, e.g. 250→300, matches
+     * neither, so it never interrupts an active recording):
      *   - prev == 65535  → leaving manual/priority always-record (button stop,
-     *                      BLE push, or manual→auto switch).
-     *   - threshold == 32769 → entering manual standby mid auto-recording (the
-     *                      app's "switch to Manual Mode" toggle); finalize the
-     *                      in-progress auto recording at the mode boundary rather
-     *                      than letting it bleed out over the VAD-hold tail.
-     * An auto→auto sensitivity tweak (e.g. 250→300) leaves both false, so it
-     * never interrupts an active recording. */
-    bool finalize_now = vad_is_recording && threshold != 65535 && (prev == 65535 || threshold == 32769);
+     *                      BLE push, or manual→auto switch). Emitted UNCONDITIONALLY
+     *                      (see below) — a stop must always leave a marker.
+     *   - threshold == 32769 while recording → entering manual standby mid
+     *                      auto-recording (the app's "switch to Manual Mode"
+     *                      toggle); finalize the in-progress auto recording at the
+     *                      mode boundary rather than letting it bleed out over the
+     *                      VAD-hold tail. */
+    /* Leaving always-record (a manual or priority-recording button/BLE stop, or
+     * a manual->auto switch) MUST emit the session-end marker unconditionally —
+     * NOT gated on vad_is_recording. A WAKE event handled by aad_process_audio the
+     * instant the stop lands can clear vad_is_recording (see the WAKE-consumed path
+     * above); with the old gate the counter still incremented (button.c bumps it
+     * before this call) but the 0xFFFFFFFC was never even enqueued, so the app never
+     * closed its priority latch and force-captured every following auto recording
+     * into one runaway span. marker_write_drops stayed 0 because nothing was queued
+     * to drop. prev == 65535 means force-capture WAS active, so a marker here is
+     * always correct; the healthy path already had vad_is_recording true, so this
+     * never double-emits. */
+    bool leaving_always_record = (prev == 65535 && threshold != 65535);
+    /* Auto -> manual-standby switch mid-recording: finalize the in-progress auto
+     * recording at the mode boundary. Only meaningful if something was recording
+     * (an idle auto->standby toggle has nothing to finalize). */
+    bool entering_manual_standby = (vad_is_recording && threshold == 32769 && prev != 65535);
+    bool finalize_now = leaving_always_record || entering_manual_standby;
 
     if (finalize_now) {
         write_session_end_marker_to_storage();
