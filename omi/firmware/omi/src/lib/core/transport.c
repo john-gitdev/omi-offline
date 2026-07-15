@@ -403,11 +403,12 @@ static atomic_t marker_write_drops = ATOMIC_INIT(0);
  *   session_end_marker_emits — write_session_end_marker_to_storage() was actually
  *     reached, i.e. aad_set_threshold()'s finalize path emitted a 0xFFFFFFFC. If a
  *     priority/manual stop leaves NO app-visible marker but this DID move, the marker
- *     was emitted-then-dropped (see marker_pause_gate_drops); if it did NOT move, the
+ *     was emitted-then-dropped (see marker_pause_gate_saves); if it did NOT move, the
  *     emit path never fired (the finalize guard).
- * marker_pause_gate_drops lives in sd_card.c (sd_get_marker_pause_gate_drops()): a
- * marker-bearing block discarded at the sd_write_paused gate — the one marker-loss
- * path that bumps neither marker_write_drops nor any other counter. */
+ * marker_pause_gate_saves lives in sd_card.c (sd_get_marker_pause_gate_saves()): a
+ * marker-bearing block RESCUED at the sd_write_paused gate (written through the pause
+ * instead of dropped). Before oo-2.5.9 that block was silently lost — the one
+ * marker-loss path that bumps neither marker_write_drops nor any other counter. */
 static atomic_t session_end_marker_emits = ATOMIC_INIT(0);
 
 /* Throttled flash persist of both counters (NOTES.md: "BLE: advertising but
@@ -454,7 +455,7 @@ static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_ha
 //   [uint32 marker_write_drops]     inline markers that failed to persist to SD (offset 52)
 //   [uint32 empty_bin_rotations]    rotations that closed a bin holding no audio (offset 56)
 //   [uint32 session_end_marker_emits] 0xFFFFFFFC emits attempted from the finalize path (offset 60)
-//   [uint32 marker_pause_gate_drops]  marker-bearing blocks discarded at the sd_write_paused gate (offset 64)
+//   [uint32 marker_pause_gate_saves]  marker-bearing blocks kept through the sd_write_paused gate (offset 64)
 static struct bt_uuid_128 diagnostics_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10060, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 diagnostics_characteristic_uuid =
@@ -512,12 +513,12 @@ static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
     uint32_t mk_drops = (uint32_t) atomic_get(&marker_write_drops);
     uint32_t empty_rots = sd_get_empty_bin_rotations();
     uint32_t se_emits = (uint32_t) atomic_get(&session_end_marker_emits);
-    uint32_t mk_pause_drops = sd_get_marker_pause_gate_drops();
+    uint32_t mk_pause_saves = sd_get_marker_pause_gate_saves();
 
     /* 68 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
      * codec_drops + sd_msgq peak depth + write-fairness activations + establishment
      * failures + Priority Recording lifecycle (starts / stops / marker drops /
-     * empty-bin rotations) + session-end emit attempts + pause-gate marker drops.
+     * empty-bin rotations) + session-end emit attempts + pause-gate marker saves.
      * Each field is appended at the end so older app builds (which read only the
      * first 20 / 28 / 32 / 40 / 44 / 60 bytes) keep working unchanged. */
     uint8_t payload[68];
@@ -537,7 +538,7 @@ static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
     pack_u32_le(payload + 52, mk_drops);
     pack_u32_le(payload + 56, empty_rots);
     pack_u32_le(payload + 60, se_emits);
-    pack_u32_le(payload + 64, mk_pause_drops);
+    pack_u32_le(payload + 64, mk_pause_saves);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
 }
 
