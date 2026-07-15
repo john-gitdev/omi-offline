@@ -291,10 +291,11 @@ static atomic_t empty_bin_rotations;
 
 /* Diagnostics: marker-bearing blocks RESCUED at the sd_write_paused gate below —
  * written through the pause instead of dropped. Before oo-2.5.9 this exact block was
- * silently discarded (the one marker-loss path that bumps no other counter, since
- * marker_write_drops only counts a transport-level block reject); the counter tallied
- * those losses. Now a nonzero value with recordings finalizing = the rescue firing.
- * Read via 0x19B10062. */
+ * silently discarded — the one marker-loss path that bumped NO counter at all
+ * (marker_write_drops only counts a transport-level block reject; the sd_write_blocked
+ * overflow path above still bumps stat_dropped_frames, so it isn't silent, just not
+ * marker-specific). The counter tallied those losses; now a nonzero value with
+ * recordings finalizing = the rescue firing. Read via 0x19B10062. */
 static atomic_t marker_pause_gate_saves;
 
 /* True if a 440-byte storage block carries any inline marker header (session-end /
