@@ -126,6 +126,7 @@ ProcessingSettings _settings({int minDurationMs = 0}) {
     deviceId: 'test-device',
     audioSaveFormat: 'm4a',
     omiEnabled: false,
+    priorityRecordCapMinutes: 0,
   );
 }
 
@@ -771,6 +772,7 @@ void main() {
           deviceId: '',
           audioSaveFormat: 'wav',
           omiEnabled: false,
+          priorityRecordCapMinutes: 0,
         );
 
     /// Bin: 0xFFFFFFFB header + [before] frames + 0xFFFFFFFE marker + [after] frames.
@@ -1235,6 +1237,52 @@ void main() {
         await p.destroy();
       });
 
+      // The restored-latch ceiling tracks the firmware Priority Recording safety
+      // cap (0x19B10014) + 30 min slack, not a fixed 6 h. Same 90-min-old latch:
+      // dropped under a 30-min cap (ceiling 60 min), kept under a 120-min cap
+      // (ceiling 150 min). Guards against a lost 0xFFFFFFFC ballooning a recording
+      // for hours while still clearing a legitimate full-cap recording.
+      ProcessingSettings capSettings(int capMinutes) => ProcessingSettings(
+            vadEnabled: false,
+            speechThreshold: 0.5,
+            silenceDurationToSplitMs: 120000,
+            minDurationMs: 0,
+            minSpeechMs: 0,
+            maxChunkMs: 0x7FFFFFFFFFFFFFFF,
+            deviceId: '',
+            audioSaveFormat: 'wav',
+            omiEnabled: false,
+            priorityRecordCapMinutes: capMinutes,
+          );
+
+      test('restored-latch ceiling is derived from the priority cap, not a fixed 6h', () async {
+        final ninetyMinAgo = DateTime.now().millisecondsSinceEpoch - (90 * 60 * 1000);
+        String writeSentinel(String name) {
+          final path = '${tempDir.path}/$name';
+          File(path).writeAsStringSync(jsonEncode({'sessionId': 1, 'openedAtMs': ninetyMinAgo, 'ts': ninetyMinAgo}));
+          return path;
+        }
+
+        // cap 30 min → ceiling 60 min < 90 min open → drop (a fixed 6h would keep it).
+        final tightPath = writeSentinel('latch_cap30.json');
+        final pTight = VadAudioProcessor.fromSettings(
+            settings: capSettings(30), outputDir: tempDir.path, priorityStatePath: tightPath);
+        await pTight.restorePriorityLatch();
+        expect(pTight.inPriorityRecording, isFalse,
+            reason: '90-min-old latch under a 30-min cap is past the 60-min ceiling → dropped');
+        expect(File(tightPath).existsSync(), isFalse);
+        await pTight.destroy();
+
+        // cap 120 min → ceiling 150 min > 90 min open → keep (a legit long recording).
+        final loosePath = writeSentinel('latch_cap120.json');
+        final pLoose = VadAudioProcessor.fromSettings(
+            settings: capSettings(120), outputDir: tempDir.path, priorityStatePath: loosePath);
+        await pLoose.restorePriorityLatch();
+        expect(pLoose.inPriorityRecording, isTrue,
+            reason: '90-min-old latch under a 120-min cap is within the 150-min ceiling → kept');
+        await pLoose.destroy();
+      });
+
       test('restored latch keeps the continuation force-captured across a splitting gap', () async {
         final latchPath = '${tempDir.path}/latch_behavior.json';
         // Sentinel as if run 1 left a priority recording open in session 1.
@@ -1695,6 +1743,7 @@ void main() {
           deviceId: '',
           audioSaveFormat: 'wav',
           omiEnabled: false,
+          priorityRecordCapMinutes: 0,
         );
 
     void addHeader(BytesBuilder b, {required int utcStartMs, int sessionId = 1}) {
