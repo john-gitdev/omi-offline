@@ -186,9 +186,10 @@ uint32_t sd_get_empty_bin_rotations(void);
  *
  * Incremented when process_write_data_req() keeps a paused (non-draining) block
  * that contains an inline marker header, rather than discarding it. Before oo-2.5.9
- * that block was silently dropped — the one marker-loss path that bumps no other
- * counter — so this counter located the lost 0xFFFFFFFC at the pause gate; now it
- * confirms the rescue. Monotonic since boot. Safe to call from any thread.
+ * that block was silently dropped — the one marker-loss path that bumped NO counter
+ * (the sd_write_blocked overflow path still bumps stat_dropped_frames) — so this
+ * counter located the lost 0xFFFFFFFC at the pause gate; now it confirms the rescue.
+ * Monotonic since boot. Safe to call from any thread.
  */
 uint32_t sd_get_marker_pause_gate_saves(void);
 
