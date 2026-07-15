@@ -1318,8 +1318,37 @@ void main() {
         await pDrop.destroy();
       });
 
-      test('restored latch auto-closes on a large resume gap (device already left force-capture)', () async {
-        final latchPath = '${tempDir.path}/latch_staleresume.json';
+      // Bin with a 0xFFFFFFFB header (anchors uptime + session=1) + 10 frames + a
+      // 0xFFFFFFFD resume + 10 frames. The header uptime lets isClockJump distinguish a
+      // real silence gap (uptime advances with UTC) from an RTC correction (uptime flat).
+      File makeResumeBin(String name, {required int resumeUtcSeconds, required int resumeUptimeMs}) {
+        final builder = BytesBuilder();
+        final hdr = ByteData(36);
+        hdr.setUint32(0, 0xFFFFFFFB, Endian.little);
+        hdr.setUint32(4, 28, Endian.little);
+        hdr.setUint64(8, kBase, Endian.little);
+        hdr.setUint64(16, 0, Endian.little);
+        hdr.setUint32(24, 0, Endian.little);
+        hdr.setUint32(28, 1, Endian.little); // sessionId = 1 (matches the restored latch)
+        builder.add(hdr.buffer.asUint8List());
+        final fhdr = ByteData(4)..setUint32(0, 4, Endian.little);
+        for (int i = 0; i < 10; i++) {
+          builder.add(fhdr.buffer.asUint8List());
+          builder.add(List.filled(4, 0));
+        }
+        final resume = ByteData(20);
+        resume.setUint32(0, 0xFFFFFFFD, Endian.little);
+        resume.setUint32(4, resumeUtcSeconds, Endian.little);
+        resume.setUint32(8, resumeUptimeMs, Endian.little);
+        builder.add(resume.buffer.asUint8List());
+        for (int i = 0; i < 10; i++) {
+          builder.add(fhdr.buffer.asUint8List());
+          builder.add(List.filled(4, 0));
+        }
+        return File('${tempDir.path}/$name')..writeAsBytesSync(builder.toBytes());
+      }
+
+      Future<VadAudioProcessor> restoredLatchProc(String latchPath) async {
         final nowMs = DateTime.now().millisecondsSinceEpoch;
         File(latchPath)
             .writeAsStringSync(jsonEncode({'sessionId': 1, 'openedAtMs': nowMs, 'capMinutes': 0, 'ts': nowMs}));
@@ -1327,39 +1356,42 @@ void main() {
             settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
         await p.restorePriorityLatch();
         expect(p.inPriorityRecording, isTrue, reason: 'latch restored → force-capture');
+        return p;
+      }
 
-        // A continuation bin with a 0xFFFFFFFD resume marker ~40 s after the bin start.
-        // Genuine force-capture writes continuous audio and never sleeps, so a gap this
-        // large means the device already stopped and the 0xFFFFFFFC was lost.
-        final segStart = DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true);
-        final bin = _makeBinFileWithVadResume(tempDir, 10, 10,
-            name: 'stale_resume.bin', vadUtcSeconds: (kBase ~/ 1000) + 40, vadUptimeMs: 40000);
-        await p.processSegmentFile(bin, segStart);
-
+      test('restored latch auto-closes on a large resume gap (device already left force-capture)', () async {
+        final latchPath = '${tempDir.path}/latch_staleresume.json';
+        final p = await restoredLatchProc(latchPath);
+        // ~40 s gap, uptime advancing in step → a real silence, not a clock jump.
+        final bin = makeResumeBin('stale_resume.bin', resumeUtcSeconds: (kBase ~/ 1000) + 40, resumeUptimeMs: 40000);
+        await p.processSegmentFile(bin, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
         expect(p.inPriorityRecording, isFalse,
-            reason: 'a >=15 s resume gap in a restored latch closes the stale force-capture');
+            reason: 'a >=15 s real resume gap in a restored latch closes the stale force-capture');
         expect(File(latchPath).existsSync(), isFalse, reason: 'stale sentinel cleared on auto-close');
         await p.destroy();
       });
 
       test('restored latch survives a small resume gap (WAKE re-arm, not a stop)', () async {
         final latchPath = '${tempDir.path}/latch_smallresume.json';
-        final nowMs = DateTime.now().millisecondsSinceEpoch;
-        File(latchPath)
-            .writeAsStringSync(jsonEncode({'sessionId': 1, 'openedAtMs': nowMs, 'capMinutes': 0, 'ts': nowMs}));
-        final p = VadAudioProcessor.fromSettings(
-            settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
-        await p.restorePriorityLatch();
-        expect(p.inPriorityRecording, isTrue);
-
+        final p = await restoredLatchProc(latchPath);
         // ~1 s gap — like a hardware WAKE re-arming mid-force-capture. Must NOT close.
-        final segStart = DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true);
-        final bin = _makeBinFileWithVadResume(tempDir, 10, 10,
-            name: 'small_resume.bin', vadUtcSeconds: (kBase ~/ 1000) + 1, vadUptimeMs: 1000);
-        await p.processSegmentFile(bin, segStart);
-
+        final bin = makeResumeBin('small_resume.bin', resumeUtcSeconds: (kBase ~/ 1000) + 1, resumeUptimeMs: 1000);
+        await p.processSegmentFile(bin, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
         expect(p.inPriorityRecording, isTrue,
             reason: 'a sub-15 s resume gap must NOT close a legit force-capture latch');
+        expect(File(latchPath).existsSync(), isTrue, reason: 'sentinel kept — latch still open');
+        await p.destroy();
+      });
+
+      test('restored latch survives a clock jump (large UTC gap, flat uptime — not silence)', () async {
+        final latchPath = '${tempDir.path}/latch_clockjump.json';
+        final p = await restoredLatchProc(latchPath);
+        // Large UTC jump (~40 s) but uptime barely moves → an RTC correction, not
+        // silence. Must NOT terminate the still-active priority recording.
+        final bin = makeResumeBin('clockjump_resume.bin', resumeUtcSeconds: (kBase ~/ 1000) + 40, resumeUptimeMs: 300);
+        await p.processSegmentFile(bin, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+        expect(p.inPriorityRecording, isTrue,
+            reason: 'a clock jump (flat uptime) is not silence, so it must not close the latch');
         expect(File(latchPath).existsSync(), isTrue, reason: 'sentinel kept — latch still open');
         await p.destroy();
       });
