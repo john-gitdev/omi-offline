@@ -1318,6 +1318,52 @@ void main() {
         await pDrop.destroy();
       });
 
+      test('restored latch auto-closes on a large resume gap (device already left force-capture)', () async {
+        final latchPath = '${tempDir.path}/latch_staleresume.json';
+        final nowMs = DateTime.now().millisecondsSinceEpoch;
+        File(latchPath)
+            .writeAsStringSync(jsonEncode({'sessionId': 1, 'openedAtMs': nowMs, 'capMinutes': 0, 'ts': nowMs}));
+        final p = VadAudioProcessor.fromSettings(
+            settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
+        await p.restorePriorityLatch();
+        expect(p.inPriorityRecording, isTrue, reason: 'latch restored → force-capture');
+
+        // A continuation bin with a 0xFFFFFFFD resume marker ~40 s after the bin start.
+        // Genuine force-capture writes continuous audio and never sleeps, so a gap this
+        // large means the device already stopped and the 0xFFFFFFFC was lost.
+        final segStart = DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true);
+        final bin = _makeBinFileWithVadResume(tempDir, 10, 10,
+            name: 'stale_resume.bin', vadUtcSeconds: (kBase ~/ 1000) + 40, vadUptimeMs: 40000);
+        await p.processSegmentFile(bin, segStart);
+
+        expect(p.inPriorityRecording, isFalse,
+            reason: 'a >=15 s resume gap in a restored latch closes the stale force-capture');
+        expect(File(latchPath).existsSync(), isFalse, reason: 'stale sentinel cleared on auto-close');
+        await p.destroy();
+      });
+
+      test('restored latch survives a small resume gap (WAKE re-arm, not a stop)', () async {
+        final latchPath = '${tempDir.path}/latch_smallresume.json';
+        final nowMs = DateTime.now().millisecondsSinceEpoch;
+        File(latchPath)
+            .writeAsStringSync(jsonEncode({'sessionId': 1, 'openedAtMs': nowMs, 'capMinutes': 0, 'ts': nowMs}));
+        final p = VadAudioProcessor.fromSettings(
+            settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
+        await p.restorePriorityLatch();
+        expect(p.inPriorityRecording, isTrue);
+
+        // ~1 s gap — like a hardware WAKE re-arming mid-force-capture. Must NOT close.
+        final segStart = DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true);
+        final bin = _makeBinFileWithVadResume(tempDir, 10, 10,
+            name: 'small_resume.bin', vadUtcSeconds: (kBase ~/ 1000) + 1, vadUptimeMs: 1000);
+        await p.processSegmentFile(bin, segStart);
+
+        expect(p.inPriorityRecording, isTrue,
+            reason: 'a sub-15 s resume gap must NOT close a legit force-capture latch');
+        expect(File(latchPath).existsSync(), isTrue, reason: 'sentinel kept — latch still open');
+        await p.destroy();
+      });
+
       test('restored latch keeps the continuation force-captured across a splitting gap', () async {
         final latchPath = '${tempDir.path}/latch_behavior.json';
         // Sentinel as if run 1 left a priority recording open in session 1.
