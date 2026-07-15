@@ -1273,6 +1273,13 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               stats.priorityRecordStarts > stats.priorityRecordStops),
           _dropStatRow('Marker writes dropped', stats.markerWriteDrops.toString(), stats.markerWriteDrops > 0),
           _dropStatRow('Empty bin rotations', stats.emptyBinRotations.toString(), stats.emptyBinRotations > 0),
+          // Locates a lost stop marker (0xFFFFFFFC): if a priority/manual stop leaves
+          // no recording boundary but "Session-end marker emits" moved, the marker was
+          // emitted then dropped — "Marker drops at SD pause gate" says it went at the
+          // pause gate. If emits didn't move, the firmware finalize path never fired.
+          _dropStatRow('Session-end marker emits', stats.sessionEndMarkerEmits.toString(), false),
+          _dropStatRow(
+              'Marker drops at SD pause gate', stats.markerPauseGateDrops.toString(), stats.markerPauseGateDrops > 0),
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 6),
             child: Divider(color: Color(0xFF2C2C2E), height: 1),
