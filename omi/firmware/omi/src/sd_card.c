@@ -289,6 +289,32 @@ static atomic_t write_fair_activations;
  * priority attempt is the on-device fingerprint of that loss. Read via 0x19B10062. */
 static atomic_t empty_bin_rotations;
 
+/* Diagnostics: marker-bearing blocks discarded at the sd_write_paused gate below.
+ * This is the one marker-loss path that bumps no other counter (marker_write_drops
+ * only counts a transport-level block reject, not a silent worker-side pause drop).
+ * A nonzero delta across a priority stop — while session_end_marker_emits also moved
+ * — pins the lost 0xFFFFFFFC to the pause gate. Read via 0x19B10062. */
+static atomic_t marker_pause_gate_drops;
+
+/* True if a 440-byte storage block carries any inline marker header (session-end /
+ * priority-start / button-tap / mute / VAD-resume). Scans 4-byte-aligned words for
+ * the header sentinels; markers are always 4-byte aligned by the transport, so a
+ * match is real. Only called on the rare pause-gate drop path, never per audio
+ * frame, so the scan cost is irrelevant. */
+static bool block_has_marker(const uint8_t *buf, size_t len)
+{
+    for (size_t i = 0; i + 4 <= len; i += 4) {
+        uint32_t w = (uint32_t) buf[i] | ((uint32_t) buf[i + 1] << 8) | ((uint32_t) buf[i + 2] << 16) |
+                     ((uint32_t) buf[i + 3] << 24);
+        if (w == 0xFFFFFFF8u /* priority-start */ || w == 0xFFFFFFF9u /* mute-off */ ||
+            w == 0xFFFFFFFAu /* mute-on */ || w == 0xFFFFFFFCu /* session-end */ ||
+            w == 0xFFFFFFFDu /* VAD-resume */ || w == 0xFFFFFFFEu /* button-tap */) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Protects current_filename / current_file_path across threads.
  * The SD worker updates these during file creation and TMP→hex rename;
  * the storage thread reads them via sd_is_current_recording_file(). */
@@ -691,6 +717,12 @@ static void process_write_data_req(const sd_req_t *req)
      * loss. (Manual-mode stop doesn't rotate, so its marker never reaches this drain
      * — that path is unchanged here.) */
     if (!sd_draining && atomic_get(&sd_write_paused)) {
+        /* Diagnostics: if this silently-dropped block carried an inline marker, it's
+         * the pause-gate marker loss (0x19B10062). Scan only here — the rare drop
+         * path — never per accepted frame. */
+        if (block_has_marker(req->u.write.buf, req->u.write.len)) {
+            atomic_inc(&marker_pause_gate_drops);
+        }
         if (spi_woken) {
             sd_set_io_low_power(true);
         }
@@ -2479,6 +2511,11 @@ uint32_t sd_get_write_fair_activations(void)
 uint32_t sd_get_empty_bin_rotations(void)
 {
     return (uint32_t)atomic_get(&empty_bin_rotations);
+}
+
+uint32_t sd_get_marker_pause_gate_drops(void)
+{
+    return (uint32_t)atomic_get(&marker_pause_gate_drops);
 }
 
 int app_sd_init(void)
