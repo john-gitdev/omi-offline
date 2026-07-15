@@ -1279,7 +1279,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           // pause instead of dropped (before oo-2.5.9 these were the silent loss). Both
           // moving with recordings finalizing = the fix working; emits flat means the
           // finalize path never fired. Kept is a rescue, so it is not highlighted.
-          _dropStatRow('Session-end marker emits', stats.sessionEndMarkerEmits.toString(), false),
+          // Amber when a priority stop happened but no session-end marker was emitted
+          // (stops > 0, emits == 0) — that's the finalize path never firing, the exact
+          // failure these counters exist to catch.
+          _dropStatRow('Session-end marker emits', stats.sessionEndMarkerEmits.toString(),
+              stats.priorityRecordStops > 0 && stats.sessionEndMarkerEmits == 0),
           _dropStatRow('Markers kept at SD pause gate', stats.markerPauseGateSaves.toString(), false),
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 6),
