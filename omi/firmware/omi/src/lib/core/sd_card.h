@@ -181,16 +181,16 @@ uint32_t sd_get_write_fair_activations(void);
 uint32_t sd_get_empty_bin_rotations(void);
 
 /**
- * @brief Get the number of marker-bearing storage blocks discarded at the
- * sd_write_paused gate.
+ * @brief Get the number of marker-bearing storage blocks RESCUED at the
+ * sd_write_paused gate (written through the pause instead of dropped).
  *
- * Incremented when process_write_data_req() drops a paused (non-draining) block
- * that contains an inline marker header. This is the one marker-loss path that
- * bumps neither marker_write_drops nor any other counter, so a nonzero delta across
- * a priority stop pins the lost 0xFFFFFFFC to the pause gate. Monotonic since boot.
- * Safe to call from any thread.
+ * Incremented when process_write_data_req() keeps a paused (non-draining) block
+ * that contains an inline marker header, rather than discarding it. Before oo-2.5.9
+ * that block was silently dropped — the one marker-loss path that bumps no other
+ * counter — so this counter located the lost 0xFFFFFFFC at the pause gate; now it
+ * confirms the rescue. Monotonic since boot. Safe to call from any thread.
  */
-uint32_t sd_get_marker_pause_gate_drops(void);
+uint32_t sd_get_marker_pause_gate_saves(void);
 
 /**
  * @brief Put the SD card interface (controller) into a low-power (suspend) state.
