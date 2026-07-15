@@ -408,7 +408,8 @@ static atomic_t marker_write_drops = ATOMIC_INIT(0);
  * marker_pause_gate_saves lives in sd_card.c (sd_get_marker_pause_gate_saves()): a
  * marker-bearing block RESCUED at the sd_write_paused gate (written through the pause
  * instead of dropped). Before oo-2.5.9 that block was silently lost — the one
- * marker-loss path that bumps neither marker_write_drops nor any other counter. */
+ * marker-loss path that bumped NO counter (the sd_write_blocked overflow path still
+ * bumps stat_dropped_frames / stream drops, so it isn't silent, just not marker-aware). */
 static atomic_t session_end_marker_emits = ATOMIC_INIT(0);
 
 /* Throttled flash persist of both counters (NOTES.md: "BLE: advertising but
