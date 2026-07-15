@@ -222,6 +222,10 @@ class OmiDeviceConnection extends DeviceConnection {
         priorityRecordStops: data.length >= 52 ? data.getUint32LittleEndian(48) : 0,
         markerWriteDrops: data.length >= 56 ? data.getUint32LittleEndian(52) : 0,
         emptyBinRotations: data.length >= 60 ? data.getUint32LittleEndian(56) : 0,
+        // Session-end emit attempts (60) + pause-gate marker drops (64), 68-byte
+        // firmware; 0 on older builds that return only the first 60 bytes.
+        sessionEndMarkerEmits: data.length >= 64 ? data.getUint32LittleEndian(60) : 0,
+        markerPauseGateDrops: data.length >= 68 ? data.getUint32LittleEndian(64) : 0,
         readAt: DateTime.now(),
       );
     } catch (e) {
