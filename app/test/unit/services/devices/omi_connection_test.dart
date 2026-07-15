@@ -34,6 +34,9 @@ class MockDeviceTransport implements DeviceTransport {
   Future<void> disconnect() async {}
 
   @override
+  Future<void> softDisconnect() async {}
+
+  @override
   Future<bool> isConnected() async => true;
 
   @override
