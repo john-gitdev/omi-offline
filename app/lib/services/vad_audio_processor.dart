@@ -1367,9 +1367,11 @@ class VadAudioProcessor {
             // FORCE a split here so the stuck "in progress" priority recording finalizes
             // instead of swallowing every following auto recording. See the field/const
             // docs; a WAKE-induced resume mid-force-capture stays sub-second so it can't
-            // trip this.
+            // trip this. Excludes a clock jump (uptime continuous, UTC corrected): that
+            // inflates gapMs without any real silence, so it must NOT terminate a valid
+            // still-active recording — matches the wouldSplit guard below.
             final bool staleLatchBreak =
-                _inPriorityRecording && _priorityLatchRestored && gapMs >= _priorityStaleResumeGapMs;
+                _inPriorityRecording && _priorityLatchRestored && gapMs >= _priorityStaleResumeGapMs && !isClockJump;
             if (staleLatchBreak) {
               Logger.debug('VadAudioProcessor: Restored priority latch saw a ${gapMs}ms resume gap '
                   '(>= ${_priorityStaleResumeGapMs}ms) — device already left force-capture; closing stale '
@@ -1393,7 +1395,11 @@ class VadAudioProcessor {
             // Silero is unavailable, latch into coalesce mode after a run of tiny
             // splits so further resume markers stitch onto one recording instead
             // of splitting (no pad, no re-anchor — see below).
+            // A stale-latch break must always finalize the recovered priority recording
+            // here, so it's never absorbed into flood-coalesce (which stitches instead
+            // of splitting when Silero is unavailable).
             final bool floodCoalesce = wouldSplit &&
+                !staleLatchBreak &&
                 _session == null &&
                 aadFloodStep(closingMs: _currentChunkDurationMs, hasRefs: _currentRefs.isNotEmpty);
 
