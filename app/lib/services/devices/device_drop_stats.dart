@@ -73,6 +73,19 @@ class DeviceDropStats {
   final int priorityRecordStops;
   final int markerWriteDrops;
   final int emptyBinRotations;
+
+  /// Session-end marker (0xFFFFFFFC) emits attempted from the firmware finalize
+  /// path, appended at offset 60 (68-byte firmware); 0 on older builds. Pins the
+  /// "lost stop marker" question: if a priority/manual stop leaves no app-visible
+  /// marker but this moved, the marker was emitted-then-dropped (see
+  /// [markerPauseGateDrops]); if it did NOT move, the emit path never fired.
+  final int sessionEndMarkerEmits;
+
+  /// Marker-bearing storage blocks the firmware discarded at its `sd_write_paused`
+  /// gate, appended at offset 64; 0 on older builds. The one marker-loss path that
+  /// bumps no other counter — a nonzero delta across a priority stop (with
+  /// [sessionEndMarkerEmits] also moving) locates the loss at the SD pause gate.
+  final int markerPauseGateDrops;
   final DateTime readAt;
 
   const DeviceDropStats({
@@ -91,6 +104,8 @@ class DeviceDropStats {
     this.priorityRecordStops = 0,
     this.markerWriteDrops = 0,
     this.emptyBinRotations = 0,
+    this.sessionEndMarkerEmits = 0,
+    this.markerPauseGateDrops = 0,
     required this.readAt,
   });
 
