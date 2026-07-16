@@ -94,8 +94,11 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   //     of the new image and clears the flag. A failed flash reverts to the old
   //     image, which ignores the flag, so the pairing survives.
   //   • Phone side: on a successful flash we removeBond here (gated on this bool
-  //     AND on the arm write below having succeeded, so we never drop the phone
-  //     bond when the device wasn't actually armed).
+  //     AND on the arm write below having LANDED — see _postDfuArmWriteOk — so a
+  //     transient arm-write failure doesn't half-apply the reset). Note this does
+  //     NOT gate on the device *honoring* 0x18: older firmware that rejects the
+  //     command still returns a landed write, and there the phone-side wipe +
+  //     re-pair is the intended fallback.
   // Net: a successful update leaves BOTH sides unbonded → clean re-pair; a failed
   // update leaves the pairing completely untouched.
   bool _wipeBondsOnUpdate = false;
@@ -182,9 +185,14 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     _acquireUpdateWakelocks();
     // Stop any in-flight storage sync before the arm write: it shares the storage
     // characteristic with file transfers, so writing over a live transfer can
-    // stall it (the same hazard the keep-alive avoids). prepareDFU cancels sync
-    // again shortly, but the arm goes out first.
-    ServiceManager.instance().wal.getSyncs().cancelSync();
+    // stall it (the same hazard the keep-alive avoids). cancelSync() only requests
+    // the stop, so wait (bounded) for the transfer to actually unwind before
+    // arming. prepareDFU cancels sync again shortly, but the arm goes out first.
+    final syncs = ServiceManager.instance().wal.getSyncs();
+    if (syncs.isSyncing) {
+      syncs.cancelSync();
+      await syncs.cancelFuture?.timeout(const Duration(seconds: 2), onTimeout: () {});
+    }
     // Arm (or clear) the device-side one-shot post-update bond wipe to match the
     // user's opt-in, while the link is still up. The device only acts on it if a
     // NEW firmware version actually boots (a successful flash), so a failed flash
