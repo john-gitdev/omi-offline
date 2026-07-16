@@ -48,12 +48,19 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   // True once we've attempted to restore the persisted baseline this polling session.
   bool _baselineRestored = false;
 
-  static const _kBaselineBlocks = 'drop_baseline_blocks';
-  static const _kBaselineFrames = 'drop_baseline_frames';
-  static const _kBaselineBoot = 'drop_baseline_boot';
-  static const _kBaselineCodec = 'drop_baseline_codec';
+  // Full boot-relative baseline snapshot (all counters that reset to 0 on device
+  // reboot), stored as JSON so a "reset diagnostics" tap survives an app restart.
+  static const _kBaselineJson = 'drop_baseline_json';
   static const _kBaselineConnFail = 'conn_fail_baseline';
   static const _kBaselineEstabFail = 'estab_fail_baseline';
+  // Superseded pre-JSON baseline keys, removed once on upgrade (see _tryRestoreBaseline).
+  static const _kLegacyBaselineBlocks = 'drop_baseline_blocks';
+  static const _kLegacyBaselineKeys = [
+    _kLegacyBaselineBlocks,
+    'drop_baseline_frames',
+    'drop_baseline_boot',
+    'drop_baseline_codec',
+  ];
   // BLE connect-fail baselines (app-side). Unlike _dropBaseline they survive a
   // device reboot, because the firmware counters are flash-persisted.
   int? _connFailBaseline;
@@ -503,27 +510,27 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     _baselineRestored = true;
     final prefs = SharedPreferencesUtil();
 
-    // SD-drop baseline: app-side, discarded when the device reboots (those
-    // counters reset to 0 on reboot, so the saved baseline would over-subtract).
-    final savedBlocks = prefs.getInt(_kBaselineBlocks, defaultValue: -1);
-    if (savedBlocks >= 0) {
-      final savedFrames = prefs.getInt(_kBaselineFrames, defaultValue: 0);
-      final savedBoot = prefs.getInt(_kBaselineBoot, defaultValue: 0);
-      final savedCodec = prefs.getInt(_kBaselineCodec, defaultValue: 0);
-      if (stats.blockDrops < savedBlocks ||
-          stats.streamFrameDrops < savedFrames ||
-          stats.codecFrameDrops < savedCodec) {
-        unawaited(prefs.remove(_kBaselineBlocks));
+    // SD-drop / lifecycle baseline: app-side, covers every boot-relative counter
+    // (all of them reset to 0 when the device reboots). Discarded on reboot —
+    // detected by a counter having dropped below the baseline (the only thing that
+    // can move one backwards), which the saved baseline would otherwise
+    // over-subtract. Uptime is intentionally not used for this: it wraps every
+    // ~49.7 days on the firmware's uint32-ms clock, which is not a reboot.
+    final savedJson = prefs.getString(_kBaselineJson);
+    if (savedJson.isNotEmpty) {
+      final saved = DeviceDropStats.fromBaselineJson(savedJson);
+      if (saved == null || stats.looksRebootedFrom(saved)) {
+        unawaited(prefs.remove(_kBaselineJson));
       } else {
-        setState(() => _dropBaseline = DeviceDropStats(
-              blockDrops: savedBlocks,
-              lastBlockDropUptimeMs: 0,
-              streamFrameDrops: savedFrames,
-              bootFrameDrops: savedBoot,
-              currentUptimeMs: 0,
-              codecFrameDrops: savedCodec,
-              readAt: DateTime.now(),
-            ));
+        setState(() => _dropBaseline = saved);
+      }
+    } else if (prefs.getInt(_kLegacyBaselineBlocks, defaultValue: -1) >= 0) {
+      // One-time cleanup of the pre-JSON four-key baseline, now superseded by the
+      // single JSON snapshot. Its value isn't carried forward: it covered only 4 of
+      // the counters, and a partial baseline is exactly the confusing half-reset
+      // this screen moved away from — the user re-taps once if they still want it.
+      for (final k in _kLegacyBaselineKeys) {
+        unawaited(prefs.remove(k));
       }
     }
 
@@ -552,11 +559,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   void _snapshotDropBaseline() {
     final stats = _dropStats;
     if (stats == null) return;
-    final prefs = SharedPreferencesUtil();
-    unawaited(prefs.saveInt(_kBaselineBlocks, stats.blockDrops));
-    unawaited(prefs.saveInt(_kBaselineFrames, stats.streamFrameDrops));
-    unawaited(prefs.saveInt(_kBaselineBoot, stats.bootFrameDrops));
-    unawaited(prefs.saveInt(_kBaselineCodec, stats.codecFrameDrops));
+    unawaited(SharedPreferencesUtil().saveString(_kBaselineJson, stats.toBaselineJson()));
     setState(() => _dropBaseline = stats);
   }
 
@@ -572,8 +575,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     });
   }
 
-  /// Reset every diagnostic counter (SD-queue/block/codec drops + BLE connect
-  /// failures) to a fresh baseline in one tap.
+  /// Baseline every diagnostic counter on the card in one tap so they all read 0
+  /// from now on: the SD-drop counters, the write-path and Priority-Recording
+  /// lifecycle counters, and the BLE connect-fail counters. Display-only — the
+  /// firmware keeps its own running totals; this only moves the app's subtraction
+  /// baseline. Device uptime is intentionally left live.
   void _resetAllDiagnostics() {
     _snapshotDropBaseline();
     _snapshotConnFailBaseline();
@@ -1207,11 +1213,29 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       );
     }
 
+    // Every firmware counter here resets to 0 on device reboot, so "Reset all
+    // diagnostics" baselines them uniformly: show the value since the last reset,
+    // clamped at 0 so a stale baseline never renders a negative. (The connect-fail
+    // counters survive reboot and carry their own int baselines below.)
     final baseline = _dropBaseline;
-    final blocks = baseline == null ? stats.blockDrops : (stats.blockDrops - baseline.blockDrops);
-    final frames = baseline == null ? stats.streamFrameDrops : (stats.streamFrameDrops - baseline.streamFrameDrops);
-    final codec = baseline == null ? stats.codecFrameDrops : (stats.codecFrameDrops - baseline.codecFrameDrops);
-    final boot = stats.bootFrameDrops; // boot drops are fixed at boot; baseline doesn't apply
+    int rel(int current, int Function(DeviceDropStats b) pick) =>
+        baseline == null ? current : (current - pick(baseline)).clamp(0, current);
+
+    final blocks = rel(stats.blockDrops, (b) => b.blockDrops);
+    final frames = rel(stats.streamFrameDrops, (b) => b.streamFrameDrops);
+    final codec = rel(stats.codecFrameDrops, (b) => b.codecFrameDrops);
+    final boot = rel(stats.bootFrameDrops, (b) => b.bootFrameDrops);
+    // Peak depth is a high-water mark, not an incremental counter, so it can't be
+    // delta-subtracted. Show the live peak once it climbs past where it stood at the
+    // reset (i.e. genuinely new queue pressure), otherwise 0.
+    final peak = baseline == null || stats.msgqPeakDepth > baseline.msgqPeakDepth ? stats.msgqPeakDepth : 0;
+    final writeFair = rel(stats.writeFairActivations, (b) => b.writeFairActivations);
+    final prioStarts = rel(stats.priorityRecordStarts, (b) => b.priorityRecordStarts);
+    final prioStops = rel(stats.priorityRecordStops, (b) => b.priorityRecordStops);
+    final markerDrops = rel(stats.markerWriteDrops, (b) => b.markerWriteDrops);
+    final emptyRot = rel(stats.emptyBinRotations, (b) => b.emptyBinRotations);
+    final seEmits = rel(stats.sessionEndMarkerEmits, (b) => b.sessionEndMarkerEmits);
+    final pauseSaves = rel(stats.markerPauseGateSaves, (b) => b.markerPauseGateSaves);
     final hasFreshDrops = blocks > 0 || frames > 0 || codec > 0;
     final connFails = _connFailBaseline == null ? stats.failedConnCount : (stats.failedConnCount - _connFailBaseline!);
     final estabFails = _estabFailBaseline == null ? stats.estabFailCount : (stats.estabFailCount - _estabFailBaseline!);
@@ -1220,7 +1244,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
 
     String lastDropLabel;
     final sinceMs = stats.msSinceLastBlockDrop;
-    if (sinceMs == null) {
+    // "Since reset" is derived from the block-drop count rising (blocks > 0), not
+    // the drop's uptime: a reboot that a zero-counter baseline can't flag (see
+    // looksRebootedFrom) resets the device uptime below the captured value, which
+    // an uptime comparison would misread as "before reset" — hiding a genuine
+    // post-reset drop as "never" while the count row shows it. Keying off the same
+    // delta keeps the two rows consistent.
+    final noDropSinceReset = baseline != null && blocks == 0;
+    if (sinceMs == null || noDropSinceReset) {
       lastDropLabel = 'never';
     } else {
       lastDropLabel = '${_formatDuration(sinceMs)} ago';
@@ -1253,26 +1284,26 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           _dropStatRow('Boot-window frame drops', boot.toString(), false),
           _dropStatRow('Last block drop', lastDropLabel, hasFreshDrops),
           _dropStatRow('Device uptime', _formatDuration(stats.currentUptimeMs), false),
-          // Write-path headroom (since boot; not baseline-adjusted). Peak depth
-          // near the queue limit (100) means the write path is riding the drop
-          // edge; a low peak means plenty of headroom. Fairness activations just
-          // show the read-vs-write arbiter engaging — informational, not a fault.
-          _dropStatRow('SD queue peak depth', '${stats.msgqPeakDepth} / 100', stats.msgqPeakDepth >= 80),
-          _dropStatRow('Write-fairness activations', stats.writeFairActivations.toString(), false),
+          // Write-path headroom. Peak depth is a high-water mark, so after a reset it
+          // reads 0 until the queue climbs past where it stood at the reset, then
+          // shows that live peak out of the queue limit (100); near 100 means the
+          // write path is riding the drop edge, low means plenty of headroom. Fairness
+          // activations just show the read-vs-write arbiter engaging — not a fault.
+          _dropStatRow('SD queue peak depth', '$peak / 100', peak >= 80),
+          _dropStatRow('Write-fairness activations', writeFair.toString(), false),
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 6),
             child: Divider(color: Color(0xFF2C2C2E), height: 1),
           ),
-          // Priority Recording lifecycle (0x0062, since boot; not baseline-adjusted).
-          // starts > stops means a recording was left open; marker-write drops and
-          // empty-bin rotations are the on-device fingerprint of a lost Priority
-          // Recording (0xFFFFFFF8 marker + audio dropped at the rotate). Amber when a
-          // start has no matching stop or either loss counter is nonzero.
-          _dropStatRow('Priority recordings started', stats.priorityRecordStarts.toString(), false),
-          _dropStatRow('Priority recordings stopped', stats.priorityRecordStops.toString(),
-              stats.priorityRecordStarts > stats.priorityRecordStops),
-          _dropStatRow('Marker writes dropped', stats.markerWriteDrops.toString(), stats.markerWriteDrops > 0),
-          _dropStatRow('Empty bin rotations', stats.emptyBinRotations.toString(), stats.emptyBinRotations > 0),
+          // Priority Recording lifecycle (0x0062, since reset). starts > stops means
+          // a recording was left open; marker-write drops and empty-bin rotations are
+          // the on-device fingerprint of a lost Priority Recording (0xFFFFFFF8 marker
+          // + audio dropped at the rotate). Amber when a start has no matching stop or
+          // either loss counter is nonzero.
+          _dropStatRow('Priority recordings started', prioStarts.toString(), false),
+          _dropStatRow('Priority recordings stopped', prioStops.toString(), prioStarts > prioStops),
+          _dropStatRow('Marker writes dropped', markerDrops.toString(), markerDrops > 0),
+          _dropStatRow('Empty bin rotations', emptyRot.toString(), emptyRot > 0),
           // Confirms the stop marker (0xFFFFFFFC) is written, not lost: "Session-end
           // marker emits" is how many times the firmware finalize path fired; "Markers
           // kept at SD pause gate" is how many marker blocks were written through a
@@ -1282,9 +1313,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           // Amber when a priority stop happened but no session-end marker was emitted
           // (stops > 0, emits == 0) — that's the finalize path never firing, the exact
           // failure these counters exist to catch.
-          _dropStatRow('Session-end marker emits', stats.sessionEndMarkerEmits.toString(),
-              stats.priorityRecordStops > 0 && stats.sessionEndMarkerEmits == 0),
-          _dropStatRow('Markers kept at SD pause gate', stats.markerPauseGateSaves.toString(), false),
+          _dropStatRow('Session-end marker emits', seEmits.toString(), prioStops > 0 && seEmits == 0),
+          _dropStatRow('Markers kept at SD pause gate', pauseSaves.toString(), false),
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 6),
             child: Divider(color: Color(0xFF2C2C2E), height: 1),
@@ -1312,8 +1342,16 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
-              child: const Text('Reset all diagnostics',
+              child: const Text('Zero all counters (display only)',
                   style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.only(top: 6),
+            child: Text(
+              'Snapshots the current values as a baseline so every counter above reads 0 from now. '
+              'Nothing is cleared on the device — it keeps its own totals until it reboots.',
+              style: TextStyle(color: Colors.white38, fontSize: 11, height: 1.3),
             ),
           ),
         ],

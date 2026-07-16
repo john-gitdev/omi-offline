@@ -74,4 +74,94 @@ void main() {
       expect(s.writeFairActivations, 0);
     });
   });
+
+  group('baseline JSON round-trip', () {
+    test('preserves every boot-relative counter and the capture uptime', () {
+      final original = DeviceDropStats(
+        blockDrops: 11,
+        lastBlockDropUptimeMs: 999, // NOT persisted — derived, not a baseline field
+        streamFrameDrops: 22,
+        bootFrameDrops: 33,
+        currentUptimeMs: 123456,
+        codecFrameDrops: 44,
+        msgqPeakDepth: 55,
+        writeFairActivations: 66,
+        priorityRecordStarts: 7,
+        priorityRecordStops: 6,
+        markerWriteDrops: 5,
+        emptyBinRotations: 4,
+        sessionEndMarkerEmits: 3,
+        markerPauseGateSaves: 2,
+        readAt: DateTime.now(),
+      );
+
+      final restored = DeviceDropStats.fromBaselineJson(original.toBaselineJson())!;
+
+      expect(restored.blockDrops, 11);
+      expect(restored.streamFrameDrops, 22);
+      expect(restored.bootFrameDrops, 33);
+      expect(restored.codecFrameDrops, 44);
+      expect(restored.msgqPeakDepth, 55);
+      expect(restored.writeFairActivations, 66);
+      expect(restored.priorityRecordStarts, 7);
+      expect(restored.priorityRecordStops, 6);
+      expect(restored.markerWriteDrops, 5);
+      expect(restored.emptyBinRotations, 4);
+      expect(restored.sessionEndMarkerEmits, 3);
+      expect(restored.markerPauseGateSaves, 2);
+      // currentUptimeMs is retained as provenance (when the reset was taken);
+      // reboot detection is counter-based, so nothing reads it, but it round-trips.
+      expect(restored.currentUptimeMs, 123456);
+      // Derived field is intentionally reset, not carried through.
+      expect(restored.lastBlockDropUptimeMs, 0);
+    });
+
+    test('returns null on malformed JSON instead of throwing', () {
+      expect(DeviceDropStats.fromBaselineJson('not json'), isNull);
+      expect(DeviceDropStats.fromBaselineJson(''), isNull);
+    });
+
+    test('missing keys decode to 0 (forward/backward-compatible snapshot)', () {
+      final restored = DeviceDropStats.fromBaselineJson('{"blockDrops": 9}')!;
+      expect(restored.blockDrops, 9);
+      expect(restored.priorityRecordStarts, 0);
+      expect(restored.currentUptimeMs, 0);
+    });
+  });
+
+  group('looksRebootedFrom', () {
+    test('false when every counter is at or above the baseline', () {
+      final base = stats(blockDrops: 3, streamFrameDrops: 2, codecFrameDrops: 1);
+      final now = stats(blockDrops: 5, streamFrameDrops: 2, codecFrameDrops: 4);
+      expect(now.looksRebootedFrom(base), isFalse);
+    });
+
+    test('true when any counter dropped below the baseline (reboot zeroed it)', () {
+      final base = stats(blockDrops: 3, streamFrameDrops: 2);
+      expect(stats(blockDrops: 0, streamFrameDrops: 0).looksRebootedFrom(base), isTrue);
+      // A single counter going backwards is enough.
+      expect(stats(blockDrops: 3, streamFrameDrops: 1).looksRebootedFrom(base), isTrue);
+    });
+
+    test('detects a reboot even when uptime has already climbed back past the baseline', () {
+      // The old uptime-comparison heuristic missed this: device rebooted, then ran
+      // long enough that its new uptime exceeds the captured one. The counters are
+      // what give it away.
+      final base = stats(blockDrops: 10, currentUptimeMs: 5000);
+      final now = stats(blockDrops: 1, currentUptimeMs: 9000);
+      expect(now.looksRebootedFrom(base), isTrue);
+    });
+
+    test('a uint32 uptime wrap with counters still climbing is NOT a reboot', () {
+      // Uptime wrapped (~49.7 days), so currentUptimeMs went backwards, but the
+      // counters kept increasing — this must not be treated as a reboot.
+      final base = stats(blockDrops: 4, currentUptimeMs: 4294967000);
+      final now = stats(blockDrops: 6, currentUptimeMs: 100);
+      expect(now.looksRebootedFrom(base), isFalse);
+    });
+
+    test('a zero baseline reads as not-rebooted (display is current − 0 either way)', () {
+      expect(stats(blockDrops: 7).looksRebootedFrom(stats()), isFalse);
+    });
+  });
 }

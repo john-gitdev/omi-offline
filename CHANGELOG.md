@@ -4,6 +4,10 @@ Patch releases are rolled up into their minor version. Each section reflects the
 
 ## App
 
+### 0.30
+
+- **Change: Debug Tools' "Reset all diagnostics" now zeroes *every* counter on the card, not just some.** The button (renamed "Zero all counters (display only)") previously re-baselined only the SD-drop and Bluetooth connect-fail rows, leaving the Priority-Recording, marker, and write-path counters showing their since-boot totals — so tapping "reset" left half the card unchanged. It now snapshots all of them, so every counter reads 0 from that point and only climbs on new activity, which makes it straightforward to reproduce an issue and see exactly what moved. The baseline persists across app restarts and is dropped automatically if the device reboots (its counters reset to 0 on the device anyway). It's a display-only reset — nothing is cleared on the device, which keeps its own running totals; the device uptime row is intentionally left live.
+
 ### 0.29
 
 - **Fix: The Omi no longer loses a Priority Recording's start or stop marker when it happens to be pausing its SD-card writes.** Root-caused with the diagnostics counters below: the firmware pauses SD writes during silence to save power, and the internal start/stop marker for a Priority Recording could be silently discarded at that pause the instant a recording started or stopped — losing the whole recording (start dropped) or leaving it stuck open and swallowing later audio (stop dropped). The firmware now always writes a marker through the pause (a pause is a power optimization, not a reason to drop a marker), so the boundary is preserved. Requires firmware ≥ this release (`oo-2.5.9`). This addresses the on-device cause the app-side auto-close (below) was compensating for.
