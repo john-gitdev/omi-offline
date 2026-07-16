@@ -165,6 +165,10 @@ Storage protocol: write commands to `storageDataStreamCharacteristicUuid` (`…8
 | `0x12` | DELETE_FILE | `[0x12, fileIndex, timestamp_4B LE?]` (timestamp optional) |
 | `0x13` | ROTATE_FILE | `[0x13]` |
 | `0x14` | CLEAR_STORAGE | `[0x14]` |
+| `0x15` | UNPAIR | `[0x15]` (firmware `bt_unpair` — wipes the device's own BLE bonds; `sendUnpairCommand`) |
+| `0x16` | REBOOT | `[0x16]` (deferred to the storage thread: ACKs, then `sys_reboot(SYS_REBOOT_COLD)`; `sendRebootCommand`. Surfaced as "Reboot Omi" in Device Settings) |
+| `0x17` | POWER_OFF | `[0x17]` (deferred to the storage thread: ACKs, then `turnoff_all()` → `sys_poweroff()` — ship mode, wakes only on button/charger; `sendShutdownCommand`. Surfaced as "Shutdown Omi" in Device Settings) |
+| `0x18` | ARM_POST_DFU_UNPAIR | `[0x18, arm]` (`arm`=1 arm / 0 disarm; bare `[0x18]` arms). Persists a one-shot NVS flag (`omi/unpair_on_boot`); the first boot of a freshly-flashed image runs `bt_unpair` + clears it (in `transport_start`, after BT bonds load). A failed flash reverts to the old image, which ignores the flag → pairing survives. Armed pre-flash by the app's "Reset pairing after update" toggle (`sendArmPostDfuUnpair`); pairs with the phone-side `removeBond` on success. |
 | `0x32` | KEEP_ALIVE | `[0x32]` (added 0.14.4; prevents firmware idle-disconnect) |
 
 File indices are **cache positions** (0-based sequential) that shift after each deletion — the firmware rebuilds its file-list cache on every CMD_LIST_FILES and after every delete, so after deleting index 0, what was index 1 becomes index 0. Supplying the timestamp in CMD_READ_FILE and CMD_DELETE_FILE lets the firmware re-locate the file by timestamp if the index shifted between LIST and READ/DELETE.
