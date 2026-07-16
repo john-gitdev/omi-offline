@@ -79,13 +79,18 @@ abstract class DeviceConnection {
     return false;
   }
 
-  Future<({bool muted, DateTime? since})> getMuteState() async {
+  /// Returns null if the device is disconnected or the read failed, so callers
+  /// can tell "device says unmuted" apart from "couldn't read".
+  Future<({bool muted, DateTime? since})?> getMuteState() async {
     if (await isConnected()) return performGetMuteState();
-    return (muted: false, since: null);
+    return null;
   }
 
-  Future<void> setMute(bool muted) async {
+  /// Returns true only if the write was delivered (with-response ACK). False on
+  /// a disconnect or write failure.
+  Future<bool> setMute(bool muted) async {
     if (await isConnected()) return performSetMute(muted);
+    return false;
   }
 
   Future<StreamSubscription<List<int>>?> getMuteListener({
@@ -290,8 +295,8 @@ abstract class DeviceConnection {
 
   Future<int> performRetrieveBatteryLevel();
   Future<bool> performRetrieveChargingState();
-  Future<({bool muted, DateTime? since})> performGetMuteState();
-  Future<void> performSetMute(bool muted);
+  Future<({bool muted, DateTime? since})?> performGetMuteState();
+  Future<bool> performSetMute(bool muted);
   Future<StreamSubscription<List<int>>?> performGetMuteListener({
     required void Function(bool muted, DateTime? since) onMuteChange,
   });
