@@ -1,6 +1,7 @@
 #ifndef SETTINGS_H
 #define SETTINGS_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <zephyr/drivers/rtc.h>
 
@@ -218,5 +219,20 @@ int app_settings_save_unpair_on_boot(uint8_t arm);
 
 /** @brief Return 1 if the one-shot post-update bond wipe is armed, else 0. */
 uint8_t app_settings_get_unpair_on_boot(void);
+
+/**
+ * @brief Record the firmware version running this boot and report whether it
+ *        changed since the previous boot.
+ *
+ * Persists [current] (refreshing the stored value only when it differs) and
+ * returns true if it differs from what the last boot stored — i.e. a firmware
+ * update actually landed. Used to gate the one-shot post-update bond wipe on a
+ * real version change, so a failed/aborted flash that leaves the same image
+ * running can't trigger a wipe on a later ordinary reboot.
+ *
+ * @param current Compile-time firmware version string (e.g. CONFIG_BT_DIS_FW_REV_STR).
+ * @return true if the version changed since the previous boot, false otherwise.
+ */
+bool app_settings_note_boot_fw_version(const char *current);
 
 #endif // SETTINGS_H
