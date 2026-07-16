@@ -128,4 +128,40 @@ void main() {
       expect(restored.currentUptimeMs, 0);
     });
   });
+
+  group('looksRebootedFrom', () {
+    test('false when every counter is at or above the baseline', () {
+      final base = stats(blockDrops: 3, streamFrameDrops: 2, codecFrameDrops: 1);
+      final now = stats(blockDrops: 5, streamFrameDrops: 2, codecFrameDrops: 4);
+      expect(now.looksRebootedFrom(base), isFalse);
+    });
+
+    test('true when any counter dropped below the baseline (reboot zeroed it)', () {
+      final base = stats(blockDrops: 3, streamFrameDrops: 2);
+      expect(stats(blockDrops: 0, streamFrameDrops: 0).looksRebootedFrom(base), isTrue);
+      // A single counter going backwards is enough.
+      expect(stats(blockDrops: 3, streamFrameDrops: 1).looksRebootedFrom(base), isTrue);
+    });
+
+    test('detects a reboot even when uptime has already climbed back past the baseline', () {
+      // The old uptime-comparison heuristic missed this: device rebooted, then ran
+      // long enough that its new uptime exceeds the captured one. The counters are
+      // what give it away.
+      final base = stats(blockDrops: 10, currentUptimeMs: 5000);
+      final now = stats(blockDrops: 1, currentUptimeMs: 9000);
+      expect(now.looksRebootedFrom(base), isTrue);
+    });
+
+    test('a uint32 uptime wrap with counters still climbing is NOT a reboot', () {
+      // Uptime wrapped (~49.7 days), so currentUptimeMs went backwards, but the
+      // counters kept increasing — this must not be treated as a reboot.
+      final base = stats(blockDrops: 4, currentUptimeMs: 4294967000);
+      final now = stats(blockDrops: 6, currentUptimeMs: 100);
+      expect(now.looksRebootedFrom(base), isFalse);
+    });
+
+    test('a zero baseline reads as not-rebooted (display is current − 0 either way)', () {
+      expect(stats(blockDrops: 7).looksRebootedFrom(stats()), isFalse);
+    });
+  });
 }
