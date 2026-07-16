@@ -91,3 +91,16 @@ abstract class SDCardWalSync implements IWalSync {
   /// then run a normal sync including short segments below the usual threshold.
   Future<SyncLocalFilesResponse?> rotateAndSync({IWalSyncProgressListener? progress});
 }
+
+extension SDCardWalSyncCancel on SDCardWalSync {
+  /// Stop any in-flight sync and wait (bounded) for the transfer to actually
+  /// unwind. [cancelSync] only *requests* cancellation, so a bare call leaves the
+  /// transfer stream still draining; callers that then write to the shared
+  /// storage characteristic (firmware-update arm, reboot/shutdown, wipe) must
+  /// await this first to avoid racing a live transfer. No-op when not syncing.
+  Future<void> cancelAndWait({Duration timeout = const Duration(seconds: 2)}) async {
+    if (!isSyncing) return;
+    cancelSync();
+    await cancelFuture?.timeout(timeout, onTimeout: () {});
+  }
+}
