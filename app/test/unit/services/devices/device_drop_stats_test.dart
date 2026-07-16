@@ -109,8 +109,8 @@ void main() {
       expect(restored.emptyBinRotations, 4);
       expect(restored.sessionEndMarkerEmits, 3);
       expect(restored.markerPauseGateSaves, 2);
-      // currentUptimeMs must survive: the restore path uses it to detect a reboot
-      // (uptime going backwards) and discard the stale baseline.
+      // currentUptimeMs is retained as provenance (when the reset was taken);
+      // reboot detection is counter-based, so nothing reads it, but it round-trips.
       expect(restored.currentUptimeMs, 123456);
       // Derived field is intentionally reset, not carried through.
       expect(restored.lastBlockDropUptimeMs, 0);

@@ -123,9 +123,11 @@ class DeviceDropStats {
 
   /// Serializes the boot-relative counters (every counter that resets to 0 when
   /// the device reboots — i.e. all of them except the flash-persisted connect-fail
-  /// counters, which the app baselines separately) plus [currentUptimeMs] at
-  /// capture. Used to persist a "reset diagnostics" baseline across an app restart;
-  /// on restore a reboot is detected by the uptime having gone backwards.
+  /// counters, which the app baselines separately) plus [currentUptimeMs] as the
+  /// device-uptime at capture. Used to persist a "reset diagnostics" baseline across
+  /// an app restart. Reboot detection on restore is counter-based, not uptime-based
+  /// (see [looksRebootedFrom]); [currentUptimeMs] is retained only as provenance of
+  /// when the reset was taken.
   String toBaselineJson() => jsonEncode({
         'blockDrops': blockDrops,
         'streamFrameDrops': streamFrameDrops,
