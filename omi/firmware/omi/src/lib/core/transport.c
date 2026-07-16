@@ -2057,22 +2057,24 @@ int transport_start()
      * ordinary reboot (or the Reboot Omi command) of an armed device does NOT
      * wipe bonds; only a genuine update does. */
     if (app_settings_get_unpair_on_boot()) {
-        if (!fw_changed) {
-            /* Not an update boot — consume the one-shot flag without wiping. */
-            LOG_INF("unpair_on_boot armed but firmware unchanged — skipping bond wipe");
-            app_settings_save_unpair_on_boot(0);
-        } else {
+        /* One-shot: always consume the flag this boot (an armed same-version
+         * reboot must not keep the wipe pending). Wipe only on a real update. */
+        app_settings_save_unpair_on_boot(0);
+        if (fw_changed) {
             int uerr = bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
             if (uerr) {
-                /* Surface the failure and LEAVE the flag armed so a later update
-                 * boot can retry, instead of silently clearing it as if the reset
-                 * had happened. The immediate mismatch is still recovered by the
-                 * phone-side removeBond (on success) + re-pair. */
-                LOG_ERR("unpair_on_boot: bt_unpair failed (err %d) — leaving flag armed to retry", uerr);
+                /* Rare. The local wipe is best-effort — the actual pairing reset
+                 * is the app clearing the PHONE bond on success, which forces a
+                 * fresh pair that re-keys the device anyway. So a failed local
+                 * unpair still recovers on the next reconnect; just surface it
+                 * rather than pretending a cross-reboot retry (the version has
+                 * already advanced, so a later boot wouldn't see fw_changed). */
+                LOG_ERR("unpair_on_boot: bt_unpair failed (err %d); phone re-pair will re-key", uerr);
             } else {
                 LOG_INF("unpair_on_boot armed + firmware changed: wiped BLE bonds");
-                app_settings_save_unpair_on_boot(0);
             }
+        } else {
+            LOG_INF("unpair_on_boot armed but firmware unchanged — skipping bond wipe");
         }
     }
 
