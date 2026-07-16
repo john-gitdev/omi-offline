@@ -1040,6 +1040,10 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     );
     if (confirmed != true) return;
 
+    // Stop any in-flight storage sync first: the reboot write shares the storage
+    // characteristic with file transfers and would otherwise race a live one.
+    ServiceManager.instance().wal.getSyncs().cancelSync();
+
     bool ok = false;
     try {
       final connection = await ServiceManager.instance().device.ensureConnection(pairedDeviceId);
@@ -1074,6 +1078,10 @@ class _DeviceSettingsState extends State<DeviceSettings> {
       ),
     );
     if (confirmed != true) return;
+
+    // Stop any in-flight storage sync first: the shutdown write shares the storage
+    // characteristic with file transfers and would otherwise race a live one.
+    ServiceManager.instance().wal.getSyncs().cancelSync();
 
     bool ok = false;
     try {
