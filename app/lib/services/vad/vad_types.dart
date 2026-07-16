@@ -24,6 +24,10 @@ class ProcessingSettings {
   final String deviceId; // used to generate upload key in .meta sidecar
   final String audioSaveFormat;
   final bool omiEnabled;
+  // Firmware Priority Recording safety cap in minutes (0x19B10014); 0 = no cap.
+  // Bounds a restored priority latch whose 0xFFFFFFFC stop was lost, so a runaway
+  // force-capture can't keep swallowing auto recordings. See VadAudioProcessor.
+  final int priorityRecordCapMinutes;
 
   const ProcessingSettings({
     required this.vadEnabled,
@@ -35,6 +39,7 @@ class ProcessingSettings {
     required this.deviceId,
     required this.audioSaveFormat,
     required this.omiEnabled,
+    required this.priorityRecordCapMinutes,
   });
 
   factory ProcessingSettings.fromPrefs() {
@@ -49,6 +54,7 @@ class ProcessingSettings {
       deviceId: p.btDevice.id,
       audioSaveFormat: p.audioSaveFormat,
       omiEnabled: p.omiEnabled,
+      priorityRecordCapMinutes: p.priorityRecordMaxMinutes,
     );
   }
 }

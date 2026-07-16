@@ -114,6 +114,7 @@ void main() {
         deviceId: 'test',
         audioSaveFormat: 'wav',
         omiEnabled: false,
+        priorityRecordCapMinutes: 0,
       );
 
       final processor = VadAudioProcessor.fromSettings(settings: settings, outputDir: tempDir.path);
@@ -176,6 +177,7 @@ void main() {
         deviceId: 'test',
         audioSaveFormat: 'wav',
         omiEnabled: false,
+        priorityRecordCapMinutes: 0,
       );
       final processor = VadAudioProcessor.fromSettings(settings: settings, outputDir: tempDir.path);
 
@@ -226,6 +228,7 @@ void main() {
         deviceId: 'test',
         audioSaveFormat: 'wav',
         omiEnabled: false,
+        priorityRecordCapMinutes: 0,
       );
       final processor = VadAudioProcessor.fromSettings(settings: settings, outputDir: tempDir.path);
 

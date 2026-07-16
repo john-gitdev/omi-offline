@@ -1541,6 +1541,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       deviceId: _prefs.btDevice.id,
       audioSaveFormat: _prefs.audioSaveFormat,
       omiEnabled: false,
+      priorityRecordCapMinutes: _prefs.priorityRecordMaxMinutes,
     );
 
     // Re-derive ONLY the discarded span, so recovery can't pull in the neighbor

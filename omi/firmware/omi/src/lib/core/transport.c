@@ -399,6 +399,19 @@ static atomic_t priority_record_starts = ATOMIC_INIT(0);
 static atomic_t priority_record_stops = ATOMIC_INIT(0);
 static atomic_t marker_write_drops = ATOMIC_INIT(0);
 
+/* Diagnostics: pins the "lost stop marker" question (0x19B10062, appended).
+ *   session_end_marker_emits — write_session_end_marker_to_storage() was actually
+ *     reached, i.e. aad_set_threshold()'s finalize path emitted a 0xFFFFFFFC. If a
+ *     priority/manual stop leaves NO app-visible marker but this DID move, the marker
+ *     was emitted-then-dropped (see marker_pause_gate_saves); if it did NOT move, the
+ *     emit path never fired (the finalize guard).
+ * marker_pause_gate_saves lives in sd_card.c (sd_get_marker_pause_gate_saves()): a
+ * marker-bearing block RESCUED at the sd_write_paused gate (written through the pause
+ * instead of dropped). Before oo-2.5.9 that block was silently lost — the one
+ * marker-loss path that bumped NO counter (the sd_write_blocked overflow path still
+ * bumps stat_dropped_frames / stream drops, so it isn't silent, just not marker-aware). */
+static atomic_t session_end_marker_emits = ATOMIC_INIT(0);
+
 /* Throttled flash persist of both counters (NOTES.md: "BLE: advertising but
  * won't connect"). The failures accrue while disconnected, and the user must
  * power-cycle or toggle phone Bluetooth to reconnect and read them, so the counts
@@ -424,7 +437,7 @@ static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_ha
 //   uptime_seconds: how long the PREVIOUS session ran before it ended (crash or clean shutdown)
 //
 // Characteristic B:   19B10062-E8F2-537E-4F6C-D104768A1214
-// Returns 60 bytes LE (fields appended over time; older apps read a prefix):
+// Returns 68 bytes LE (fields appended over time; older apps read a prefix):
 //   [uint32 storage_block_drops]   storage_block_drops since boot (each = ~5 Opus frames lost)
 //   [uint32 last_drop_uptime_ms]   k_uptime_get() at the most recent block drop (0 = none)
 //   [uint32 sd_stream_drops]       stat_dropped_frames from sd_card.c (queue-full audio frame drops)
@@ -442,6 +455,8 @@ static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_ha
 //   [uint32 priority_record_stops]  priority recordings ended; starts>stops = left open (offset 48)
 //   [uint32 marker_write_drops]     inline markers that failed to persist to SD (offset 52)
 //   [uint32 empty_bin_rotations]    rotations that closed a bin holding no audio (offset 56)
+//   [uint32 session_end_marker_emits] 0xFFFFFFFC emits attempted from the finalize path (offset 60)
+//   [uint32 marker_pause_gate_saves]  marker-bearing blocks kept through the sd_write_paused gate (offset 64)
 static struct bt_uuid_128 diagnostics_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10060, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 diagnostics_characteristic_uuid =
@@ -498,13 +513,16 @@ static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
     uint32_t prio_stops = (uint32_t) atomic_get(&priority_record_stops);
     uint32_t mk_drops = (uint32_t) atomic_get(&marker_write_drops);
     uint32_t empty_rots = sd_get_empty_bin_rotations();
+    uint32_t se_emits = (uint32_t) atomic_get(&session_end_marker_emits);
+    uint32_t mk_pause_saves = sd_get_marker_pause_gate_saves();
 
-    /* 60 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
+    /* 68 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
      * codec_drops + sd_msgq peak depth + write-fairness activations + establishment
      * failures + Priority Recording lifecycle (starts / stops / marker drops /
-     * empty-bin rotations). Each field is appended at the end so older app builds
-     * (which read only the first 20 / 28 / 32 / 40 / 44 bytes) keep working unchanged. */
-    uint8_t payload[60];
+     * empty-bin rotations) + session-end emit attempts + pause-gate marker saves.
+     * Each field is appended at the end so older app builds (which read only the
+     * first 20 / 28 / 32 / 40 / 44 / 60 bytes) keep working unchanged. */
+    uint8_t payload[68];
     pack_u32_le(payload + 0, block_drops);
     pack_u32_le(payload + 4, last_drop_ms);
     pack_u32_le(payload + 8, sd_stream_drops);
@@ -520,6 +538,8 @@ static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
     pack_u32_le(payload + 48, prio_stops);
     pack_u32_le(payload + 52, mk_drops);
     pack_u32_le(payload + 56, empty_rots);
+    pack_u32_le(payload + 60, se_emits);
+    pack_u32_le(payload + 64, mk_pause_saves);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
 }
 
@@ -1805,6 +1825,10 @@ bool write_marker_to_storage(void)
 
 bool write_session_end_marker_to_storage(void)
 {
+    /* Count the emit attempt (diagnostics 0x19B10062): reaching here means the
+     * finalize path fired and a 0xFFFFFFFC was handed to storage. Counted even if
+     * the write below is dropped downstream — that pairing is the diagnosis. */
+    atomic_inc(&session_end_marker_emits);
     return write_marker_header_to_storage(0xFFFFFFFC, "session-end");
 }
 

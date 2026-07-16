@@ -289,6 +289,34 @@ static atomic_t write_fair_activations;
  * priority attempt is the on-device fingerprint of that loss. Read via 0x19B10062. */
 static atomic_t empty_bin_rotations;
 
+/* Diagnostics: marker-bearing blocks RESCUED at the sd_write_paused gate below —
+ * written through the pause instead of dropped. Before oo-2.5.9 this exact block was
+ * silently discarded — the one marker-loss path that bumped NO counter at all
+ * (marker_write_drops only counts a transport-level block reject; the sd_write_blocked
+ * overflow path above still bumps stat_dropped_frames, so it isn't silent, just not
+ * marker-specific). The counter tallied those losses; now a nonzero value with
+ * recordings finalizing = the rescue firing. Read via 0x19B10062. */
+static atomic_t marker_pause_gate_saves;
+
+/* True if a 440-byte storage block carries any inline marker header (session-end /
+ * priority-start / button-tap / mute / VAD-resume). Scans 4-byte-aligned words for
+ * the header sentinels; markers are always 4-byte aligned by the transport, so a
+ * match is real. Only called on the rare pause-gate drop path, never per audio
+ * frame, so the scan cost is irrelevant. */
+static bool block_has_marker(const uint8_t *buf, size_t len)
+{
+    for (size_t i = 0; i + 4 <= len; i += 4) {
+        uint32_t w = (uint32_t) buf[i] | ((uint32_t) buf[i + 1] << 8) | ((uint32_t) buf[i + 2] << 16) |
+                     ((uint32_t) buf[i + 3] << 24);
+        if (w == 0xFFFFFFF8u /* priority-start */ || w == 0xFFFFFFF9u /* mute-off */ ||
+            w == 0xFFFFFFFAu /* mute-on */ || w == 0xFFFFFFFCu /* session-end */ ||
+            w == 0xFFFFFFFDu /* VAD-resume */ || w == 0xFFFFFFFEu /* button-tap */) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Protects current_filename / current_file_path across threads.
  * The SD worker updates these during file creation and TMP→hex rename;
  * the storage thread reads them via sd_is_current_recording_file(). */
@@ -691,10 +719,24 @@ static void process_write_data_req(const sd_req_t *req)
      * loss. (Manual-mode stop doesn't rotate, so its marker never reaches this drain
      * — that path is unchanged here.) */
     if (!sd_draining && atomic_get(&sd_write_paused)) {
-        if (spi_woken) {
-            sd_set_io_low_power(true);
+        /* A pause is a power optimization for silence, NOT a correctness gate. A
+         * marker-bearing block MUST still be persisted here, or a priority/manual stop
+         * that enqueued 0xFFFFFFFC and then queued a pause loses it: the SD worker can
+         * pull that marker off sd_msgq via this normal path BEFORE the
+         * REQ_CREATE_NEW_FILE drain runs, so the drain-bypass alone didn't cover it
+         * (confirmed on-device — session_end_marker_emits moved while the app saw no
+         * stop, and marker_pause_gate_saves logged the drop). Write a marker block
+         * through despite the pause; drop only non-marker (audio) blocks. The counter
+         * tallies these RESCUES (markers kept through a pause), not losses. */
+        if (block_has_marker(req->u.write.buf, req->u.write.len)) {
+            atomic_inc(&marker_pause_gate_saves);
+            /* fall through to persist the marker despite the pause */
+        } else {
+            if (spi_woken) {
+                sd_set_io_low_power(true);
+            }
+            return;
         }
-        return;
     }
 
     if (current_filename[0] == '\0') {
@@ -2479,6 +2521,11 @@ uint32_t sd_get_write_fair_activations(void)
 uint32_t sd_get_empty_bin_rotations(void)
 {
     return (uint32_t)atomic_get(&empty_bin_rotations);
+}
+
+uint32_t sd_get_marker_pause_gate_saves(void)
+{
+    return (uint32_t)atomic_get(&marker_pause_gate_saves);
 }
 
 int app_sd_init(void)
