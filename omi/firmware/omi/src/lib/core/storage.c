@@ -973,7 +973,9 @@ void storage_write(void)
              * graceful teardown (LED/haptic/mic/SD/accel off) and then
              * sys_poweroff(); the device only wakes on a button press or charger.
              * turnoff_all() has its own settle delays, so beyond letting the ACK
-             * flush there's no extra sleep needed. */
+             * flush there's no extra sleep needed. It normally never returns, but
+             * can bail early on a rare GPIO/watchdog config failure — in which
+             * case we fall through and the device simply keeps running. */
             if (conn) {
                 uint8_t ack[2] = {PACKET_ACK, 0};
                 STORAGE_NOTIFY(conn, ack, sizeof(ack));
@@ -981,6 +983,7 @@ void storage_write(void)
             LOG_INF("CMD_POWER_OFF: powering off now");
             k_msleep(500);
             turnoff_all();
+            LOG_ERR("CMD_POWER_OFF: turnoff_all() returned — power-off did not complete");
         }
         if (atomic_get(&stop_started)) {
             atomic_clear(&remaining_length);
