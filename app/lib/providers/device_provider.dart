@@ -22,6 +22,24 @@ import 'package:omi/utils/other/debouncer.dart';
 import 'package:omi/utils/platform/platform_manager.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+/// Outcome of [DeviceProvider.setMuted], so the UI can explain a silent no-op
+/// instead of leaving the user to guess why the mute toggle did nothing.
+enum MuteResult {
+  /// The device adopted the requested mute state.
+  applied,
+
+  /// The firmware ignored the write because an auto-mode Priority Recording is
+  /// force-capturing (which can't be muted).
+  priorityRecording,
+
+  /// The firmware ignored the write because the device is actually in manual
+  /// mode (mute is unavailable there).
+  manualMode,
+
+  /// The write or read-back didn't complete — the device was unreachable.
+  unreachable,
+}
+
 class DeviceProvider extends ChangeNotifier
     with WidgetsBindingObserver
     implements IDeviceServiceSubscription, IWalServiceListener {
@@ -368,6 +386,7 @@ class DeviceProvider extends ChangeNotifier
     var connection = await ServiceManager.instance().device.ensureConnection(connectedDevice!.id);
     if (connection == null) return;
     final state = await connection.getMuteState();
+    if (state == null) return; // read failed — keep the last-known state
     _applyMuteState(state.muted, state.since);
   }
 
@@ -396,16 +415,43 @@ class DeviceProvider extends ChangeNotifier
     notifyListeners();
   }
 
-  /// Toggle mute over BLE (battery-icon tap). The firmware ignores this in
-  /// manual mode, so we re-read the device's authoritative state afterward
-  /// instead of assuming the write took effect.
-  Future<void> setMuted(bool muted) async {
+  /// Toggle mute over BLE (mute-icon tap) and report the outcome so the UI can
+  /// explain a no-op instead of failing silently.
+  ///
+  /// The firmware honors mute only in auto mode at rest; it silently ignores the
+  /// write while an auto-mode Priority Recording force-captures (and in manual
+  /// mode, though the toggle isn't shown there). We tell a genuine firmware
+  /// ignore apart from a comms failure via the write ACK + read-back, then
+  /// confirm the reason from the PERSISTED VAD threshold so a stale mode
+  /// assumption isn't mislabeled.
+  Future<MuteResult> setMuted(bool muted) async {
     final dev = connectedDevice;
-    if (dev == null) return;
+    if (dev == null) return MuteResult.unreachable;
     final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
-    if (connection == null) return;
-    await connection.setMute(muted);
-    await updateMuteState();
+    if (connection == null) return MuteResult.unreachable;
+    // With-response write: true means the firmware received it (and ran
+    // mute_apply); false means the write never landed.
+    final wrote = await connection.setMute(muted);
+    if (!wrote) return MuteResult.unreachable;
+    // Read back the authoritative state. Null = the read itself failed, so we
+    // can't tell whether the mute took — treat as unreachable, not "ignored".
+    final state = await connection.getMuteState();
+    if (state == null) return MuteResult.unreachable;
+    _applyMuteState(state.muted, state.since);
+    if (state.muted == muted) return MuteResult.applied;
+    // Write landed + read succeeded but the device didn't adopt the request: the
+    // firmware ignored it. Confirm the mode from the persisted threshold — an
+    // auto value (or an unreadable one) means a Priority Recording is force-
+    // capturing; a sentinel means the device is really in manual mode, so
+    // re-adopt that (matching the connect-time read-and-adopt) to stop offering
+    // mute.
+    final thr = await connection.getVadThreshold();
+    if (thr == 32769 || thr == 65535) {
+      SharedPreferencesUtil().manualMode = true;
+      notifyListeners();
+      return MuteResult.manualMode;
+    }
+    return MuteResult.priorityRecording;
   }
 
   Future<BtDevice?> _getConnectedDevice() async {
