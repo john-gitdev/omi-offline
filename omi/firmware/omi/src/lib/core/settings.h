@@ -203,36 +203,32 @@ int app_settings_save_haptic_config(const uint8_t config[6]);
 void app_settings_get_haptic_config(uint8_t config[6]);
 
 /**
- * @brief Arm/disarm the one-shot "unpair after firmware update" flag.
+ * @brief Arm/disarm the one-shot "unpair after firmware update" marker.
  *
- * When armed, the FIRST boot of a freshly-flashed image wipes all BLE bonds and
- * clears the flag (see the boot-time check in transport_start). Because the flag
- * lives in the settings/NVS partition (which survives a DFU) but is only acted
- * on by an image that boots, a failed flash that reverts to the old image leaves
- * the bonds untouched. The app arms this before a flash (when the user opted in)
- * and disarms it otherwise, so a stale arm can't fire on a later update.
+ * Arming records [current_fw] (the version running now, before the flash);
+ * disarming clears it. Consumed once, on the first boot whose running version
+ * DIFFERS from the armed one (see @ref app_settings_consume_post_dfu_unpair /
+ * transport_start). Because the version is captured at ARM time, a failed/
+ * aborted flash (same version afterward) never triggers the wipe, and it's
+ * fail-closed: if arming didn't persist, no version is stored and no wipe fires.
+ * The app arms this before a flash when the user opted in, and disarms otherwise.
  *
- * @param arm 1 to arm, 0 to disarm.
+ * @param arm true to arm, false to disarm.
+ * @param current_fw Compile-time firmware version string (e.g. CONFIG_BT_DIS_FW_REV_STR).
  * @return 0 on success, negative error code otherwise.
  */
-int app_settings_save_unpair_on_boot(uint8_t arm);
-
-/** @brief Return 1 if the one-shot post-update bond wipe is armed, else 0. */
-uint8_t app_settings_get_unpair_on_boot(void);
+int app_settings_arm_post_dfu_unpair(bool arm, const char *current_fw);
 
 /**
- * @brief Record the firmware version running this boot and report whether it
- *        changed since the previous boot.
+ * @brief Consume the one-shot post-update unpair marker for this boot.
  *
- * Persists [current] (refreshing the stored value only when it differs) and
- * returns true if it differs from what the last boot stored — i.e. a firmware
- * update actually landed. Used to gate the one-shot post-update bond wipe on a
- * real version change, so a failed/aborted flash that leaves the same image
- * running can't trigger a wipe on a later ordinary reboot.
+ * Clears the armed marker (one-shot) and returns whether a bond wipe is due:
+ * true iff it was armed AND [current_fw] differs from the armed version (a real
+ * update landed). Returns false when not armed or the version is unchanged.
  *
- * @param current Compile-time firmware version string (e.g. CONFIG_BT_DIS_FW_REV_STR).
- * @return true if the version changed since the previous boot, false otherwise.
+ * @param current_fw Compile-time firmware version string (e.g. CONFIG_BT_DIS_FW_REV_STR).
+ * @return true if the caller should wipe BLE bonds, false otherwise.
  */
-bool app_settings_note_boot_fw_version(const char *current);
+bool app_settings_consume_post_dfu_unpair(const char *current_fw);
 
 #endif // SETTINGS_H
