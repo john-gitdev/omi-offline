@@ -20,6 +20,7 @@ import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/gen/pigeon_communicator.g.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/services.dart';
+import 'package:omi/services/wals/wal_interfaces.dart';
 import 'package:omi/utils/logger.dart';
 
 // --- Skeleton classes for missing dependencies ---
@@ -185,14 +186,9 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     _acquireUpdateWakelocks();
     // Stop any in-flight storage sync before the arm write: it shares the storage
     // characteristic with file transfers, so writing over a live transfer can
-    // stall it (the same hazard the keep-alive avoids). cancelSync() only requests
-    // the stop, so wait (bounded) for the transfer to actually unwind before
-    // arming. prepareDFU cancels sync again shortly, but the arm goes out first.
-    final syncs = ServiceManager.instance().wal.getSyncs();
-    if (syncs.isSyncing) {
-      syncs.cancelSync();
-      await syncs.cancelFuture?.timeout(const Duration(seconds: 2), onTimeout: () {});
-    }
+    // stall it (the same hazard the keep-alive avoids). cancelAndWait bounds the
+    // wait; prepareDFU cancels sync again shortly, but the arm goes out first.
+    await ServiceManager.instance().wal.getSyncs().cancelAndWait();
     // Arm (or clear) the device-side one-shot post-update bond wipe to match the
     // user's opt-in, while the link is still up. The device only acts on it if a
     // NEW firmware version actually boots (a successful flash), so a failed flash
@@ -209,14 +205,20 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   /// Set the device's one-shot "unpair after next update" flag to [arm] over the
   /// still-live link before the flash. Returns whether the write landed (true
   /// even on older firmware that rejects the command — the write itself
-  /// succeeds); false on a transient BLE failure or no connection, which gates
-  /// off the phone-side wipe so we never half-apply the reset.
+  /// succeeds); false on a transient BLE failure, no connection, or a stall,
+  /// which gates off the phone-side wipe so we never half-apply the reset.
+  /// Bounded by a timeout so a stuck write can't hang startDfu before the
+  /// installing UI ever appears.
   Future<bool> _armPostDfuUnpair(BtDevice btDevice, bool arm) async {
-    try {
+    Future<bool> doArm() async {
       final connection = await ServiceManager.instance().device.ensureConnection(btDevice.id);
       return await connection?.sendArmPostDfuUnpair(arm) ?? false;
+    }
+
+    try {
+      return await doArm().timeout(const Duration(seconds: 8));
     } catch (e) {
-      Logger.debug('Arming post-DFU unpair failed: $e');
+      Logger.debug('Arming post-DFU unpair failed or timed out: $e');
       return false;
     }
   }
