@@ -53,6 +53,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   static const _kBaselineJson = 'drop_baseline_json';
   static const _kBaselineConnFail = 'conn_fail_baseline';
   static const _kBaselineEstabFail = 'estab_fail_baseline';
+  // Superseded pre-JSON baseline keys, removed once on upgrade (see _tryRestoreBaseline).
+  static const _kLegacyBaselineBlocks = 'drop_baseline_blocks';
+  static const _kLegacyBaselineKeys = [
+    _kLegacyBaselineBlocks,
+    'drop_baseline_frames',
+    'drop_baseline_boot',
+    'drop_baseline_codec',
+  ];
   // BLE connect-fail baselines (app-side). Unlike _dropBaseline they survive a
   // device reboot, because the firmware counters are flash-persisted.
   int? _connFailBaseline;
@@ -504,15 +512,25 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
 
     // SD-drop / lifecycle baseline: app-side, covers every boot-relative counter
     // (all of them reset to 0 when the device reboots). Discarded on reboot —
-    // detected by the device uptime having gone backwards — because the saved
-    // baseline would otherwise over-subtract.
+    // detected by a counter having dropped below the baseline (the only thing that
+    // can move one backwards), which the saved baseline would otherwise
+    // over-subtract. Uptime is intentionally not used for this: it wraps every
+    // ~49.7 days on the firmware's uint32-ms clock, which is not a reboot.
     final savedJson = prefs.getString(_kBaselineJson);
     if (savedJson.isNotEmpty) {
       final saved = DeviceDropStats.fromBaselineJson(savedJson);
-      if (saved == null || stats.currentUptimeMs < saved.currentUptimeMs) {
+      if (saved == null || stats.looksRebootedFrom(saved)) {
         unawaited(prefs.remove(_kBaselineJson));
       } else {
         setState(() => _dropBaseline = saved);
+      }
+    } else if (prefs.getInt(_kLegacyBaselineBlocks, defaultValue: -1) >= 0) {
+      // One-time cleanup of the pre-JSON four-key baseline, now superseded by the
+      // single JSON snapshot. Its value isn't carried forward: it covered only 4 of
+      // the counters, and a partial baseline is exactly the confusing half-reset
+      // this screen moved away from — the user re-taps once if they still want it.
+      for (final k in _kLegacyBaselineKeys) {
+        unawaited(prefs.remove(k));
       }
     }
 
@@ -1207,7 +1225,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final frames = rel(stats.streamFrameDrops, (b) => b.streamFrameDrops);
     final codec = rel(stats.codecFrameDrops, (b) => b.codecFrameDrops);
     final boot = rel(stats.bootFrameDrops, (b) => b.bootFrameDrops);
-    final peak = rel(stats.msgqPeakDepth, (b) => b.msgqPeakDepth);
+    // Peak depth is a high-water mark, not an incremental counter, so it can't be
+    // delta-subtracted. Show the live peak once it climbs past where it stood at the
+    // reset (i.e. genuinely new queue pressure), otherwise 0.
+    final peak = baseline == null || stats.msgqPeakDepth > baseline.msgqPeakDepth ? stats.msgqPeakDepth : 0;
     final writeFair = rel(stats.writeFairActivations, (b) => b.writeFairActivations);
     final prioStarts = rel(stats.priorityRecordStarts, (b) => b.priorityRecordStarts);
     final prioStops = rel(stats.priorityRecordStops, (b) => b.priorityRecordStops);
@@ -1258,11 +1279,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           _dropStatRow('Boot-window frame drops', boot.toString(), false),
           _dropStatRow('Last block drop', lastDropLabel, hasFreshDrops),
           _dropStatRow('Device uptime', _formatDuration(stats.currentUptimeMs), false),
-          // Write-path headroom (since reset). Peak depth is the high-water growth
-          // since the reset, out of the queue limit (100); a value climbing toward
-          // 100 means the write path is riding the drop edge, a low value means
-          // plenty of headroom. Fairness activations just show the read-vs-write
-          // arbiter engaging — informational, not a fault.
+          // Write-path headroom. Peak depth is a high-water mark, so after a reset it
+          // reads 0 until the queue climbs past where it stood at the reset, then
+          // shows that live peak out of the queue limit (100); near 100 means the
+          // write path is riding the drop edge, low means plenty of headroom. Fairness
+          // activations just show the read-vs-write arbiter engaging — not a fault.
           _dropStatRow('SD queue peak depth', '$peak / 100', peak >= 80),
           _dropStatRow('Write-fairness activations', writeFair.toString(), false),
           const Padding(
