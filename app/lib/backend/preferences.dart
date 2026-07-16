@@ -72,6 +72,15 @@ class SharedPreferencesUtil {
   bool get combineRecordButton => getBool('combineRecordButton', defaultValue: false);
   set combineRecordButton(bool v) => saveBool('combineRecordButton', v);
 
+  // Android-only: wipe the BLE bond on BOTH the omi (CMD_UNPAIR 0x15, sent while
+  // still connected before the flash) and the phone (removeBond, after a
+  // successful flash) as part of a firmware update. An OTA can reset the
+  // device's pairing keys; clearing both sides sidesteps the "won't reconnect"
+  // mismatch that otherwise needs the manual repair steps. Default on. iOS can't
+  // clear a bond programmatically, so the toggle is hidden there.
+  bool get wipeBondsOnFirmwareUpdate => getBool('wipeBondsOnFirmwareUpdate', defaultValue: true);
+  set wipeBondsOnFirmwareUpdate(bool v) => saveBool('wipeBondsOnFirmwareUpdate', v);
+
   /// Make a 6-slot button config valid for the given recording-button style,
   /// so the firmware and the picker only ever see in-range actions. Idempotent,
   /// and the same rule serves both the switch-flip and the migration/defensive
