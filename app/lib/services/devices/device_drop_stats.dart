@@ -171,4 +171,26 @@ class DeviceDropStats {
       return null;
     }
   }
+
+  /// True if this snapshot indicates the device rebooted since [baseline] was
+  /// captured. Every counter serialized in the baseline resets to 0 on reboot and
+  /// is monotonic within a boot, so any of them reading below the baseline can only
+  /// mean a reboot (or a re-flash). This is deliberately used instead of comparing
+  /// [currentUptimeMs]: the firmware uptime is a uint32 millisecond value that wraps
+  /// every ~49.7 days, which an uptime comparison would misread as a reboot. When
+  /// the baseline counters were all zero a reboot leaves nothing to detect here, but
+  /// then the displayed "since reset" value (current − 0) is correct either way.
+  bool looksRebootedFrom(DeviceDropStats baseline) =>
+      blockDrops < baseline.blockDrops ||
+      streamFrameDrops < baseline.streamFrameDrops ||
+      bootFrameDrops < baseline.bootFrameDrops ||
+      codecFrameDrops < baseline.codecFrameDrops ||
+      msgqPeakDepth < baseline.msgqPeakDepth ||
+      writeFairActivations < baseline.writeFairActivations ||
+      priorityRecordStarts < baseline.priorityRecordStarts ||
+      priorityRecordStops < baseline.priorityRecordStops ||
+      markerWriteDrops < baseline.markerWriteDrops ||
+      emptyBinRotations < baseline.emptyBinRotations ||
+      sessionEndMarkerEmits < baseline.sessionEndMarkerEmits ||
+      markerPauseGateSaves < baseline.markerPauseGateSaves;
 }
