@@ -1244,9 +1244,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
 
     String lastDropLabel;
     final sinceMs = stats.msSinceLastBlockDrop;
-    // Treat a drop that happened at/before the reset as "none since reset".
-    final lastDropBeforeReset = baseline != null && stats.lastBlockDropUptimeMs <= baseline.currentUptimeMs;
-    if (sinceMs == null || lastDropBeforeReset) {
+    // "Since reset" is derived from the block-drop count rising (blocks > 0), not
+    // the drop's uptime: a reboot that a zero-counter baseline can't flag (see
+    // looksRebootedFrom) resets the device uptime below the captured value, which
+    // an uptime comparison would misread as "before reset" — hiding a genuine
+    // post-reset drop as "never" while the count row shows it. Keying off the same
+    // delta keeps the two rows consistent.
+    final noDropSinceReset = baseline != null && blocks == 0;
+    if (sinceMs == null || noDropSinceReset) {
       lastDropLabel = 'never';
     } else {
       lastDropLabel = '${_formatDuration(sinceMs)} ago';
