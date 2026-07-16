@@ -66,15 +66,15 @@ static uint8_t button_config[6] = {0, 2, 4, 3, 5, 0};
  * Patterns: 0=Off, 1=Single, 2=Double, 3=Triple. Default off everywhere. */
 static uint8_t haptic_config[6] = {0, 0, 0, 0, 0, 0};
 
-/* One-shot "unpair after firmware update" flag. Armed by the app before a flash
- * (when the user opted in); the first boot of a freshly-flashed image wipes the
- * bonds and clears it. Lives in NVS so it rides through the DFU. Default off. */
-static uint8_t unpair_on_boot = 0;
-
-/* Firmware version string stored by the previous boot. Compared against the
- * running version on each boot to tell a real update apart from an ordinary
- * reboot — the gate for the one-shot bond wipe above. Empty until first stored. */
-static char boot_fw_version[24] = {0};
+/* One-shot "unpair after firmware update" marker: the firmware version the
+ * device was running when the app armed a post-update bond wipe
+ * (CMD_ARM_POST_DFU_UNPAIR). Empty = disarmed. On boot, a running version that
+ * DIFFERS from this armed value means a real update landed → wipe. Capturing the
+ * version at ARM time (a deliberate, pre-flash act) means the wipe decision
+ * doesn't depend on any boot-time persistence, and it's fail-closed: if arming
+ * never persisted, the value stays empty and no wipe ever fires. Rides through
+ * the DFU in NVS. */
+static char unpair_armed_fw[24] = {0};
 
 static int settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
@@ -272,27 +272,15 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         return rc;
     }
 
-    if (settings_name_steq(name, "unpair_on_boot", &next) && !next) {
-        if (len != sizeof(unpair_on_boot)) {
+    if (settings_name_steq(name, "unpair_armed_fw", &next) && !next) {
+        if (len > sizeof(unpair_armed_fw)) {
             return -EINVAL;
         }
-        rc = read_cb(cb_arg, &unpair_on_boot, sizeof(unpair_on_boot));
+        memset(unpair_armed_fw, 0, sizeof(unpair_armed_fw));
+        rc = read_cb(cb_arg, unpair_armed_fw, len);
         if (rc >= 0) {
-            LOG_INF("Loaded unpair_on_boot: %u", unpair_on_boot);
-            return 0;
-        }
-        return rc;
-    }
-
-    if (settings_name_steq(name, "boot_fw_version", &next) && !next) {
-        if (len > sizeof(boot_fw_version)) {
-            return -EINVAL;
-        }
-        memset(boot_fw_version, 0, sizeof(boot_fw_version));
-        rc = read_cb(cb_arg, boot_fw_version, len);
-        if (rc >= 0) {
-            boot_fw_version[sizeof(boot_fw_version) - 1] = '\0';
-            LOG_INF("Loaded boot_fw_version: %s", boot_fw_version);
+            unpair_armed_fw[sizeof(unpair_armed_fw) - 1] = '\0';
+            LOG_INF("Loaded unpair_armed_fw: '%s'", unpair_armed_fw);
             return 0;
         }
         return rc;
@@ -551,47 +539,45 @@ void app_settings_get_haptic_config(uint8_t config[6])
     memcpy(config, haptic_config, sizeof(haptic_config));
 }
 
-int app_settings_save_unpair_on_boot(uint8_t arm)
+int app_settings_arm_post_dfu_unpair(bool arm, const char *current_fw)
 {
-    unpair_on_boot = arm ? 1 : 0;
-    int err = settings_save_one("omi/unpair_on_boot", &unpair_on_boot, sizeof(unpair_on_boot));
-    if (err) {
-        LOG_ERR("Failed to save unpair_on_boot (err %d)", err);
-    } else {
-        LOG_INF("Saved unpair_on_boot: %u", unpair_on_boot);
-    }
-    return err;
-}
-
-uint8_t app_settings_get_unpair_on_boot(void)
-{
-    return unpair_on_boot;
-}
-
-bool app_settings_note_boot_fw_version(const char *current)
-{
-    if (current == NULL) {
-        return false;
-    }
-    /* Unchanged since the last recorded boot: an ordinary reboot, not an update. */
-    if (strncmp(boot_fw_version, current, sizeof(boot_fw_version)) == 0) {
-        return false;
-    }
-    /* Persist FIRST and only report a confirmed change once it's durably stored.
-     * If the write fails we leave the stored (and in-memory) value untouched and
-     * return false, so: (a) this boot skips the wipe rather than acting on an
-     * unrecorded change, and (b) the next boot retries the persist. Updating the
-     * in-memory copy only on success keeps it consistent with flash, so a failed
-     * persist can't make a later boot mis-detect a version change. */
-    char buf[sizeof(boot_fw_version)];
+    char buf[sizeof(unpair_armed_fw)];
     memset(buf, 0, sizeof(buf));
-    strncpy(buf, current, sizeof(buf) - 1);
-    int err = settings_save_one("omi/boot_fw_version", buf, sizeof(buf));
-    if (err) {
-        LOG_ERR("Failed to save boot_fw_version (err %d) — not treating as a version change", err);
-        return false;
+    if (arm && current_fw != NULL) {
+        strncpy(buf, current_fw, sizeof(buf) - 1);
     }
-    memcpy(boot_fw_version, buf, sizeof(buf));
-    LOG_INF("Recorded boot_fw_version: %s", boot_fw_version);
-    return true;
+    /* buf is the empty string when disarming. */
+    int err = settings_save_one("omi/unpair_armed_fw", buf, sizeof(buf));
+    if (err) {
+        LOG_ERR("Failed to save unpair_armed_fw (err %d)", err);
+        return err;
+    }
+    memcpy(unpair_armed_fw, buf, sizeof(buf));
+    if (arm) {
+        LOG_INF("post-DFU unpair armed @ '%s'", current_fw ? current_fw : "");
+    } else {
+        LOG_INF("post-DFU unpair disarmed");
+    }
+    return 0;
+}
+
+bool app_settings_consume_post_dfu_unpair(const char *current_fw)
+{
+    if (unpair_armed_fw[0] == '\0') {
+        return false; /* not armed */
+    }
+    bool changed = (current_fw != NULL) && strncmp(unpair_armed_fw, current_fw, sizeof(unpair_armed_fw)) != 0;
+
+    /* One-shot: clear the armed marker. If the clear fails it stays set and a
+     * later boot re-evaluates — harmless: a same-version boot returns false (no
+     * wipe), and a changed boot would at worst do a redundant idempotent wipe. */
+    char empty[sizeof(unpair_armed_fw)];
+    memset(empty, 0, sizeof(empty));
+    int err = settings_save_one("omi/unpair_armed_fw", empty, sizeof(empty));
+    if (err) {
+        LOG_ERR("Failed to clear unpair_armed_fw (err %d)", err);
+    } else {
+        memset(unpair_armed_fw, 0, sizeof(unpair_armed_fw));
+    }
+    return changed;
 }
