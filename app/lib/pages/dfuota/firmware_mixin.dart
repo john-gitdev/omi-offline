@@ -210,13 +210,16 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   /// Bounded by a timeout so a stuck write can't hang startDfu before the
   /// installing UI ever appears.
   Future<bool> _armPostDfuUnpair(BtDevice btDevice, bool arm) async {
-    Future<bool> doArm() async {
+    final source = () async {
       final connection = await ServiceManager.instance().device.ensureConnection(btDevice.id);
       return await connection?.sendArmPostDfuUnpair(arm) ?? false;
-    }
-
+    }();
+    // Future.timeout discards a source completion that arrives after the timeout
+    // fires, so a slow ensureConnection/write that errors late would otherwise
+    // surface as an unhandled exception. Attach a handler up front to consume it.
+    unawaited(source.catchError((_) => false));
     try {
-      return await doArm().timeout(const Duration(seconds: 8));
+      return await source.timeout(const Duration(seconds: 8));
     } catch (e) {
       Logger.debug('Arming post-DFU unpair failed or timed out: $e');
       return false;
