@@ -2057,12 +2057,22 @@ int transport_start()
      * ordinary reboot (or the Reboot Omi command) of an armed device does NOT
      * wipe bonds; only a genuine update does. */
     if (app_settings_get_unpair_on_boot()) {
-        app_settings_save_unpair_on_boot(0);
-        if (fw_changed) {
-            LOG_INF("unpair_on_boot armed + firmware changed: wiping BLE bonds");
-            bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
-        } else {
+        if (!fw_changed) {
+            /* Not an update boot — consume the one-shot flag without wiping. */
             LOG_INF("unpair_on_boot armed but firmware unchanged — skipping bond wipe");
+            app_settings_save_unpair_on_boot(0);
+        } else {
+            int uerr = bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
+            if (uerr) {
+                /* Surface the failure and LEAVE the flag armed so a later update
+                 * boot can retry, instead of silently clearing it as if the reset
+                 * had happened. The immediate mismatch is still recovered by the
+                 * phone-side removeBond (on success) + re-pair. */
+                LOG_ERR("unpair_on_boot: bt_unpair failed (err %d) — leaving flag armed to retry", uerr);
+            } else {
+                LOG_INF("unpair_on_boot armed + firmware changed: wiped BLE bonds");
+                app_settings_save_unpair_on_boot(0);
+            }
         }
     }
 
