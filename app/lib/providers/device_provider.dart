@@ -441,11 +441,12 @@ class DeviceProvider extends ChangeNotifier
     if (state.muted == muted) return MuteResult.applied;
     // Write landed + read succeeded but the device didn't adopt the request: the
     // firmware ignored it. Confirm the mode from the persisted threshold — an
-    // auto value (or an unreadable one) means a Priority Recording is force-
-    // capturing; a sentinel means the device is really in manual mode, so
-    // re-adopt that (matching the connect-time read-and-adopt) to stop offering
-    // mute.
+    // auto value means a Priority Recording is force-capturing; a sentinel means
+    // the device is really in manual mode, so re-adopt that (matching the
+    // connect-time read-and-adopt) to stop offering mute. A failed read can't
+    // confirm the reason, so don't assert a specific one — report unreachable.
     final thr = await connection.getVadThreshold();
+    if (thr == null) return MuteResult.unreachable;
     if (thr == 32769 || thr == 65535) {
       SharedPreferencesUtil().manualMode = true;
       notifyListeners();
