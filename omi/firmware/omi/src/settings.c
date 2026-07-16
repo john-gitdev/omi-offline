@@ -65,6 +65,11 @@ static uint8_t button_config[6] = {0, 2, 4, 3, 5, 0};
  * Patterns: 0=Off, 1=Single, 2=Double, 3=Triple. Default off everywhere. */
 static uint8_t haptic_config[6] = {0, 0, 0, 0, 0, 0};
 
+/* One-shot "unpair after firmware update" flag. Armed by the app before a flash
+ * (when the user opted in); the first boot of a freshly-flashed image wipes the
+ * bonds and clears it. Lives in NVS so it rides through the DFU. Default off. */
+static uint8_t unpair_on_boot = 0;
+
 static int settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
     const char *next;
@@ -256,6 +261,18 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         rc = read_cb(cb_arg, haptic_config, sizeof(haptic_config));
         if (rc >= 0) {
             LOG_INF("Loaded haptic_config");
+            return 0;
+        }
+        return rc;
+    }
+
+    if (settings_name_steq(name, "unpair_on_boot", &next) && !next) {
+        if (len != sizeof(unpair_on_boot)) {
+            return -EINVAL;
+        }
+        rc = read_cb(cb_arg, &unpair_on_boot, sizeof(unpair_on_boot));
+        if (rc >= 0) {
+            LOG_INF("Loaded unpair_on_boot: %u", unpair_on_boot);
             return 0;
         }
         return rc;
@@ -512,4 +529,21 @@ int app_settings_save_haptic_config(const uint8_t config[6])
 void app_settings_get_haptic_config(uint8_t config[6])
 {
     memcpy(config, haptic_config, sizeof(haptic_config));
+}
+
+int app_settings_save_unpair_on_boot(uint8_t arm)
+{
+    unpair_on_boot = arm ? 1 : 0;
+    int err = settings_save_one("omi/unpair_on_boot", &unpair_on_boot, sizeof(unpair_on_boot));
+    if (err) {
+        LOG_ERR("Failed to save unpair_on_boot (err %d)", err);
+    } else {
+        LOG_INF("Saved unpair_on_boot: %u", unpair_on_boot);
+    }
+    return err;
+}
+
+uint8_t app_settings_get_unpair_on_boot(void)
+{
+    return unpair_on_boot;
 }
