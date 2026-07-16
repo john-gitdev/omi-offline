@@ -1018,6 +1018,76 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     );
   }
 
+  /// Remote cold-reboot the Omi via CMD_REBOOT (0x16). The device ACKs, then
+  /// restarts and drops the link for a few seconds; the native BLE layer
+  /// auto-reconnects once it re-advertises. Useful to recover a wedged device
+  /// without clearing the pairing (unlike Unpair).
+  Future<void> _rebootDevice(DeviceProvider provider) async {
+    final pairedDeviceId = provider.pairedDevice?.id ?? SharedPreferencesUtil().btDevice.id;
+    if (pairedDeviceId.isEmpty) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (c) => getDialog(
+        context,
+        () => Navigator.of(context).pop(false),
+        () => Navigator.of(context).pop(true),
+        'Reboot Omi?',
+        'Restart your Omi now. It will disconnect for a few seconds and reconnect automatically. '
+            'An in-progress recording not yet written to the SD card may lose its last few seconds.',
+        confirmText: 'Reboot',
+      ),
+    );
+    if (confirmed != true) return;
+
+    bool ok = false;
+    try {
+      final connection = await ServiceManager.instance().device.ensureConnection(pairedDeviceId);
+      ok = await connection?.sendRebootCommand() ?? false;
+    } catch (_) {
+      ok = false;
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(ok ? 'Rebooting your Omi…' : 'Could not reach your Omi — try again.')),
+    );
+  }
+
+  /// Remote power-off the Omi via CMD_POWER_OFF (0x17). The device ACKs, shuts
+  /// down (ship mode) and stays off until a button press or charger wakes it —
+  /// so, unlike Reboot, it does not reconnect on its own.
+  Future<void> _shutdownDevice(DeviceProvider provider) async {
+    final pairedDeviceId = provider.pairedDevice?.id ?? SharedPreferencesUtil().btDevice.id;
+    if (pairedDeviceId.isEmpty) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (c) => getDialog(
+        context,
+        () => Navigator.of(context).pop(false),
+        () => Navigator.of(context).pop(true),
+        'Shut down Omi?',
+        'Power your Omi off now. It will disconnect and stay off until you turn it back on with the button — '
+            "it won't reconnect on its own. An in-progress recording not yet written to the SD card may lose "
+            'its last few seconds.',
+        confirmText: 'Shut Down',
+      ),
+    );
+    if (confirmed != true) return;
+
+    bool ok = false;
+    try {
+      final connection = await ServiceManager.instance().device.ensureConnection(pairedDeviceId);
+      ok = await connection?.sendShutdownCommand() ?? false;
+    } catch (_) {
+      ok = false;
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(ok ? 'Shutting down your Omi…' : 'Could not reach your Omi — try again.')),
+    );
+  }
+
   Widget _buildActionsSection(DeviceProvider provider) {
     return Material(
       color: const Color(0xFF1C1C1E),
@@ -1026,6 +1096,56 @@ class _DeviceSettingsState extends State<DeviceSettings> {
       child: Column(
         children: [
           if (provider.isConnected) ...[
+            const Divider(height: 1, color: Color(0xFF3C3C43)),
+            // Remote cold-reboot — recover a wedged device without unpairing.
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () => _rebootDevice(provider),
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 24,
+                        height: 24,
+                        child: FaIcon(FontAwesomeIcons.arrowsRotate, color: Colors.white70, size: 20),
+                      ),
+                      SizedBox(width: 16),
+                      Text(
+                        'Reboot Omi',
+                        style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w400),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const Divider(height: 1, color: Color(0xFF3C3C43)),
+            // Remote power-off (ship mode) — stays off until a button/charger wake.
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () => _shutdownDevice(provider),
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 24,
+                        height: 24,
+                        child: FaIcon(FontAwesomeIcons.powerOff, color: Colors.white70, size: 20),
+                      ),
+                      SizedBox(width: 16),
+                      Text(
+                        'Shutdown Omi',
+                        style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w400),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
             const Divider(height: 1, color: Color(0xFF3C3C43)),
             Material(
               color: Colors.transparent,
