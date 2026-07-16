@@ -573,16 +573,25 @@ bool app_settings_note_boot_fw_version(const char *current)
     if (current == NULL) {
         return false;
     }
-    bool changed = strncmp(boot_fw_version, current, sizeof(boot_fw_version)) != 0;
-    if (changed) {
-        strncpy(boot_fw_version, current, sizeof(boot_fw_version) - 1);
-        boot_fw_version[sizeof(boot_fw_version) - 1] = '\0';
-        int err = settings_save_one("omi/boot_fw_version", boot_fw_version, sizeof(boot_fw_version));
-        if (err) {
-            LOG_ERR("Failed to save boot_fw_version (err %d)", err);
-        } else {
-            LOG_INF("Saved boot_fw_version: %s", boot_fw_version);
-        }
+    /* Unchanged since the last recorded boot: an ordinary reboot, not an update. */
+    if (strncmp(boot_fw_version, current, sizeof(boot_fw_version)) == 0) {
+        return false;
     }
-    return changed;
+    /* Persist FIRST and only report a confirmed change once it's durably stored.
+     * If the write fails we leave the stored (and in-memory) value untouched and
+     * return false, so: (a) this boot skips the wipe rather than acting on an
+     * unrecorded change, and (b) the next boot retries the persist. Updating the
+     * in-memory copy only on success keeps it consistent with flash, so a failed
+     * persist can't make a later boot mis-detect a version change. */
+    char buf[sizeof(boot_fw_version)];
+    memset(buf, 0, sizeof(buf));
+    strncpy(buf, current, sizeof(buf) - 1);
+    int err = settings_save_one("omi/boot_fw_version", buf, sizeof(buf));
+    if (err) {
+        LOG_ERR("Failed to save boot_fw_version (err %d) — not treating as a version change", err);
+        return false;
+    }
+    memcpy(boot_fw_version, buf, sizeof(buf));
+    LOG_INF("Recorded boot_fw_version: %s", boot_fw_version);
+    return true;
 }
