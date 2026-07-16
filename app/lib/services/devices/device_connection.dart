@@ -172,6 +172,23 @@ abstract class DeviceConnection {
   /// Sends a command to the peripheral to wipe its native OS pairing keys.
   Future<bool> sendUnpairCommand() async => false;
 
+  /// Sends a command to the peripheral to cold-reboot itself. The device ACKs
+  /// then restarts, dropping the link; the native layer auto-reconnects once
+  /// it re-advertises.
+  Future<bool> sendRebootCommand() async => false;
+
+  /// Sends a command to the peripheral to power itself off (ship mode). The
+  /// device ACKs then shuts down; it stays off until a button press or charger
+  /// wakes it, so no reconnect follows.
+  Future<bool> sendShutdownCommand() async => false;
+
+  /// Arms ([arm]=true) or disarms the peripheral's one-shot "unpair after the
+  /// next firmware update" flag. When armed, the first boot of a freshly-flashed
+  /// image wipes the device's own bonds and clears the flag; a failed flash
+  /// (which reverts to the old image) leaves it untouched. Sent before a flash
+  /// to match the user's opt-in.
+  Future<bool> sendArmPostDfuUnpair(bool arm) async => false;
+
   Future<BleAudioCodec?> getAudioCodec() async {
     if (await isConnected()) return performGetAudioCodec();
     return null;
