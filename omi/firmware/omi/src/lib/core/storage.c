@@ -610,12 +610,17 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
     }
 
     if (command == CMD_ARM_POST_DFU_UNPAIR) {
-        /* [0x18][arm]: persist the one-shot post-update bond-wipe flag. A bare
-         * 0x18 (no payload byte) arms. Just an NVS write — ACK inline like the
-         * other config writes; the wipe itself happens at the next new-image
-         * boot (see transport_start). */
-        uint8_t arm = (len >= 2) ? (((uint8_t *) buf)[1] ? 1 : 0) : 1;
-        int err = app_settings_save_unpair_on_boot(arm);
+        /* [0x18][arm]: arm(1)/disarm(0) the one-shot post-update bond wipe.
+         * Require the explicit arm byte — fail closed on a short/malformed write
+         * rather than silently arming a destructive wipe (the app always sends 2
+         * bytes). Arming records the current firmware version; the wipe fires on
+         * the first boot of a DIFFERENT version (see transport_start). NVS write
+         * ACK'd inline like the other config writes. */
+        if (len < 2) {
+            return INVALID_COMMAND;
+        }
+        uint8_t arm = ((uint8_t *) buf)[1] ? 1 : 0;
+        int err = app_settings_arm_post_dfu_unpair(arm, CONFIG_BT_DIS_FW_REV_STR);
         LOG_INF("CMD_ARM_POST_DFU_UNPAIR: %s", arm ? "armed" : "disarmed");
         return err ? 1 : 0;  /* non-zero ACK signals a persist failure to the client */
     }
