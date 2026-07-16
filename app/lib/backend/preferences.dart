@@ -72,8 +72,9 @@ class SharedPreferencesUtil {
   bool get combineRecordButton => getBool('combineRecordButton', defaultValue: false);
   set combineRecordButton(bool v) => saveBool('combineRecordButton', v);
 
-  // Android-only: wipe the BLE bond on BOTH the omi (CMD_UNPAIR 0x15, sent while
-  // still connected before the flash) and the phone (removeBond, after a
+  // Android-only: wipe the BLE bond on BOTH the omi (via CMD_ARM_POST_DFU_UNPAIR
+  // 0x18, armed while still connected before the flash and executed by the omi on
+  // its first boot after a successful flash) and the phone (removeBond, after a
   // successful flash) as part of a firmware update. An OTA can reset the
   // device's pairing keys; clearing both sides sidesteps the "won't reconnect"
   // mismatch that otherwise needs the manual repair steps. Default on. iOS can't
