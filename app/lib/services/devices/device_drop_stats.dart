@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 /// Snapshot of the firmware's SD-write drop counters, read from the
 /// 0x19B10062 diagnostics characteristic.
 ///
@@ -118,4 +120,87 @@ class DeviceDropStats {
     if (lastBlockDropUptimeMs == 0) return null;
     return currentUptimeMs - lastBlockDropUptimeMs;
   }
+
+  /// Serializes the boot-relative counters (every counter that resets to 0 when
+  /// the device reboots — i.e. all of them except the flash-persisted connect-fail
+  /// counters, which the app baselines separately) plus [currentUptimeMs] as the
+  /// device-uptime at capture. Used to persist a "reset diagnostics" baseline across
+  /// an app restart. Reboot detection on restore is counter-based, not uptime-based
+  /// (see [looksRebootedFrom]); [currentUptimeMs] is retained only as provenance of
+  /// when the reset was taken.
+  String toBaselineJson() => jsonEncode({
+        'blockDrops': blockDrops,
+        'streamFrameDrops': streamFrameDrops,
+        'bootFrameDrops': bootFrameDrops,
+        'codecFrameDrops': codecFrameDrops,
+        'msgqPeakDepth': msgqPeakDepth,
+        'writeFairActivations': writeFairActivations,
+        'priorityRecordStarts': priorityRecordStarts,
+        'priorityRecordStops': priorityRecordStops,
+        'markerWriteDrops': markerWriteDrops,
+        'emptyBinRotations': emptyBinRotations,
+        'sessionEndMarkerEmits': sessionEndMarkerEmits,
+        'markerPauseGateSaves': markerPauseGateSaves,
+        'currentUptimeMs': currentUptimeMs,
+      });
+
+  /// Rebuilds a baseline snapshot from [toBaselineJson]; returns null on malformed
+  /// input. `readAt` is set to now, and the flash-persisted connect-fail counters
+  /// and the derived last-drop uptime default to 0 (they are not part of this
+  /// baseline).
+  static DeviceDropStats? fromBaselineJson(String raw) {
+    try {
+      final j = jsonDecode(raw) as Map<String, dynamic>;
+      int g(String k) => (j[k] as num?)?.toInt() ?? 0;
+      return DeviceDropStats(
+        blockDrops: g('blockDrops'),
+        lastBlockDropUptimeMs: 0,
+        streamFrameDrops: g('streamFrameDrops'),
+        bootFrameDrops: g('bootFrameDrops'),
+        currentUptimeMs: g('currentUptimeMs'),
+        codecFrameDrops: g('codecFrameDrops'),
+        msgqPeakDepth: g('msgqPeakDepth'),
+        writeFairActivations: g('writeFairActivations'),
+        priorityRecordStarts: g('priorityRecordStarts'),
+        priorityRecordStops: g('priorityRecordStops'),
+        markerWriteDrops: g('markerWriteDrops'),
+        emptyBinRotations: g('emptyBinRotations'),
+        sessionEndMarkerEmits: g('sessionEndMarkerEmits'),
+        markerPauseGateSaves: g('markerPauseGateSaves'),
+        readAt: DateTime.now(),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// True if this snapshot indicates the device rebooted since [baseline] was
+  /// captured. Every counter serialized in the baseline resets to 0 on reboot and
+  /// is monotonic within a boot, so any of them reading below the baseline can only
+  /// mean a reboot (or a re-flash). This is deliberately used instead of comparing
+  /// [currentUptimeMs]: the firmware uptime is a uint32 millisecond value that wraps
+  /// every ~49.7 days, which an uptime comparison would misread as a reboot. When
+  /// the baseline counters were all zero a reboot leaves nothing to detect here, but
+  /// then the displayed "since reset" value (current − 0) is correct either way.
+  ///
+  /// A uint32 *counter* wrap could in theory also read as backwards, but unlike the
+  /// uptime it is unreachable here: these are all boot-relative counters that reset
+  /// to 0 every boot (only the flash-persisted connect-fail counters survive, and
+  /// they are not compared here), and they increment on drops / rotations / user
+  /// actions — orders of magnitude slower than a 1 kHz millisecond clock. Reaching
+  /// 2^32 would take years of a single uninterrupted boot, which the battery life
+  /// makes impossible, so a backwards counter is an unambiguous reboot signal.
+  bool looksRebootedFrom(DeviceDropStats baseline) =>
+      blockDrops < baseline.blockDrops ||
+      streamFrameDrops < baseline.streamFrameDrops ||
+      bootFrameDrops < baseline.bootFrameDrops ||
+      codecFrameDrops < baseline.codecFrameDrops ||
+      msgqPeakDepth < baseline.msgqPeakDepth ||
+      writeFairActivations < baseline.writeFairActivations ||
+      priorityRecordStarts < baseline.priorityRecordStarts ||
+      priorityRecordStops < baseline.priorityRecordStops ||
+      markerWriteDrops < baseline.markerWriteDrops ||
+      emptyBinRotations < baseline.emptyBinRotations ||
+      sessionEndMarkerEmits < baseline.sessionEndMarkerEmits ||
+      markerPauseGateSaves < baseline.markerPauseGateSaves;
 }
