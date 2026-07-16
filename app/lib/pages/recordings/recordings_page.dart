@@ -893,10 +893,11 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                               MuteResult.manualMode => "Mute isn't available in Manual mode",
                               MuteResult.unreachable => "Couldn't reach Omi — try muting again",
                             };
+                            // Clear any prior mute message first so a successful
+                            // retry doesn't leave a stale error on screen.
+                            messenger.hideCurrentSnackBar();
                             if (message != null) {
-                              messenger
-                                ..hideCurrentSnackBar()
-                                ..showSnackBar(SnackBar(content: Text(message)));
+                              messenger.showSnackBar(SnackBar(content: Text(message)));
                             }
                           }
                         : null,
