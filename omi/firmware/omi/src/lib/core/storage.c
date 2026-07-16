@@ -615,9 +615,9 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
          * other config writes; the wipe itself happens at the next new-image
          * boot (see transport_start). */
         uint8_t arm = (len >= 2) ? (((uint8_t *) buf)[1] ? 1 : 0) : 1;
-        app_settings_save_unpair_on_boot(arm);
+        int err = app_settings_save_unpair_on_boot(arm);
         LOG_INF("CMD_ARM_POST_DFU_UNPAIR: %s", arm ? "armed" : "disarmed");
-        return 0;
+        return err ? 1 : 0;  /* non-zero ACK signals a persist failure to the client */
     }
 
     if (command == CMD_CLEAR_STORAGE) {
