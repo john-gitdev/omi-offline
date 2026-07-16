@@ -881,7 +881,25 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                       size: 20,
                     ),
                     onPressed: deviceProvider.isConnected
-                        ? () => unawaited(deviceProvider.setMuted(!deviceProvider.isMuted))
+                        ? () async {
+                            final messenger = ScaffoldMessenger.of(context);
+                            final result = await deviceProvider.setMuted(!deviceProvider.isMuted);
+                            if (!mounted) return;
+                            // The mute action is unchanged; this only surfaces why
+                            // nothing happened so the user isn't left guessing.
+                            final message = switch (result) {
+                              MuteResult.applied => null,
+                              MuteResult.priorityRecording => "Can't mute during a Priority Recording",
+                              MuteResult.manualMode => "Mute isn't available in Manual mode",
+                              MuteResult.unreachable => "Couldn't reach Omi — try muting again",
+                            };
+                            // Clear any prior mute message first so a successful
+                            // retry doesn't leave a stale error on screen.
+                            messenger.hideCurrentSnackBar();
+                            if (message != null) {
+                              messenger.showSnackBar(SnackBar(content: Text(message)));
+                            }
+                          }
                         : null,
                     tooltip: deviceProvider.isMuted ? 'Unmute Omi' : 'Mute Omi',
                   ),
