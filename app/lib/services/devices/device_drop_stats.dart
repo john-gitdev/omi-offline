@@ -182,6 +182,14 @@ class DeviceDropStats {
   /// every ~49.7 days, which an uptime comparison would misread as a reboot. When
   /// the baseline counters were all zero a reboot leaves nothing to detect here, but
   /// then the displayed "since reset" value (current − 0) is correct either way.
+  ///
+  /// A uint32 *counter* wrap could in theory also read as backwards, but unlike the
+  /// uptime it is unreachable here: these are all boot-relative counters that reset
+  /// to 0 every boot (only the flash-persisted connect-fail counters survive, and
+  /// they are not compared here), and they increment on drops / rotations / user
+  /// actions — orders of magnitude slower than a 1 kHz millisecond clock. Reaching
+  /// 2^32 would take years of a single uninterrupted boot, which the battery life
+  /// makes impossible, so a backwards counter is an unambiguous reboot signal.
   bool looksRebootedFrom(DeviceDropStats baseline) =>
       blockDrops < baseline.blockDrops ||
       streamFrameDrops < baseline.streamFrameDrops ||
