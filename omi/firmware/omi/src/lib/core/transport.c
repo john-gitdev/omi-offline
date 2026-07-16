@@ -2044,6 +2044,19 @@ int transport_start()
     }
 #endif
 
+    /* One-shot post-update bond wipe: if the app armed it before a firmware
+     * flash, this fresh image's first boot clears every bond (now that they've
+     * been loaded above) and disarms the flag — so the device advertises
+     * unbonded and the phone (which the app clears on its side on success)
+     * re-pairs cleanly. A failed flash reverts to the OLD image, which has no
+     * such check, so the bonds survive: the wipe only ever runs when a NEW image
+     * actually boots. */
+    if (app_settings_get_unpair_on_boot()) {
+        LOG_INF("unpair_on_boot armed: wiping BLE bonds after firmware update");
+        bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
+        app_settings_save_unpair_on_boot(0);
+    }
+
     LOG_INF("Transport bluetooth initialized");
 
     //  Enable accelerometer
