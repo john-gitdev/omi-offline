@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 /// Snapshot of the firmware's SD-write drop counters, read from the
 /// 0x19B10062 diagnostics characteristic.
 ///
@@ -117,5 +119,56 @@ class DeviceDropStats {
   int? get msSinceLastBlockDrop {
     if (lastBlockDropUptimeMs == 0) return null;
     return currentUptimeMs - lastBlockDropUptimeMs;
+  }
+
+  /// Serializes the boot-relative counters (every counter that resets to 0 when
+  /// the device reboots — i.e. all of them except the flash-persisted connect-fail
+  /// counters, which the app baselines separately) plus [currentUptimeMs] at
+  /// capture. Used to persist a "reset diagnostics" baseline across an app restart;
+  /// on restore a reboot is detected by the uptime having gone backwards.
+  String toBaselineJson() => jsonEncode({
+        'blockDrops': blockDrops,
+        'streamFrameDrops': streamFrameDrops,
+        'bootFrameDrops': bootFrameDrops,
+        'codecFrameDrops': codecFrameDrops,
+        'msgqPeakDepth': msgqPeakDepth,
+        'writeFairActivations': writeFairActivations,
+        'priorityRecordStarts': priorityRecordStarts,
+        'priorityRecordStops': priorityRecordStops,
+        'markerWriteDrops': markerWriteDrops,
+        'emptyBinRotations': emptyBinRotations,
+        'sessionEndMarkerEmits': sessionEndMarkerEmits,
+        'markerPauseGateSaves': markerPauseGateSaves,
+        'currentUptimeMs': currentUptimeMs,
+      });
+
+  /// Rebuilds a baseline snapshot from [toBaselineJson]; returns null on malformed
+  /// input. `readAt` is set to now, and the flash-persisted connect-fail counters
+  /// and the derived last-drop uptime default to 0 (they are not part of this
+  /// baseline).
+  static DeviceDropStats? fromBaselineJson(String raw) {
+    try {
+      final j = jsonDecode(raw) as Map<String, dynamic>;
+      int g(String k) => (j[k] as num?)?.toInt() ?? 0;
+      return DeviceDropStats(
+        blockDrops: g('blockDrops'),
+        lastBlockDropUptimeMs: 0,
+        streamFrameDrops: g('streamFrameDrops'),
+        bootFrameDrops: g('bootFrameDrops'),
+        currentUptimeMs: g('currentUptimeMs'),
+        codecFrameDrops: g('codecFrameDrops'),
+        msgqPeakDepth: g('msgqPeakDepth'),
+        writeFairActivations: g('writeFairActivations'),
+        priorityRecordStarts: g('priorityRecordStarts'),
+        priorityRecordStops: g('priorityRecordStops'),
+        markerWriteDrops: g('markerWriteDrops'),
+        emptyBinRotations: g('emptyBinRotations'),
+        sessionEndMarkerEmits: g('sessionEndMarkerEmits'),
+        markerPauseGateSaves: g('markerPauseGateSaves'),
+        readAt: DateTime.now(),
+      );
+    } catch (_) {
+      return null;
+    }
   }
 }
