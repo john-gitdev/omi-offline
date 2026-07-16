@@ -986,6 +986,7 @@ void storage_write(void)
              * already run, leaving the device torn down and unreachable over BLE.
              * Cold-reboot to recover to a working state rather than limp on. */
             LOG_ERR("CMD_POWER_OFF: turnoff_all() returned — rebooting to recover");
+            k_msleep(100);  /* let the error log flush before the cold reboot */
             sys_reboot(SYS_REBOOT_COLD);
         }
         if (atomic_get(&stop_started)) {
