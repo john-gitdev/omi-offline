@@ -1041,8 +1041,14 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     if (confirmed != true) return;
 
     // Stop any in-flight storage sync first: the reboot write shares the storage
-    // characteristic with file transfers and would otherwise race a live one.
-    ServiceManager.instance().wal.getSyncs().cancelSync();
+    // characteristic with file transfers. cancelSync() only requests the stop, so
+    // await the transfer actually unwinding (bounded) before writing — same guard
+    // the wipe-storage flow uses.
+    final syncs = ServiceManager.instance().wal.getSyncs();
+    if (syncs.isSyncing) {
+      syncs.cancelSync();
+      await syncs.cancelFuture?.timeout(const Duration(seconds: 2), onTimeout: () {});
+    }
 
     bool ok = false;
     try {
@@ -1080,8 +1086,14 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     if (confirmed != true) return;
 
     // Stop any in-flight storage sync first: the shutdown write shares the storage
-    // characteristic with file transfers and would otherwise race a live one.
-    ServiceManager.instance().wal.getSyncs().cancelSync();
+    // characteristic with file transfers. cancelSync() only requests the stop, so
+    // await the transfer actually unwinding (bounded) before writing — same guard
+    // the wipe-storage flow uses.
+    final syncs = ServiceManager.instance().wal.getSyncs();
+    if (syncs.isSyncing) {
+      syncs.cancelSync();
+      await syncs.cancelFuture?.timeout(const Duration(seconds: 2), onTimeout: () {});
+    }
 
     bool ok = false;
     try {
