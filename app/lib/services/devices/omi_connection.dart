@@ -338,6 +338,9 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<({bool muted, DateTime? since})?> performGetMuteState() async {
     try {
       final data = await transport.readCharacteristic(muteServiceUuid, muteCharacteristicUuid);
+      // A successful-but-short read tells us nothing about mute state; surface it
+      // as a failed read (null) rather than a false authoritative "unmuted".
+      if (data.length < 9) return null;
       return _parseMuteState(data);
     } catch (_) {
       return null;
