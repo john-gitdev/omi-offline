@@ -335,21 +335,26 @@ class OmiDeviceConnection extends DeviceConnection {
   }
 
   @override
-  Future<({bool muted, DateTime? since})> performGetMuteState() async {
+  Future<({bool muted, DateTime? since})?> performGetMuteState() async {
     try {
       final data = await transport.readCharacteristic(muteServiceUuid, muteCharacteristicUuid);
+      // A successful-but-short read tells us nothing about mute state; surface it
+      // as a failed read (null) rather than a false authoritative "unmuted".
+      if (data.length < 9) return null;
       return _parseMuteState(data);
     } catch (_) {
-      return (muted: false, since: null);
+      return null;
     }
   }
 
   @override
-  Future<void> performSetMute(bool muted) async {
+  Future<bool> performSetMute(bool muted) async {
     try {
       await transport.writeCharacteristic(muteServiceUuid, muteCharacteristicUuid, [muted ? 1 : 0]);
+      return true;
     } catch (e) {
       Logger.debug('OmiDeviceConnection: Error writing mute: $e');
+      return false;
     }
   }
 

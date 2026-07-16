@@ -110,12 +110,12 @@ class MockDeviceConnection extends DeviceConnection {
   }
 
   @override
-  Future<({bool muted, DateTime? since})> performGetMuteState() async {
+  Future<({bool muted, DateTime? since})?> performGetMuteState() async {
     return (muted: false, since: null);
   }
 
   @override
-  Future<void> performSetMute(bool muted) async {}
+  Future<bool> performSetMute(bool muted) async => true;
 
   @override
   Future<StreamSubscription<List<int>>?> performGetMuteListener(
