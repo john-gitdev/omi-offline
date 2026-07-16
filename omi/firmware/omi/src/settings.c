@@ -1,5 +1,6 @@
 #include "lib/core/settings.h"
 
+#include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
@@ -69,6 +70,11 @@ static uint8_t haptic_config[6] = {0, 0, 0, 0, 0, 0};
  * (when the user opted in); the first boot of a freshly-flashed image wipes the
  * bonds and clears it. Lives in NVS so it rides through the DFU. Default off. */
 static uint8_t unpair_on_boot = 0;
+
+/* Firmware version string stored by the previous boot. Compared against the
+ * running version on each boot to tell a real update apart from an ordinary
+ * reboot — the gate for the one-shot bond wipe above. Empty until first stored. */
+static char boot_fw_version[24] = {0};
 
 static int settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
@@ -273,6 +279,20 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         rc = read_cb(cb_arg, &unpair_on_boot, sizeof(unpair_on_boot));
         if (rc >= 0) {
             LOG_INF("Loaded unpair_on_boot: %u", unpair_on_boot);
+            return 0;
+        }
+        return rc;
+    }
+
+    if (settings_name_steq(name, "boot_fw_version", &next) && !next) {
+        if (len > sizeof(boot_fw_version)) {
+            return -EINVAL;
+        }
+        memset(boot_fw_version, 0, sizeof(boot_fw_version));
+        rc = read_cb(cb_arg, boot_fw_version, len);
+        if (rc >= 0) {
+            boot_fw_version[sizeof(boot_fw_version) - 1] = '\0';
+            LOG_INF("Loaded boot_fw_version: %s", boot_fw_version);
             return 0;
         }
         return rc;
@@ -546,4 +566,23 @@ int app_settings_save_unpair_on_boot(uint8_t arm)
 uint8_t app_settings_get_unpair_on_boot(void)
 {
     return unpair_on_boot;
+}
+
+bool app_settings_note_boot_fw_version(const char *current)
+{
+    if (current == NULL) {
+        return false;
+    }
+    bool changed = strncmp(boot_fw_version, current, sizeof(boot_fw_version)) != 0;
+    if (changed) {
+        strncpy(boot_fw_version, current, sizeof(boot_fw_version) - 1);
+        boot_fw_version[sizeof(boot_fw_version) - 1] = '\0';
+        int err = settings_save_one("omi/boot_fw_version", boot_fw_version, sizeof(boot_fw_version));
+        if (err) {
+            LOG_ERR("Failed to save boot_fw_version (err %d)", err);
+        } else {
+            LOG_INF("Saved boot_fw_version: %s", boot_fw_version);
+        }
+    }
+    return changed;
 }
