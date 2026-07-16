@@ -1383,6 +1383,10 @@ class VadAudioProcessor {
               _priorityCapAtOpenMinutes = null;
               _priorityOpenBinPath = null;
               await _clearPriorityLatchFile();
+              // The recovered span was force-captured (user-intended priority audio), so
+              // it must bypass the short-speech noise filter in the split below — mark it
+              // forced, exactly as the 0xFFFFFFFC session-end finalize does.
+              _forcedByMarker = true;
             }
 
             final bool wouldSplit = staleLatchBreak ||
