@@ -1396,6 +1396,40 @@ void main() {
         await p.destroy();
       });
 
+      test('stale-latch break finalizes a SHORT recovered priority recording (bypasses noise filter)', () async {
+        final latchPath = '${tempDir.path}/latch_shortrecovery.json';
+        final nowMs = DateTime.now().millisecondsSinceEpoch;
+        File(latchPath)
+            .writeAsStringSync(jsonEncode({'sessionId': 1, 'openedAtMs': nowMs, 'capMinutes': 0, 'ts': nowMs}));
+        // session != null + minSpeechMs far above the buffered span → without the forced
+        // flag the split's short-speech noise filter would DISCARD the recovered priority
+        // audio. It's force-captured (user-intended), so it must be finalized instead.
+        const settings = ProcessingSettings(
+          vadEnabled: true,
+          speechThreshold: 0.5,
+          silenceDurationToSplitMs: 120000,
+          minDurationMs: 0,
+          minSpeechMs: 60000,
+          maxChunkMs: 0x7FFFFFFFFFFFFFFF,
+          deviceId: '',
+          audioSaveFormat: 'wav',
+          omiEnabled: false,
+          priorityRecordCapMinutes: 0,
+        );
+        final p = VadAudioProcessor.fromSettings(
+            settings: settings, outputDir: tempDir.path, priorityStatePath: latchPath, session: _fakeSession());
+        await p.restorePriorityLatch();
+        expect(p.inPriorityRecording, isTrue);
+
+        final bin = makeResumeBin('short_recovery.bin', resumeUtcSeconds: (kBase ~/ 1000) + 40, resumeUptimeMs: 40000);
+        final saved = await p.processSegmentFile(bin, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+
+        expect(p.inPriorityRecording, isFalse, reason: 'stale latch closed at the large resume gap');
+        expect(saved, isNotEmpty,
+            reason: 'a short recovered priority recording is finalized (forced), not discarded as noise');
+        await p.destroy();
+      });
+
       test('restored latch keeps the continuation force-captured across a splitting gap', () async {
         final latchPath = '${tempDir.path}/latch_behavior.json';
         // Sentinel as if run 1 left a priority recording open in session 1.
