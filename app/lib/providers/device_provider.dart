@@ -1548,11 +1548,18 @@ class DeviceProvider extends ChangeNotifier
         final bool priorityActivity = dropStats.priorityRecordStarts > 0 ||
             dropStats.priorityRecordStops > 0 ||
             dropStats.markerWriteDrops > 0 ||
-            dropStats.emptyBinRotations > 0;
+            dropStats.emptyBinRotations > 0 ||
+            dropStats.sessionEndMarkerEmits > 0 ||
+            dropStats.markerPauseGateSaves > 0;
         if (priorityActivity) {
+          // seEmits + pauseGateSaves confirm the pause-gate fix: a stop emits the
+          // 0xFFFFFFFC (seEmits moves) and it's kept through the pause (pauseGateSaves
+          // moves) rather than lost. emits flat = the firmware finalize path never
+          // fired. pauseGateSaves is a rescue, so it is NOT a loss warning.
           final priorityMsg = 'Device priority-record counters: starts=${dropStats.priorityRecordStarts} '
               'stops=${dropStats.priorityRecordStops} markerDrops=${dropStats.markerWriteDrops} '
-              'emptyBinRotations=${dropStats.emptyBinRotations}';
+              'emptyBinRotations=${dropStats.emptyBinRotations} seEmits=${dropStats.sessionEndMarkerEmits} '
+              'pauseGateSaves=${dropStats.markerPauseGateSaves}';
           if (dropStats.markerWriteDrops > 0 || dropStats.emptyBinRotations > 0) {
             Logger.warning('$priorityMsg — possible lost Priority Recording (marker/audio dropped on-device)');
           } else {
@@ -1563,6 +1570,8 @@ class DeviceProvider extends ChangeNotifier
             'priority_stops': dropStats.priorityRecordStops,
             'marker_write_drops': dropStats.markerWriteDrops,
             'empty_bin_rotations': dropStats.emptyBinRotations,
+            'session_end_marker_emits': dropStats.sessionEndMarkerEmits,
+            'marker_pause_gate_saves': dropStats.markerPauseGateSaves,
           });
         }
       }

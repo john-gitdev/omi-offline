@@ -126,6 +126,7 @@ ProcessingSettings _settings({int minDurationMs = 0}) {
     deviceId: 'test-device',
     audioSaveFormat: 'm4a',
     omiEnabled: false,
+    priorityRecordCapMinutes: 0,
   );
 }
 
@@ -771,6 +772,7 @@ void main() {
           deviceId: '',
           audioSaveFormat: 'wav',
           omiEnabled: false,
+          priorityRecordCapMinutes: 0,
         );
 
     /// Bin: 0xFFFFFFFB header + [before] frames + 0xFFFFFFFE marker + [after] frames.
@@ -1208,6 +1210,8 @@ void main() {
         final written = jsonDecode(File(latchPath).readAsStringSync()) as Map<String, dynamic>;
         expect(written['sessionId'], 1);
         expect(written['openedAtMs'], kBase + 200, reason: 'the 0xFFFFFFF8 wall time, preserved for the age bound');
+        expect(written.containsKey('capMinutes'), isTrue,
+            reason: 'the cap armed at open is snapshotted so a later Settings change cannot move the ceiling');
 
         // Run 2: a fresh (recent) sentinel restores force-capture. Rewritten with a
         // current openedAtMs because kBase is historical — a real recording's marker
@@ -1232,6 +1236,197 @@ void main() {
         await p.restorePriorityLatch();
         expect(p.inPriorityRecording, isFalse, reason: 'a >6h-open latch means the 0xFFFFFFFC was lost → drop it');
         expect(File(latchPath).existsSync(), isFalse, reason: 'the stuck sentinel is cleared');
+        await p.destroy();
+      });
+
+      // The restored-latch ceiling tracks the firmware Priority Recording safety
+      // cap (0x19B10014) + 30 min slack, not a fixed 6 h. Same 90-min-old latch:
+      // dropped under a 30-min cap (ceiling 60 min), kept under a 120-min cap
+      // (ceiling 150 min). Guards against a lost 0xFFFFFFFC ballooning a recording
+      // for hours while still clearing a legitimate full-cap recording.
+      ProcessingSettings capSettings(int capMinutes) => ProcessingSettings(
+            vadEnabled: false,
+            speechThreshold: 0.5,
+            silenceDurationToSplitMs: 120000,
+            minDurationMs: 0,
+            minSpeechMs: 0,
+            maxChunkMs: 0x7FFFFFFFFFFFFFFF,
+            deviceId: '',
+            audioSaveFormat: 'wav',
+            omiEnabled: false,
+            priorityRecordCapMinutes: capMinutes,
+          );
+
+      test('restored-latch ceiling is derived from the priority cap, not a fixed 6h', () async {
+        final ninetyMinAgo = DateTime.now().millisecondsSinceEpoch - (90 * 60 * 1000);
+        String writeSentinel(String name) {
+          final path = '${tempDir.path}/$name';
+          File(path).writeAsStringSync(jsonEncode({'sessionId': 1, 'openedAtMs': ninetyMinAgo, 'ts': ninetyMinAgo}));
+          return path;
+        }
+
+        // cap 30 min → ceiling 60 min < 90 min open → drop (a fixed 6h would keep it).
+        final tightPath = writeSentinel('latch_cap30.json');
+        final pTight = VadAudioProcessor.fromSettings(
+            settings: capSettings(30), outputDir: tempDir.path, priorityStatePath: tightPath);
+        await pTight.restorePriorityLatch();
+        expect(pTight.inPriorityRecording, isFalse,
+            reason: '90-min-old latch under a 30-min cap is past the 60-min ceiling → dropped');
+        expect(File(tightPath).existsSync(), isFalse);
+        await pTight.destroy();
+
+        // cap 120 min → ceiling 150 min > 90 min open → keep (a legit long recording).
+        final loosePath = writeSentinel('latch_cap120.json');
+        final pLoose = VadAudioProcessor.fromSettings(
+            settings: capSettings(120), outputDir: tempDir.path, priorityStatePath: loosePath);
+        await pLoose.restorePriorityLatch();
+        expect(pLoose.inPriorityRecording, isTrue,
+            reason: '90-min-old latch under a 120-min cap is within the 150-min ceiling → kept');
+        await pLoose.destroy();
+      });
+
+      test('restore uses the cap snapshotted at open, not the current pref (mid-recording cap change)', () async {
+        final ninetyMinAgo = DateTime.now().millisecondsSinceEpoch - (90 * 60 * 1000);
+        String writeSentinel(String name, int capMinutes) {
+          final path = '${tempDir.path}/$name';
+          File(path).writeAsStringSync(
+              jsonEncode({'sessionId': 1, 'openedAtMs': ninetyMinAgo, 'capMinutes': capMinutes, 'ts': ninetyMinAgo}));
+          return path;
+        }
+
+        // Recording opened under a 120-min cap (snapshot → ceiling 150 min); user then
+        // shrank the cap to 30. Live pref would age it out at 60 min < 90, but the
+        // snapshot must win → keep the legit recording.
+        final keepPath = writeSentinel('latch_snap120_pref30.json', 120);
+        final pKeep = VadAudioProcessor.fromSettings(
+            settings: capSettings(30), outputDir: tempDir.path, priorityStatePath: keepPath);
+        await pKeep.restorePriorityLatch();
+        expect(pKeep.inPriorityRecording, isTrue,
+            reason: 'snapshot cap 120 (ceiling 150) overrides the shrunk 30-min pref → kept');
+        await pKeep.destroy();
+
+        // Symmetric: opened under a 30-min cap (ceiling 60 < 90), user then raised it
+        // to 120. The snapshot still ages it out — the recording the firmware armed
+        // was the 30-min one.
+        final dropPath = writeSentinel('latch_snap30_pref120.json', 30);
+        final pDrop = VadAudioProcessor.fromSettings(
+            settings: capSettings(120), outputDir: tempDir.path, priorityStatePath: dropPath);
+        await pDrop.restorePriorityLatch();
+        expect(pDrop.inPriorityRecording, isFalse,
+            reason: 'snapshot cap 30 (ceiling 60) overrides the raised 120-min pref → dropped');
+        expect(File(dropPath).existsSync(), isFalse);
+        await pDrop.destroy();
+      });
+
+      // Bin with a 0xFFFFFFFB header (anchors uptime + session=1) + 10 frames + a
+      // 0xFFFFFFFD resume + 10 frames. The header uptime lets isClockJump distinguish a
+      // real silence gap (uptime advances with UTC) from an RTC correction (uptime flat).
+      File makeResumeBin(String name, {required int resumeUtcSeconds, required int resumeUptimeMs}) {
+        final builder = BytesBuilder();
+        final hdr = ByteData(36);
+        hdr.setUint32(0, 0xFFFFFFFB, Endian.little);
+        hdr.setUint32(4, 28, Endian.little);
+        hdr.setUint64(8, kBase, Endian.little);
+        hdr.setUint64(16, 0, Endian.little);
+        hdr.setUint32(24, 0, Endian.little);
+        hdr.setUint32(28, 1, Endian.little); // sessionId = 1 (matches the restored latch)
+        builder.add(hdr.buffer.asUint8List());
+        final fhdr = ByteData(4)..setUint32(0, 4, Endian.little);
+        for (int i = 0; i < 10; i++) {
+          builder.add(fhdr.buffer.asUint8List());
+          builder.add(List.filled(4, 0));
+        }
+        final resume = ByteData(20);
+        resume.setUint32(0, 0xFFFFFFFD, Endian.little);
+        resume.setUint32(4, resumeUtcSeconds, Endian.little);
+        resume.setUint32(8, resumeUptimeMs, Endian.little);
+        builder.add(resume.buffer.asUint8List());
+        for (int i = 0; i < 10; i++) {
+          builder.add(fhdr.buffer.asUint8List());
+          builder.add(List.filled(4, 0));
+        }
+        return File('${tempDir.path}/$name')..writeAsBytesSync(builder.toBytes());
+      }
+
+      Future<VadAudioProcessor> restoredLatchProc(String latchPath) async {
+        final nowMs = DateTime.now().millisecondsSinceEpoch;
+        File(latchPath)
+            .writeAsStringSync(jsonEncode({'sessionId': 1, 'openedAtMs': nowMs, 'capMinutes': 0, 'ts': nowMs}));
+        final p = VadAudioProcessor.fromSettings(
+            settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
+        await p.restorePriorityLatch();
+        expect(p.inPriorityRecording, isTrue, reason: 'latch restored → force-capture');
+        return p;
+      }
+
+      test('restored latch auto-closes on a large resume gap (device already left force-capture)', () async {
+        final latchPath = '${tempDir.path}/latch_staleresume.json';
+        final p = await restoredLatchProc(latchPath);
+        // ~40 s gap, uptime advancing in step → a real silence, not a clock jump.
+        final bin = makeResumeBin('stale_resume.bin', resumeUtcSeconds: (kBase ~/ 1000) + 40, resumeUptimeMs: 40000);
+        await p.processSegmentFile(bin, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+        expect(p.inPriorityRecording, isFalse,
+            reason: 'a >=15 s real resume gap in a restored latch closes the stale force-capture');
+        expect(File(latchPath).existsSync(), isFalse, reason: 'stale sentinel cleared on auto-close');
+        await p.destroy();
+      });
+
+      test('restored latch survives a small resume gap (WAKE re-arm, not a stop)', () async {
+        final latchPath = '${tempDir.path}/latch_smallresume.json';
+        final p = await restoredLatchProc(latchPath);
+        // ~1 s gap — like a hardware WAKE re-arming mid-force-capture. Must NOT close.
+        final bin = makeResumeBin('small_resume.bin', resumeUtcSeconds: (kBase ~/ 1000) + 1, resumeUptimeMs: 1000);
+        await p.processSegmentFile(bin, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+        expect(p.inPriorityRecording, isTrue,
+            reason: 'a sub-15 s resume gap must NOT close a legit force-capture latch');
+        expect(File(latchPath).existsSync(), isTrue, reason: 'sentinel kept — latch still open');
+        await p.destroy();
+      });
+
+      test('restored latch survives a clock jump (large UTC gap, flat uptime — not silence)', () async {
+        final latchPath = '${tempDir.path}/latch_clockjump.json';
+        final p = await restoredLatchProc(latchPath);
+        // Large UTC jump (~40 s) but uptime barely moves → an RTC correction, not
+        // silence. Must NOT terminate the still-active priority recording.
+        final bin = makeResumeBin('clockjump_resume.bin', resumeUtcSeconds: (kBase ~/ 1000) + 40, resumeUptimeMs: 300);
+        await p.processSegmentFile(bin, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+        expect(p.inPriorityRecording, isTrue,
+            reason: 'a clock jump (flat uptime) is not silence, so it must not close the latch');
+        expect(File(latchPath).existsSync(), isTrue, reason: 'sentinel kept — latch still open');
+        await p.destroy();
+      });
+
+      test('stale-latch break finalizes a SHORT recovered priority recording (bypasses noise filter)', () async {
+        final latchPath = '${tempDir.path}/latch_shortrecovery.json';
+        final nowMs = DateTime.now().millisecondsSinceEpoch;
+        File(latchPath)
+            .writeAsStringSync(jsonEncode({'sessionId': 1, 'openedAtMs': nowMs, 'capMinutes': 0, 'ts': nowMs}));
+        // session != null + minSpeechMs far above the buffered span → without the forced
+        // flag the split's short-speech noise filter would DISCARD the recovered priority
+        // audio. It's force-captured (user-intended), so it must be finalized instead.
+        const settings = ProcessingSettings(
+          vadEnabled: true,
+          speechThreshold: 0.5,
+          silenceDurationToSplitMs: 120000,
+          minDurationMs: 0,
+          minSpeechMs: 60000,
+          maxChunkMs: 0x7FFFFFFFFFFFFFFF,
+          deviceId: '',
+          audioSaveFormat: 'wav',
+          omiEnabled: false,
+          priorityRecordCapMinutes: 0,
+        );
+        final p = VadAudioProcessor.fromSettings(
+            settings: settings, outputDir: tempDir.path, priorityStatePath: latchPath, session: _fakeSession());
+        await p.restorePriorityLatch();
+        expect(p.inPriorityRecording, isTrue);
+
+        final bin = makeResumeBin('short_recovery.bin', resumeUtcSeconds: (kBase ~/ 1000) + 40, resumeUptimeMs: 40000);
+        final saved = await p.processSegmentFile(bin, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+
+        expect(p.inPriorityRecording, isFalse, reason: 'stale latch closed at the large resume gap');
+        expect(saved, isNotEmpty,
+            reason: 'a short recovered priority recording is finalized (forced), not discarded as noise');
         await p.destroy();
       });
 
@@ -1695,6 +1890,7 @@ void main() {
           deviceId: '',
           audioSaveFormat: 'wav',
           omiEnabled: false,
+          priorityRecordCapMinutes: 0,
         );
 
     void addHeader(BytesBuilder b, {required int utcStartMs, int sessionId = 1}) {
