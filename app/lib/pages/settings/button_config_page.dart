@@ -406,7 +406,7 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
     }
 
     return Container(
-      margin: const EdgeInsets.only(top: 12),
+      margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(12.0),
       decoration: BoxDecoration(
         color: const Color(0xFF3A2E12),
@@ -589,6 +589,33 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
                   ),
                   const SizedBox(height: 12),
                 ],
+                // Visibility of the red auto-mode Priority Recording markers.
+                // A global display preference (no device/tab dependency), so it
+                // sits with the other top-level switches above the mode selector.
+                Material(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(12),
+                  clipBehavior: Clip.antiAlias,
+                  child: SwitchListTile(
+                    value: _showHighPriorityMarker,
+                    onChanged: (v) {
+                      setState(() => _showHighPriorityMarker = v);
+                      SharedPreferencesUtil().showHighPriorityMarker = v;
+                    },
+                    title: const Text('Show Priority Recording markers',
+                        style: TextStyle(color: Colors.white, fontSize: 16)),
+                    subtitle: const Text(
+                      'Display the red markers added when you start a priority recording in auto mode.',
+                      style: TextStyle(color: Colors.white54, fontSize: 12),
+                    ),
+                    activeThumbColor: Colors.red,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                // Warns (for the currently-viewed mode) when a Start action is
+                // mapped with no matching Stop — kept above the selector so it's
+                // visible whichever tab is showing.
+                _buildNoStopWarning(),
                 _buildModeSelector(),
                 Padding(
                   padding: const EdgeInsets.only(top: 8.0, bottom: 12.0, left: 4.0),
@@ -619,7 +646,6 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
                     ],
                   ),
                 ),
-                _buildNoStopWarning(),
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 16.0),
                   child: Text(
@@ -627,30 +653,6 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
                     style: TextStyle(color: Colors.white54, fontSize: 12),
                   ),
                 ),
-                // Priority Recording markers are an auto-mode-only concept (manual-mode
-                // RECORD_START writes no priority marker — every manual recording
-                // is user-triggered), so only offer the visibility toggle on the
-                // Auto tab.
-                if (!_selectedManual)
-                  Material(
-                    color: const Color(0xFF1C1C1E),
-                    borderRadius: BorderRadius.circular(12),
-                    clipBehavior: Clip.antiAlias,
-                    child: SwitchListTile(
-                      value: _showHighPriorityMarker,
-                      onChanged: (v) {
-                        setState(() => _showHighPriorityMarker = v);
-                        SharedPreferencesUtil().showHighPriorityMarker = v;
-                      },
-                      title: const Text('Show Priority Recording markers',
-                          style: TextStyle(color: Colors.white, fontSize: 16)),
-                      subtitle: const Text(
-                        'Display the red markers added when you start a priority recording in auto mode.',
-                        style: TextStyle(color: Colors.white54, fontSize: 12),
-                      ),
-                      activeThumbColor: Colors.red,
-                    ),
-                  ),
               ],
             ),
     );
