@@ -19,6 +19,7 @@ import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/gen/pigeon_communicator.g.dart';
 import 'package:omi/providers/device_provider.dart';
+import 'package:omi/services/services.dart';
 import 'package:omi/utils/logger.dart';
 
 // --- Skeleton classes for missing dependencies ---
@@ -85,6 +86,17 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   static const Duration _dfuStallTimeout = Duration(seconds: 45);
   bool _dfuTerminated = false;
   String? installErrorMessage;
+
+  // When true (set per-call by startDfu), the Android bond-reset for this update
+  // is in effect. It has two halves, both success-only:
+  //   • Device side: startDfu arms a one-shot flag on the omi (CMD_ARM_POST_DFU_
+  //     UNPAIR) before the flash; the omi wipes its OWN bonds on the first boot
+  //     of the new image and clears the flag. A failed flash reverts to the old
+  //     image, which ignores the flag, so the pairing survives.
+  //   • Phone side: on a successful flash we removeBond here (gated on this bool).
+  // Net: a successful update leaves BOTH sides unbonded → clean re-pair; a failed
+  // update leaves the pairing completely untouched.
+  bool _wipeBondsOnUpdate = false;
 
   /// Process ZIP file and return firmware image list
   Future<List<mcumgr.Image>> processZipFile(Uint8List zipFileData) async {
@@ -155,12 +167,49 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     if (Platform.isAndroid || Platform.isIOS) BleHostApi().releaseProcessingWakeLock();
   }
 
-  Future<void> startDfu(BtDevice btDevice, {bool fileInAssets = false, String? zipFilePath}) async {
+  Future<void> startDfu(BtDevice btDevice,
+      {bool fileInAssets = false, String? zipFilePath, bool wipeBonds = false}) async {
+    _wipeBondsOnUpdate = wipeBonds;
     _acquireUpdateWakelocks();
+    // Arm (or clear) the device-side one-shot post-update bond wipe to match the
+    // user's opt-in, while the link is still up. The device only acts on it if a
+    // NEW image actually boots (i.e. a successful flash), so a failed flash
+    // leaves pairing untouched; we still disarm when off so a stale arm from an
+    // earlier failed flash can't fire on this update. Best-effort — older
+    // firmware just rejects the command.
+    await _armPostDfuUnpair(btDevice, wipeBonds);
     if (isLegacySecureDFU) {
       return startLegacyDfu(btDevice, fileInAssets: fileInAssets, zipFilePath: zipFilePath);
     }
     return startMCUDfu(btDevice, fileInAssets: fileInAssets, zipFilePath: zipFilePath);
+  }
+
+  /// Best-effort: set the device's one-shot "unpair after next update" flag to
+  /// [arm] over the still-live link before the flash. Deferred to the device's
+  /// own first boot on the new image, so it's inherently success-gated. Failures
+  /// are non-fatal (older firmware rejects it; the phone-side wipe on success
+  /// still runs).
+  Future<void> _armPostDfuUnpair(BtDevice btDevice, bool arm) async {
+    try {
+      final connection = await ServiceManager.instance().device.ensureConnection(btDevice.id);
+      await connection?.sendArmPostDfuUnpair(arm);
+    } catch (e) {
+      Logger.debug('Arming post-DFU unpair failed: $e');
+    }
+  }
+
+  /// Best-effort: on a SUCCESSFUL flash, clear the phone's stored bond for the
+  /// device so the next reconnect re-pairs cleanly. The device wiped its own
+  /// bond at boot (via the armed flag above), so both sides end clean. Only
+  /// called from the success callbacks — a failed flash never reaches here,
+  /// leaving the pairing untouched. No-op unless this update requested the wipe.
+  Future<void> _wipePhoneBondOnSuccess(BtDevice btDevice) async {
+    if (!_wipeBondsOnUpdate) return;
+    try {
+      await BleHostApi().removeBond(btDevice.id);
+    } catch (e) {
+      Logger.debug('Post-update phone bond wipe failed: $e');
+    }
   }
 
   Future<void> killMcuUpdateManager() async {
@@ -198,6 +247,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     _dfuTerminated = true;
     killMcuUpdateManager(); // also cancels the stall watchdog
     releaseUpdateWakelocks();
+    // A failed flash deliberately leaves the pairing untouched — no bond wipe here.
     if (!mounted) return;
     setState(() {
       isInstalling = false;
@@ -256,6 +306,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
         Logger.debug('update success');
         killMcuUpdateManager(); // also cancels the stall watchdog
         releaseUpdateWakelocks();
+        _wipePhoneBondOnSuccess(btDevice);
         if (mounted) {
           setState(() {
             isInstalling = false;
@@ -329,6 +380,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       onError: (deviceAddress, error, errorType, message) {
         Logger.debug('deviceAddress: $deviceAddress, error: $error, errorType: $errorType, message: $message');
         releaseUpdateWakelocks();
+        // A failed flash deliberately leaves the pairing untouched — no bond wipe here.
         setState(() {
           isInstalling = false;
         });
@@ -345,6 +397,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       onDfuCompleted: (deviceAddress) {
         Logger.debug('deviceAddress: $deviceAddress, onDfuCompleted');
         releaseUpdateWakelocks();
+        _wipePhoneBondOnSuccess(btDevice);
         setState(() {
           isInstalling = false;
           isInstalled = true;
