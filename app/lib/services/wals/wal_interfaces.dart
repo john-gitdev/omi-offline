@@ -1,6 +1,7 @@
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/wals/wal.dart';
+import 'package:omi/utils/logger.dart';
 
 class SyncLocalFilesResponse {
   final List<String> newConversationIds;
@@ -101,6 +102,10 @@ extension SDCardWalSyncCancel on SDCardWalSync {
   Future<void> cancelAndWait({Duration timeout = const Duration(seconds: 2)}) async {
     if (!isSyncing) return;
     cancelSync();
-    await cancelFuture?.timeout(timeout, onTimeout: () {});
+    await cancelFuture?.timeout(timeout, onTimeout: () {
+      // Proceed anyway, but log it: a caller writing to the shared storage
+      // characteristic right after may now race a transfer that didn't stop.
+      Logger.debug('SDCardWalSync.cancelAndWait: sync did not stop within $timeout — proceeding anyway');
+    });
   }
 }
