@@ -2044,37 +2044,23 @@ int transport_start()
     }
 #endif
 
-    /* Record whether this boot is running a different firmware version than the
-     * previous boot (i.e. an update actually landed) and refresh the stored one. */
-    bool fw_changed = app_settings_note_boot_fw_version(CONFIG_BT_DIS_FW_REV_STR);
-
-    /* One-shot post-update bond wipe: if the app armed it before a flash, wipe
-     * every bond (now that they've been loaded above) so the device advertises
-     * unbonded and the phone (which the app clears on its side on success)
-     * re-pairs cleanly. The armed flag is consumed on ANY boot, but the wipe
-     * only runs when the firmware version actually changed — the real success
-     * gate. A failed/aborted flash leaves the SAME image running, so a later
-     * ordinary reboot (or the Reboot Omi command) of an armed device does NOT
-     * wipe bonds; only a genuine update does. */
-    if (app_settings_get_unpair_on_boot()) {
-        /* One-shot: always consume the flag this boot (an armed same-version
-         * reboot must not keep the wipe pending). Wipe only on a real update. */
-        app_settings_save_unpair_on_boot(0);
-        if (fw_changed) {
-            int uerr = bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
-            if (uerr) {
-                /* Rare. The local wipe is best-effort — the actual pairing reset
-                 * is the app clearing the PHONE bond on success, which forces a
-                 * fresh pair that re-keys the device anyway. So a failed local
-                 * unpair still recovers on the next reconnect; just surface it
-                 * rather than pretending a cross-reboot retry (the version has
-                 * already advanced, so a later boot wouldn't see fw_changed). */
-                LOG_ERR("unpair_on_boot: bt_unpair failed (err %d); phone re-pair will re-key", uerr);
-            } else {
-                LOG_INF("unpair_on_boot armed + firmware changed: wiped BLE bonds");
-            }
+    /* One-shot post-update bond wipe: if the app armed it before a flash (via
+     * CMD_ARM_POST_DFU_UNPAIR, which records the version at arm time), a boot on
+     * a DIFFERENT version means a real update landed — wipe every bond (now that
+     * they've been loaded above) so the device advertises unbonded and the phone
+     * (which clears its side on success) re-pairs cleanly. A failed/aborted flash
+     * leaves the SAME version, so consume returns false and nothing is wiped —
+     * an ordinary reboot or the Reboot Omi command of an armed device can't wipe.
+     * Consume is one-shot and clears the marker regardless. */
+    if (app_settings_consume_post_dfu_unpair(CONFIG_BT_DIS_FW_REV_STR)) {
+        int uerr = bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
+        if (uerr) {
+            /* Rare. The local wipe is best-effort — the actual pairing reset is
+             * the app clearing the PHONE bond on success, which forces a fresh
+             * pair that re-keys the device anyway. Just surface it. */
+            LOG_ERR("post-DFU unpair: bt_unpair failed (err %d); phone re-pair will re-key", uerr);
         } else {
-            LOG_INF("unpair_on_boot armed but firmware unchanged — skipping bond wipe");
+            LOG_INF("post-DFU unpair: firmware changed — wiped BLE bonds");
         }
     }
 
