@@ -15,7 +15,9 @@ import 'package:omi/utils/device.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/services.dart';
+import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/recordings_manager.dart';
+import 'package:omi/services/wals/wal_interfaces.dart';
 import 'package:omi/pages/settings/button_config_page.dart';
 import 'package:omi/widgets/dialog.dart';
 
@@ -432,9 +434,8 @@ class _DeviceSettingsState extends State<DeviceSettings> {
       final syncs = ServiceManager.instance().wal.getSyncs();
       if (syncs.isSyncing) {
         Logger.debug('DeviceSettings: cancelling active sync before wiping device storage');
-        syncs.cancelSync();
-        await syncs.cancelFuture?.timeout(const Duration(seconds: 2), onTimeout: () {});
       }
+      await syncs.cancelAndWait();
 
       Logger.debug('DeviceSettings: wiping device storage via deleteAllPendingWals()');
       await syncs.deleteAllPendingWals();
@@ -1018,95 +1019,78 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     );
   }
 
+  /// Shared flow for the remote power commands (Reboot / Shutdown): confirm,
+  /// stop any in-flight sync so the write doesn't race a live transfer on the
+  /// shared storage characteristic, send [sendCommand] over the connection, and
+  /// report the outcome. Keeps the two entry points from drifting.
+  Future<void> _sendPowerCommand(
+    DeviceProvider provider, {
+    required String title,
+    required String message,
+    required String confirmText,
+    required Future<bool> Function(DeviceConnection conn) sendCommand,
+    required String successMsg,
+  }) async {
+    final pairedDeviceId = provider.pairedDevice?.id ?? SharedPreferencesUtil().btDevice.id;
+    if (pairedDeviceId.isEmpty) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (c) => getDialog(
+        context,
+        () => Navigator.of(context).pop(false),
+        () => Navigator.of(context).pop(true),
+        title,
+        message,
+        confirmText: confirmText,
+      ),
+    );
+    if (confirmed != true) return;
+
+    // The power-command write shares the storage characteristic with file
+    // transfers, so stop any in-flight sync (and wait for it to unwind) first.
+    await ServiceManager.instance().wal.getSyncs().cancelAndWait();
+
+    bool ok = false;
+    try {
+      final connection = await ServiceManager.instance().device.ensureConnection(pairedDeviceId);
+      ok = connection != null && await sendCommand(connection);
+    } catch (_) {
+      ok = false;
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(ok ? successMsg : 'Could not reach your Omi — try again.')),
+    );
+  }
+
   /// Remote cold-reboot the Omi via CMD_REBOOT (0x16). The device ACKs, then
   /// restarts and drops the link for a few seconds; the native BLE layer
   /// auto-reconnects once it re-advertises. Useful to recover a wedged device
   /// without clearing the pairing (unlike Unpair).
-  Future<void> _rebootDevice(DeviceProvider provider) async {
-    final pairedDeviceId = provider.pairedDevice?.id ?? SharedPreferencesUtil().btDevice.id;
-    if (pairedDeviceId.isEmpty) return;
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (c) => getDialog(
-        context,
-        () => Navigator.of(context).pop(false),
-        () => Navigator.of(context).pop(true),
-        'Reboot Omi?',
-        'Restart your Omi now. It will disconnect for a few seconds and reconnect automatically. '
+  Future<void> _rebootDevice(DeviceProvider provider) => _sendPowerCommand(
+        provider,
+        title: 'Reboot Omi?',
+        message: 'Restart your Omi now. It will disconnect for a few seconds and reconnect automatically. '
             'An in-progress recording not yet written to the SD card may lose its last few seconds.',
         confirmText: 'Reboot',
-      ),
-    );
-    if (confirmed != true) return;
-
-    // Stop any in-flight storage sync first: the reboot write shares the storage
-    // characteristic with file transfers. cancelSync() only requests the stop, so
-    // await the transfer actually unwinding (bounded) before writing — same guard
-    // the wipe-storage flow uses.
-    final syncs = ServiceManager.instance().wal.getSyncs();
-    if (syncs.isSyncing) {
-      syncs.cancelSync();
-      await syncs.cancelFuture?.timeout(const Duration(seconds: 2), onTimeout: () {});
-    }
-
-    bool ok = false;
-    try {
-      final connection = await ServiceManager.instance().device.ensureConnection(pairedDeviceId);
-      ok = await connection?.sendRebootCommand() ?? false;
-    } catch (_) {
-      ok = false;
-    }
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(ok ? 'Rebooting your Omi…' : 'Could not reach your Omi — try again.')),
-    );
-  }
+        sendCommand: (conn) => conn.sendRebootCommand(),
+        successMsg: 'Rebooting your Omi…',
+      );
 
   /// Remote power-off the Omi via CMD_POWER_OFF (0x17). The device ACKs, shuts
   /// down (ship mode) and stays off until a button press or charger wakes it —
   /// so, unlike Reboot, it does not reconnect on its own.
-  Future<void> _shutdownDevice(DeviceProvider provider) async {
-    final pairedDeviceId = provider.pairedDevice?.id ?? SharedPreferencesUtil().btDevice.id;
-    if (pairedDeviceId.isEmpty) return;
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (c) => getDialog(
-        context,
-        () => Navigator.of(context).pop(false),
-        () => Navigator.of(context).pop(true),
-        'Shut down Omi?',
-        'Power your Omi off now. It will disconnect and stay off until you turn it back on with the button — '
-            "it won't reconnect on its own. An in-progress recording not yet written to the SD card may lose "
-            'its last few seconds.',
+  Future<void> _shutdownDevice(DeviceProvider provider) => _sendPowerCommand(
+        provider,
+        title: 'Shut down Omi?',
+        message: 'Power your Omi off now. It will disconnect and stay off until you turn it back on with the '
+            "button — it won't reconnect on its own. An in-progress recording not yet written to the SD card "
+            'may lose its last few seconds.',
         confirmText: 'Shut Down',
-      ),
-    );
-    if (confirmed != true) return;
-
-    // Stop any in-flight storage sync first: the shutdown write shares the storage
-    // characteristic with file transfers. cancelSync() only requests the stop, so
-    // await the transfer actually unwinding (bounded) before writing — same guard
-    // the wipe-storage flow uses.
-    final syncs = ServiceManager.instance().wal.getSyncs();
-    if (syncs.isSyncing) {
-      syncs.cancelSync();
-      await syncs.cancelFuture?.timeout(const Duration(seconds: 2), onTimeout: () {});
-    }
-
-    bool ok = false;
-    try {
-      final connection = await ServiceManager.instance().device.ensureConnection(pairedDeviceId);
-      ok = await connection?.sendShutdownCommand() ?? false;
-    } catch (_) {
-      ok = false;
-    }
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(ok ? 'Shutting down your Omi…' : 'Could not reach your Omi — try again.')),
-    );
-  }
+        sendCommand: (conn) => conn.sendShutdownCommand(),
+        successMsg: 'Shutting down your Omi…',
+      );
 
   Widget _buildActionsSection(DeviceProvider provider) {
     return Material(
