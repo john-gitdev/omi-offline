@@ -74,4 +74,58 @@ void main() {
       expect(s.writeFairActivations, 0);
     });
   });
+
+  group('baseline JSON round-trip', () {
+    test('preserves every boot-relative counter and the capture uptime', () {
+      final original = DeviceDropStats(
+        blockDrops: 11,
+        lastBlockDropUptimeMs: 999, // NOT persisted — derived, not a baseline field
+        streamFrameDrops: 22,
+        bootFrameDrops: 33,
+        currentUptimeMs: 123456,
+        codecFrameDrops: 44,
+        msgqPeakDepth: 55,
+        writeFairActivations: 66,
+        priorityRecordStarts: 7,
+        priorityRecordStops: 6,
+        markerWriteDrops: 5,
+        emptyBinRotations: 4,
+        sessionEndMarkerEmits: 3,
+        markerPauseGateSaves: 2,
+        readAt: DateTime.now(),
+      );
+
+      final restored = DeviceDropStats.fromBaselineJson(original.toBaselineJson())!;
+
+      expect(restored.blockDrops, 11);
+      expect(restored.streamFrameDrops, 22);
+      expect(restored.bootFrameDrops, 33);
+      expect(restored.codecFrameDrops, 44);
+      expect(restored.msgqPeakDepth, 55);
+      expect(restored.writeFairActivations, 66);
+      expect(restored.priorityRecordStarts, 7);
+      expect(restored.priorityRecordStops, 6);
+      expect(restored.markerWriteDrops, 5);
+      expect(restored.emptyBinRotations, 4);
+      expect(restored.sessionEndMarkerEmits, 3);
+      expect(restored.markerPauseGateSaves, 2);
+      // currentUptimeMs must survive: the restore path uses it to detect a reboot
+      // (uptime going backwards) and discard the stale baseline.
+      expect(restored.currentUptimeMs, 123456);
+      // Derived field is intentionally reset, not carried through.
+      expect(restored.lastBlockDropUptimeMs, 0);
+    });
+
+    test('returns null on malformed JSON instead of throwing', () {
+      expect(DeviceDropStats.fromBaselineJson('not json'), isNull);
+      expect(DeviceDropStats.fromBaselineJson(''), isNull);
+    });
+
+    test('missing keys decode to 0 (forward/backward-compatible snapshot)', () {
+      final restored = DeviceDropStats.fromBaselineJson('{"blockDrops": 9}')!;
+      expect(restored.blockDrops, 9);
+      expect(restored.priorityRecordStarts, 0);
+      expect(restored.currentUptimeMs, 0);
+    });
+  });
 }
