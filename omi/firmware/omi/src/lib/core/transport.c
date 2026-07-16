@@ -2044,17 +2044,26 @@ int transport_start()
     }
 #endif
 
-    /* One-shot post-update bond wipe: if the app armed it before a firmware
-     * flash, this fresh image's first boot clears every bond (now that they've
-     * been loaded above) and disarms the flag — so the device advertises
+    /* Record whether this boot is running a different firmware version than the
+     * previous boot (i.e. an update actually landed) and refresh the stored one. */
+    bool fw_changed = app_settings_note_boot_fw_version(CONFIG_BT_DIS_FW_REV_STR);
+
+    /* One-shot post-update bond wipe: if the app armed it before a flash, wipe
+     * every bond (now that they've been loaded above) so the device advertises
      * unbonded and the phone (which the app clears on its side on success)
-     * re-pairs cleanly. A failed flash reverts to the OLD image, which has no
-     * such check, so the bonds survive: the wipe only ever runs when a NEW image
-     * actually boots. */
+     * re-pairs cleanly. The armed flag is consumed on ANY boot, but the wipe
+     * only runs when the firmware version actually changed — the real success
+     * gate. A failed/aborted flash leaves the SAME image running, so a later
+     * ordinary reboot (or the Reboot Omi command) of an armed device does NOT
+     * wipe bonds; only a genuine update does. */
     if (app_settings_get_unpair_on_boot()) {
-        LOG_INF("unpair_on_boot armed: wiping BLE bonds after firmware update");
-        bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
         app_settings_save_unpair_on_boot(0);
+        if (fw_changed) {
+            LOG_INF("unpair_on_boot armed + firmware changed: wiping BLE bonds");
+            bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
+        } else {
+            LOG_INF("unpair_on_boot armed but firmware unchanged — skipping bond wipe");
+        }
     }
 
     LOG_INF("Transport bluetooth initialized");
