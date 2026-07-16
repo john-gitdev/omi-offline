@@ -201,4 +201,22 @@ int app_settings_save_haptic_config(const uint8_t config[6]);
  */
 void app_settings_get_haptic_config(uint8_t config[6]);
 
+/**
+ * @brief Arm/disarm the one-shot "unpair after firmware update" flag.
+ *
+ * When armed, the FIRST boot of a freshly-flashed image wipes all BLE bonds and
+ * clears the flag (see the boot-time check in transport_start). Because the flag
+ * lives in the settings/NVS partition (which survives a DFU) but is only acted
+ * on by an image that boots, a failed flash that reverts to the old image leaves
+ * the bonds untouched. The app arms this before a flash (when the user opted in)
+ * and disarms it otherwise, so a stale arm can't fire on a later update.
+ *
+ * @param arm 1 to arm, 0 to disarm.
+ * @return 0 on success, negative error code otherwise.
+ */
+int app_settings_save_unpair_on_boot(uint8_t arm);
+
+/** @brief Return 1 if the one-shot post-update bond wipe is armed, else 0. */
+uint8_t app_settings_get_unpair_on_boot(void);
+
 #endif // SETTINGS_H
