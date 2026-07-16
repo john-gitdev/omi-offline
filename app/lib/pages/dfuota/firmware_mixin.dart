@@ -93,10 +93,19 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   //     UNPAIR) before the flash; the omi wipes its OWN bonds on the first boot
   //     of the new image and clears the flag. A failed flash reverts to the old
   //     image, which ignores the flag, so the pairing survives.
-  //   • Phone side: on a successful flash we removeBond here (gated on this bool).
+  //   • Phone side: on a successful flash we removeBond here (gated on this bool
+  //     AND on the arm write below having succeeded, so we never drop the phone
+  //     bond when the device wasn't actually armed).
   // Net: a successful update leaves BOTH sides unbonded → clean re-pair; a failed
   // update leaves the pairing completely untouched.
   bool _wipeBondsOnUpdate = false;
+
+  // Whether the pre-flash arm write to the device actually went through. If it
+  // didn't (transient BLE failure), we skip the phone-side removeBond too, so a
+  // half-applied wipe can't strand the pairing. A successful write to older
+  // firmware that rejects the command still returns true (the write landed), so
+  // the phone-side fallback + re-pair still covers those devices.
+  bool _postDfuArmWriteOk = false;
 
   /// Process ZIP file and return firmware image list
   Future<List<mcumgr.Image>> processZipFile(Uint8List zipFileData) async {
@@ -171,30 +180,36 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       {bool fileInAssets = false, String? zipFilePath, bool wipeBonds = false}) async {
     _wipeBondsOnUpdate = wipeBonds;
     _acquireUpdateWakelocks();
+    // Stop any in-flight storage sync before the arm write: it shares the storage
+    // characteristic with file transfers, so writing over a live transfer can
+    // stall it (the same hazard the keep-alive avoids). prepareDFU cancels sync
+    // again shortly, but the arm goes out first.
+    ServiceManager.instance().wal.getSyncs().cancelSync();
     // Arm (or clear) the device-side one-shot post-update bond wipe to match the
     // user's opt-in, while the link is still up. The device only acts on it if a
-    // NEW image actually boots (i.e. a successful flash), so a failed flash
+    // NEW firmware version actually boots (a successful flash), so a failed flash
     // leaves pairing untouched; we still disarm when off so a stale arm from an
-    // earlier failed flash can't fire on this update. Best-effort — older
-    // firmware just rejects the command.
-    await _armPostDfuUnpair(btDevice, wipeBonds);
+    // earlier failed flash can't fire on this update. The result gates the
+    // phone-side wipe (see _wipePhoneBondOnSuccess).
+    _postDfuArmWriteOk = await _armPostDfuUnpair(btDevice, wipeBonds);
     if (isLegacySecureDFU) {
       return startLegacyDfu(btDevice, fileInAssets: fileInAssets, zipFilePath: zipFilePath);
     }
     return startMCUDfu(btDevice, fileInAssets: fileInAssets, zipFilePath: zipFilePath);
   }
 
-  /// Best-effort: set the device's one-shot "unpair after next update" flag to
-  /// [arm] over the still-live link before the flash. Deferred to the device's
-  /// own first boot on the new image, so it's inherently success-gated. Failures
-  /// are non-fatal (older firmware rejects it; the phone-side wipe on success
-  /// still runs).
-  Future<void> _armPostDfuUnpair(BtDevice btDevice, bool arm) async {
+  /// Set the device's one-shot "unpair after next update" flag to [arm] over the
+  /// still-live link before the flash. Returns whether the write landed (true
+  /// even on older firmware that rejects the command — the write itself
+  /// succeeds); false on a transient BLE failure or no connection, which gates
+  /// off the phone-side wipe so we never half-apply the reset.
+  Future<bool> _armPostDfuUnpair(BtDevice btDevice, bool arm) async {
     try {
       final connection = await ServiceManager.instance().device.ensureConnection(btDevice.id);
-      await connection?.sendArmPostDfuUnpair(arm);
+      return await connection?.sendArmPostDfuUnpair(arm) ?? false;
     } catch (e) {
       Logger.debug('Arming post-DFU unpair failed: $e');
+      return false;
     }
   }
 
@@ -202,9 +217,11 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   /// device so the next reconnect re-pairs cleanly. The device wiped its own
   /// bond at boot (via the armed flag above), so both sides end clean. Only
   /// called from the success callbacks — a failed flash never reaches here,
-  /// leaving the pairing untouched. No-op unless this update requested the wipe.
+  /// leaving the pairing untouched. No-op unless this update requested the wipe
+  /// AND the device-side arm write landed (so we don't drop the phone bond while
+  /// the device stays bonded).
   Future<void> _wipePhoneBondOnSuccess(BtDevice btDevice) async {
-    if (!_wipeBondsOnUpdate) return;
+    if (!_wipeBondsOnUpdate || !_postDfuArmWriteOk) return;
     try {
       await BleHostApi().removeBond(btDevice.id);
     } catch (e) {
