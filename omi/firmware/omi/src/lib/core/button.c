@@ -572,7 +572,7 @@ void register_button_service()
 // Returns TURNOFF_ALREADY if another context is already powering off (no-op),
 // TURNOFF_BAILED if the hardware teardown couldn't complete (caller may recover,
 // e.g. cold-reboot), and never returns on success (ends in sys_poweroff()).
-int turnoff_all()
+turnoff_result_t turnoff_all()
 {
     /* Power-off can be triggered from several contexts — the button work thread
      * (4-tap-hold), the storage thread (CMD_POWER_OFF), and transport. Guard
