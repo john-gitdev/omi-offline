@@ -91,6 +91,12 @@ abstract class SDCardWalSync implements IWalSync {
   /// Send CMD_ROTATE_FILE, wait for ACK (current file sealed, new file open),
   /// then run a normal sync including short segments below the usual threshold.
   Future<SyncLocalFilesResponse?> rotateAndSync({IWalSyncProgressListener? progress});
+
+  /// Bins (paths relative to `raw_segments/`) whose transfer has NOT delivered
+  /// every byte the device advertised — see [Wal.isIncompleteTransfer]. These
+  /// are prefixes awaiting a resumed read, so the processing pass must skip
+  /// them: it prunes every bin it consumes, and pruning one strands its resume.
+  Future<Set<String>> incompleteBinRelPaths();
 }
 
 extension SDCardWalSyncCancel on SDCardWalSync {
