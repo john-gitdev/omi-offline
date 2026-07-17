@@ -456,12 +456,22 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   ///    duplicate audio mid-bin and desync the VAD frame parser.
   ///  - Bin SHORTER, or gone: the processing pass consumed a partial bin into a
   ///    draft and pruned it (it deletes every bin it decodes). Resuming at the
-  ///    stale offset would ask the device for the TAIL and land it at position 0
-  ///    of a recreated file — downloadStorageFile opens the path with
-  ///    append=true, which silently creates an empty file when it is missing — so
-  ///    the bin ends up scrambled, and once its length happens to match it passes
-  ///    the completeness guard and the device-side copy is deleted. Rewind to
-  ///    what is really on disk instead.
+  ///    stale offset asks the device for the TAIL and lands it at position 0 of a
+  ///    recreated file — downloadStorageFile opens the path with append=true,
+  ///    which silently creates an empty file when it is missing.
+  ///
+  ///    The result is not a transient glitch that self-heals; it converges on
+  ///    silent corruption in exactly two syncs. With `T` = advertised size and
+  ///    `a` = bytes on disk when the bin was pruned:
+  ///      sync 1: asks from `a`, receives `T - a` into the recreated file → the
+  ///              offset REGRESSES to `T - a` (logged as "no progress", +1 strike)
+  ///      sync 2: asks from `T - a`, receives `a`, appends → length is now
+  ///              `(T - a) + a` == `T`, EXACTLY the advertised size, always.
+  ///    So it always passes the length-only completeness guard, and the device
+  ///    copy — the last intact source — is deleted. The bin holds the tail twice
+  ///    and has lost its first `T - a` bytes. Observed with T=2071116/a=1338480.
+  ///
+  ///    Rewind to what is really on disk instead, so every read is contiguous.
   Future<int> _reconcileResumeOffset(File binFile, int offset, Wal wal) async {
     try {
       final bool exists = await binFile.exists();
