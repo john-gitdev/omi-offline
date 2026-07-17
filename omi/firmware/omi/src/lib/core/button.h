@@ -38,7 +38,17 @@ extern volatile marker_flash_color_t marker_flash_color;
 int button_init();
 void activate_button_work();
 void register_button_service();
-void turnoff_all();
+
+/* turnoff_all() result. It never returns on a successful power-off (ends in
+ * sys_poweroff()); these cover the two non-fatal early returns. Values are
+ * ordered so a bare truthy check (`if (turnoff_all())`) treats the recoverable
+ * failure as the non-benign case: the no-op is 0, the teardown failure is
+ * non-zero. */
+typedef enum {
+    TURNOFF_ALREADY = 0, /* another context is already powering off; this call was a no-op */
+    TURNOFF_BAILED = 1,  /* hardware teardown couldn't complete; caller may recover (e.g. reboot) */
+} turnoff_result_t;
+turnoff_result_t turnoff_all();
 
 /* Apply a mute change from the button FSM or the BLE mute characteristic.
  * No-op while in manual mode (mirrors the physical-button gate). Records the

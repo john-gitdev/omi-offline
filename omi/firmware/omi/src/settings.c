@@ -1,5 +1,6 @@
 #include "lib/core/settings.h"
 
+#include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
@@ -64,6 +65,16 @@ static uint8_t button_config[6] = {0, 2, 4, 3, 5, 0};
 /* Per-tap-slot vibration pattern, same slot order as button_config.
  * Patterns: 0=Off, 1=Single, 2=Double, 3=Triple. Default off everywhere. */
 static uint8_t haptic_config[6] = {0, 0, 0, 0, 0, 0};
+
+/* One-shot "unpair after firmware update" marker: the firmware version the
+ * device was running when the app armed a post-update bond wipe
+ * (CMD_ARM_POST_DFU_UNPAIR). Empty = disarmed. On boot, a running version that
+ * DIFFERS from this armed value means a real update landed → wipe. Capturing the
+ * version at ARM time (a deliberate, pre-flash act) means the wipe decision
+ * doesn't depend on any boot-time persistence, and it's fail-closed: if arming
+ * never persisted, the value stays empty and no wipe ever fires. Rides through
+ * the DFU in NVS. */
+static char unpair_armed_fw[24] = {0};
 
 static int settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
@@ -256,6 +267,20 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         rc = read_cb(cb_arg, haptic_config, sizeof(haptic_config));
         if (rc >= 0) {
             LOG_INF("Loaded haptic_config");
+            return 0;
+        }
+        return rc;
+    }
+
+    if (settings_name_steq(name, "unpair_armed_fw", &next) && !next) {
+        if (len > sizeof(unpair_armed_fw)) {
+            return -EINVAL;
+        }
+        memset(unpair_armed_fw, 0, sizeof(unpair_armed_fw));
+        rc = read_cb(cb_arg, unpair_armed_fw, len);
+        if (rc >= 0) {
+            unpair_armed_fw[sizeof(unpair_armed_fw) - 1] = '\0';
+            LOG_INF("Loaded unpair_armed_fw: '%s'", unpair_armed_fw);
             return 0;
         }
         return rc;
@@ -512,4 +537,55 @@ int app_settings_save_haptic_config(const uint8_t config[6])
 void app_settings_get_haptic_config(uint8_t config[6])
 {
     memcpy(config, haptic_config, sizeof(haptic_config));
+}
+
+int app_settings_arm_post_dfu_unpair(bool arm, const char *current_fw)
+{
+    if (arm && (current_fw == NULL || current_fw[0] == '\0')) {
+        /* The empty string is the disarmed sentinel, so arming with no version
+         * to key on would silently no-op while reporting success. Refuse loudly
+         * rather than persist a marker that can never fire. */
+        LOG_ERR("post-DFU unpair: refusing to arm with an empty firmware version");
+        return -EINVAL;
+    }
+    char buf[sizeof(unpair_armed_fw)];
+    memset(buf, 0, sizeof(buf));
+    if (arm) {
+        /* current_fw is guaranteed non-empty here. */
+        strncpy(buf, current_fw, sizeof(buf) - 1);
+    }
+    /* buf is the empty string when disarming. */
+    int err = settings_save_one("omi/unpair_armed_fw", buf, sizeof(buf));
+    if (err) {
+        LOG_ERR("Failed to save unpair_armed_fw (err %d)", err);
+        return err;
+    }
+    memcpy(unpair_armed_fw, buf, sizeof(buf));
+    if (arm) {
+        LOG_INF("post-DFU unpair armed @ '%s'", current_fw);
+    } else {
+        LOG_INF("post-DFU unpair disarmed");
+    }
+    return 0;
+}
+
+bool app_settings_consume_post_dfu_unpair(const char *current_fw)
+{
+    if (unpair_armed_fw[0] == '\0') {
+        return false; /* not armed */
+    }
+    bool changed = (current_fw != NULL) && strncmp(unpair_armed_fw, current_fw, sizeof(unpair_armed_fw)) != 0;
+
+    /* One-shot: clear the armed marker. If the clear fails it stays set and a
+     * later boot re-evaluates — harmless: a same-version boot returns false (no
+     * wipe), and a changed boot would at worst do a redundant idempotent wipe. */
+    char empty[sizeof(unpair_armed_fw)];
+    memset(empty, 0, sizeof(empty));
+    int err = settings_save_one("omi/unpair_armed_fw", empty, sizeof(empty));
+    if (err) {
+        LOG_ERR("Failed to clear unpair_armed_fw (err %d)", err);
+    } else {
+        memset(unpair_armed_fw, 0, sizeof(unpair_armed_fw));
+    }
+    return changed;
 }
