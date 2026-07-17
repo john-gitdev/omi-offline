@@ -961,15 +961,19 @@ void storage_write(void)
             }
         }
         if (atomic_cas(&reboot_requested, 1, 0)) {
-            /* ACK before the reboot drops the link, then give the notify a
-             * moment to flush (and any in-flight SD write time to settle) before
-             * the cold reboot, which never returns. Recovery after an unclean
-             * reboot is the same path the watchdog reset already exercises. */
+            /* ACK before the reboot drops the link. Gracefully close the SD card
+             * first (the same guarded app_sd_off() path CMD_POWER_OFF uses via
+             * turnoff_all) so a reboot landing mid-write flushes/unmounts instead
+             * of tearing an in-progress block; then let the ACK notify flush
+             * before the cold reboot, which never returns. */
             if (conn) {
                 uint8_t ack[2] = {PACKET_ACK, 0};
                 STORAGE_NOTIFY(conn, ack, sizeof(ack));
             }
             LOG_INF("CMD_REBOOT: rebooting now");
+            if (is_sd_on() && sd_is_boot_ready()) {
+                app_sd_off();
+            }
             k_msleep(500);
             sys_reboot(SYS_REBOOT_COLD);
         }
