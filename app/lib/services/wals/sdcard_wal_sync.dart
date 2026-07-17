@@ -209,25 +209,31 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   @override
   Future<Set<String>> incompleteBinRelPaths() async {
-    // The in-memory list is the live truth during a sync (its offsets run ahead
-    // of the ~1 Hz-throttled persist), but it is empty when no device is
-    // attached — and Force Process / a resume after an app restart still has to
-    // honour a half-downloaded bin left behind by an earlier session. Fall back
-    // to the persisted WALs there; the completeness guard saves immediately on
-    // the incomplete path, so disk is current for exactly the bins that matter.
-    var wals = _wals;
-    if (wals.isEmpty) {
-      try {
-        wals = await WalFileManager.loadWals();
-      } catch (e) {
-        // Fail open: an unreadable WAL file must not stall processing forever.
-        // The resume reconciliation in _readStorageBytesToFileLocked* still
-        // keeps a pruned partial from corrupting the re-fetched bin.
-        Logger.error('SDCardWalSync: incompleteBinRelPaths could not load persisted WALs: $e');
-        return const {};
+    // raw_segments/ is a GLOBAL pool — a bin's path carries no device id — but
+    // _wals only ever holds the CONNECTED device's WALs (setDevice filters by
+    // w.device, and saveWals deliberately preserves other devices' entries). A
+    // second device's half-downloaded bin sits in the same pool and is just as
+    // unsafe to decode and prune, so union both sources rather than reading one:
+    //  - persisted: every device, and the only source when none is attached
+    //    (Force Process / a resume after an app restart still has to honour a
+    //    half-downloaded bin left behind by an earlier session).
+    //  - _wals: fresher for the current device — its offsets run ahead of the
+    //    ~1 Hz-throttled persist — so it wins on conflict.
+    final byId = <String, Wal>{}; // Wal.id is device-scoped ('$device-$timerStart')
+    try {
+      for (final w in await WalFileManager.loadWals()) {
+        byId[w.id] = w;
       }
+    } catch (e) {
+      // Carry on with the live list rather than giving up: skipping a bin costs
+      // one sync cycle, pruning one mid-transfer corrupts it. _reconcileResumeOffset
+      // still backstops a stale offset if something prunes a bin anyway.
+      Logger.error('SDCardWalSync: incompleteBinRelPaths could not load persisted WALs: $e');
     }
-    return wals.where((w) => w.isIncompleteTransfer).map((w) => w.relativeBinPath).toSet();
+    for (final w in _wals) {
+      byId[w.id] = w;
+    }
+    return byId.values.where((w) => w.isIncompleteTransfer).map((w) => w.relativeBinPath).toSet();
   }
 
   @override
@@ -496,8 +502,45 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       wal.walOffset = actualSize;
       return actualSize;
     } catch (e) {
-      Logger.error('SDCardWalSync: resume reconciliation failed for ${binFile.path}: $e');
-      return offset;
+      // The file's state is now UNKNOWN — exists()/length()/truncate() failed. Do
+      // not hand the stale offset back: if the bin is missing or short, the
+      // caller appends the tail onto a gap and recreates the exact corruption
+      // this helper exists to stop. Fail to a full re-fetch instead. The device
+      // copy is immutable until CMD_DELETE_FILE, and offset 0 makes the native
+      // writer truncate rather than append, so this costs bandwidth and nothing
+      // else — the one safe answer when we cannot see the file.
+      Logger.error('SDCardWalSync: resume reconciliation failed for ${binFile.path} — '
+          'restarting this bin from 0 (cannot trust offset $offset): $e');
+      wal.walOffset = 0;
+      return 0;
+    }
+  }
+
+  /// Absolute path of [wal]'s bin in the processing pool.
+  Future<File> _binFileFor(Wal wal) async {
+    final directory = await getApplicationDocumentsDirectory();
+    return File('${directory.path}/raw_segments/${wal.relativeBinPath}');
+  }
+
+  /// Rewinds [wal].walOffset to the bytes actually on disk, BEFORE a caller
+  /// snapshots it for progress / disk-space bookkeeping.
+  ///
+  /// _reconcileResumeOffset also runs inside the native read, but by then
+  /// _syncAllLocked has already captured `initialOffset` from the stale value —
+  /// and it treats that as "this attempt's resume point" when deciding whether a
+  /// read made forward progress. A rewind would leave a phantom baseline: a
+  /// resumed read that genuinely advanced (say 0 → 500 KB after a rewind from
+  /// 1.3 MB) would score as "no progress", burn a strike, and at 5 strikes the
+  /// poison-drop deletes the recording outright — the precise data loss the
+  /// forward-progress guard was added to prevent. Reconciling first keeps the
+  /// snapshot honest, and also sizes the disk-space reservation for what will
+  /// really be fetched. No-op when nothing was downloaded yet.
+  Future<void> _reconcileWalOffsetToDisk(Wal wal) async {
+    if (wal.walOffset <= 0) return;
+    try {
+      await _reconcileResumeOffset(await _binFileFor(wal), wal.walOffset, wal);
+    } catch (e) {
+      Logger.error('SDCardWalSync: could not reconcile the resume offset for ts=${wal.timerStart}: $e');
     }
   }
 
@@ -961,6 +1004,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       wal.syncStartedAt = DateTime.now();
       listener.onWalUpdated();
 
+      // Reconcile BEFORE the snapshot below: initialOffset must be this attempt's
+      // real resume point, or the forward-progress check misjudges a rewound read
+      // and the strike count can reach the poison-drop. See _reconcileWalOffsetToDisk.
+      await _reconcileWalOffsetToDisk(wal);
+
       final initialOffset = wal.walOffset;
       int lastOffset = initialOffset;
       _lastSegmentBoundaryOffset =
@@ -1305,6 +1353,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     wal.isSyncing = true;
     wal.syncStartedAt = DateTime.now();
     listener.onWalUpdated();
+
+    // Reconcile before the snapshot, as in _syncAllLocked: initialOffset sizes the
+    // disk reservation and the progress %, both of which a rewind would skew.
+    await _reconcileWalOffsetToDisk(wal);
 
     final initialOffset = wal.walOffset;
     int lastOffset = initialOffset;
