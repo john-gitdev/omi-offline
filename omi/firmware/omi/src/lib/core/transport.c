@@ -2044,6 +2044,26 @@ int transport_start()
     }
 #endif
 
+    /* One-shot post-update bond wipe: if the app armed it before a flash (via
+     * CMD_ARM_POST_DFU_UNPAIR, which records the version at arm time), a boot on
+     * a DIFFERENT version means a real update landed — wipe every bond (now that
+     * they've been loaded above) so the device advertises unbonded and the phone
+     * (which clears its side on success) re-pairs cleanly. A failed/aborted flash
+     * leaves the SAME version, so consume returns false and nothing is wiped —
+     * an ordinary reboot or the Reboot Omi command of an armed device can't wipe.
+     * Consume is one-shot and clears the marker regardless. */
+    if (app_settings_consume_post_dfu_unpair(CONFIG_BT_DIS_FW_REV_STR)) {
+        int uerr = bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
+        if (uerr) {
+            /* Rare. The local wipe is best-effort — the actual pairing reset is
+             * the app clearing the PHONE bond on success, which forces a fresh
+             * pair that re-keys the device anyway. Just surface it. */
+            LOG_ERR("post-DFU unpair: bt_unpair failed (err %d); phone re-pair will re-key", uerr);
+        } else {
+            LOG_INF("post-DFU unpair: firmware changed — wiped BLE bonds");
+        }
+    }
+
     LOG_INF("Transport bluetooth initialized");
 
     //  Enable accelerometer

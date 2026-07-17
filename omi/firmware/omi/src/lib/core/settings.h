@@ -1,6 +1,7 @@
 #ifndef SETTINGS_H
 #define SETTINGS_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <zephyr/drivers/rtc.h>
 
@@ -200,5 +201,34 @@ int app_settings_save_haptic_config(const uint8_t config[6]);
  * @param config Array of 6 bytes to store the configuration.
  */
 void app_settings_get_haptic_config(uint8_t config[6]);
+
+/**
+ * @brief Arm/disarm the one-shot "unpair after firmware update" marker.
+ *
+ * Arming records [current_fw] (the version running now, before the flash);
+ * disarming clears it. Consumed once, on the first boot whose running version
+ * DIFFERS from the armed one (see @ref app_settings_consume_post_dfu_unpair /
+ * transport_start). Because the version is captured at ARM time, a failed/
+ * aborted flash (same version afterward) never triggers the wipe, and it's
+ * fail-closed: if arming didn't persist, no version is stored and no wipe fires.
+ * The app arms this before a flash when the user opted in, and disarms otherwise.
+ *
+ * @param arm true to arm, false to disarm.
+ * @param current_fw Compile-time firmware version string (e.g. CONFIG_BT_DIS_FW_REV_STR).
+ * @return 0 on success, negative error code otherwise.
+ */
+int app_settings_arm_post_dfu_unpair(bool arm, const char *current_fw);
+
+/**
+ * @brief Consume the one-shot post-update unpair marker for this boot.
+ *
+ * Clears the armed marker (one-shot) and returns whether a bond wipe is due:
+ * true iff it was armed AND [current_fw] differs from the armed version (a real
+ * update landed). Returns false when not armed or the version is unchanged.
+ *
+ * @param current_fw Compile-time firmware version string (e.g. CONFIG_BT_DIS_FW_REV_STR).
+ * @return true if the caller should wipe BLE bonds, false otherwise.
+ */
+bool app_settings_consume_post_dfu_unpair(const char *current_fw);
 
 #endif // SETTINGS_H

@@ -165,6 +165,10 @@ Storage protocol: write commands to `storageDataStreamCharacteristicUuid` (`…8
 | `0x12` | DELETE_FILE | `[0x12, fileIndex, timestamp_4B LE?]` (timestamp optional) |
 | `0x13` | ROTATE_FILE | `[0x13]` |
 | `0x14` | CLEAR_STORAGE | `[0x14]` |
+| `0x15` | UNPAIR | `[0x15]` (firmware `bt_unpair` — wipes the device's own BLE bonds; `sendUnpairCommand`) |
+| `0x16` | REBOOT | `[0x16]` (deferred to the storage thread: ACKs, gracefully closes the SD card (`app_sd_off()` when `is_sd_on()` — flush + unmount), then `sys_reboot(SYS_REBOOT_COLD)`; `sendRebootCommand`. Surfaced as "Reboot Omi" in Device Settings) |
+| `0x17` | POWER_OFF | `[0x17]` (deferred to the storage thread: ACKs, then `turnoff_all()` → `sys_poweroff()` — ship mode, wakes only on button/charger; `sendShutdownCommand`. Surfaced as "Shutdown Omi" in Device Settings) |
+| `0x18` | ARM_POST_DFU_UNPAIR | `[0x18, arm]` (`arm`=1 arm / 0 disarm; a short/malformed write is rejected — fail-closed on a destructive action). Arming records the **current firmware version** in NVS (`omi/unpair_armed_fw`); on boot `transport_start` (after BT bonds load) consumes the marker and runs `bt_unpair` **only when the running version differs** from the armed one — so a failed/aborted flash (same version) never wipes, and a stale arm can't fire on an ordinary reboot / the Reboot command. Fail-closed: if arming didn't persist, no version is stored and nothing wipes. Armed pre-flash by the app's "Reset pairing after update" toggle (`sendArmPostDfuUnpair`); the app gates its phone-side `removeBond` (on success) on the arm write landing. |
 | `0x32` | KEEP_ALIVE | `[0x32]` (added 0.14.4; prevents firmware idle-disconnect) |
 
 File indices are **cache positions** (0-based sequential) that shift after each deletion — the firmware rebuilds its file-list cache on every CMD_LIST_FILES and after every delete, so after deleting index 0, what was index 1 becomes index 0. Supplying the timestamp in CMD_READ_FILE and CMD_DELETE_FILE lets the firmware re-locate the file by timestamp if the index shifted between LIST and READ/DELETE.
