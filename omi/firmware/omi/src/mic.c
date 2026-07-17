@@ -255,6 +255,16 @@ void mic_off()
 void mic_on()
 {
     if (!mic_running) {
+        /* Restore the mic + TXS0104 rail in case a prior mic_off() drove PDM_EN
+         * low. Normally PDM_EN is already high (default-enable pull-up), so this
+         * is a no-op; it only matters if mic_off() ran without a full power-off
+         * (e.g. a bailed turnoff_all). Re-assert active and let the rail settle
+         * before capture so the first frames aren't garbage. */
+        if (gpio_is_ready_dt(&pdm_en)) {
+            gpio_pin_configure_dt(&pdm_en, GPIO_OUTPUT_ACTIVE);
+            k_msleep(5);
+        }
+
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
         if (ret < 0) {
             LOG_ERR("START trigger failed: %d", ret);
