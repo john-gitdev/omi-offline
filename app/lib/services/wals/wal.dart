@@ -93,6 +93,25 @@ class Wal {
     return getSegmentFileNameByTimestamp(timerStart, sessionId: sessionId);
   }
 
+  /// True while the device advertised more bytes for this file than have landed
+  /// in the local bin — i.e. the transfer is mid-flight or ended short and the
+  /// completeness guard left it `miss` for a resumed read on the next sync.
+  ///
+  /// The bin on disk is a PREFIX of the real recording, so it must not be
+  /// decoded or pruned: the processing pass deletes every bin it consumes, and
+  /// a deleted bin makes the resume append the tail to an empty file. Mirrors
+  /// the guard's condition in SDCardWalSyncImpl._syncAllLocked.
+  bool get isIncompleteTransfer => storageTotalBytes > 0 && walOffset < storageTotalBytes;
+
+  /// Path of this WAL's bin relative to `raw_segments/`, matching the folder
+  /// rule the download path uses (pre-time-sync files land under
+  /// `session_<sessionId>/`). Same shape as the keys in
+  /// [RecordingsManager.discardedRelBinPaths].
+  String get relativeBinPath {
+    final folder = timerStart < 946684800 ? 'session_$sessionId' : '$timerStart';
+    return '$folder/${getFileName()}';
+  }
+
   String? getFilePath() {
     return filePath;
   }

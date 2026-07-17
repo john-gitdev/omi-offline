@@ -507,8 +507,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
             if (_isDisposed) return;
             final discarded = await RecordingsManager.discardedRelBinPaths();
             final covered = await RecordingsManager.coveredBinPaths(_batches.expand((b) => b.rawSegments).toList());
-            final processable =
-                _batches.expand((b) => b.rawSegments).where((f) => _isProcessableBin(f, discarded, covered)).toList();
+            final incomplete = await _incompleteBins();
+            final processable = _batches
+                .expand((b) => b.rawSegments)
+                .where((f) => isProcessableBin(f, discarded, covered, incomplete))
+                .toList();
             final lengths = await Future.wait(processable.map((f) => f.length().catchError((_) => 0)));
             final totalBytes = lengths.fold(0, (s, len) => s + len);
             if (_isDisposed) return;
@@ -535,8 +538,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
               if (_isDisposed) return;
               final discarded = await RecordingsManager.discardedRelBinPaths();
               final covered = await RecordingsManager.coveredBinPaths(_batches.expand((b) => b.rawSegments).toList());
-              final processable =
-                  _batches.expand((b) => b.rawSegments).where((f) => _isProcessableBin(f, discarded, covered)).toList();
+              final incomplete = await _incompleteBins();
+              final processable = _batches
+                  .expand((b) => b.rawSegments)
+                  .where((f) => isProcessableBin(f, discarded, covered, incomplete))
+                  .toList();
               final lengths = await Future.wait(processable.map((f) => f.length().catchError((_) => 0)));
               final totalBytes = lengths.fold(0, (s, len) => s + len);
               if (_isDisposed) return;
@@ -781,11 +787,16 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     if (result?.isPartial == true) {
       // The transfer was interrupted (e.g. a BLE drop mid-file) but unwound
-      // without throwing, so the trailing bin is partial. Drop out of force
-      // mode for the processing pass: finalizing that partial draft here would
-      // prune its source bin and break resume on the next sync — the same
-      // invariant _processBinsAfterInterruptedSync guards on the throw/cancel
-      // paths. A clean Force Sync (isPartial false) still finalizes drafts.
+      // without throwing, so the trailing bin is partial. Drop out of force mode
+      // for the processing pass: finalizing here would promote a recording that
+      // stops mid-audio and stamp it complete, when the rest of it is still on
+      // the device. Kept as a draft it re-stitches with the resumed bytes.
+      //
+      // NB: what keeps the partial bin itself on disk is the incomplete-bin
+      // filter in _runProcessing ([isProcessableBin]) — NOT draft mode. The
+      // draft flush prunes its source bins too (consumeSafeToDeletePaths runs
+      // after flushRemaining clears the refs), so draft-vs-finalize decides only
+      // whether the recording is promoted. A clean Force Sync still finalizes.
       _isForcePipeline = false;
     }
 
@@ -903,14 +914,42 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _isUserTriggered = false;
   }
 
-  /// True unless [f] is a raw bin that already has a discard record or (if
-  /// [covered] is provided) is already covered by an existing recording.
-  /// Mirrors the pipeline's filters so the displayed "minutes to process" and
-  /// processing promotions match what will actually be processed.
-  static bool _isProcessableBin(File f, Set<String> discarded, [Set<String>? covered]) {
+  /// True unless [f] is a raw bin that already has a discard record, is still
+  /// mid-transfer ([incomplete]), or (if [covered] is provided) is already
+  /// covered by an existing recording. Mirrors the pipeline's filters so the
+  /// displayed "minutes to process" and processing promotions match what will
+  /// actually be processed.
+  @visibleForTesting
+  static bool isProcessableBin(File f, Set<String> discarded, [Set<String>? covered, Set<String>? incomplete]) {
     if (covered != null && covered.contains(f.path)) return false;
     final parts = f.path.split('/raw_segments/');
-    return parts.length != 2 || !discarded.contains(parts.last);
+    if (parts.length != 2) return true;
+    // An incompletely-transferred bin holds only a PREFIX of the recording.
+    // Decoding it would cut a draft short of the real audio, and — because the
+    // processing pass prunes every bin it consumes — delete the file the next
+    // sync has to resume into. Leave it alone; it becomes processable once the
+    // whole file has landed. See Wal.isIncompleteTransfer.
+    if (incomplete != null && incomplete.contains(parts.last)) return false;
+    return !discarded.contains(parts.last);
+  }
+
+  /// Bins still awaiting a resumed read — never safe to process or prune.
+  ///
+  /// [failClosed] governs what happens when the WAL state can't be read (a
+  /// corrupt / half-written wals.json makes the sync layer throw). The pruning
+  /// path (`_runProcessing`) passes true and rethrows: it must NOT prune when it
+  /// can't tell which bins are still mid-download, or it re-opens the exact
+  /// corruption this guards. Display/estimate call sites pass false — they only
+  /// mis-size a "minutes to process" figure that self-corrects next cycle, so a
+  /// transient read blip shouldn't stall them.
+  static Future<Set<String>> _incompleteBins({bool failClosed = false}) async {
+    try {
+      return await ServiceManager.instance().wal.getSyncs().incompleteBinRelPaths();
+    } catch (e) {
+      Logger.error('RecordingsController: could not read incomplete-bin set: $e');
+      if (failClosed) rethrow;
+      return const {};
+    }
   }
 
   Future<void> _runProcessing() async {
@@ -932,9 +971,32 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     // it).
     final Set<String> coveredBins = await RecordingsManager.coveredBinPaths(allBins);
     final discardedBins = await RecordingsManager.discardedRelBinPaths();
+    final Set<String> incompleteBins;
+    try {
+      // Fail closed: this pass PRUNES the bins it decodes, so an unreadable WAL
+      // state must abort the run rather than let a mid-download bin be pruned.
+      // wals.json is rewritten by every sync, so the next cycle self-heals.
+      incompleteBins = await _incompleteBins(failClosed: true);
+    } catch (e) {
+      if (gen != _pipelineGeneration) return; // watchdog already recovered
+      Logger.error('RecordingsController: skipping processing — incomplete-bin set unavailable: $e');
+      // Clear force mode before settling. _runForcePipeline sets _isForcePipeline
+      // but clears it only via a settle path inside _runProcessing (there is no
+      // finally), so this early return must do it too — otherwise a Force Sync that
+      // bails here leaves force mode latched, and the NEXT ordinary run processes
+      // with finalizeDrafts:true, prematurely promoting a draft and pruning its
+      // source bins. Matches every other settle path in this file.
+      _isForcePipeline = false;
+      _releaseWakelock();
+      if (_isAppForeground()) _settleNotification();
+      _transitionTo(SyncProcessState.idle);
+      unawaited(reloadBatchesSilently());
+      return;
+    }
 
     final processableBatches = _batches.map((b) {
-      final filtered = b.rawSegments.where((f) => _isProcessableBin(f, discardedBins, coveredBins)).toList();
+      final filtered =
+          b.rawSegments.where((f) => isProcessableBin(f, discardedBins, coveredBins, incompleteBins)).toList();
       if (filtered.length == b.rawSegments.length) return b;
       return Batch(
         dateString: b.dateString,
@@ -1097,9 +1159,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   /// Always processes in draft/background mode. An interrupted sync downloads
   /// oldest-first and deletes each whole file immediately, so the only possibly
   /// incomplete bin is the trailing one. Finalizing drafts here (Force Sync
-  /// behaviour) would promote that partial and let bin-pruning delete its
-  /// source, breaking resume — the exact failure the draft-flush invariant
-  /// guards against — so `_isForcePipeline` is cleared up front.
+  /// behaviour) would promote a recording that stops mid-audio and stamp it
+  /// complete while the rest is still on the device, so `_isForcePipeline` is
+  /// cleared up front. The partial bin itself is held on disk by the
+  /// incomplete-bin filter in [_runProcessing], not by draft mode.
   ///
   /// Transitions to `processing` synchronously before the first await: the
   /// `_poll` timer would otherwise observe `stopping`/`syncing` with the WAL
@@ -1306,6 +1369,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
           _batches,
           await RecordingsManager.discardedRelBinPaths(),
           await RecordingsManager.coveredBinPaths(rawSegments),
+          await _incompleteBins(),
         );
         _toProcessMinutes = acc.toProcessMinutes;
         _draftMinutes = acc.draftMinutes;
@@ -1343,6 +1407,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
           _batches,
           await RecordingsManager.discardedRelBinPaths(),
           await RecordingsManager.coveredBinPaths(rawSegments),
+          await _incompleteBins(),
         );
         _toProcessMinutes = acc.toProcessMinutes;
         _draftMinutes = acc.draftMinutes;
@@ -1774,13 +1839,16 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   ///
   /// [discardedRelBins] MUST be the global persisted set from
   /// [RecordingsManager.discardedRelBinPaths]. [coveredBins] are those identified
-  /// by [RecordingsManager.coveredBinPaths].
+  /// by [RecordingsManager.coveredBinPaths]. [incompleteBins] are those still
+  /// awaiting a resumed read ([_incompleteBins]) — counting them here would
+  /// promise minutes the pass deliberately leaves on disk.
   ({double toProcessMinutes, double draftMinutes, int unprocessedBins, DateTime? draftEndTime}) _computeAccumulated(
-      List<Batch> batches, Set<String> discardedRelBins, Set<String> coveredBins) {
+      List<Batch> batches, Set<String> discardedRelBins, Set<String> coveredBins,
+      [Set<String>? incompleteBins]) {
     int rawBytes = 0;
     int unprocessedBinsCount = 0;
     for (final f in batches.expand((b) => b.rawSegments)) {
-      if (!_isProcessableBin(f, discardedRelBins, coveredBins)) continue;
+      if (!isProcessableBin(f, discardedRelBins, coveredBins, incompleteBins)) continue;
 
       try {
         rawBytes += f.lengthSync();

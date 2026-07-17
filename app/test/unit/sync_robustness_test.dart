@@ -16,6 +16,7 @@ import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/wals/wal.dart';
 import 'package:omi/services/wals/wal_interfaces.dart';
 import 'package:omi/services/wals/sdcard_wal_sync.dart';
+import 'package:omi/utils/wal_file_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
@@ -345,12 +346,61 @@ void main() {
     tempDir = Directory.systemTemp.createTempSync('sync_test');
     mockPathProvider = MockPathProvider()..tempPath = tempDir.path;
     PathProviderPlatform.instance = mockPathProvider;
+    // WalFileManager caches its File handles in statics, so without this the
+    // first test to touch them pins wals.json to ITS tempDir — which tearDown
+    // then deletes — and every later test silently reads/writes a dead path
+    // (production swallows the error: saveWals is fire-and-forget).
+    await WalFileManager.init();
     SharedPreferences.setMockInitialValues({});
     await SharedPreferencesUtil.init();
   });
 
   tearDown(() {
-    if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    try {
+      if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    } catch (_) {
+      // Best-effort: production's saveWals is fire-and-forget, so a write can
+      // still hold wals.json here (Windows refuses to delete an open file).
+      // It's a temp dir — the OS reclaims it either way.
+    }
+  });
+
+  group('Wal incomplete-transfer identity', () {
+    Wal walOf({required int offset, required int total, int timerStart = 1784260394, int? sessionId}) => Wal(
+          codec: BleAudioCodec.opus,
+          channel: 1,
+          device: 'test-device',
+          fileNum: 0,
+          walOffset: offset,
+          storageTotalBytes: total,
+          timerStart: timerStart,
+          sessionId: sessionId,
+          storage: WalStorage.sdcard,
+        );
+
+    test('a bin short of the advertised size is incomplete', () {
+      expect(walOf(offset: 1338480, total: 2071116).isIncompleteTransfer, isTrue);
+    });
+
+    test('a bin that received every advertised byte is complete', () {
+      expect(walOf(offset: 2071116, total: 2071116).isIncompleteTransfer, isFalse);
+    });
+
+    test('a device-advertised 0 B bin is complete, not incomplete', () {
+      // An empty rotation advertises 0 B and transfers 0 B. Treating it as
+      // incomplete would park it in the skip set forever.
+      expect(walOf(offset: 0, total: 0).isIncompleteTransfer, isFalse);
+    });
+
+    test('relativeBinPath matches the download path layout', () {
+      expect(walOf(offset: 0, total: 10, sessionId: 4230330572).relativeBinPath,
+          equals('1784260394/1784260394_4230330572.bin'));
+    });
+
+    test('relativeBinPath uses the session_ folder for pre-time-sync bins', () {
+      expect(walOf(offset: 0, total: 10, timerStart: 1010, sessionId: 77).relativeBinPath,
+          equals('session_77/1010_77.bin'));
+    });
   });
 
   group('SDCardWalSync Protocol Logic', () {
@@ -549,6 +599,211 @@ void main() {
       // recording permanently (this is how a Priority Recording vanished). It stays
       // on the device so the next sync can retry.
       expect(globalDeletedTimestamps, isEmpty);
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('an incomplete bin belonging to ANOTHER device is still skipped', () async {
+      // raw_segments/ is one global pool — a bin's path carries no device id — but
+      // _wals only holds the CONNECTED device's WALs. A second Omi's half-downloaded
+      // bin is just as unsafe to decode and prune, and nothing else would catch it:
+      // its own WAL isn't consulted until that device reconnects.
+      final otherTs = (DateTime.now().millisecondsSinceEpoch ~/ 1000) + 500;
+      await WalFileManager.saveWals([
+        Wal(
+          codec: BleAudioCodec.opus,
+          channel: 1,
+          device: 'other-omi',
+          fileNum: 0,
+          walOffset: 512,
+          storageTotalBytes: 4096, // half-downloaded
+          timerStart: otherTs,
+          storage: WalStorage.sdcard,
+        ),
+      ], deviceId: 'other-omi');
+
+      // Connect THIS device and give it its own (complete) WAL, so the union is
+      // exercised rather than the no-device fallback.
+      mockConn.files = [StorageFile(index: 1, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 100)];
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await pump(10);
+
+      expect(await sync.incompleteBinRelPaths(), contains('$otherTs/${otherTs}_0.bin'));
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('two pre-time-sync bins sharing a timerStart but not a sessionId are both kept', () async {
+      // Pre-sync bins (timerStart < 946684800) carry sessionId in the PATH
+      // (session_<sid>/…) but share a device-scoped Wal.id ($device-$timerStart).
+      // Keying the union by Wal.id would collapse them and expose one partial to
+      // pruning; keying by the physical path keeps both.
+      await WalFileManager.saveWals([
+        Wal(
+            codec: BleAudioCodec.opus,
+            channel: 1,
+            device: 'other-omi',
+            fileNum: 0,
+            walOffset: 100,
+            storageTotalBytes: 4096, // partial
+            timerStart: 1010,
+            sessionId: 111,
+            storage: WalStorage.sdcard),
+        Wal(
+            codec: BleAudioCodec.opus,
+            channel: 1,
+            device: 'other-omi',
+            fileNum: 1,
+            walOffset: 200,
+            storageTotalBytes: 4096, // partial
+            timerStart: 1010,
+            sessionId: 222,
+            storage: WalStorage.sdcard),
+      ], deviceId: 'other-omi');
+
+      final incomplete = await sync.incompleteBinRelPaths();
+      expect(incomplete, containsAll(['session_111/1010_111.bin', 'session_222/1010_222.bin']));
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('a corrupt wals.json makes incompleteBinRelPaths throw (fail closed)', () async {
+      // _loadWalsUnlocked returns [] for missing/empty/bad-shape, but jsonDecode
+      // throws on a half-written file. The union must NOT swallow that: with no
+      // device attached, other devices' partials live ONLY in this file, and
+      // failing open would let processing prune a mid-download bin. Processing's
+      // caller turns the throw into "skip this run" until a sync rewrites it.
+      final walFile = File('${tempDir.path}/wals.json');
+      await walFile.writeAsString('{"version":1,"wals":[{"device":"x",'); // truncated JSON
+
+      await expectLater(sync.incompleteBinRelPaths(), throwsA(anything));
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('a short-read bin is reported incomplete so processing cannot consume + prune it', () async {
+      globalWriteCount = 0;
+      globalDeletedTimestamps = [];
+      final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      mockConn.files = [StorageFile(index: 1, timestamp: ts, size: 1000000)];
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await pump(10);
+
+      final syncFuture = sync.syncAll();
+      await mockConn.waitForWrite(1);
+      await pump(10);
+      mockConn.add(ackPacket(0x00));
+      await pump();
+      mockConn.add(dataPacket(0, List<int>.filled(5, 0xEE)));
+      await pump();
+      mockConn.add(eotPacket());
+      await pump(10);
+      await syncFuture;
+
+      // The local bin now holds 5 of the 1,000,000 advertised bytes and the WAL is
+      // parked at that resume offset. The processing pass must be told to skip it:
+      // it prunes every bin it decodes, and pruning this one strands the resume —
+      // the tail would be appended to a recreated (empty) file, scrambling the bin.
+      expect(await sync.incompleteBinRelPaths(), contains('$ts/${ts}_0.bin'));
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    // The invariant these three protect: the app must NEVER ask the device to
+    // resume from an offset the local bin cannot continue from. Every byte the
+    // downloader receives is appended, so a resume point past what is on disk
+    // silently drops the bytes in between — and because (T-a)+a == T, the file
+    // still reaches its advertised length and passes the completeness guard.
+    // Assert on the offset actually put on the wire, not on our own bookkeeping.
+    Wal resumeWal({required int offset, required int total, required int ts}) => Wal(
+          codec: BleAudioCodec.opus,
+          channel: 1,
+          device: 'test',
+          fileNum: 1,
+          walOffset: offset,
+          storageTotalBytes: total,
+          timerStart: ts,
+          storage: WalStorage.sdcard,
+        );
+
+    Future<void> writeBin(int ts, int bytes) async {
+      final f = File('${tempDir.path}/raw_segments/$ts/${ts}_0.bin');
+      await f.parent.create(recursive: true);
+      await f.writeAsBytes(List<int>.filled(bytes, 0xAB));
+    }
+
+    /// Drives a real resumed read and returns the offset actually put on the wire.
+    ///
+    /// `reconcileResumeOffsets: true` opts into the NATIVE path's semantics
+    /// (walOffset == physical bin length). The host VM is never Android/iOS, so
+    /// production's `_platformUsesNativeDownload` is false here and the
+    /// reconciliation — which only ever runs on a real device — would otherwise be
+    /// impossible to cover. The transfer itself still goes over the mock stream;
+    /// only the resume-offset decision under test is switched to native rules.
+    Future<int> offsetAskedFor(Wal w) async {
+      final nativeLike = SDCardWalSyncImpl(
+        MockWalSyncListener(),
+        connectionProvider: (_) async => mockConn,
+        inactivityTimeout: const Duration(seconds: 1),
+        reconcileResumeOffsets: true,
+      );
+      await nativeLike.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      globalRequestedOffset = -1;
+      final f = nativeLike.syncWal(wal: w);
+      await mockConn.waitForWrite(1);
+      await pump(5);
+      final asked = globalRequestedOffset;
+      await expectLater(f, throwsA(isA<Exception>())); // no data follows; stalls out
+      nativeLike.cancelSync();
+      return asked;
+    }
+
+    test('the Dart stream path is NOT reconciled (its gap handler seeks ahead on purpose)', () async {
+      // A gap leaves the bin legitimately shorter than walOffset, with a hole.
+      // Rewinding would replay the gapped bytes and let the file reach its
+      // advertised length while still holding that hole — turning a DETECTED
+      // incomplete into a silent corruption. `sync` here is built with production
+      // defaults, so on this host it takes the stream path.
+      final ts = (DateTime.now().millisecondsSinceEpoch ~/ 1000) + 3;
+      await writeBin(ts, 40); // shorter than the logical offset below
+      globalRequestedOffset = -1;
+      final f = sync.syncWal(wal: resumeWal(offset: 100, total: 200, ts: ts));
+      await mockConn.waitForWrite(1);
+      await pump(5);
+      expect(globalRequestedOffset, equals(100), reason: 'stream path must keep its logical offset');
+      await expectLater(f, throwsA(isA<Exception>()));
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('resume rewinds to 0 when the bin was pruned from under it', () async {
+      final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      // Nothing on disk: the processing pass decoded the partial and deleted it.
+      // Asking from 100 would land the tail at position 0 of a recreated file.
+      expect(await offsetAskedFor(resumeWal(offset: 100, total: 200, ts: ts)), equals(0));
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('resume rewinds to the real length when the bin is short', () async {
+      final ts = (DateTime.now().millisecondsSinceEpoch ~/ 1000) + 1;
+      await writeBin(ts, 40);
+      expect(await offsetAskedFor(resumeWal(offset: 100, total: 200, ts: ts)), equals(40));
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('resume is preserved when the bin is intact (no needless re-download)', () async {
+      final ts = (DateTime.now().millisecondsSinceEpoch ~/ 1000) + 2;
+      await writeBin(ts, 100);
+      expect(await offsetAskedFor(resumeWal(offset: 100, total: 200, ts: ts)), equals(100));
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('a fully-transferred bin is NOT reported incomplete (stays processable)', () async {
+      globalDeletedTimestamps = [];
+      final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      mockConn.files = [StorageFile(index: 1, timestamp: ts, size: 5)];
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await pump(10);
+
+      final syncFuture = sync.syncAll();
+      await mockConn.waitForWrite(1);
+      await pump(10);
+      mockConn.add(ackPacket(0x00));
+      await pump();
+      mockConn.add(dataPacket(0, List<int>.filled(5, 0xEE)));
+      await pump();
+      mockConn.add(eotPacket());
+      await pump(10);
+      await syncFuture;
+
+      // Every advertised byte arrived, so the bin is whole: processing must be free
+      // to decode and prune it as usual. Guards the fix against over-blocking.
+      expect(await sync.incompleteBinRelPaths(), isEmpty);
     }, timeout: const Timeout(Duration(seconds: 30)));
 
     test('syncAll eventually drops a persistently-unreadable (zero-progress) file to unblock', () async {
