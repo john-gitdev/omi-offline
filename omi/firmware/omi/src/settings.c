@@ -541,9 +541,17 @@ void app_settings_get_haptic_config(uint8_t config[6])
 
 int app_settings_arm_post_dfu_unpair(bool arm, const char *current_fw)
 {
+    if (arm && (current_fw == NULL || current_fw[0] == '\0')) {
+        /* The empty string is the disarmed sentinel, so arming with no version
+         * to key on would silently no-op while reporting success. Refuse loudly
+         * rather than persist a marker that can never fire. */
+        LOG_ERR("post-DFU unpair: refusing to arm with an empty firmware version");
+        return -EINVAL;
+    }
     char buf[sizeof(unpair_armed_fw)];
     memset(buf, 0, sizeof(buf));
-    if (arm && current_fw != NULL) {
+    if (arm) {
+        /* current_fw is guaranteed non-empty here. */
         strncpy(buf, current_fw, sizeof(buf) - 1);
     }
     /* buf is the empty string when disarming. */
@@ -554,7 +562,7 @@ int app_settings_arm_post_dfu_unpair(bool arm, const char *current_fw)
     }
     memcpy(unpair_armed_fw, buf, sizeof(buf));
     if (arm) {
-        LOG_INF("post-DFU unpair armed @ '%s'", current_fw ? current_fw : "");
+        LOG_INF("post-DFU unpair armed @ '%s'", current_fw);
     } else {
         LOG_INF("post-DFU unpair disarmed");
     }
