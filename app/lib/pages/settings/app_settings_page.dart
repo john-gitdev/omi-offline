@@ -557,11 +557,12 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                 ),
               ),
 
-              // Companion Device Pairing (Android only) — troubleshooting toggle for OEM
-              // Bluetooth connection contention (the "toggle phone Bluetooth to reconnect"
-              // wedge). Lives here (not Device Settings) so it stays reachable when the
-              // device won't connect. Default off; applies immediately via
-              // _setCompanionDevicePairing (reconnect on off, system chooser on on).
+              // Companion Device Pairing (Android only) — default ON: companion status
+              // exempts the app from aggressive OEM battery-manager freezing so it can
+              // recover from a ghost-GATT wedge on its own. Kept as a toggle (and here,
+              // not Device Settings, so it stays reachable when the device won't connect)
+              // for the rare OEM where a bare association still hurts. Applies immediately
+              // via _setCompanionDevicePairing (reconnect on off, system chooser on on).
               if (Platform.isAndroid) ...[
                 const SizedBox(height: 16),
                 Container(
@@ -576,8 +577,8 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                         style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
                     subtitle: Text(
                       _companionDeviceEnabled
-                          ? 'Registers the Omi as an Android system companion. If you often have to toggle phone Bluetooth to reconnect (common on OnePlus/Oppo/Realme), turn this off.'
-                          : 'Off — the app connects by address + bond, no companion association. Turning it on reconnects and opens the system pairing dialog.',
+                          ? 'On (recommended) — registers the Omi as an Android system companion so the app can recover from Bluetooth wedges without you toggling phone Bluetooth. If you still have to toggle Bluetooth to reconnect (rare, seen on some OnePlus/Oppo/Realme), turn this off.'
+                          : 'Off — the app connects by address + bond, no companion association. Recommended only if companion pairing makes reconnection worse on your phone. Turning it on reconnects and opens the system pairing dialog.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
                     value: _companionDeviceEnabled,
