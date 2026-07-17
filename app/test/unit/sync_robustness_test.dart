@@ -629,6 +629,50 @@ void main() {
       expect(await sync.incompleteBinRelPaths(), contains('$otherTs/${otherTs}_0.bin'));
     }, timeout: const Timeout(Duration(seconds: 30)));
 
+    test('two pre-time-sync bins sharing a timerStart but not a sessionId are both kept', () async {
+      // Pre-sync bins (timerStart < 946684800) carry sessionId in the PATH
+      // (session_<sid>/…) but share a device-scoped Wal.id ($device-$timerStart).
+      // Keying the union by Wal.id would collapse them and expose one partial to
+      // pruning; keying by the physical path keeps both.
+      await WalFileManager.saveWals([
+        Wal(
+            codec: BleAudioCodec.opus,
+            channel: 1,
+            device: 'other-omi',
+            fileNum: 0,
+            walOffset: 100,
+            storageTotalBytes: 4096, // partial
+            timerStart: 1010,
+            sessionId: 111,
+            storage: WalStorage.sdcard),
+        Wal(
+            codec: BleAudioCodec.opus,
+            channel: 1,
+            device: 'other-omi',
+            fileNum: 1,
+            walOffset: 200,
+            storageTotalBytes: 4096, // partial
+            timerStart: 1010,
+            sessionId: 222,
+            storage: WalStorage.sdcard),
+      ], deviceId: 'other-omi');
+
+      final incomplete = await sync.incompleteBinRelPaths();
+      expect(incomplete, containsAll(['session_111/1010_111.bin', 'session_222/1010_222.bin']));
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('a corrupt wals.json makes incompleteBinRelPaths throw (fail closed)', () async {
+      // _loadWalsUnlocked returns [] for missing/empty/bad-shape, but jsonDecode
+      // throws on a half-written file. The union must NOT swallow that: with no
+      // device attached, other devices' partials live ONLY in this file, and
+      // failing open would let processing prune a mid-download bin. Processing's
+      // caller turns the throw into "skip this run" until a sync rewrites it.
+      final walFile = File('${tempDir.path}/wals.json');
+      await walFile.writeAsString('{"version":1,"wals":[{"device":"x",'); // truncated JSON
+
+      await expectLater(sync.incompleteBinRelPaths(), throwsA(anything));
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
     test('a short-read bin is reported incomplete so processing cannot consume + prune it', () async {
       globalWriteCount = 0;
       globalDeletedTimestamps = [];
