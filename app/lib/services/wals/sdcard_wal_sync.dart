@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:omi/gen/pigeon_communicator.g.dart';
 
 import 'package:collection/collection.dart';
+import 'package:flutter/foundation.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/wal_file_manager.dart';
 
@@ -92,8 +93,32 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     this.listener, {
     Future<DeviceConnection?> Function(String deviceId)? connectionProvider,
     Duration inactivityTimeout = const Duration(seconds: 15),
+    @visibleForTesting bool? reconcileResumeOffsets,
   })  : _connectionProvider = connectionProvider,
-        _inactivityTimeout = inactivityTimeout;
+        _inactivityTimeout = inactivityTimeout,
+        _reconcileResumeOverride = reconcileResumeOffsets;
+
+  /// Whether the native whole-file downloader handles transfers on this platform.
+  /// Single source of truth: it picks the download path AND decides whether
+  /// walOffset may be reconciled against the bin on disk, so the two can't drift.
+  static bool get _platformUsesNativeDownload => Platform.isAndroid || Platform.isIOS;
+
+  /// Test-only override for [_shouldReconcileResume]. Tests run on the host VM,
+  /// which is never Android/iOS, so without this the reconciliation — which only
+  /// ever runs in production — would be impossible to cover. Never set outside tests.
+  final bool? _reconcileResumeOverride;
+
+  /// Whether walOffset tracks the PHYSICAL length of the local bin, and may
+  /// therefore be reconciled against it before a resumed read.
+  ///
+  /// True only on the native path. The Dart stream path keeps a LOGICAL device
+  /// offset that its ProtocolGapException handler deliberately seeks ahead of the
+  /// local bytes (`wal.walOffset = e.incoming`) to resync past a gap — leaving the
+  /// bin legitimately shorter than walOffset, with a hole. Rewinding there would
+  /// replay the gapped bytes and let the bin reach exactly its advertised length
+  /// while still holding a hole, turning a *detected* incomplete transfer into a
+  /// *silent* corruption — the very failure this reconciliation exists to prevent.
+  bool get _shouldReconcileResume => _reconcileResumeOverride ?? _platformUsesNativeDownload;
 
   @override
   void cancelSync() {
@@ -536,6 +561,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   /// snapshot honest, and also sizes the disk-space reservation for what will
   /// really be fetched. No-op when nothing was downloaded yet.
   Future<void> _reconcileWalOffsetToDisk(Wal wal) async {
+    if (!_shouldReconcileResume) return; // stream path: walOffset is a logical offset
     if (wal.walOffset <= 0) return;
     try {
       await _reconcileResumeOffset(await _binFileFor(wal), wal.walOffset, wal);
@@ -554,7 +580,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     // Native whole-file download (writes straight to disk, no per-packet Dart hop).
     // Android and iOS both implement BleHostApi.downloadStorageFile; other platforms
     // fall through to the Dart notification-stream path below.
-    if (Platform.isAndroid || Platform.isIOS) {
+    if (_platformUsesNativeDownload) {
       return await _readStorageBytesToFileLockedNative(connection, wal, callback,
           onProgress: onProgress, overrideFileNum: overrideFileNum);
     }
