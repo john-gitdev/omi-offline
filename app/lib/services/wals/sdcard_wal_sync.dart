@@ -208,6 +208,29 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   }
 
   @override
+  Future<Set<String>> incompleteBinRelPaths() async {
+    // The in-memory list is the live truth during a sync (its offsets run ahead
+    // of the ~1 Hz-throttled persist), but it is empty when no device is
+    // attached — and Force Process / a resume after an app restart still has to
+    // honour a half-downloaded bin left behind by an earlier session. Fall back
+    // to the persisted WALs there; the completeness guard saves immediately on
+    // the incomplete path, so disk is current for exactly the bins that matter.
+    var wals = _wals;
+    if (wals.isEmpty) {
+      try {
+        wals = await WalFileManager.loadWals();
+      } catch (e) {
+        // Fail open: an unreadable WAL file must not stall processing forever.
+        // The resume reconciliation in _readStorageBytesToFileLocked* still
+        // keeps a pruned partial from corrupting the re-fetched bin.
+        Logger.error('SDCardWalSync: incompleteBinRelPaths could not load persisted WALs: $e');
+        return const {};
+      }
+    }
+    return wals.where((w) => w.isIncompleteTransfer).map((w) => w.relativeBinPath).toSet();
+  }
+
+  @override
   Future<List<Wal>> getMissingWals() async {
     final dev = _device;
     if (dev == null) return [];
@@ -417,6 +440,57 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     return (file, rawData.length);
   }
 
+  /// Reconciles a resume [offset] against what is actually in [binFile], and
+  /// returns the offset the device should be asked to resume from. The device's
+  /// copy is immutable until CMD_DELETE_FILE, so re-fetching either way is safe.
+  ///
+  /// NATIVE PATH ONLY. Here walOffset is always "bytes in the local bin" (the
+  /// caller sets it from the on-disk size), so any divergence is a fault to
+  /// repair. The Dart stream path keeps a *logical* device offset that its
+  /// gap handler seeks ahead on purpose — see the truncate block there.
+  ///
+  /// walOffset and the local bin can diverge in BOTH directions:
+  ///  - Bin LONGER than the offset: a prior session was killed between a flush
+  ///    (which put bytes on disk) and the next ~1 Hz-throttled walOffset persist.
+  ///    Those bytes are about to be re-fetched, so truncate — keeping them would
+  ///    duplicate audio mid-bin and desync the VAD frame parser.
+  ///  - Bin SHORTER, or gone: the processing pass consumed a partial bin into a
+  ///    draft and pruned it (it deletes every bin it decodes). Resuming at the
+  ///    stale offset would ask the device for the TAIL and land it at position 0
+  ///    of a recreated file — downloadStorageFile opens the path with
+  ///    append=true, which silently creates an empty file when it is missing — so
+  ///    the bin ends up scrambled, and once its length happens to match it passes
+  ///    the completeness guard and the device-side copy is deleted. Rewind to
+  ///    what is really on disk instead.
+  Future<int> _reconcileResumeOffset(File binFile, int offset, Wal wal) async {
+    try {
+      final bool exists = await binFile.exists();
+      final int actualSize = exists ? await binFile.length() : 0;
+      if (actualSize == offset) return offset;
+
+      if (actualSize > offset) {
+        final raf = await binFile.open(mode: FileMode.append);
+        try {
+          await raf.truncate(offset);
+        } finally {
+          await raf.close();
+        }
+        Logger.debug(
+            'SDCardWalSync: Truncated ${binFile.path} from $actualSize to $offset bytes (resume reconciliation)');
+        return offset;
+      }
+
+      Logger.error('SDCardWalSync: ts=${wal.timerStart} resume offset $offset is past the $actualSize B '
+          'actually on disk (bin ${exists ? 'truncated' : 'missing'}) — rewinding to $actualSize so the '
+          'resumed read cannot append the tail onto a gap');
+      wal.walOffset = actualSize;
+      return actualSize;
+    } catch (e) {
+      Logger.error('SDCardWalSync: resume reconciliation failed for ${binFile.path}: $e');
+      return offset;
+    }
+  }
+
   Future _readStorageBytesToFileLocked(
     DeviceConnection connection,
     Wal wal,
@@ -464,6 +538,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         // device — keeping them would duplicate audio in the middle of the bin
         // and confuse the VAD frame parser. The device's stored file is
         // immutable until we send CMD_DELETE_FILE, so the re-fetch is safe.
+        //
+        // Only the file-is-LONGER direction is reconciled here. Unlike the
+        // native path, walOffset on this path is a LOGICAL device offset that
+        // the ProtocolGapException handler deliberately seeks ahead of the local
+        // bytes (`wal.walOffset = e.incoming`) to resync past a gap, so a bin
+        // shorter than walOffset is expected here and must not be rewound.
         try {
           final actualSize = await existingFile.length();
           if (actualSize > offset) {
@@ -670,7 +750,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     int? overrideFileNum,
   }) async {
     final fileNum = overrideFileNum ?? wal.fileNum;
-    final offset = wal.walOffset;
+    int offset = wal.walOffset;
     final timerStart = wal.timerStart;
 
     if (_isCancelled) throw Exception("Cancelled");
@@ -684,22 +764,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     final outputFile = File(outputPath);
 
     // Truncate-on-resume: same guard as the stream path.
-    if (offset > 0 && await outputFile.exists()) {
-      try {
-        final actualSize = await outputFile.length();
-        if (actualSize > offset) {
-          final raf = await outputFile.open(mode: FileMode.append);
-          try {
-            await raf.truncate(offset);
-          } finally {
-            await raf.close();
-          }
-          Logger.debug(
-              'SDCardWalSync: Truncated $outputPath from $actualSize to $offset bytes (resume reconciliation)');
-        }
-      } catch (e) {
-        Logger.error('SDCardWalSync: truncate-on-resume failed for $outputPath: $e');
-      }
+    if (offset > 0) {
+      offset = await _reconcileResumeOffset(outputFile, offset, wal);
     }
 
     // _activeTransferCompleter is not used for the native path; cancellation is
