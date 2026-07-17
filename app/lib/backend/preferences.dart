@@ -674,16 +674,21 @@ class SharedPreferencesUtil {
   bool get showSdWriteDrops => getBool('showSdWriteDrops', defaultValue: false);
   set showSdWriteDrops(bool value) => saveBool('showSdWriteDrops', value);
 
-  // Android only. Defaults OFF: OEM Companion-Device contention (OnePlus/Oppo/Realme)
-  // makes the OS hold a hidden link that fights the app for the connection (the
-  // "toggle Bluetooth to reconnect" wedge), and the association isn't load-bearing
-  // here — background sync runs on the foreground service + alarms, not the CDM grant.
-  // When false, no association is created and any existing one is cleared on the next
-  // connect, so the app connects purely by address + bond. When true, the app creates
-  // a CompanionDeviceManager association on first connect (presence observation is
-  // never armed); kept as an opt-in for OEMs where companion status helps background
-  // survival. Read natively as flutter.companionDeviceEnabled.
-  bool get companionDeviceEnabled => getBool('companionDeviceEnabled', defaultValue: false);
+  // Android only. Defaults ON. The app registers as a system companion of the Omi. This
+  // does NOT arm CompanionDevice *presence observation* (that path was removed entirely —
+  // it was the OEM-contention "toggle Bluetooth to reconnect" wedge on OnePlus/Oppo/Realme);
+  // only a bare association is held. Companion status exempts the app from aggressive OEM
+  // battery-manager freezing/killing and grants background-FGS-start, so when a ghost-GATT
+  // wedge occurs the foreground service's recovery machinery (purge + advertising probe +
+  // backoff reconnect) keeps running and clears it, instead of the app being frozen until
+  // the next sync alarm or a manual BT toggle. When true, the app creates the association on
+  // first connect (a one-time system pairing dialog via find_devices / the settings toggle;
+  // manageDevice never disassociates). When false, no association is created and any existing
+  // one is cleared on the next connect, so the app connects purely by address + bond — the
+  // fallback for the rare OEM where a bare association still hurts. The native
+  // OmiBleForegroundService default MUST match this. Read natively as
+  // flutter.companionDeviceEnabled.
+  bool get companionDeviceEnabled => getBool('companionDeviceEnabled', defaultValue: true);
   set companionDeviceEnabled(bool value) => saveBool('companionDeviceEnabled', value);
 
   //--------------------------- Setters & Getters -----------------------------//
