@@ -934,13 +934,20 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   /// Bins still awaiting a resumed read — never safe to process or prune.
-  /// Empty (fail-open) if the WAL state can't be read; the sync layer's resume
-  /// reconciliation is the backstop there.
-  static Future<Set<String>> _incompleteBins() async {
+  ///
+  /// [failClosed] governs what happens when the WAL state can't be read (a
+  /// corrupt / half-written wals.json makes the sync layer throw). The pruning
+  /// path (`_runProcessing`) passes true and rethrows: it must NOT prune when it
+  /// can't tell which bins are still mid-download, or it re-opens the exact
+  /// corruption this guards. Display/estimate call sites pass false — they only
+  /// mis-size a "minutes to process" figure that self-corrects next cycle, so a
+  /// transient read blip shouldn't stall them.
+  static Future<Set<String>> _incompleteBins({bool failClosed = false}) async {
     try {
       return await ServiceManager.instance().wal.getSyncs().incompleteBinRelPaths();
     } catch (e) {
       Logger.error('RecordingsController: could not read incomplete-bin set: $e');
+      if (failClosed) rethrow;
       return const {};
     }
   }
@@ -964,7 +971,21 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     // it).
     final Set<String> coveredBins = await RecordingsManager.coveredBinPaths(allBins);
     final discardedBins = await RecordingsManager.discardedRelBinPaths();
-    final incompleteBins = await _incompleteBins();
+    final Set<String> incompleteBins;
+    try {
+      // Fail closed: this pass PRUNES the bins it decodes, so an unreadable WAL
+      // state must abort the run rather than let a mid-download bin be pruned.
+      // wals.json is rewritten by every sync, so the next cycle self-heals.
+      incompleteBins = await _incompleteBins(failClosed: true);
+    } catch (e) {
+      if (gen != _pipelineGeneration) return; // watchdog already recovered
+      Logger.error('RecordingsController: skipping processing — incomplete-bin set unavailable: $e');
+      _releaseWakelock();
+      if (_isAppForeground()) _settleNotification();
+      _transitionTo(SyncProcessState.idle);
+      unawaited(reloadBatchesSilently());
+      return;
+    }
 
     final processableBatches = _batches.map((b) {
       final filtered =

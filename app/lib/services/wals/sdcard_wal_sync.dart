@@ -244,21 +244,28 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     //    half-downloaded bin left behind by an earlier session).
     //  - _wals: fresher for the current device — its offsets run ahead of the
     //    ~1 Hz-throttled persist — so it wins on conflict.
-    final byId = <String, Wal>{}; // Wal.id is device-scoped ('$device-$timerStart')
-    try {
-      for (final w in await WalFileManager.loadWals()) {
-        byId[w.id] = w;
-      }
-    } catch (e) {
-      // Carry on with the live list rather than giving up: skipping a bin costs
-      // one sync cycle, pruning one mid-transfer corrupts it. _reconcileResumeOffset
-      // still backstops a stale offset if something prunes a bin anyway.
-      Logger.error('SDCardWalSync: incompleteBinRelPaths could not load persisted WALs: $e');
+    //
+    // Key by relativeBinPath, the PHYSICAL identity processing matches on — NOT
+    // Wal.id (`$device-$timerStart`). A pre-time-sync bin carries its sessionId in
+    // the path (session_<sid>/…), so two such bins with the same low timerStart but
+    // different sessionIds share a Wal.id yet are distinct files; keying by Wal.id
+    // would collapse them and expose one partial to pruning. Same-path entries ARE
+    // the same physical bin, so live-over-persisted precedence still holds.
+    final byPath = <String, Wal>{};
+    // Do NOT swallow a load failure. _loadWalsUnlocked returns [] for missing/
+    // empty/bad-format, so a throw here means a genuinely unreadable or half-written
+    // wals.json — exactly when other devices' (and, with no device attached, this
+    // device's) partial bins live ONLY in that file. Failing open would drop them
+    // from the protection set and let processing prune a mid-download bin, re-opening
+    // the corruption this whole change prevents. Propagate so the caller fails closed
+    // (skips the pruning pass) until the next sync rewrites a clean wals.json.
+    for (final w in await WalFileManager.loadWals()) {
+      byPath[w.relativeBinPath] = w;
     }
     for (final w in _wals) {
-      byId[w.id] = w;
+      byPath[w.relativeBinPath] = w;
     }
-    return byId.values.where((w) => w.isIncompleteTransfer).map((w) => w.relativeBinPath).toSet();
+    return byPath.values.where((w) => w.isIncompleteTransfer).map((w) => w.relativeBinPath).toSet();
   }
 
   @override
