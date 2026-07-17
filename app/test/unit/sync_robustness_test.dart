@@ -353,6 +353,44 @@ void main() {
     if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
   });
 
+  group('Wal incomplete-transfer identity', () {
+    Wal walOf({required int offset, required int total, int timerStart = 1784260394, int? sessionId}) => Wal(
+          codec: BleAudioCodec.opus,
+          channel: 1,
+          device: 'test-device',
+          fileNum: 0,
+          walOffset: offset,
+          storageTotalBytes: total,
+          timerStart: timerStart,
+          sessionId: sessionId,
+          storage: WalStorage.sdcard,
+        );
+
+    test('a bin short of the advertised size is incomplete', () {
+      expect(walOf(offset: 1338480, total: 2071116).isIncompleteTransfer, isTrue);
+    });
+
+    test('a bin that received every advertised byte is complete', () {
+      expect(walOf(offset: 2071116, total: 2071116).isIncompleteTransfer, isFalse);
+    });
+
+    test('a device-advertised 0 B bin is complete, not incomplete', () {
+      // An empty rotation advertises 0 B and transfers 0 B. Treating it as
+      // incomplete would park it in the skip set forever.
+      expect(walOf(offset: 0, total: 0).isIncompleteTransfer, isFalse);
+    });
+
+    test('relativeBinPath matches the download path layout', () {
+      expect(walOf(offset: 0, total: 10, sessionId: 4230330572).relativeBinPath,
+          equals('1784260394/1784260394_4230330572.bin'));
+    });
+
+    test('relativeBinPath uses the session_ folder for pre-time-sync bins', () {
+      expect(walOf(offset: 0, total: 10, timerStart: 1010, sessionId: 77).relativeBinPath,
+          equals('session_77/1010_77.bin'));
+    });
+  });
+
   group('SDCardWalSync Protocol Logic', () {
     test('Little-Endian offset parsing is correct', () {
       final bytes = [0x01, 0xEF, 0xBE, 0xAD, 0xDE, 0xAA, 0xBB];
@@ -549,6 +587,55 @@ void main() {
       // recording permanently (this is how a Priority Recording vanished). It stays
       // on the device so the next sync can retry.
       expect(globalDeletedTimestamps, isEmpty);
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('a short-read bin is reported incomplete so processing cannot consume + prune it', () async {
+      globalWriteCount = 0;
+      globalDeletedTimestamps = [];
+      final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      mockConn.files = [StorageFile(index: 1, timestamp: ts, size: 1000000)];
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await pump(10);
+
+      final syncFuture = sync.syncAll();
+      await mockConn.waitForWrite(1);
+      await pump(10);
+      mockConn.add(ackPacket(0x00));
+      await pump();
+      mockConn.add(dataPacket(0, List<int>.filled(5, 0xEE)));
+      await pump();
+      mockConn.add(eotPacket());
+      await pump(10);
+      await syncFuture;
+
+      // The local bin now holds 5 of the 1,000,000 advertised bytes and the WAL is
+      // parked at that resume offset. The processing pass must be told to skip it:
+      // it prunes every bin it decodes, and pruning this one strands the resume —
+      // the tail would be appended to a recreated (empty) file, scrambling the bin.
+      expect(await sync.incompleteBinRelPaths(), contains('$ts/${ts}_0.bin'));
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('a fully-transferred bin is NOT reported incomplete (stays processable)', () async {
+      globalDeletedTimestamps = [];
+      final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      mockConn.files = [StorageFile(index: 1, timestamp: ts, size: 5)];
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await pump(10);
+
+      final syncFuture = sync.syncAll();
+      await mockConn.waitForWrite(1);
+      await pump(10);
+      mockConn.add(ackPacket(0x00));
+      await pump();
+      mockConn.add(dataPacket(0, List<int>.filled(5, 0xEE)));
+      await pump();
+      mockConn.add(eotPacket());
+      await pump(10);
+      await syncFuture;
+
+      // Every advertised byte arrived, so the bin is whole: processing must be free
+      // to decode and prune it as usual. Guards the fix against over-blocking.
+      expect(await sync.incompleteBinRelPaths(), isEmpty);
     }, timeout: const Timeout(Duration(seconds: 30)));
 
     test('syncAll eventually drops a persistently-unreadable (zero-progress) file to unblock', () async {
