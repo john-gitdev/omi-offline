@@ -980,6 +980,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     } catch (e) {
       if (gen != _pipelineGeneration) return; // watchdog already recovered
       Logger.error('RecordingsController: skipping processing — incomplete-bin set unavailable: $e');
+      // Clear force mode before settling. _runForcePipeline sets _isForcePipeline
+      // but clears it only via a settle path inside _runProcessing (there is no
+      // finally), so this early return must do it too — otherwise a Force Sync that
+      // bails here leaves force mode latched, and the NEXT ordinary run processes
+      // with finalizeDrafts:true, prematurely promoting a draft and pruning its
+      // source bins. Matches every other settle path in this file.
+      _isForcePipeline = false;
       _releaseWakelock();
       if (_isAppForeground()) _settleNotification();
       _transitionTo(SyncProcessState.idle);
