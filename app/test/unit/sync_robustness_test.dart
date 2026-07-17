@@ -678,15 +678,47 @@ void main() {
       await f.writeAsBytes(List<int>.filled(bytes, 0xAB));
     }
 
+    /// Drives a real resumed read and returns the offset actually put on the wire.
+    ///
+    /// `reconcileResumeOffsets: true` opts into the NATIVE path's semantics
+    /// (walOffset == physical bin length). The host VM is never Android/iOS, so
+    /// production's `_platformUsesNativeDownload` is false here and the
+    /// reconciliation — which only ever runs on a real device — would otherwise be
+    /// impossible to cover. The transfer itself still goes over the mock stream;
+    /// only the resume-offset decision under test is switched to native rules.
     Future<int> offsetAskedFor(Wal w) async {
+      final nativeLike = SDCardWalSyncImpl(
+        MockWalSyncListener(),
+        connectionProvider: (_) async => mockConn,
+        inactivityTimeout: const Duration(seconds: 1),
+        reconcileResumeOffsets: true,
+      );
+      await nativeLike.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
       globalRequestedOffset = -1;
-      final f = sync.syncWal(wal: w);
+      final f = nativeLike.syncWal(wal: w);
       await mockConn.waitForWrite(1);
       await pump(5);
       final asked = globalRequestedOffset;
       await expectLater(f, throwsA(isA<Exception>())); // no data follows; stalls out
+      nativeLike.cancelSync();
       return asked;
     }
+
+    test('the Dart stream path is NOT reconciled (its gap handler seeks ahead on purpose)', () async {
+      // A gap leaves the bin legitimately shorter than walOffset, with a hole.
+      // Rewinding would replay the gapped bytes and let the file reach its
+      // advertised length while still holding that hole — turning a DETECTED
+      // incomplete into a silent corruption. `sync` here is built with production
+      // defaults, so on this host it takes the stream path.
+      final ts = (DateTime.now().millisecondsSinceEpoch ~/ 1000) + 3;
+      await writeBin(ts, 40); // shorter than the logical offset below
+      globalRequestedOffset = -1;
+      final f = sync.syncWal(wal: resumeWal(offset: 100, total: 200, ts: ts));
+      await mockConn.waitForWrite(1);
+      await pump(5);
+      expect(globalRequestedOffset, equals(100), reason: 'stream path must keep its logical offset');
+      await expectLater(f, throwsA(isA<Exception>()));
+    }, timeout: const Timeout(Duration(seconds: 30)));
 
     test('resume rewinds to 0 when the bin was pruned from under it', () async {
       final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
