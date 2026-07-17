@@ -985,14 +985,16 @@ void storage_write(void)
             }
             LOG_INF("CMD_POWER_OFF: powering off now");
             k_msleep(500);
-            turnoff_all();
-            /* turnoff_all() normally never returns, but can bail early on a rare
-             * GPIO/watchdog config failure — after transport_off()/mic_off() have
-             * already run, leaving the device torn down and unreachable over BLE.
-             * Cold-reboot to recover to a working state rather than limp on. */
-            LOG_ERR("CMD_POWER_OFF: turnoff_all() returned — rebooting to recover");
-            k_msleep(100);  /* let the error log flush before the cold reboot */
-            sys_reboot(SYS_REBOOT_COLD);
+            /* Normally never returns. TURNOFF_ALREADY = another context (e.g. a
+             * physical 4-tap-hold) is already powering off, so just fall through
+             * and let it finish. TURNOFF_BAILED = the hardware teardown couldn't
+             * complete (after transport_off()/mic_off() ran), leaving the device
+             * unreachable over BLE — cold-reboot to recover rather than limp on. */
+            if (turnoff_all() == TURNOFF_BAILED) {
+                LOG_ERR("CMD_POWER_OFF: turnoff_all() bailed — rebooting to recover");
+                k_msleep(100);  /* let the error log flush before the cold reboot */
+                sys_reboot(SYS_REBOOT_COLD);
+            }
         }
         if (atomic_get(&stop_started)) {
             atomic_clear(&remaining_length);
