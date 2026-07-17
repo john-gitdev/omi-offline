@@ -8,6 +8,7 @@
 
 #include <nrfx_pdm.h>
 #include <zephyr/audio/dmic.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
@@ -38,6 +39,17 @@ K_MEM_SLAB_DEFINE_STATIC(mem_slab, MAX_BLOCK_SIZE, BLOCK_COUNT, 4);
 static const struct device *dmic_dev;
 static volatile mix_handler callback_func = NULL;
 static volatile bool mic_running = false;
+
+/* PDM_EN (board net, P1.4): active-high enable for the T5838 mic + TXS0104
+ * level-shifter power rail (schematic: PDM_EN gates the shifter's VCCA/VCCB).
+ * It is hardware-default-enabled via a pull-up, so the mic runs without the
+ * firmware ever touching it. We drive it low in mic_off() — whose sole caller
+ * is turnoff_all() — so the mic + shifter fully power down at ship-mode instead
+ * of leaking ~1 mA of the 150 mAh cell through System OFF (GPIO output levels
+ * are retained in System OFF). NB: config.h's PDM_PWR_PIN (P1.10) is a misnamed,
+ * unused leftover pointing at a different rail — this pdm_en_pin node is the
+ * real mic-power net. */
+static const struct gpio_dt_spec pdm_en = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(pdm_en_pin), gpios, {0});
 
 #define MAX_FRAMES (MAX_SAMPLE_RATE / 10)
 static int16_t mono_buffer[MAX_FRAMES];
@@ -228,6 +240,15 @@ void mic_off()
         }
 
         LOG_INF("Microphone stopped");
+    }
+
+    /* Cut the mic + TXS0104 shifter power rail. mic_off() runs only on the
+     * power-down path (turnoff_all), so forcing PDM_EN low here overrides its
+     * default-enable pull-up and stops the ~1 mA system-off leak. INACTIVE =
+     * physical low = disabled (pdm_en_pin is GPIO_ACTIVE_HIGH). */
+    if (gpio_is_ready_dt(&pdm_en)) {
+        gpio_pin_configure_dt(&pdm_en, GPIO_OUTPUT_INACTIVE);
+        LOG_INF("PDM_EN low — mic + shifter powered down");
     }
 }
 
