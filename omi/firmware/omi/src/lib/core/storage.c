@@ -962,16 +962,18 @@ void storage_write(void)
         }
         if (atomic_cas(&reboot_requested, 1, 0)) {
             /* ACK before the reboot drops the link. Gracefully close the SD card
-             * first (the same guarded app_sd_off() path CMD_POWER_OFF uses via
-             * turnoff_all) so a reboot landing mid-write flushes/unmounts instead
-             * of tearing an in-progress block; then let the ACK notify flush
-             * before the cold reboot, which never returns. */
+             * first (app_sd_off() flushes + unmounts via the SD worker) so a
+             * reboot landing mid-write doesn't tear an in-progress block; then let
+             * the ACK notify flush before the cold reboot, which never returns.
+             * Gate only on is_sd_on(): app_sd_off() internally guards on the mount
+             * + worker state, so boot-readiness is the wrong gate here — it would
+             * skip the flush in the on-but-not-yet-boot-ready window. */
             if (conn) {
                 uint8_t ack[2] = {PACKET_ACK, 0};
                 STORAGE_NOTIFY(conn, ack, sizeof(ack));
             }
             LOG_INF("CMD_REBOOT: rebooting now");
-            if (is_sd_on() && sd_is_boot_ready()) {
+            if (is_sd_on()) {
                 app_sd_off();
             }
             k_msleep(500);
