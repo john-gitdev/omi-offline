@@ -6,6 +6,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/pm/device_runtime.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/sys/poweroff.h>
 
 #include "haptic.h"
@@ -568,8 +569,23 @@ void register_button_service()
     bt_gatt_service_register(&button_service);
 }
 
-void turnoff_all()
+// Returns TURNOFF_ALREADY if another context is already powering off (no-op),
+// TURNOFF_BAILED if the hardware teardown couldn't complete (caller may recover,
+// e.g. cold-reboot), and never returns on success (ends in sys_poweroff()).
+int turnoff_all()
 {
+    /* Power-off can be triggered from several contexts — the button work thread
+     * (4-tap-hold), the storage thread (CMD_POWER_OFF), and transport. Guard
+     * against a concurrent or re-entrant call running the hardware teardown
+     * (LED/mic/SD/watchdog/GPIO) twice: the first caller wins, later ones no-op.
+     * The winner ends in sys_poweroff() and never returns; a bail-out path below
+     * releases the guard so a recovery attempt can retry. */
+    static atomic_t poweroff_started = ATOMIC_INIT(0);
+    if (!atomic_cas(&poweroff_started, 0, 1)) {
+        LOG_WRN("turnoff_all: power-off already in progress, ignoring re-entrant call");
+        return TURNOFF_ALREADY;
+    }
+
     int rc;
 
     // Immediate feedback: LED off and haptic
@@ -629,18 +645,21 @@ void turnoff_all()
     rc = gpio_pin_configure_dt(&usr_btn, GPIO_INPUT);
     if (rc < 0) {
         LOG_ERR("Could not configure usr_btn GPIO (%d)", rc);
-        return;
+        atomic_clear(&poweroff_started);
+        return TURNOFF_BAILED;
     }
 
     rc = gpio_pin_interrupt_configure_dt(&usr_btn, GPIO_INT_LEVEL_LOW);
     if (rc < 0) {
         LOG_ERR("Could not configure usr_btn GPIO interrupt (%d)", rc);
-        return;
+        atomic_clear(&poweroff_started);
+        return TURNOFF_BAILED;
     }
     rc = watchdog_deinit();
     if (rc < 0) {
         LOG_ERR("Failed to deinitialize watchdog (%d)", rc);
-        return;
+        atomic_clear(&poweroff_started);
+        return TURNOFF_BAILED;
     }
 
     /* Persist an IMU timestamp base so we can estimate time across system_off. */
