@@ -533,13 +533,16 @@ class OmiBleForegroundService : Service() {
         OmiCompanionManager.stopObservingForAddress(applicationContext, addr)
 
         // Honor the app-side "Companion Device Pairing" toggle (App Settings), which
-        // defaults OFF. When disabled, clear any existing association so the OS stops
-        // treating us as a companion — some OEMs (OnePlus/Oppo/Realme) auto-connect
-        // associated devices, contending for the firmware's single slot. Read from
-        // Flutter's SharedPreferences; default false (off).
+        // defaults ON. When disabled, clear any existing association so the OS stops
+        // treating us as a companion — the fallback for the rare OEM where a bare
+        // association still hurts. Read from Flutter's SharedPreferences; the default
+        // here MUST match SharedPreferencesUtil.companionDeviceEnabled (also true), or a
+        // fresh install (key absent) would have Dart think companion is on while native
+        // disassociates every connect. Note this is only the disassociate gate — the
+        // association itself is created by the Dart find_devices / settings chooser flow.
         val companionEnabled = applicationContext
             .getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
-            .getBoolean("flutter.companionDeviceEnabled", false)
+            .getBoolean("flutter.companionDeviceEnabled", true)
         Log.i(TAG, "Companion pairing enabled=$companionEnabled for $addr")
         if (!companionEnabled) {
             OmiCompanionManager.disassociateAddress(applicationContext, addr)
