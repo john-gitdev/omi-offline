@@ -155,6 +155,16 @@ static uint8_t lfs_lookahead_buf[LFS_LOOKAHEAD_SIZE];
  *   every idle timeout. */
 #define IDLE_GC_MIN_SILENCE_MS 10000
 #define IDLE_GC_RETRY_COOLDOWN_MS 60000
+/* Skip the idle refill entirely once a full scan is observed to take longer than this.
+ * The scan is one atomic lfs_fs_gc() on the worker — it can't be aborted — so whatever
+ * arrives while it runs (a phone connecting, a sync being admitted, speech resuming)
+ * waits for the whole thing. The disconnected/silence/sync guards only decide when it
+ * *starts*; they can't stop a connection landing mid-scan. Bounding the scan we're
+ * willing to run makes that unavoidable race benign: a racer waits at most ~this long,
+ * well under any BLE command timeout. The cost is that on a card full enough for a long
+ * scan we no longer pre-empt it (the queue + lookahead + keeping the FS emptier carry
+ * it instead) — but a long scan is exactly the one too dangerous to hide in a silence. */
+#define IDLE_GC_MAX_SCAN_MS 5000
 
 /* Shared temp sector buffer â€” only used from worker thread, safe as static */
 static uint8_t _lfs_io_tmp[512];
@@ -412,6 +422,11 @@ static lfs_size_t bytes_written_since_gc = 0;
  * last idle-gc was last attempted. Both feed the idle-gc safety gate. */
 static int64_t sd_paused_since_ms = 0;
 static int64_t last_idle_gc_attempt_ms = 0;
+/* Longest full allocator scan observed this boot (seeded from the boot pre-warm, then
+ * maxed by each idle refill). Gates idle-gc off once scans exceed IDLE_GC_MAX_SCAN_MS.
+ * Re-baselined each boot (assignment, not max) so a card emptied by syncs and rebooted
+ * starts fresh; within a disconnected session the card only fills, so max is correct. */
+static int64_t worst_full_scan_ms = 0;
 
 /* Current writing file info */
 static char current_filename[MAX_FILENAME_LEN] = {0};
@@ -1982,6 +1997,9 @@ void sd_worker_thread(void)
                 write_magic();
             }
         } else {
+            /* Baseline the idle-gc duration gate to this card's current fill (see
+             * worst_full_scan_ms). A slow pre-warm here => idle refills stay disabled. */
+            worst_full_scan_ms = gc_elapsed_ms;
             LOG_INF("[SD_BOOT] LFS allocator pre-warmed OK in %lld ms", gc_elapsed_ms);
         }
     }
@@ -2135,6 +2153,7 @@ void sd_worker_thread(void)
             sd_set_io_low_power(true);
         } else if (!atomic_get(&ble_connected) && atomic_get(&sd_write_paused) &&
                    bytes_written_since_gc >= IDLE_GC_BYTES_THRESHOLD && !is_storage_sync_active() &&
+                   worst_full_scan_ms <= IDLE_GC_MAX_SCAN_MS &&
                    k_msgq_num_used_get(&sd_msgq) == 0 && k_msgq_num_used_get(&sd_prio_msgq) == 0 &&
                    (k_uptime_get() - sd_paused_since_ms) >= IDLE_GC_MIN_SILENCE_MS &&
                    (k_uptime_get() - last_idle_gc_attempt_ms) >= IDLE_GC_RETRY_COOLDOWN_MS) {
@@ -2150,18 +2169,24 @@ void sd_worker_thread(void)
              * would freeze AAD wake/resume handling. Here nothing waits on the worker.
              *
              * Guards, and what each prevents:
-             *  - !ble_connected: a storage sync can only run over a live connection, so
-             *    requiring "disconnected" ELIMINATES the sync-vs-gc race outright — a
-             *    transfer cannot be admitted behind an in-flight refill. (is_storage_sync_
-             *    active() alone is check-then-act: a sync could be admitted just after the
-             *    check.) It also aims the refill at the devices that need it — a phone
-             *    that's away isn't draining the card, so the FS fills and scans lengthen;
-             *    a connected phone is presumably syncing, keeping the card (and scans) small.
+             *  - worst_full_scan_ms <= IDLE_GC_MAX_SCAN_MS: the ONE that makes the race
+             *    safe. The scan is a single atomic lfs_fs_gc() — un-abortable — so a phone
+             *    that connects (or speech that resumes) *mid-scan* waits for the whole
+             *    thing regardless of the start-time guards below. Only running scans we've
+             *    observed to be short bounds that wait to ~5 s (well under any BLE command
+             *    timeout). Long scans on a full card are left to the queue + lookahead +
+             *    prompt sync (keeping the FS emptier) — they're the ones too costly to hide
+             *    in a gap anyway.
+             *  - !ble_connected: don't even *start* a refill while connected — biases the
+             *    work to when nobody's around, so the mid-scan-connect case above is rare.
+             *    Also aims the refill at devices that need it (a phone that's away isn't
+             *    draining the card, so it fills and scans lengthen; a connected phone is
+             *    presumably syncing, keeping scans short).
              *  - !is_storage_sync_active(): defense-in-depth for the disconnect edge.
              *  - MIN_SILENCE_MS: only pre-empt a scan into a silence long enough to
              *    plausibly outlast it. Resumed speech mid-scan queues (120-deep, ~10 s)
-             *    and drops only if the scan runs longer than the queue holds — the same
-             *    loss the mid-write scan would cause anyway, now much less likely.
+             *    and, with the duration bound above, the scan is short enough the queue
+             *    absorbs it — the drop the mid-write scan would have caused is avoided.
              *  - RETRY_COOLDOWN_MS: a persistently failing gc leaves bytes_written_since_gc
              *    above threshold; without a cooldown it would re-scan every timeout.
              * The pause suspended SPI, so wake it for the scan and re-suspend after.
@@ -2173,6 +2198,11 @@ void sd_worker_thread(void)
             int64_t gc_ms = k_uptime_get() - gc_start_ms;
             if (gc_res == 0) {
                 bytes_written_since_gc = 0;
+                if (gc_ms > worst_full_scan_ms) {
+                    /* Card has grown slower than the boot baseline — disable further
+                     * idle refills (this one already ran; the next gate check skips). */
+                    worst_full_scan_ms = gc_ms;
+                }
                 atomic_inc(&idle_gc_runs);
                 if (gc_ms > (int64_t) atomic_get(&idle_gc_max_ms)) {
                     atomic_set(&idle_gc_max_ms, (atomic_val_t) gc_ms);
