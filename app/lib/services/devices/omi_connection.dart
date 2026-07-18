@@ -246,15 +246,24 @@ class OmiDeviceConnection extends DeviceConnection {
   @override
   Future<StreamSubscription<List<int>>?> performGetDropStatsListener({
     required void Function(DeviceDropStats stats) onDropStats,
+    void Function()? onClosed,
   }) async {
     try {
       final stream =
           await transport.getCharacteristicStream(diagnosticsServiceUuid, diagnosticsDropsCharacteristicUuid);
       await _dropStatsSubscription?.cancel();
-      _dropStatsSubscription = stream.listen((v) {
-        final stats = _parseDropStats(v);
-        if (stats != null) onDropStats(stats);
-      });
+      // onDone/onError fire when the transport closes this stream — notably on a
+      // BLE disconnect (the transport re-subscribes on reconnect using a *new*
+      // controller this subscription isn't attached to). Surface it so the caller
+      // can drop the dead subscription and re-establish one.
+      _dropStatsSubscription = stream.listen(
+        (v) {
+          final stats = _parseDropStats(v);
+          if (stats != null) onDropStats(stats);
+        },
+        onError: (_) => onClosed?.call(),
+        onDone: () => onClosed?.call(),
+      );
       return _dropStatsSubscription;
     } catch (e) {
       // Subscribing writes the CCCD; during an active transfer that GATT write
@@ -264,6 +273,18 @@ class OmiDeviceConnection extends DeviceConnection {
       Logger.debug('OmiDeviceConnection: Error subscribing to drop stats: $e');
       return null;
     }
+  }
+
+  @override
+  Future<void> unsubscribeDropStats() async {
+    await _dropStatsSubscription?.cancel();
+    _dropStatsSubscription = null;
+    // Write CCCD=0 so the firmware stops pushing drop-counter notifications for
+    // the rest of the connection, and drop the controller so a later re-subscribe
+    // re-issues a fresh CCCD write (a failed initial write leaves it silent).
+    try {
+      await transport.unsubscribeCharacteristic(diagnosticsServiceUuid, diagnosticsDropsCharacteristicUuid);
+    } catch (_) {}
   }
 
   Future<void> stop() async {
