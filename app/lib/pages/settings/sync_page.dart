@@ -51,10 +51,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   // Liveness tracking. The native subscribe (CCCD write) is fire-and-forget, so a
   // live-but-silent stream (failed write, or a link recycled onto a new controller)
   // can't be detected any other way.
-  // _dropSubscribedAt: when the current sub was established (no notification yet).
-  // _lastDropNotifyAt: when a notification last arrived (null until the first one).
-  DateTime? _dropSubscribedAt;
-  DateTime? _lastDropNotifyAt;
+  // Tracked against a monotonic clock (_dropClock), NOT DateTime.now(): a backward
+  // wall-clock adjustment (NTP/DST/manual) would otherwise make a dead stream look
+  // freshly-active and defeat the stale-subscription watchdog.
+  // _dropSubscribedElapsed: _dropClock.elapsed when the sub was established.
+  // _lastDropNotifyElapsed: _dropClock.elapsed at the last notification (null = none yet).
+  final Stopwatch _dropClock = Stopwatch()..start();
+  Duration? _dropSubscribedElapsed;
+  Duration? _lastDropNotifyElapsed;
   // Pending (subscribed, no notification yet): the firmware pushes immediately on
   // subscribe, so a short window is enough — if nothing arrives the CCCD write
   // failed and we re-subscribe. Established: allow gaps up to the timeout, which
@@ -149,8 +153,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final conn = _dropConn;
     _dropStatsSub = null;
     _dropConn = null;
-    _dropSubscribedAt = null;
-    _lastDropNotifyAt = null;
+    _dropSubscribedElapsed = null;
+    _lastDropNotifyElapsed = null;
     await sub?.cancel();
     // Write CCCD=0 so the firmware stops pushing, and drop the transport's stream
     // controller so a later re-subscribe issues a fresh CCCD write. Best-effort;
@@ -544,11 +548,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   // silence timeout are fine.
   bool get _dropSubHealthy {
     if (_dropStatsSub == null) return false;
-    final now = DateTime.now();
-    final last = _lastDropNotifyAt;
-    if (last != null) return now.difference(last) < _dropSilenceTimeout;
-    final since = _dropSubscribedAt;
-    return since != null && now.difference(since) < _dropPendingTimeout;
+    final now = _dropClock.elapsed;
+    final last = _lastDropNotifyElapsed;
+    if (last != null) return now - last < _dropSilenceTimeout;
+    final since = _dropSubscribedElapsed;
+    return since != null && now - since < _dropPendingTimeout;
   }
 
   Future<void> _ensureDropSubscription() async {
@@ -576,7 +580,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       final sub = await conn.getDropStatsListener(
         onDropStats: (stats) {
           if (!mounted || gen != _dropSubGen) return;
-          _lastDropNotifyAt = DateTime.now();
+          _lastDropNotifyElapsed = _dropClock.elapsed;
           setState(() {
             _dropStats = stats;
             if (stats.msgqPeakDepth > _peakSinceReset) _peakSinceReset = stats.msgqPeakDepth;
@@ -589,8 +593,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         onClosed: () {
           if (gen != _dropSubGen) return;
           _dropStatsSub = null;
-          _dropSubscribedAt = null;
-          _lastDropNotifyAt = null;
+          _dropSubscribedElapsed = null;
+          _lastDropNotifyElapsed = null;
         },
       );
       if (!mounted || gen != _dropSubGen) {
@@ -608,8 +612,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       if (sub != null) {
         _dropStatsSub = sub;
         _dropConn = conn;
-        _dropSubscribedAt = DateTime.now();
-        _lastDropNotifyAt = null;
+        _dropSubscribedElapsed = _dropClock.elapsed;
+        _lastDropNotifyElapsed = null;
       }
     } catch (_) {
       // Transient BLE error — retry on the next tick.
