@@ -1412,11 +1412,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final emptyRot = rel(stats.emptyBinRotations, (b) => b.emptyBinRotations);
     final seEmits = rel(stats.sessionEndMarkerEmits, (b) => b.sessionEndMarkerEmits);
     final pauseSaves = rel(stats.markerPauseGateSaves, (b) => b.markerPauseGateSaves);
-    final gcRuns = rel(stats.idleGcRuns, (b) => b.idleGcRuns);
-    // idleGcMaxMs is a lifetime high-water mark (longest single refill), not an
-    // incremental counter, so it isn't delta-subtracted — shown raw like the device
-    // uptime. It answers "how long a mid-recording allocator scan would have been."
-    final gcMaxMs = stats.idleGcMaxMs;
     // Peak thread stack usage vs the configured stack sizes (firmware constants:
     // SD_WORKER_STACK_SIZE=16384, codec_stack=19000). Gauges, shown raw. Large unused
     // headroom = the stack is over-provisioned and can be trimmed to reclaim RAM.
@@ -1511,14 +1506,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
             padding: EdgeInsets.symmetric(vertical: 6),
             child: Divider(color: Color(0xFF2C2C2E), height: 1),
           ),
-          // Idle allocator refills (0x0062). The firmware pre-warms LittleFS's block
-          // allocator during AAD silence so the periodic full-FS traversal doesn't
-          // stall the write path mid-recording. "Longest refill" is roughly how long
-          // that traversal WOULD have blocked writes had it fired while recording —
-          // if it's several seconds and the SD queue peak above stays clear of the
-          // ceiling, the scan is being absorbed in silence, as intended.
-          _dropStatRow('Idle allocator refills', gcRuns.toString(), false),
-          _dropStatRow('Longest refill', gcMaxMs > 0 ? _formatDuration(gcMaxMs) : '—', false),
           // Peak thread stack usage (0x0062). Read after a heavy session (an allocator
           // scan is the SD worker's deepest path; busy encoding is the codec's) so the
           // high-water reflects the worst case. Big gap below the configured size means
