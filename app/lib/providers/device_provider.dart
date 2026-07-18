@@ -1583,12 +1583,10 @@ class DeviceProvider extends ChangeNotifier
           'codec_frame_drops': dropStats.codecFrameDrops,
           'msgq_peak_depth': dropStats.msgqPeakDepth,
           'write_fair_activations': dropStats.writeFairActivations,
-          // Allocator-refill + thread-stack telemetry is logged here unconditionally —
-          // it applies to every device, not just ones with Priority-Recording activity
-          // (the priority block below is gated and would otherwise drop it on quiet
-          // devices). 0 on firmware older than oo-2.6.2.
-          'idle_gc_runs': dropStats.idleGcRuns,
-          'idle_gc_max_ms': dropStats.idleGcMaxMs,
+          // Thread-stack telemetry is logged here unconditionally — it applies to every
+          // device, not just ones with Priority-Recording activity (the priority block
+          // below is gated and would otherwise drop it on quiet devices). 0 on firmware
+          // older than oo-2.6.2.
           'sd_worker_stack_used': dropStats.sdWorkerStackUsed,
           'codec_stack_used': dropStats.codecStackUsed,
           'live_uptime_ms': dropStats.currentUptimeMs,
