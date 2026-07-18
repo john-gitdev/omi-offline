@@ -1476,11 +1476,12 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           _dropStatRow('Last block drop', lastDropLabel, hasFreshDrops),
           _dropStatRow('Device uptime', _formatDuration(stats.currentUptimeMs), false),
           // Write-path headroom. Peak depth is a high-water mark, so after a reset it
-          // reads 0 until the queue climbs past where it stood at the reset, then
-          // shows that live peak out of the queue limit (120); near 120 means the
-          // write path is riding the drop edge, low means plenty of headroom. Fairness
-          // activations just show the read-vs-write arbiter engaging — not a fault.
-          _dropStatRow('SD queue peak depth', '$peak / 120', peak >= 96),
+          // reads 0 until the queue climbs past where it stood at the reset, then shows
+          // that live peak out of the firmware's queue limit (stats.sdQueueMax — 120 on
+          // oo-2.6.2+, 100 on older firmware); near the limit means the write path is
+          // riding the drop edge. Fairness activations just show the read-vs-write
+          // arbiter engaging — not a fault.
+          _dropStatRow('SD queue peak depth', '$peak / ${stats.sdQueueMax}', peak >= (stats.sdQueueMax * 0.8).round()),
           _dropStatRow('Write-fairness activations', writeFair.toString(), false),
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 6),
