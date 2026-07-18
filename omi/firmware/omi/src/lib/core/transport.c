@@ -437,7 +437,7 @@ static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_ha
 //   uptime_seconds: how long the PREVIOUS session ran before it ended (crash or clean shutdown)
 //
 // Characteristic B:   19B10062-E8F2-537E-4F6C-D104768A1214
-// Returns 84 bytes LE (fields appended over time; older apps read a prefix):
+// Returns 76 bytes LE (fields appended over time; older apps read a prefix):
 //   [uint32 storage_block_drops]   storage_block_drops since boot (each = ~5 Opus frames lost)
 //   [uint32 last_drop_uptime_ms]   k_uptime_get() at the most recent block drop (0 = none)
 //   [uint32 sd_stream_drops]       stat_dropped_frames from sd_card.c (queue-full audio frame drops)
@@ -457,10 +457,8 @@ static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_ha
 //   [uint32 empty_bin_rotations]    rotations that closed a bin holding no audio (offset 56)
 //   [uint32 session_end_marker_emits] 0xFFFFFFFC emits attempted from the finalize path (offset 60)
 //   [uint32 marker_pause_gate_saves]  marker-bearing blocks kept through the sd_write_paused gate (offset 64)
-//   [uint32 idle_gc_runs]          opportunistic allocator refills run during AAD silence (offset 68)
-//   [uint32 idle_gc_max_ms]        longest such refill in ms ~= the mid-recording stall it avoided (offset 72)
-//   [uint32 sd_worker_stack_used]  peak sd_worker stack bytes used since boot (offset 76)
-//   [uint32 codec_stack_used]      peak codec/encode thread stack bytes used since boot (offset 80)
+//   [uint32 sd_worker_stack_used]  peak sd_worker stack bytes used since boot (offset 68)
+//   [uint32 codec_stack_used]      peak codec/encode thread stack bytes used since boot (offset 72)
 static struct bt_uuid_128 diagnostics_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10060, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 diagnostics_characteristic_uuid =
@@ -497,10 +495,10 @@ static inline void pack_u32_le(uint8_t *dst, uint32_t v)
     dst[3] = (uint8_t) (v >> 24);
 }
 
-/* Pack the 84-byte drop-counter payload. Shared by the read handler (0x0062)
+/* Pack the 76-byte drop-counter payload. Shared by the read handler (0x0062)
  * and the notify path (diagnostics_drops_notify) so the wire layout has exactly
  * one definition. */
-static void diagnostics_drops_pack(uint8_t payload[84])
+static void diagnostics_drops_pack(uint8_t payload[76])
 {
     uint32_t block_drops = (uint32_t) atomic_get(&storage_block_drops);
     uint32_t last_drop_ms = (uint32_t) atomic_get(&last_storage_drop_uptime_ms);
@@ -518,19 +516,16 @@ static void diagnostics_drops_pack(uint8_t payload[84])
     uint32_t empty_rots = sd_get_empty_bin_rotations();
     uint32_t se_emits = (uint32_t) atomic_get(&session_end_marker_emits);
     uint32_t mk_pause_saves = sd_get_marker_pause_gate_saves();
-    uint32_t gc_runs = sd_get_idle_gc_runs();
-    uint32_t gc_max_ms = sd_get_idle_gc_max_ms();
     uint32_t sd_stack_used = sd_get_worker_stack_used();
     uint32_t codec_stack_used = codec_get_stack_used();
 
-    /* 84 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
+    /* 76 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
      * codec_drops + sd_msgq peak depth + write-fairness activations + establishment
      * failures + Priority Recording lifecycle (starts / stops / marker drops /
      * empty-bin rotations) + session-end emit attempts + pause-gate marker saves +
-     * idle allocator-refill count + longest idle refill (ms) + sd_worker & codec
-     * peak stack used. Each field is appended at the end so older app builds (which
-     * read only the first 20 / 28 / 32 / 40 / 44 / 60 / 68 / 76 bytes) keep working
-     * unchanged. */
+     * sd_worker & codec peak stack used. Each field is appended at the end so older app
+     * builds (which read only the first 20 / 28 / 32 / 40 / 44 / 60 / 68 bytes) keep
+     * working unchanged. */
     pack_u32_le(payload + 0, block_drops);
     pack_u32_le(payload + 4, last_drop_ms);
     pack_u32_le(payload + 8, sd_stream_drops);
@@ -548,10 +543,8 @@ static void diagnostics_drops_pack(uint8_t payload[84])
     pack_u32_le(payload + 56, empty_rots);
     pack_u32_le(payload + 60, se_emits);
     pack_u32_le(payload + 64, mk_pause_saves);
-    pack_u32_le(payload + 68, gc_runs);
-    pack_u32_le(payload + 72, gc_max_ms);
-    pack_u32_le(payload + 76, sd_stack_used);
-    pack_u32_le(payload + 80, codec_stack_used);
+    pack_u32_le(payload + 68, sd_stack_used);
+    pack_u32_le(payload + 72, codec_stack_used);
 }
 
 static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
@@ -560,7 +553,7 @@ static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
                                               uint16_t len,
                                               uint16_t offset)
 {
-    uint8_t payload[84];
+    uint8_t payload[76];
     diagnostics_drops_pack(payload);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
 }
@@ -599,11 +592,11 @@ static struct bt_gatt_attr diagnostics_service_attr[] = {
 
 static struct bt_gatt_service diagnostics_service = BT_GATT_SERVICE(diagnostics_service_attr);
 
-/* Notify the 84-byte drop payload to every subscribed client. The value
+/* Notify the 76-byte drop payload to every subscribed client. The value
  * attribute is index 4: [0]=service, [1]/[2]=0x0061 decl/value,
  * [3]/[4]=0x0062 decl/value, [5]=CCC.
  *
- * An 84-byte notification needs ATT_MTU >= 87; on a link that never negotiated up
+ * A 76-byte notification needs ATT_MTU >= 79; on a link that never negotiated up
  * from the 23-byte default bt_gatt_notify returns -EMSGSIZE and the update is lost.
  * This is a *live* convenience path — the same payload is always available via a
  * plain READ (ATT read-blob is not MTU-bounded), which is the app's fallback — so we
@@ -613,7 +606,7 @@ static struct bt_gatt_service diagnostics_service = BT_GATT_SERVICE(diagnostics_
  * AUTO_UPDATE_MTU makes this the rare exception, not the rule. */
 static void diagnostics_drops_notify(void)
 {
-    uint8_t payload[84];
+    uint8_t payload[76];
     diagnostics_drops_pack(payload);
     int err = bt_gatt_notify(NULL, &diagnostics_service_attr[4], payload, sizeof(payload));
     if (err && err != -ENOTCONN) {
