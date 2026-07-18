@@ -194,6 +194,35 @@ uint32_t sd_get_empty_bin_rotations(void);
 uint32_t sd_get_marker_pause_gate_saves(void);
 
 /**
+ * @brief Get the number of opportunistic allocator-lookahead refills (idle-gc).
+ *
+ * Incremented each time the REQ_PAUSE_IO handler runs lfs_fs_gc during an AAD silence
+ * pause to pre-warm the block allocator off the write path. Monotonic since boot.
+ * Safe to call from any thread.
+ */
+uint32_t sd_get_idle_gc_runs(void);
+
+/**
+ * @brief Get the longest opportunistic allocator refill duration in ms (idle-gc).
+ *
+ * High-water mark of a single idle lfs_fs_gc call. Approximates how long a full-FS
+ * allocator traversal WOULD have stalled the write path had it fired mid-recording.
+ * Monotonic since boot. Safe to call from any thread.
+ */
+uint32_t sd_get_idle_gc_max_ms(void);
+
+/**
+ * @brief Get the peak stack usage (bytes) of the SD worker thread since boot.
+ *
+ * Reads the high-water mark via k_thread_stack_space_get (needs CONFIG_INIT_STACKS +
+ * CONFIG_THREAD_STACK_INFO); the sentinel fill isn't restored after use, so a single
+ * read returns the peak. Returns 0 if the thread isn't up or the configs are off.
+ * Compare against SD_WORKER_STACK_SIZE to gauge how much stack is reclaimable.
+ * Safe to call from any thread.
+ */
+uint32_t sd_get_worker_stack_used(void);
+
+/**
  * @brief Put the SD card interface (controller) into a low-power (suspend) state.
  *        Note: This typically suspends the SPI controller managing the SD card slot.
  *
