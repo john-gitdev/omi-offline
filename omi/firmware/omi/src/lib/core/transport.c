@@ -1116,16 +1116,27 @@ void broadcast_battery_level(struct k_work *work_item)
             LOG_ERR("Error updating battery level: %d", err);
         }
 
-        /* Notify charging state even during an active file sync. It's 1 byte at
-         * most once per battery cycle; the storage stream's NOTIFY_RETRY yield/
-         * retry (storage.c) absorbs the momentary buffer contention, so a control
-         * notify can't starve the transfer. The old storage_transfer_active()
-         * skip meant the app's charging state froze for the whole (often long)
-         * duration of a sync. */
+        /* Notify charging state even during an active file sync (the old
+         * storage_transfer_active() skip froze the app's charging state for the whole,
+         * often long, duration of a sync). It's a 1-byte notify on the battery-refresh
+         * cadence, so it can't starve the transfer — but mid-sync the TX buffers can be
+         * momentarily full, so a bare notify may return -ENOMEM and be lost until the
+         * next battery cycle (~60 s). Do a short bounded retry so the charging state
+         * stays live; give up quietly after that (the next cycle re-sends). */
         struct bt_conn *conn = get_current_connection();
         if (conn != NULL) {
             uint8_t is_charging_byte = (uint8_t) is_charging;
-            bt_gatt_notify(NULL, &battery_detail_service_attr[2], &is_charging_byte, 1);
+            int nerr = 0;
+            for (int attempt = 0; attempt < 3; attempt++) {
+                nerr = bt_gatt_notify(NULL, &battery_detail_service_attr[2], &is_charging_byte, 1);
+                if (nerr != -ENOMEM) {
+                    break; /* sent, or a non-transient error (e.g. not subscribed) */
+                }
+                k_msleep(20);
+            }
+            if (nerr && nerr != -ENOTCONN) {
+                LOG_DBG("charging notify failed: %d (next battery cycle re-sends)", nerr);
+            }
         }
         put_current_connection(conn);
 
