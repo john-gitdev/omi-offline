@@ -45,7 +45,7 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 #endif
 
 #define DISK_DRIVE_NAME CONFIG_SDMMC_VOLUME_NAME
-#define SD_REQ_QUEUE_MSGS 100
+#define SD_REQ_QUEUE_MSGS 120
 #define SD_PRIO_QUEUE_MSGS 10
 /* Write fairness: the priority (read) queue is normally drained first, but a
  * steady read stream (active sync) must not starve audio writes. Force a write
@@ -117,11 +117,30 @@ static uint8_t lfs_prog_buf[LFS_CACHE_SIZE];
  * (lfs_alloc_scan → lfs_fs_traverse_) which reads every block in every file.
  * With 200 MB of data (~50K blocks) this costs 10-50+ seconds per scan over SPI.
  *
- * 2048 bytes = 16384 blocks = 64 MB window → only ~8 scans to cover entire disk.
- * Reduces scan frequency from every ~4 MB written to every ~64 MB written.
- * Cost: 1920 bytes extra static RAM (nRF52840 has 256 KB). */
-#define LFS_LOOKAHEAD_SIZE 2048
+ * The traversal runs on the single sd_worker thread and is the dominant source of
+ * intermittent sd_msgq saturation (peak-depth spikes toward SD_REQ_QUEUE_MSGS): it
+ * fires only when the window drains, and its duration tracks how full the SD is.
+ *
+ * 4096 bytes = 32768 blocks = 128 MB window → ~4 scans to cover entire disk.
+ * Reduces scan frequency to every ~128 MB written (vs ~64 MB at 2048), halving how
+ * often the write path eats a full-FS traversal. Does NOT shorten each scan — that
+ * cost is O(data on disk), so prompt app-side sync+delete (keeping the FS emptier)
+ * remains the biggest lever on stall *duration*.
+ * Cost: 2048 bytes extra static RAM vs the prior 2048-byte window. */
+#define LFS_LOOKAHEAD_SIZE 4096
 static uint8_t lfs_lookahead_buf[LFS_LOOKAHEAD_SIZE];
+
+/* Bytes covered by one full lookahead window: each lookahead byte tracks 8 blocks
+ * (1 bit/block), each block LFS_BLOCK_SIZE. When this many bytes have been allocated
+ * the window drains and lfs_alloc runs a full-FS traversal — the multi-second write
+ * stall we want to avoid. IDLE_GC_BYTES_THRESHOLD is half the window: once this much
+ * has been written since the last refill, the next AAD silence pause proactively runs
+ * lfs_fs_gc (allocator pre-warm only; compact_thresh=-1) so the traversal happens with
+ * no audio in flight instead of mid-recording. Half-window => the window never fully
+ * drains on the write path as long as one silence occurs per ~64 MB of recorded audio
+ * (~3.5 h at ~5100 B/s). */
+#define LFS_LOOKAHEAD_BYTES ((lfs_size_t) LFS_LOOKAHEAD_SIZE * 8 * LFS_BLOCK_SIZE)
+#define IDLE_GC_BYTES_THRESHOLD (LFS_LOOKAHEAD_BYTES / 2)
 
 /* Shared temp sector buffer â€” only used from worker thread, safe as static */
 static uint8_t _lfs_io_tmp[512];
@@ -232,7 +251,7 @@ static struct lfs_config lfs_cfg = {
     .block_size = LFS_BLOCK_SIZE,
     .block_count = 0,                     /* set at mount time */
     .cache_size = LFS_CACHE_SIZE,         /* 4096: full-block cache → multi-sector I/O */
-    .lookahead_size = LFS_LOOKAHEAD_SIZE, /* 2048 bytes = 16384 blocks = 64 MB window */
+    .lookahead_size = LFS_LOOKAHEAD_SIZE, /* 4096 bytes = 32768 blocks = 128 MB window */
 
     .read_buffer = lfs_read_buf,
     .prog_buffer = lfs_prog_buf,
@@ -298,6 +317,15 @@ static atomic_t empty_bin_rotations;
  * recordings finalizing = the rescue firing. Read via 0x19B10062. */
 static atomic_t marker_pause_gate_saves;
 
+/* Diagnostics for the opportunistic allocator refill (see IDLE_GC_BYTES_THRESHOLD).
+ * idle_gc_runs   = times we ran lfs_fs_gc during an AAD silence pause to pre-warm the
+ *                  block-allocator lookahead off the write path.
+ * idle_gc_max_ms = longest such refill. This is the key metric: it is (approximately)
+ *                  how long the full-FS traversal WOULD have stalled the write path had
+ *                  it fired mid-recording instead. Read via 0x19B10062. */
+static atomic_t idle_gc_runs;
+static atomic_t idle_gc_max_ms;
+
 /* True if a 440-byte storage block carries any inline marker header (session-end /
  * priority-start / button-tap / mute / VAD-resume). Scans 4-byte-aligned words for
  * the header sentinels; markers are always 4-byte aligned by the transport, so a
@@ -362,6 +390,10 @@ static bool sd_shutdown_in_progress = false;
 static uint32_t current_file_size = 0;
 static size_t bytes_since_sync = 0;
 static int64_t last_file_sync_uptime_ms = 0;
+/* Bytes written since the last allocator-lookahead refill (idle-gc). Worker-local,
+ * like bytes_since_sync; reset only when idle-gc actually runs. Gates the refill in
+ * the REQ_PAUSE_IO handler so a burst of brief silences can't re-scan every pause. */
+static lfs_size_t bytes_written_since_gc = 0;
 
 /* Current writing file info */
 static char current_filename[MAX_FILENAME_LEN] = {0};
@@ -643,6 +675,7 @@ static int flush_batch_buffer_chunked(void)
         total_written += bw;
         current_file_size += bw;
         bytes_since_sync += bw;
+        bytes_written_since_gc += bw;
 
         /* CRITICAL: Preemption point to let BLE run! */
         if (to_write > 0 && k_msgq_num_used_get(&sd_prio_msgq) > 0) {
@@ -2076,6 +2109,35 @@ void sd_worker_thread(void)
                 last_file_sync_uptime_ms = k_uptime_get();
             }
             sd_set_io_low_power(true);
+        } else if (atomic_get(&sd_write_paused) && bytes_written_since_gc >= IDLE_GC_BYTES_THRESHOLD &&
+                   k_msgq_num_used_get(&sd_msgq) == 0 && k_msgq_num_used_get(&sd_prio_msgq) == 0) {
+            /* Opportunistic allocator refill. We are here only on a write-wait timeout
+             * with an empty batch AND both queues drained AND SD writes paused — i.e.
+             * the worker is genuinely idle during an AAD silence, no audio in flight and
+             * no sync in progress. This is the free window to run the full-FS lookahead
+             * traversal that would otherwise stall the write path mid-recording (see
+             * LFS_LOOKAHEAD_SIZE / IDLE_GC_BYTES_THRESHOLD). Deliberately NOT run inside
+             * REQ_PAUSE_IO: that handler ACKs the AAD thread (which blocks on it), so a
+             * multi-second gc there would freeze AAD wake/resume handling. Here nothing
+             * waits on the worker. A write/marker that arrives mid-gc queues (120-deep)
+             * and is served when gc returns — same as any gc, but starting from empty.
+             * The pause suspended SPI, so wake it for the scan and re-suspend after.
+             * compact_thresh=-1 keeps this to the allocator pre-warm (no compaction). */
+            sd_set_io_low_power(false);
+            int64_t gc_start_ms = k_uptime_get();
+            int gc_res = lfs_fs_gc(&lfs_fs);
+            int64_t gc_ms = k_uptime_get() - gc_start_ms;
+            if (gc_res == 0) {
+                bytes_written_since_gc = 0;
+                atomic_inc(&idle_gc_runs);
+                if (gc_ms > (int64_t) atomic_get(&idle_gc_max_ms)) {
+                    atomic_set(&idle_gc_max_ms, (atomic_val_t) gc_ms);
+                }
+                LOG_INF("[SD] idle allocator refill: %lld ms", gc_ms);
+            } else {
+                LOG_WRN("[SD] idle lfs_fs_gc failed: %d (%lld ms)", gc_res, gc_ms);
+            }
+            sd_set_io_low_power(true);
         }
         continue;
 
@@ -2526,6 +2588,27 @@ uint32_t sd_get_empty_bin_rotations(void)
 uint32_t sd_get_marker_pause_gate_saves(void)
 {
     return (uint32_t)atomic_get(&marker_pause_gate_saves);
+}
+
+uint32_t sd_get_idle_gc_runs(void)
+{
+    return (uint32_t)atomic_get(&idle_gc_runs);
+}
+
+uint32_t sd_get_idle_gc_max_ms(void)
+{
+    return (uint32_t)atomic_get(&idle_gc_max_ms);
+}
+
+uint32_t sd_get_worker_stack_used(void)
+{
+#if defined(CONFIG_THREAD_STACK_INFO) && defined(CONFIG_INIT_STACKS)
+    size_t unused = 0;
+    if (sd_worker_tid != NULL && k_thread_stack_space_get(sd_worker_tid, &unused) == 0) {
+        return (uint32_t)(K_THREAD_STACK_SIZEOF(sd_worker_stack) - unused);
+    }
+#endif
+    return 0;
 }
 
 int app_sd_init(void)
