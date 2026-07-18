@@ -247,6 +247,10 @@ class OmiDeviceConnection extends DeviceConnection {
       // older builds that return only the first 76 bytes.
       sdWorkerStackUsed: data.length >= 80 ? data.getUint32LittleEndian(76) : 0,
       codecStackUsed: data.length >= 84 ? data.getUint32LittleEndian(80) : 0,
+      // Derived, not a wire field: the 84-byte payload is only produced by oo-2.6.2,
+      // which is the build that raised SD_REQ_QUEUE_MSGS 100→120. A shorter payload is
+      // older firmware still at 100. Keeps the peak-depth denominator honest.
+      sdQueueMax: data.length >= 84 ? 120 : 100,
       readAt: DateTime.now(),
     );
   }
