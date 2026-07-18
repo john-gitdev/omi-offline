@@ -577,8 +577,8 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                         style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
                     subtitle: Text(
                       _companionDeviceEnabled
-                          ? 'On (recommended) — registers the Omi as an Android system companion so the app can recover from Bluetooth wedges without you toggling phone Bluetooth. If you still have to toggle Bluetooth to reconnect (rare, seen on some OnePlus/Oppo/Realme), turn this off.'
-                          : 'Off — the app connects by address + bond, no companion association. Recommended only if companion pairing makes reconnection worse on your phone. Turning it on reconnects and opens the system pairing dialog.',
+                          ? 'On (recommended) — lets the app fix a stuck Bluetooth connection on its own, instead of you having to toggle phone Bluetooth. Turn off only if reconnecting gets worse with this on.'
+                          : "Off — the app connects without registering as a system companion. Turn on (recommended) to help it recover from stuck Bluetooth connections; it'll reconnect and show a pairing dialog.",
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
                     value: _companionDeviceEnabled,
