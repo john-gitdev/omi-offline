@@ -493,11 +493,10 @@ static inline void pack_u32_le(uint8_t *dst, uint32_t v)
     dst[3] = (uint8_t) (v >> 24);
 }
 
-static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
-                                              const struct bt_gatt_attr *attr,
-                                              void *buf,
-                                              uint16_t len,
-                                              uint16_t offset)
+/* Pack the 68-byte drop-counter payload. Shared by the read handler (0x0062)
+ * and the notify path (diagnostics_drops_notify) so the wire layout has exactly
+ * one definition. */
+static void diagnostics_drops_pack(uint8_t payload[68])
 {
     uint32_t block_drops = (uint32_t) atomic_get(&storage_block_drops);
     uint32_t last_drop_ms = (uint32_t) atomic_get(&last_storage_drop_uptime_ms);
@@ -522,7 +521,6 @@ static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
      * empty-bin rotations) + session-end emit attempts + pause-gate marker saves.
      * Each field is appended at the end so older app builds (which read only the
      * first 20 / 28 / 32 / 40 / 44 / 60 bytes) keep working unchanged. */
-    uint8_t payload[68];
     pack_u32_le(payload + 0, block_drops);
     pack_u32_le(payload + 4, last_drop_ms);
     pack_u32_le(payload + 8, sd_stream_drops);
@@ -540,8 +538,30 @@ static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
     pack_u32_le(payload + 56, empty_rots);
     pack_u32_le(payload + 60, se_emits);
     pack_u32_le(payload + 64, mk_pause_saves);
+}
+
+static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
+                                              const struct bt_gatt_attr *attr,
+                                              void *buf,
+                                              uint16_t len,
+                                              uint16_t offset)
+{
+    uint8_t payload[68];
+    diagnostics_drops_pack(payload);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
 }
+
+/* Drop counters are also pushed as a notification (0x0062) so the app's
+ * diagnostics view updates live *during* an SD sync — a GATT read would race
+ * the storage notify stream and throw Error 133 on Android, so the app can't
+ * poll while syncing. Firmware pushes instead: fast cadence during a transfer
+ * (when the counters actually move and the live view matters), slow heartbeat
+ * otherwise (keeps the live uptime ticking at negligible cost). Emits only
+ * while a client is subscribed. */
+static void diagnostics_drops_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
+static atomic_t diag_notify_subscribed = ATOMIC_INIT(0);
+#define DIAG_NOTIFY_SYNC_MS 2000
+#define DIAG_NOTIFY_IDLE_MS 15000
 
 static struct bt_gatt_attr diagnostics_service_attr[] = {
     BT_GATT_PRIMARY_SERVICE(&diagnostics_service_uuid),
@@ -552,16 +572,61 @@ static struct bt_gatt_attr diagnostics_service_attr[] = {
                            NULL,
                            NULL),
     /* Drops characteristic — appended last so existing diagnostics handles
-     * stay stable across firmware revisions. */
+     * stay stable across firmware revisions. READ (poll) + NOTIFY (live during
+     * sync); the CCC that follows is the last attribute in the service. */
     BT_GATT_CHARACTERISTIC(&diagnostics_drops_characteristic_uuid.uuid,
-                           BT_GATT_CHRC_READ,
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
                            BT_GATT_PERM_READ,
                            diagnostics_drops_read_handler,
                            NULL,
                            NULL),
+    BT_GATT_CCC(diagnostics_drops_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 };
 
 static struct bt_gatt_service diagnostics_service = BT_GATT_SERVICE(diagnostics_service_attr);
+
+/* Notify the 68-byte drop payload to every subscribed client. The value
+ * attribute is index 4: [0]=service, [1]/[2]=0x0061 decl/value,
+ * [3]/[4]=0x0062 decl/value, [5]=CCC. */
+static void diagnostics_drops_notify(void)
+{
+    uint8_t payload[68];
+    diagnostics_drops_pack(payload);
+    bt_gatt_notify(NULL, &diagnostics_service_attr[4], payload, sizeof(payload));
+}
+
+static void diagnostics_notify_work_handler(struct k_work *work);
+K_WORK_DELAYABLE_DEFINE(diagnostics_notify_work, diagnostics_notify_work_handler);
+
+static void diagnostics_notify_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    /* Stop the chain if the client unsubscribed or the link dropped; a fresh
+     * subscribe re-arms it from diagnostics_drops_ccc_changed. */
+    if (!atomic_get(&diag_notify_subscribed) || !is_connected) {
+        return;
+    }
+    diagnostics_drops_notify();
+#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+    uint32_t next = storage_transfer_active() ? DIAG_NOTIFY_SYNC_MS : DIAG_NOTIFY_IDLE_MS;
+#else
+    uint32_t next = DIAG_NOTIFY_IDLE_MS;
+#endif
+    k_work_reschedule(&diagnostics_notify_work, K_MSEC(next));
+}
+
+static void diagnostics_drops_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+    ARG_UNUSED(attr);
+    if (value == BT_GATT_CCC_NOTIFY) {
+        atomic_set(&diag_notify_subscribed, 1);
+        /* Push immediately on subscribe, then the handler self-reschedules. */
+        k_work_reschedule(&diagnostics_notify_work, K_NO_WAIT);
+    } else {
+        atomic_set(&diag_notify_subscribed, 0);
+        k_work_cancel_delayable(&diagnostics_notify_work);
+    }
+}
 
 // --- Button Service ---
 // Service UUID: 23BA7924-0000-1000-7450-346EAC492E92
@@ -1032,16 +1097,14 @@ void broadcast_battery_level(struct k_work *work_item)
             LOG_ERR("Error updating battery level: %d", err);
         }
 
-        /* Skip detail notify during active file sync to avoid consuming
-         * the TX slots reserved for audio — storage_transfer_active()
-         * returns true while a BLE file transfer is in progress. */
+        /* Notify charging state even during an active file sync. It's 1 byte at
+         * most once per battery cycle; the storage stream's NOTIFY_RETRY yield/
+         * retry (storage.c) absorbs the momentary buffer contention, so a control
+         * notify can't starve the transfer. The old storage_transfer_active()
+         * skip meant the app's charging state froze for the whole (often long)
+         * duration of a sync. */
         struct bt_conn *conn = get_current_connection();
-#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
-        bool syncing = storage_transfer_active();
-#else
-        bool syncing = false;
-#endif
-        if (conn != NULL && !syncing) {
+        if (conn != NULL) {
             uint8_t is_charging_byte = (uint8_t) is_charging;
             bt_gatt_notify(NULL, &battery_detail_service_attr[2], &is_charging_byte, 1);
         }
@@ -1325,6 +1388,12 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
 static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
 {
     is_connected = false;
+
+    /* Stop diagnostics notifications; the CCC state is per-bond and the next
+     * client will re-subscribe. The work handler already bails on !is_connected,
+     * but clear the flag + cancel so a stale timer can't fire post-disconnect. */
+    atomic_set(&diag_notify_subscribed, 0);
+    k_work_cancel_delayable(&diagnostics_notify_work);
 
     /* A link that comes up and immediately dies with 0x3e never exchanged a
      * data-channel packet. Count it separately from failed_conn_count (see the
