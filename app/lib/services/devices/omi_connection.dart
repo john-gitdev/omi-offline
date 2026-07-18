@@ -239,6 +239,14 @@ class OmiDeviceConnection extends DeviceConnection {
       // firmware; 0 on older builds that return only the first 60 bytes.
       sessionEndMarkerEmits: data.length >= 64 ? data.getUint32LittleEndian(60) : 0,
       markerPauseGateSaves: data.length >= 68 ? data.getUint32LittleEndian(64) : 0,
+      // Idle allocator-refill count (68) + longest idle refill in ms (72), 76-byte
+      // firmware; 0 on older builds that return only the first 68 bytes.
+      idleGcRuns: data.length >= 72 ? data.getUint32LittleEndian(68) : 0,
+      idleGcMaxMs: data.length >= 76 ? data.getUint32LittleEndian(72) : 0,
+      // Peak thread stack usage (sd_worker @76, codec @80), 84-byte firmware; 0 on
+      // older builds that return only the first 76 bytes.
+      sdWorkerStackUsed: data.length >= 80 ? data.getUint32LittleEndian(76) : 0,
+      codecStackUsed: data.length >= 84 ? data.getUint32LittleEndian(80) : 0,
       readAt: DateTime.now(),
     );
   }
