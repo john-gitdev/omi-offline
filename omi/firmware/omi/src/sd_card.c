@@ -142,6 +142,20 @@ static uint8_t lfs_lookahead_buf[LFS_LOOKAHEAD_SIZE];
 #define LFS_LOOKAHEAD_BYTES ((lfs_size_t) LFS_LOOKAHEAD_SIZE * 8 * LFS_BLOCK_SIZE)
 #define IDLE_GC_BYTES_THRESHOLD (LFS_LOOKAHEAD_BYTES / 2)
 
+/* Idle-gc safety gating (see the worker idle tick). The traversal is only worth
+ * pre-empting into a silence that will plausibly outlast it, and it must not be
+ * retried on every 50 ms timeout if it fails.
+ * MIN_SILENCE_MS: require the pause to have persisted this long before scanning, so
+ *   a real conversational gap (idle for tens of seconds) is scanned but a brief
+ *   inter-utterance pause is not — bounds the window in which resumed speech could
+ *   race a long scan. The AAD VAD-hold already means silence has lasted ~10 s before
+ *   the pause fires, so this is on top of that.
+ * RETRY_COOLDOWN_MS: minimum spacing between idle-gc *attempts* regardless of outcome,
+ *   so a persistently failing lfs_fs_gc (e.g. transient FS error) can't re-scan on
+ *   every idle timeout. */
+#define IDLE_GC_MIN_SILENCE_MS 10000
+#define IDLE_GC_RETRY_COOLDOWN_MS 60000
+
 /* Shared temp sector buffer â€” only used from worker thread, safe as static */
 static uint8_t _lfs_io_tmp[512];
 
@@ -392,8 +406,12 @@ static size_t bytes_since_sync = 0;
 static int64_t last_file_sync_uptime_ms = 0;
 /* Bytes written since the last allocator-lookahead refill (idle-gc). Worker-local,
  * like bytes_since_sync; reset only when idle-gc actually runs. Gates the refill in
- * the REQ_PAUSE_IO handler so a burst of brief silences can't re-scan every pause. */
+ * the worker idle tick so a burst of brief silences can't re-scan every pause. */
 static lfs_size_t bytes_written_since_gc = 0;
+/* Uptime (ms) at which SD writes were last paused (silence onset), and at which the
+ * last idle-gc was last attempted. Both feed the idle-gc safety gate. */
+static int64_t sd_paused_since_ms = 0;
+static int64_t last_idle_gc_attempt_ms = 0;
 
 /* Current writing file info */
 static char current_filename[MAX_FILENAME_LEN] = {0};
@@ -928,6 +946,12 @@ bool sd_get_ota_active(void)
 void sd_write_pause(bool pause)
 {
     if (pause) {
+        if (!atomic_get(&sd_write_paused)) {
+            /* Record silence onset for the idle-gc gate. Only on the 0->1 edge so a
+             * re-apply (AAD queues the pause, then the worker re-runs sd_write_pause
+             * in the REQ_PAUSE_IO handler) doesn't keep pushing the timestamp forward. */
+            sd_paused_since_ms = k_uptime_get();
+        }
         atomic_set(&sd_write_paused, 1);
 
         if (k_current_get() != sd_worker_tid) {
@@ -2110,19 +2134,35 @@ void sd_worker_thread(void)
             }
             sd_set_io_low_power(true);
         } else if (atomic_get(&sd_write_paused) && bytes_written_since_gc >= IDLE_GC_BYTES_THRESHOLD &&
-                   k_msgq_num_used_get(&sd_msgq) == 0 && k_msgq_num_used_get(&sd_prio_msgq) == 0) {
-            /* Opportunistic allocator refill. We are here only on a write-wait timeout
-             * with an empty batch AND both queues drained AND SD writes paused — i.e.
-             * the worker is genuinely idle during an AAD silence, no audio in flight and
-             * no sync in progress. This is the free window to run the full-FS lookahead
+                   !is_storage_sync_active() && k_msgq_num_used_get(&sd_msgq) == 0 &&
+                   k_msgq_num_used_get(&sd_prio_msgq) == 0 &&
+                   (k_uptime_get() - sd_paused_since_ms) >= IDLE_GC_MIN_SILENCE_MS &&
+                   (k_uptime_get() - last_idle_gc_attempt_ms) >= IDLE_GC_RETRY_COOLDOWN_MS) {
+            /* Opportunistic allocator refill. We reach here only on a write-wait timeout
+             * with an empty batch, both queues drained, SD writes paused (AAD silence),
+             * NO storage sync in progress, the silence sustained past IDLE_GC_MIN_SILENCE_MS,
+             * and past the retry cooldown — i.e. the worker is genuinely idle in a real
+             * conversational gap. This is the free window to run the full-FS lookahead
              * traversal that would otherwise stall the write path mid-recording (see
              * LFS_LOOKAHEAD_SIZE / IDLE_GC_BYTES_THRESHOLD). Deliberately NOT run inside
              * REQ_PAUSE_IO: that handler ACKs the AAD thread (which blocks on it), so a
              * multi-second gc there would freeze AAD wake/resume handling. Here nothing
-             * waits on the worker. A write/marker that arrives mid-gc queues (120-deep)
-             * and is served when gc returns — same as any gc, but starting from empty.
+             * waits on the worker.
+             *
+             * Guards, and what each prevents:
+             *  - !is_storage_sync_active(): the empty-queue check is a single instant; a
+             *    sync has brief gaps between reads where both queues are momentarily
+             *    empty. Without this, a gc could start in that gap and block the next
+             *    read for the whole scan, stalling the transfer.
+             *  - MIN_SILENCE_MS: only pre-empt a scan into a silence long enough to
+             *    plausibly outlast it. Resumed speech mid-scan queues (120-deep, ~10 s)
+             *    and drops only if the scan runs longer than the queue holds — the same
+             *    loss the mid-write scan would cause anyway, now much less likely.
+             *  - RETRY_COOLDOWN_MS: a persistently failing gc leaves bytes_written_since_gc
+             *    above threshold; without a cooldown it would re-scan every 50 ms timeout.
              * The pause suspended SPI, so wake it for the scan and re-suspend after.
              * compact_thresh=-1 keeps this to the allocator pre-warm (no compaction). */
+            last_idle_gc_attempt_ms = k_uptime_get();
             sd_set_io_low_power(false);
             int64_t gc_start_ms = k_uptime_get();
             int gc_res = lfs_fs_gc(&lfs_fs);
