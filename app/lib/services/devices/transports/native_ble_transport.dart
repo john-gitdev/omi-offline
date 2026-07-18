@@ -234,6 +234,20 @@ class NativeBleTransport extends DeviceTransport {
     }
   }
 
+  @override
+  Future<void> unsubscribeCharacteristic(String serviceUuid, String characteristicUuid) async {
+    final key = '${serviceUuid.toLowerCase()}:${characteristicUuid.toLowerCase()}';
+    // Drop the controller first so a later getCharacteristicStream re-creates it
+    // and re-issues the CCCD write. Closing it fires onDone on any live listener.
+    final controller = _streamControllers.remove(key);
+    try {
+      _hostApi.unsubscribeCharacteristic(_peripheralUuid, serviceUuid, characteristicUuid);
+    } catch (e) {
+      Logger.debug('[NativeBleTransport] Failed to unsubscribe $serviceUuid:$characteristicUuid: $e');
+    }
+    await controller?.close();
+  }
+
   bool _hasCharacteristic(String serviceUuid, String characteristicUuid) {
     final sUuid = serviceUuid.toLowerCase();
     final cUuid = characteristicUuid.toLowerCase();
@@ -257,8 +271,7 @@ class NativeBleTransport extends DeviceTransport {
       // signature (link up, GATT ops dead) — NOT an empty characteristic. Surface it
       // distinctly (still returning [] to preserve the callers' empty-on-failure
       // contract) so a wedge isn't silently read as "device returned nothing".
-      Logger.warning(
-          '[NativeBleTransport] readCharacteristic $serviceUuid:$characteristicUuid TIMED OUT after '
+      Logger.warning('[NativeBleTransport] readCharacteristic $serviceUuid:$characteristicUuid TIMED OUT after '
           '${_gattOpTimeout.inSeconds}s — likely a wedged GATT (returning empty)');
       return [];
     } catch (e) {
