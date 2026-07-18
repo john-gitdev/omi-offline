@@ -239,9 +239,15 @@ class NativeBleTransport extends DeviceTransport {
     final key = '${serviceUuid.toLowerCase()}:${characteristicUuid.toLowerCase()}';
     // Drop the controller first so a later getCharacteristicStream re-creates it
     // and re-issues the CCCD write. Closing it fires onDone on any live listener.
+    // Also forget the key so an auto-reconnect (_resubscribeAfterReconnect) doesn't
+    // resurrect a stream the caller explicitly stopped.
     final controller = _streamControllers.remove(key);
+    _activeSubscriptionKeys.remove(key);
     try {
-      _hostApi.unsubscribeCharacteristic(_peripheralUuid, serviceUuid, characteristicUuid);
+      // Await so a native failure surfaces to the caller instead of becoming an
+      // unhandled future error, and so teardown ordering (CCCD=0 before any later
+      // re-subscribe) is preserved.
+      await _hostApi.unsubscribeCharacteristic(_peripheralUuid, serviceUuid, characteristicUuid);
     } catch (e) {
       Logger.debug('[NativeBleTransport] Failed to unsubscribe $serviceUuid:$characteristicUuid: $e');
     }
