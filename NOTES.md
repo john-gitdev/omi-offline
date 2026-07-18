@@ -274,7 +274,7 @@ Battery voltage on the 150 mAh LiPo changes on the order of millivolts per minut
 
 **Current values (`sd_card.c:48`):**
 ```c
-#define SD_REQ_QUEUE_MSGS  100   // main audio write queue depth
+#define SD_REQ_QUEUE_MSGS  120   // main audio write queue depth
 #define SD_PRIO_QUEUE_MSGS  10   // priority queue (control requests)
 #define MAX_READS_BETWEEN_WRITES 6  // write fairness: force a write turn after N reads
 #define WRITE_FAIR_MIN  4        // write fairness: min writes drained per forced turn
@@ -282,7 +282,7 @@ Battery voltage on the 150 mAh LiPo changes on the order of millivolts per minut
 #define SD_FSYNC_INTERVAL_MS (60 * 1000)  // fsync every 60s
 ```
 
-Each slot in `sd_msgq` holds one `sd_req_t`, which embeds a `uint8_t buf[MAX_WRITE_SIZE]` (440 B) directly — so the queue's RAM cost is ~`SD_REQ_QUEUE_MSGS × 440 B`. At 100 that's **~44 KB** — on par with `write_batch_buffer` (also 44 KB) as the largest RAM consumer in the app core. A `k_mem_slab` refactor (pointer-in-slot instead of embedded buffer) was tried and **reverted** — same buffer depth = same RAM, no win. The only lever to shrink the queue's RAM is the slot **count**: each slot dropped frees ~440 B.
+Each slot in `sd_msgq` holds one `sd_req_t`, which embeds a `uint8_t buf[MAX_WRITE_SIZE]` (440 B) directly — so the queue's RAM cost is ~`SD_REQ_QUEUE_MSGS × 452 B` (440 B buffer + type/len/ptr). At 120 that's **~53 KB** — on par with `write_batch_buffer` (44 KB) as the largest RAM consumer in the app core. A `k_mem_slab` refactor (pointer-in-slot instead of embedded buffer) was tried and **reverted** — same buffer depth = same RAM, no win. The only lever to shrink the queue's RAM is the slot **count**: each slot dropped frees ~452 B.
 
 **Write fairness (`0095b1fa8`, 2026-06-10) is now what holds the line — not depth.** The priority (read) queue is normally drained first, but a steady read stream during an active sync must not starve audio writes. The worker forces a write turn after `MAX_READS_BETWEEN_WRITES` (6) consecutive reads and drains at least `WRITE_FAIR_MIN` (4) writes before yielding back to reads. This bounds write latency to ~6 read-ops regardless of read pressure, so the queue depth no longer has to absorb full read-burst diversions — which is why the depth could come back down from 150 to 100 without re-introducing the sync-time drops (see history below). Two new since-boot observability counters track headroom: `sd_msgq_peak_depth` (high-water mark of occupancy vs the 100 limit) and `write_fair_activations` (times fairness engaged); both are surfaced in Debug Tools (see "SD Write Drop Counters").
 
@@ -303,10 +303,24 @@ The depth has been a repeated tug-of-war between RAM and **audio frame drops dur
 | `252d3b0f1` (oo-1.4.0) | 100 | RAM |
 | `b577639bc` (Jun 8) | **150** | settled compromise — RAM-affordable, still above the depth that dropped |
 | `0095b1fa8` (Jun 10) | **100** | **write fairness added** — reads can no longer starve writes, so depth no longer has to absorb read-burst diversions; dropped back to 100 for RAM |
+| 2026-07-18 | **120** | **allocator-scan headroom** — a second, previously-unaccounted stall class (the LittleFS block-allocator traversal, below) can peg the queue independent of sync; +20 slots (~10 s tolerance) rides out the short scans while idle-gc removes the long ones |
 
 **The binding constraint was read/write contention during phone sync** — NOT steady-state SD stalls. Audio writes and BLE file reads share one SD-worker thread; while the worker served a read burst it stopped draining the write queue, which then filled at the audio ingest rate and dropped frames. A bigger queue absorbed those diversions (100 demonstrably dropped frames during sync, which is why it went to 200, then settled at 150). **As of `0095b1fa8` the contention is addressed structurally by write fairness** (forced write turns, see above), not by queue depth — which is why the depth could safely return to 100. Before changing either lever, re-run a heavy sync-while-recording test and watch the drop counters + `sd_msgq_peak_depth` (see "SD Write Drop Counters" section).
 
 **Rate note (the "2–4 s vs 13 s" confusion):** the Mar 23 commit assumed 25 slots = 500 ms (≈50 blocks/s → 100 = 2 s, 200 = 4 s). On-device measurement (`audio/stats.txt`) showed ~5,100 B/s, i.e. ~11.6 blocks/s → 150 = ~13 s, 100 = ~8.6 s. The queue holds **encoded Opus**, not PCM, so it fills ~6× slower than the 32 KB/s mic rate. The two estimates were never reconciled, but the *observed* drops at 100 settle the decision regardless.
+
+### The second stall class: LittleFS allocator traversal (2026-07-18)
+
+The "read/write contention during sync" story above is not the whole picture. There is a second, **sync-independent** way to peg `sd_msgq`: the LittleFS block allocator. When its lookahead window drains, `lfs_alloc` runs a **full-FS traversal** (`lfs_alloc_scan → lfs_fs_traverse_`) that reads every block of every file on the single SD-worker thread — **10–50+ s on a full card** (`sd_card.c` lookahead comment, ~line 114). While it runs, writes queue and eventually drop. This is intermittent (fires only when the window drains, ~every `LFS_LOOKAHEAD_SIZE × 8 × block_size` bytes written) and its duration scales with how full the SD is. It is the likely cause of the peak-depth spiking toward the ceiling **without** an active sync — a case write fairness cannot help, because fairness interleaves discrete ops and cannot preempt one long `lfs_*` call.
+
+**Three mitigations landed together (2026-07-18):**
+1. **`LFS_LOOKAHEAD_SIZE` 2048 → 4096** (64 MB → 128 MB window): halves scan *frequency* (~every 128 MB written). Does not shorten each scan.
+2. **Idle-gc during AAD silence** (worker idle tick, **not** the pause handler): AAD only pauses SD writes when no audio is being ingested, so during a pause the worker's write-wait loop times out with both queues drained — a genuine idle window. It runs `lfs_fs_gc` there (allocator pre-warm only; `compact_thresh = -1` disables compaction) to refill the lookahead **off the write path**. Gated on `sd_write_paused && bytes_written_since_gc ≥ IDLE_GC_BYTES_THRESHOLD` (half the window) **and both msgqs empty**, so it never runs during force-capture (AAD skips the pause then, so `sd_write_paused` stays 0), during an active sync (prio queue non-empty), or on brief back-to-back silences. **Deliberately not in `REQ_PAUSE_IO`:** that handler ACKs the AAD thread, which blocks on it (`k_sem_take`, 10 s), so a multi-second gc there would freeze AAD wake/resume handling — the exact pause/wake interaction behind the priority-marker-loss history. In the idle tick nothing waits on the worker. A write/marker arriving mid-gc queues (120-deep) and is served when gc returns. **Effective in auto/AAD mode only** — manual mode records continuously with no silence window, so there the scan is unavoidably mid-write and the levers are lookahead size + queue depth + keeping the FS emptier (scan cost ∝ data on disk → prompt app-side sync+delete is the biggest lever on *duration*).
+3. **Queue 100 → 120** — rides out the short scans (see history row above).
+
+Two new `0x0062` counters make this observable on-device (offsets 68/72): `idle_gc_runs` (refills that ran during silence) and `idle_gc_max_ms` (longest refill ≈ how long a mid-recording scan *would* have stalled writes). Healthy auto-mode reading: `idle_gc_runs` climbing, `idle_gc_max_ms` several seconds, and `sd_msgq_peak_depth` staying clear of 120 — the scan is being absorbed in silence. Surfaced in the Diagnostics card as "Idle allocator refills" / "Longest refill".
+
+**RAM-reclaim diagnostic (same char, offsets 76/80, payload grew 76→84 B):** `sd_worker_stack_used` and `codec_stack_used` — peak stack bytes used by those two threads since boot, via `k_thread_stack_space_get` (needs `CONFIG_INIT_STACKS` — already on — plus `CONFIG_THREAD_STACK_INFO`, added 2026-07-18). These are gauges, not counters (the sentinel fill isn't restored, so one read = peak-since-boot; read after a heavy session — an allocator scan is the SD worker's deepest path — to catch the worst case). Surfaced as "SD worker stack" / "Codec stack" (`used / configured`; `SD_WORKER_STACK_SIZE`=16384, `codec_stack`=19000). Point: those two stacks are ~35 KB combined and are the **one RAM lever with no audio-pipeline tradeoff** — a large gap below the configured size is directly reclaimable to fund lookahead/queue depth. Amber only if usage rides >85% of the ceiling (overflow risk — do *not* trim then).
 
 ---
 
@@ -562,7 +576,7 @@ All counters are cumulative since boot (except `conn_fails`, which is flash-pers
 
 - `transport.c`: `static atomic_t storage_block_drops` and `static atomic_t last_storage_drop_uptime_ms` (both `ATOMIC_INIT(0)`). Incremented together at the two `write_custom_packet_to_storage` failure sites (`atomic_inc` + `atomic_set(k_uptime_get())`). `conn_fails` = `failed_conn_count` atomic. Exposed via `diagnostics_drops_read_handler` (packs all 40 bytes), registered as the last attribute in `diagnostics_service_attr[]`.
 - `codec.c`: `static atomic_t codec_dropped_count` (`ATOMIC_INIT(0)`), incremented at both `codec_receive_pcm` failure sites (ring-full and partial-write). Accessor `codec_get_dropped_frames()` declared in `codec.h`; read by `transport.c` into the diagnostics payload.
-- `sd_card.c`: `static atomic_t stat_dropped_frames` (stream drops) and `static atomic_t boot_dropped_frames` (boot drops). `SD_REQ_QUEUE_MSGS = 100` (sd_card.c:48) backs `K_MSGQ_DEFINE(sd_msgq, …)` — see "SD Write Queue Configuration" for why 100. Also `static atomic_t sd_msgq_peak_depth` and `static atomic_t write_fair_activations` (write-path observability). Accessors: `sd_get_stream_dropped_frames()`, `sd_get_boot_dropped_frames()`, `sd_get_msgq_peak_depth()`, `sd_get_write_fair_activations()`.
+- `sd_card.c`: `static atomic_t stat_dropped_frames` (stream drops) and `static atomic_t boot_dropped_frames` (boot drops). `SD_REQ_QUEUE_MSGS = 120` (sd_card.c:48) backs `K_MSGQ_DEFINE(sd_msgq, …)` — see "SD Write Queue Configuration" for the depth history. Also `static atomic_t sd_msgq_peak_depth` and `static atomic_t write_fair_activations` (write-path observability). Accessors: `sd_get_stream_dropped_frames()`, `sd_get_boot_dropped_frames()`, `sd_get_msgq_peak_depth()`, `sd_get_write_fair_activations()`.
 - `sd_card.h`: declares `sd_get_stream_dropped_frames()`, `sd_get_boot_dropped_frames()`, `sd_get_msgq_peak_depth()`, `sd_get_write_fair_activations()`.
 
 ### App side / how to use it
@@ -576,7 +590,7 @@ All counters are cumulative since boot (except `conn_fails`, which is flash-pers
 ### Forcing drops for a controlled test
 
 - Run an active BLE sync **while recording**: the SD-worker retry budget tightens (`K_MSEC(5)` → `K_MSEC(1)`) and sync reads compete with writes on the same worker thread. ~30–60 min usually enough to provoke something if the system is marginal. This is the realistic `block_drops` / `sd_stream_drops` provocation.
-- Or temporarily drop `SD_REQ_QUEUE_MSGS` from 100 → 8 in `sd_card.c` and rebuild — forces SD drops within minutes. Proves the counters fire; says nothing about real-world frequency. Revert after.
+- Or temporarily drop `SD_REQ_QUEUE_MSGS` from 120 → 8 in `sd_card.c` and rebuild — forces SD drops within minutes. Proves the counters fire; says nothing about real-world frequency. Revert after.
 - For `codec_drops`: temporarily shrink `AUDIO_BUFFER_SAMPLES` (config.h) to a tiny value (e.g. 800) and/or add CPU load; the encoder will starve and drop. Revert after.
 
 ### Code locations
