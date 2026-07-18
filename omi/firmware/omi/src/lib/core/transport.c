@@ -1144,12 +1144,12 @@ K_WORK_DELAYABLE_DEFINE(post_connect_work, post_connect_work_handler);
  * for 30+ s), so the link stays down until the app's next periodic sync
  * scans and connects.
  *
- * MUST stay above the app's foreground keep-alive interval (10 s, see
+ * MUST stay above the app's foreground keep-alive interval (5 s, see
  * device_provider.dart _startForegroundKeepAlive). A timeout at/below that
  * interval makes the heartbeat structurally unable to keep the link up: the
  * device idle-drops before the next keep-alive arrives, producing a permanent
  * connect/disconnect loop (BT_HCI_ERR_REMOTE_USER_TERM_CONN / gatt_status_19).
- * 15 s gives the 10 s keep-alive a 5 s margin. */
+ * 15 s gives the 5 s keep-alive a 10 s margin (survives two missed beats). */
 #define IDLE_DISCONNECT_TIMEOUT_MS 15000
 #define IDLE_DISCONNECT_POLL_MS 5000
 
