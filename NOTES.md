@@ -290,9 +290,9 @@ Each slot in `sd_msgq` holds one `sd_req_t`, which embeds a `uint8_t buf[MAX_WRI
 
 The early-flush path (`sd_boot_ready` gate + high-watermark logic) prevents the queue from filling during the boot `lfs_fs_gc` pre-warm and during bursts of rapid audio ingestion.
 
-### Why 100 today (history — do not re-litigate without data)
+### Depth history — 120 today (do not re-litigate without data)
 
-The depth has been a repeated tug-of-war between RAM and **audio frame drops during BLE sync**. Trajectory (git):
+**Current value: 120** (`oo-2.6.2`, 2026-07-18 — see the allocator-scan section below). It was **100** for the whole write-fairness era before that, and the reasoning in this section is written against that 100 baseline; read it as the history that justified 100, then the +20 for allocator-scan headroom on top. The depth has been a repeated tug-of-war between RAM and **audio frame drops during BLE sync**. Trajectory (git):
 
 | Commit / date | Value | Reason |
 |---|---|---|
@@ -573,7 +573,7 @@ All counters are cumulative since boot (except `conn_fails`, which is flash-pers
 
 ### Firmware variables / internals
 
-- `transport.c`: `static atomic_t storage_block_drops` and `static atomic_t last_storage_drop_uptime_ms` (both `ATOMIC_INIT(0)`). Incremented together at the two `write_custom_packet_to_storage` failure sites (`atomic_inc` + `atomic_set(k_uptime_get())`). `conn_fails` = `failed_conn_count` atomic. Exposed via `diagnostics_drops_pack` (76 bytes), served on both the READ handler and the NOTIFY work; the char is registered as the last attribute in `diagnostics_service_attr[]`.
+- `transport.c`: `static atomic_t storage_block_drops` and `static atomic_t last_storage_drop_uptime_ms` (both `ATOMIC_INIT(0)`). Incremented together at the two `write_custom_packet_to_storage` failure sites (`atomic_inc` + `atomic_set(k_uptime_get())`). `conn_fails` = `failed_conn_count` atomic. Exposed via `diagnostics_drops_pack` (76 bytes), served on both the READ handler and the NOTIFY work; the `0x0062` characteristic is the last *characteristic* in `diagnostics_service_attr[]`, followed by its CCC descriptor (the actual last attribute — index 5; the value attr is index 4).
 - `codec.c`: `static atomic_t codec_dropped_count` (`ATOMIC_INIT(0)`), incremented at both `codec_receive_pcm` failure sites (ring-full and partial-write). Accessor `codec_get_dropped_frames()` declared in `codec.h`; read by `transport.c` into the diagnostics payload.
 - `sd_card.c`: `static atomic_t stat_dropped_frames` (stream drops) and `static atomic_t boot_dropped_frames` (boot drops). `SD_REQ_QUEUE_MSGS = 120` (sd_card.c:48) backs `K_MSGQ_DEFINE(sd_msgq, …)` — see "SD Write Queue Configuration" for the depth history. Also `static atomic_t sd_msgq_peak_depth` and `static atomic_t write_fair_activations` (write-path observability). Accessors: `sd_get_stream_dropped_frames()`, `sd_get_boot_dropped_frames()`, `sd_get_msgq_peak_depth()`, `sd_get_write_fair_activations()`.
 - `sd_card.h`: declares `sd_get_stream_dropped_frames()`, `sd_get_boot_dropped_frames()`, `sd_get_msgq_peak_depth()`, `sd_get_write_fair_activations()`.
