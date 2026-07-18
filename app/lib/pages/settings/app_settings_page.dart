@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
@@ -9,8 +8,6 @@ import 'package:omi/pages/recordings/passthrough_integration.dart';
 import 'package:omi/pages/recordings/recordings_controller.dart';
 import 'package:provider/provider.dart';
 import 'package:omi/providers/device_provider.dart';
-import 'package:omi/services/services.dart';
-import 'package:omi/utils/logger.dart';
 
 class AppSettingsPage extends StatefulWidget {
   const AppSettingsPage({super.key});
@@ -26,7 +23,6 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
   late int _keepRecordingsDays;
   late bool _uploadOnWifiOnly;
   late int _filterMinDurationSeconds;
-  late bool _companionDeviceEnabled;
   late bool _showDebugMenu;
 
   static const List<int> _kShortRecordingOptions = [0, 10, 30, 60, 120, 300, 600, 1800];
@@ -42,7 +38,6 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
     _keepRecordingsDays = SharedPreferencesUtil().keepRecordingsDays;
     _uploadOnWifiOnly = SharedPreferencesUtil().uploadOnWifiOnly;
     _filterMinDurationSeconds = SharedPreferencesUtil().filterMinDurationSeconds;
-    _companionDeviceEnabled = SharedPreferencesUtil().companionDeviceEnabled;
     _showDebugMenu = SharedPreferencesUtil().showDebugMenu;
   }
 
@@ -97,45 +92,6 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
           SnackBar(content: Text('Deleted $count short recording${count == 1 ? '' : 's'}.')),
         );
       }
-    }
-  }
-
-  // Companion Device Pairing applies immediately — it has side effects (a
-  // disconnect/reconnect, and the system pairing chooser when enabling), so it sits
-  // outside the page's save/discard flow. OFF: reconnect so native manageDevice clears
-  // the association now. ON: disconnect (so the Omi advertises), pop the system
-  // companion chooser, then reconnect. Both directions need the disconnect first —
-  // ensureConnection(force) is a no-op while connected (so manageDevice wouldn't re-run),
-  // and a connected Omi (MAX_CONN=1) isn't advertising for the chooser to find.
-  Future<void> _setCompanionDevicePairing(bool value) async {
-    setState(() => _companionDeviceEnabled = value);
-    SharedPreferencesUtil().companionDeviceEnabled = value;
-
-    final deviceId = SharedPreferencesUtil().btDevice.id;
-    if (deviceId.isEmpty) return; // no paired device — applies on next connect
-
-    final deviceService = ServiceManager.instance().device;
-    final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(SnackBar(
-      content: Text(value ? 'Enabling companion pairing…' : 'Disabling companion pairing…'),
-    ));
-
-    try {
-      await deviceService.disconnectDevice(isManual: true);
-
-      if (value && !(await deviceService.hasCompanionDeviceAssociation())) {
-        final addr = await deviceService.requestCompanionDeviceAssociation(deviceId);
-        if (addr.isEmpty) {
-          // Chooser cancelled — revert so the toggle reflects reality.
-          SharedPreferencesUtil().companionDeviceEnabled = false;
-          if (mounted) setState(() => _companionDeviceEnabled = false);
-        }
-      }
-
-      // Reconnect: native manageDevice clears the association when off, no-op when on.
-      await deviceService.ensureConnection(deviceId, force: true);
-    } catch (e) {
-      Logger.error('AppSettings: companion pairing toggle failed: $e');
     }
   }
 
@@ -556,37 +512,6 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                   activeThumbColor: Colors.deepPurpleAccent,
                 ),
               ),
-
-              // Companion Device Pairing (Android only) — default ON: companion status
-              // exempts the app from aggressive OEM battery-manager freezing so it can
-              // recover from a ghost-GATT wedge on its own. Kept as a toggle (and here,
-              // not Device Settings, so it stays reachable when the device won't connect)
-              // for the rare OEM where a bare association still hurts. Applies immediately
-              // via _setCompanionDevicePairing (reconnect on off, system chooser on on).
-              if (Platform.isAndroid) ...[
-                const SizedBox(height: 16),
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1C1C1E),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Companion Device Pairing',
-                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-                    subtitle: Text(
-                      _companionDeviceEnabled
-                          ? 'On (recommended) — lets the app fix a stuck Bluetooth connection on its own, instead of you having to toggle phone Bluetooth. Turn off only if reconnecting gets worse with this on.'
-                          : "Off — the app connects without registering as a system companion. Turn on (recommended) to help it recover from stuck Bluetooth connections; it'll reconnect and show a pairing dialog.",
-                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                    ),
-                    value: _companionDeviceEnabled,
-                    onChanged: (value) => _setCompanionDevicePairing(value),
-                    activeThumbColor: Colors.deepPurpleAccent,
-                  ),
-                ),
-              ],
 
               // Debug Menu — shows/hides the "Debug Tools" entry in the settings
               // drawer. Default off, so debug tooling stays out of the way until
