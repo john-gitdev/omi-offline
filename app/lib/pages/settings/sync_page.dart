@@ -13,6 +13,7 @@ import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/services/wals.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/utils/mutex.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/pages/settings/widgets/debug_button.dart';
@@ -47,12 +48,22 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   // Connection we subscribed on, kept so we can unsubscribe at the BLE layer
   // (CCCD=0) on teardown even from dispose(), where we can't await a fresh lookup.
   DeviceConnection? _dropConn;
-  // Last time a notification actually arrived. Drives the liveness watchdog: the
-  // native subscribe (CCCD write) is fire-and-forget, so a live-but-silent stream
-  // (failed write, or a link recycled onto a new controller) can't be detected any
-  // other way. Must exceed the firmware's 15 s idle heartbeat.
+  // Liveness tracking. The native subscribe (CCCD write) is fire-and-forget, so a
+  // live-but-silent stream (failed write, or a link recycled onto a new controller)
+  // can't be detected any other way.
+  // _dropSubscribedAt: when the current sub was established (no notification yet).
+  // _lastDropNotifyAt: when a notification last arrived (null until the first one).
+  DateTime? _dropSubscribedAt;
   DateTime? _lastDropNotifyAt;
+  // Pending (subscribed, no notification yet): the firmware pushes immediately on
+  // subscribe, so a short window is enough — if nothing arrives the CCCD write
+  // failed and we re-subscribe. Established: allow gaps up to the timeout, which
+  // must exceed the firmware's 15 s idle heartbeat.
+  static const _dropPendingTimeout = Duration(seconds: 6);
   static const _dropSilenceTimeout = Duration(seconds: 35);
+  // Serializes subscribe vs teardown so an async teardown's BLE unsubscribe can't
+  // land on a freshly re-subscribed stream (fast Show-Diagnostics off/on).
+  final Mutex _dropMutex = Mutex();
   // Bumped whenever the subscription intent is invalidated (teardown / stop) so an
   // in-flight subscribe or a stale onClosed can't act on a superseded generation.
   int _dropSubGen = 0;
@@ -64,8 +75,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   // own high-water mark of the values seen since the last "Zero all counters" tap:
   // reset it to 0 and let it re-climb from the next reading upward.
   int _peakSinceReset = 0;
-  // Re-entrancy guard so overlapping timer ticks don't fire concurrent subscribes.
-  bool _dropsSubscribing = false;
   // True once we've attempted to restore the persisted baseline this polling session.
   bool _baselineRestored = false;
 
@@ -130,26 +139,37 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     _peakSinceReset = 0;
     _connFailBaseline = null;
     _estabFailBaseline = null;
-    _dropsSubscribing = false;
     _baselineRestored = false;
   }
 
-  /// Drop the notify subscription at both the Dart and BLE layers, and invalidate
-  /// the current generation so any in-flight subscribe / stale onClosed is ignored.
-  /// The generation bump runs synchronously (before the first await), so callers
-  /// that fire-and-forget this still invalidate in-flight work immediately.
-  Future<void> _teardownDropSubscription() async {
-    _dropSubGen++;
+  /// Cancel the Dart sub and stop the device pushing (CCCD=0). Assumes the caller
+  /// already holds [_dropMutex].
+  Future<void> _dropTeardownLocked() async {
     final sub = _dropStatsSub;
     final conn = _dropConn;
     _dropStatsSub = null;
     _dropConn = null;
+    _dropSubscribedAt = null;
     _lastDropNotifyAt = null;
     await sub?.cancel();
     // Write CCCD=0 so the firmware stops pushing, and drop the transport's stream
     // controller so a later re-subscribe issues a fresh CCCD write. Best-effort;
     // a real disconnect also unsubscribes, and it no-ops on a recycled connection.
     await conn?.unsubscribeDropStats();
+  }
+
+  /// Teardown for stop()/dispose(). Bumps the generation synchronously (so a
+  /// fire-and-forget call invalidates in-flight work immediately), then serializes
+  /// the actual cancel/unsubscribe behind [_dropMutex] so it can't interleave with
+  /// a concurrent re-subscribe.
+  Future<void> _teardownDropSubscription() async {
+    _dropSubGen++;
+    await _dropMutex.acquire();
+    try {
+      await _dropTeardownLocked();
+    } finally {
+      _dropMutex.release();
+    }
   }
 
   void _startLogPolling() {
@@ -517,30 +537,38 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     });
   }
 
-  // Healthy = we have a subscription that has produced a notification within the
-  // silence window. The native subscribe is fire-and-forget, so a subscription
-  // object alone doesn't prove notifications are flowing.
+  // Healthy = we have a subscription that is actually delivering. The native
+  // subscribe is fire-and-forget, so a subscription object alone doesn't prove
+  // notifications flow: while pending (subscribed, no notification yet) we allow
+  // only a short window before re-subscribing; once established, gaps up to the
+  // silence timeout are fine.
   bool get _dropSubHealthy {
     if (_dropStatsSub == null) return false;
+    final now = DateTime.now();
     final last = _lastDropNotifyAt;
-    return last != null && DateTime.now().difference(last) < _dropSilenceTimeout;
+    if (last != null) return now.difference(last) < _dropSilenceTimeout;
+    final since = _dropSubscribedAt;
+    return since != null && now.difference(since) < _dropPendingTimeout;
   }
 
   Future<void> _ensureDropSubscription() async {
-    if (_dropsSubscribing) return;
-    // Healthy subscription — notifications drive _dropStats directly.
-    if (_dropSubHealthy) return;
+    // Healthy subscription — notifications drive _dropStats directly. isLocked skips
+    // ticks while a subscribe/teardown is already running (acquire sets it
+    // synchronously on the uncontended path, so this guard is race-free).
+    if (_dropSubHealthy || _dropMutex.isLocked) return;
     if (!mounted) return;
     final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
     final dev = deviceProvider.connectedDevice;
     if (dev == null) return;
-    _dropsSubscribing = true;
-    // Tear down any dead/silent subscription first, awaiting the BLE unsubscribe so
-    // the transport's stream controller is gone before we re-subscribe — otherwise
-    // getCharacteristicStream reuses the stale controller and skips the CCCD write.
-    if (_dropStatsSub != null || _dropConn != null) await _teardownDropSubscription();
-    final gen = _dropSubGen;
+    await _dropMutex.acquire();
     try {
+      // Re-check under the lock — a teardown/subscribe may have run while we waited.
+      if (_dropSubHealthy) return;
+      // Tear down any dead/silent subscription first (awaited, under the lock) so the
+      // transport's stream controller is gone before we re-subscribe — otherwise
+      // getCharacteristicStream reuses the stale controller and skips the CCCD write.
+      if (_dropStatsSub != null || _dropConn != null) await _dropTeardownLocked();
+      final gen = _dropSubGen;
       final conn = await ServiceManager.instance().device.ensureConnection(dev.id);
       // Bail if the connection died, the widget went away, or stop()/another
       // teardown superseded this attempt while we awaited.
@@ -559,8 +587,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         // via a new controller this sub isn't attached to, so drop it and let the
         // next tick re-establish. Ignored if a newer generation already took over.
         onClosed: () {
-          if (!mounted || gen != _dropSubGen) return;
+          if (gen != _dropSubGen) return;
           _dropStatsSub = null;
+          _dropSubscribedAt = null;
           _lastDropNotifyAt = null;
         },
       );
@@ -569,17 +598,19 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         return;
       }
       // Subscribe writes the CCCD; during a transfer that write can lose the race
-      // (Error 133) and return null — retry next tick. Seed the silence clock so
-      // the watchdog re-subscribes if no notification ever arrives.
+      // (Error 133) and return null — retry next tick. Mark it pending (not yet
+      // notified); the pending-timeout watchdog re-subscribes if the CCCD write
+      // silently failed and no notification ever arrives.
       if (sub != null) {
         _dropStatsSub = sub;
         _dropConn = conn;
-        _lastDropNotifyAt = DateTime.now();
+        _dropSubscribedAt = DateTime.now();
+        _lastDropNotifyAt = null;
       }
     } catch (_) {
       // Transient BLE error — retry on the next tick.
     } finally {
-      _dropsSubscribing = false;
+      _dropMutex.release();
     }
   }
 
