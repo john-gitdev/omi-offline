@@ -435,7 +435,9 @@ class OmiDeviceConnection extends DeviceConnection {
     _chargingSubscription = null;
     await _muteSubscription?.cancel();
     _muteSubscription = null;
-    await _dropStatsSubscription?.cancel();
+    // Do NOT cancel the drop-stats sub here: cancelling suppresses onDone, which is
+    // how the diagnostics page learns the stream closed and re-subscribes. Just drop
+    // our reference — super.disconnect() closes the stream, firing onDone/onClosed.
     _dropStatsSubscription = null;
     await stop();
     await super.disconnect(isManual: isManual);
