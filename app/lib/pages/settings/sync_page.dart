@@ -594,7 +594,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         },
       );
       if (!mounted || gen != _dropSubGen) {
-        await sub?.cancel();
+        // stop()/dispose ran while we awaited; its teardown found nothing because we
+        // hadn't stored the sub/conn yet. Tear down what we just created via the
+        // connection — this cancels the Dart sub AND writes CCCD=0 / drops the
+        // controller — or the device keeps notifying to a listener-less stream.
+        await conn.unsubscribeDropStats();
         return;
       }
       // Subscribe writes the CCCD; during a transfer that write can lose the race
