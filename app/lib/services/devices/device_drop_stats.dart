@@ -102,7 +102,7 @@ class DeviceDropStats {
 
   /// The firmware's SD write-queue size (`SD_REQ_QUEUE_MSGS`), used as the denominator
   /// for [msgqPeakDepth]. The firmware doesn't send this as a field; it's derived from
-  /// the payload length in the parser — the 84-byte payload is only produced by the
+  /// the payload length in the parser — the 76-byte payload is only produced by the
   /// build that also raised the queue to 120, so a shorter payload means the old 100.
   /// Prevents reporting a peak of 96 as `96/120` (healthy-looking) on firmware whose
   /// real ceiling is 100.
