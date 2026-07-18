@@ -2133,33 +2133,37 @@ void sd_worker_thread(void)
                 last_file_sync_uptime_ms = k_uptime_get();
             }
             sd_set_io_low_power(true);
-        } else if (atomic_get(&sd_write_paused) && bytes_written_since_gc >= IDLE_GC_BYTES_THRESHOLD &&
-                   !is_storage_sync_active() && k_msgq_num_used_get(&sd_msgq) == 0 &&
-                   k_msgq_num_used_get(&sd_prio_msgq) == 0 &&
+        } else if (!atomic_get(&ble_connected) && atomic_get(&sd_write_paused) &&
+                   bytes_written_since_gc >= IDLE_GC_BYTES_THRESHOLD && !is_storage_sync_active() &&
+                   k_msgq_num_used_get(&sd_msgq) == 0 && k_msgq_num_used_get(&sd_prio_msgq) == 0 &&
                    (k_uptime_get() - sd_paused_since_ms) >= IDLE_GC_MIN_SILENCE_MS &&
                    (k_uptime_get() - last_idle_gc_attempt_ms) >= IDLE_GC_RETRY_COOLDOWN_MS) {
             /* Opportunistic allocator refill. We reach here only on a write-wait timeout
              * with an empty batch, both queues drained, SD writes paused (AAD silence),
-             * NO storage sync in progress, the silence sustained past IDLE_GC_MIN_SILENCE_MS,
-             * and past the retry cooldown — i.e. the worker is genuinely idle in a real
-             * conversational gap. This is the free window to run the full-FS lookahead
-             * traversal that would otherwise stall the write path mid-recording (see
-             * LFS_LOOKAHEAD_SIZE / IDLE_GC_BYTES_THRESHOLD). Deliberately NOT run inside
-             * REQ_PAUSE_IO: that handler ACKs the AAD thread (which blocks on it), so a
-             * multi-second gc there would freeze AAD wake/resume handling. Here nothing
-             * waits on the worker.
+             * NO BLE connection, no storage sync, the silence sustained past
+             * IDLE_GC_MIN_SILENCE_MS, and past the retry cooldown — i.e. the worker is
+             * genuinely idle in a real conversational gap with nobody connected. This is
+             * the free window to run the full-FS lookahead traversal that would otherwise
+             * stall the write path mid-recording (see LFS_LOOKAHEAD_SIZE /
+             * IDLE_GC_BYTES_THRESHOLD). Deliberately NOT run inside REQ_PAUSE_IO: that
+             * handler ACKs the AAD thread (which blocks on it), so a multi-second gc there
+             * would freeze AAD wake/resume handling. Here nothing waits on the worker.
              *
              * Guards, and what each prevents:
-             *  - !is_storage_sync_active(): the empty-queue check is a single instant; a
-             *    sync has brief gaps between reads where both queues are momentarily
-             *    empty. Without this, a gc could start in that gap and block the next
-             *    read for the whole scan, stalling the transfer.
+             *  - !ble_connected: a storage sync can only run over a live connection, so
+             *    requiring "disconnected" ELIMINATES the sync-vs-gc race outright — a
+             *    transfer cannot be admitted behind an in-flight refill. (is_storage_sync_
+             *    active() alone is check-then-act: a sync could be admitted just after the
+             *    check.) It also aims the refill at the devices that need it — a phone
+             *    that's away isn't draining the card, so the FS fills and scans lengthen;
+             *    a connected phone is presumably syncing, keeping the card (and scans) small.
+             *  - !is_storage_sync_active(): defense-in-depth for the disconnect edge.
              *  - MIN_SILENCE_MS: only pre-empt a scan into a silence long enough to
              *    plausibly outlast it. Resumed speech mid-scan queues (120-deep, ~10 s)
              *    and drops only if the scan runs longer than the queue holds — the same
              *    loss the mid-write scan would cause anyway, now much less likely.
              *  - RETRY_COOLDOWN_MS: a persistently failing gc leaves bytes_written_since_gc
-             *    above threshold; without a cooldown it would re-scan every 50 ms timeout.
+             *    above threshold; without a cooldown it would re-scan every timeout.
              * The pause suspended SPI, so wake it for the scan and re-suspend after.
              * compact_thresh=-1 keeps this to the allocator pre-warm (no compaction). */
             last_idle_gc_attempt_ms = k_uptime_get();
