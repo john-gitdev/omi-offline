@@ -601,12 +601,24 @@ static struct bt_gatt_service diagnostics_service = BT_GATT_SERVICE(diagnostics_
 
 /* Notify the 84-byte drop payload to every subscribed client. The value
  * attribute is index 4: [0]=service, [1]/[2]=0x0061 decl/value,
- * [3]/[4]=0x0062 decl/value, [5]=CCC. */
+ * [3]/[4]=0x0062 decl/value, [5]=CCC.
+ *
+ * An 84-byte notification needs ATT_MTU >= 87; on a link that never negotiated up
+ * from the 23-byte default bt_gatt_notify returns -EMSGSIZE and the update is lost.
+ * This is a *live* convenience path — the same payload is always available via a
+ * plain READ (ATT read-blob is not MTU-bounded), which is the app's fallback — so we
+ * don't defer or fragment here, but we no longer drop the error on the floor: log it
+ * (rate-limited by the caller's 2 s/15 s cadence) so a chronically small MTU is
+ * visible instead of silent. In practice CONFIG_BT_L2CAP_TX_MTU=498 with
+ * AUTO_UPDATE_MTU makes this the rare exception, not the rule. */
 static void diagnostics_drops_notify(void)
 {
     uint8_t payload[84];
     diagnostics_drops_pack(payload);
-    bt_gatt_notify(NULL, &diagnostics_service_attr[4], payload, sizeof(payload));
+    int err = bt_gatt_notify(NULL, &diagnostics_service_attr[4], payload, sizeof(payload));
+    if (err && err != -ENOTCONN) {
+        LOG_DBG("diagnostics notify skipped (err %d) — client can still READ 0x0062", err);
+    }
 }
 
 static void diagnostics_notify_work_handler(struct k_work *work);
