@@ -114,6 +114,21 @@ abstract class DeviceConnection {
 
   Future<DeviceDropStats?> performGetDropStats() async => null;
 
+  /// Subscribe to live drop-counter notifications (0x0062). Firmware pushes
+  /// these on a timer while subscribed, so the diagnostics view updates during
+  /// an SD sync — unlike getDropStats(), whose read races the sync stream.
+  Future<StreamSubscription<List<int>>?> getDropStatsListener({
+    required void Function(DeviceDropStats stats) onDropStats,
+  }) async {
+    if (await isConnected()) return performGetDropStatsListener(onDropStats: onDropStats);
+    return null;
+  }
+
+  Future<StreamSubscription<List<int>>?> performGetDropStatsListener({
+    required void Function(DeviceDropStats stats) onDropStats,
+  }) async =>
+      null;
+
   Future<List<StorageFile>> listFiles() async {
     if (await isConnected()) return performListFiles();
     return [];
