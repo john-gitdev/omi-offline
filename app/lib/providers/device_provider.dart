@@ -1619,6 +1619,10 @@ class DeviceProvider extends ChangeNotifier
             'empty_bin_rotations': dropStats.emptyBinRotations,
             'session_end_marker_emits': dropStats.sessionEndMarkerEmits,
             'marker_pause_gate_saves': dropStats.markerPauseGateSaves,
+            'idle_gc_runs': dropStats.idleGcRuns,
+            'idle_gc_max_ms': dropStats.idleGcMaxMs,
+            'sd_worker_stack_used': dropStats.sdWorkerStackUsed,
+            'codec_stack_used': dropStats.codecStackUsed,
           });
         }
       }
