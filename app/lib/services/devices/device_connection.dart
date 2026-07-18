@@ -117,17 +117,25 @@ abstract class DeviceConnection {
   /// Subscribe to live drop-counter notifications (0x0062). Firmware pushes
   /// these on a timer while subscribed, so the diagnostics view updates during
   /// an SD sync — unlike getDropStats(), whose read races the sync stream.
+  /// [onClosed] fires when the underlying stream ends (e.g. a disconnect), so the
+  /// caller can drop the dead subscription and re-establish one.
   Future<StreamSubscription<List<int>>?> getDropStatsListener({
     required void Function(DeviceDropStats stats) onDropStats,
+    void Function()? onClosed,
   }) async {
-    if (await isConnected()) return performGetDropStatsListener(onDropStats: onDropStats);
+    if (await isConnected()) return performGetDropStatsListener(onDropStats: onDropStats, onClosed: onClosed);
     return null;
   }
 
   Future<StreamSubscription<List<int>>?> performGetDropStatsListener({
     required void Function(DeviceDropStats stats) onDropStats,
+    void Function()? onClosed,
   }) async =>
       null;
+
+  /// Tear down the drop-counter subscription at the BLE layer (CCCD=0) so the
+  /// firmware stops pushing notifications while the connection stays up.
+  Future<void> unsubscribeDropStats() async {}
 
   Future<List<StorageFile>> listFiles() async {
     if (await isConnected()) return performListFiles();
