@@ -92,6 +92,8 @@ void main() {
         emptyBinRotations: 4,
         sessionEndMarkerEmits: 3,
         markerPauseGateSaves: 2,
+        idleGcRuns: 8,
+        idleGcMaxMs: 4200,
         readAt: DateTime.now(),
       );
 
@@ -109,6 +111,8 @@ void main() {
       expect(restored.emptyBinRotations, 4);
       expect(restored.sessionEndMarkerEmits, 3);
       expect(restored.markerPauseGateSaves, 2);
+      expect(restored.idleGcRuns, 8);
+      expect(restored.idleGcMaxMs, 4200);
       // currentUptimeMs is retained as provenance (when the reset was taken);
       // reboot detection is counter-based, so nothing reads it, but it round-trips.
       expect(restored.currentUptimeMs, 123456);
