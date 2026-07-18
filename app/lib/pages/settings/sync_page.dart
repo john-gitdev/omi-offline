@@ -39,12 +39,20 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   Timer? _pollTimer;
   Timer? _dropPollTimer;
   Timer? _logPollTimer;
+  // Live drop-counter notifications (0x0062). The firmware pushes these while
+  // subscribed, so counters keep updating during a sync — a GATT read would race
+  // the sync stream (Error 133 on Android).
+  StreamSubscription<List<int>>? _dropStatsSub;
   DeviceDropStats? _dropStats;
   // Snapshot used to render "since baseline" deltas; null = show absolute totals.
   DeviceDropStats? _dropBaseline;
-  bool _dropsUnsupported = false;
-  bool _dropsReading = false;
-  bool _dropsWaitingSync = false;
+  // SD-queue peak depth is a monotonic since-boot high-water mark in firmware, so
+  // it can't be delta-subtracted like the cumulative counters. Instead we keep our
+  // own high-water mark of the values seen since the last "Zero all counters" tap:
+  // reset it to 0 and let it re-climb from the next reading upward.
+  int _peakSinceReset = 0;
+  // Re-entrancy guard so overlapping timer ticks don't fire concurrent subscribes.
+  bool _dropsSubscribing = false;
   // True once we've attempted to restore the persisted baseline this polling session.
   bool _baselineRestored = false;
 
@@ -92,19 +100,25 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   void _startDropPolling() {
-    _dropPollTimer ??= Timer.periodic(const Duration(seconds: 2), (_) => _refreshDropStats());
-    unawaited(_refreshDropStats());
+    // The timer's only job is to establish (and, if it drops, re-establish) the
+    // notify subscription; once subscribed, notifications — not the timer — drive
+    // the UI. A subscribe during an active transfer can lose the CCCD-write race,
+    // so the tick retries until it lands.
+    _dropPollTimer ??= Timer.periodic(const Duration(seconds: 2), (_) => _ensureDropSubscription());
+    unawaited(_ensureDropSubscription());
   }
 
   void _stopDropPolling() {
     _dropPollTimer?.cancel();
     _dropPollTimer = null;
+    unawaited(_dropStatsSub?.cancel());
+    _dropStatsSub = null;
     _dropStats = null;
     _dropBaseline = null;
+    _peakSinceReset = 0;
     _connFailBaseline = null;
     _estabFailBaseline = null;
-    _dropsUnsupported = false;
-    _dropsWaitingSync = false;
+    _dropsSubscribing = false;
     _baselineRestored = false;
   }
 
@@ -473,35 +487,32 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     });
   }
 
-  Future<void> _refreshDropStats() async {
-    if (_dropsUnsupported || _dropsReading) return;
+  Future<void> _ensureDropSubscription() async {
+    // Already subscribed — notifications drive _dropStats directly.
+    if (_dropStatsSub != null || _dropsSubscribing) return;
     if (!mounted) return;
     final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
     final dev = deviceProvider.connectedDevice;
     if (dev == null) return;
-    _dropsReading = true;
+    _dropsSubscribing = true;
     try {
       final conn = await ServiceManager.instance().device.ensureConnection(dev.id);
       if (conn == null) return;
-      // Skip during active file transfer — a GATT read racing with the notification
-      // stream causes Error 133 on Android and drops the connection.
-      if (conn.isStorageBusy) {
-        if (!_dropsWaitingSync) setState(() => _dropsWaitingSync = true);
-        return;
-      }
-      if (_dropsWaitingSync) setState(() => _dropsWaitingSync = false);
-      final stats = await conn.getDropStats();
-      if (!mounted) return;
-      if (stats == null) {
-        setState(() => _dropsUnsupported = true);
-      } else {
-        setState(() => _dropStats = stats);
+      final sub = await conn.getDropStatsListener(onDropStats: (stats) {
+        if (!mounted) return;
+        setState(() {
+          _dropStats = stats;
+          if (stats.msgqPeakDepth > _peakSinceReset) _peakSinceReset = stats.msgqPeakDepth;
+        });
         _tryRestoreBaseline(stats);
-      }
+      });
+      // Subscribe writes the CCCD; during a transfer that write can lose the race
+      // (Error 133) and return null — just retry on the next tick until it lands.
+      if (sub != null) _dropStatsSub = sub;
     } catch (_) {
-      // Transient BLE errors are fine — try again on the next tick.
+      // Transient BLE error — retry on the next tick.
     } finally {
-      _dropsReading = false;
+      _dropsSubscribing = false;
     }
   }
 
@@ -583,6 +594,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   void _resetAllDiagnostics() {
     _snapshotDropBaseline();
     _snapshotConnFailBaseline();
+    // Peak depth has no baseline to subtract — zero our high-water mark so it
+    // re-climbs from the next reading (the next value > 0), not from the old peak.
+    setState(() => _peakSinceReset = 0);
   }
 
   /// Counts `.bin` files in the isolated Adjustment Mode folder.
@@ -619,6 +633,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   void dispose() {
     _pollTimer?.cancel();
     _dropPollTimer?.cancel();
+    unawaited(_dropStatsSub?.cancel());
     _logPollTimer?.cancel();
     super.dispose();
   }
@@ -1255,28 +1270,13 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       );
     }
 
-    if (_dropsUnsupported) {
-      return const Row(
-        children: [
-          FaIcon(FontAwesomeIcons.circleInfo, size: 13, color: Colors.white38),
-          SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              'Diagnostics unavailable (older firmware).',
-              style: TextStyle(color: Colors.white38, fontSize: 12),
-            ),
-          ),
-        ],
-      );
-    }
     final stats = _dropStats;
     if (stats == null) {
-      final waitLabel = _dropsWaitingSync ? 'Waiting for sync to complete…' : 'Reading drop counters…';
-      return Row(
+      return const Row(
         children: [
-          const FaIcon(FontAwesomeIcons.circleNotch, size: 13, color: Colors.white38),
-          const SizedBox(width: 8),
-          Text(waitLabel, style: const TextStyle(color: Colors.white38, fontSize: 12)),
+          FaIcon(FontAwesomeIcons.circleNotch, size: 13, color: Colors.white38),
+          SizedBox(width: 8),
+          Text('Reading drop counters…', style: TextStyle(color: Colors.white38, fontSize: 12)),
         ],
       );
     }
@@ -1293,10 +1293,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final frames = rel(stats.streamFrameDrops, (b) => b.streamFrameDrops);
     final codec = rel(stats.codecFrameDrops, (b) => b.codecFrameDrops);
     final boot = rel(stats.bootFrameDrops, (b) => b.bootFrameDrops);
-    // Peak depth is a high-water mark, not an incremental counter, so it can't be
-    // delta-subtracted. Show the live peak once it climbs past where it stood at the
-    // reset (i.e. genuinely new queue pressure), otherwise 0.
-    final peak = baseline == null || stats.msgqPeakDepth > baseline.msgqPeakDepth ? stats.msgqPeakDepth : 0;
+    // Peak depth is a monotonic high-water mark, not an incremental counter, so it
+    // can't be delta-subtracted. Show our own high-water mark since the last reset:
+    // "Zero all counters" sets it to 0 and it re-climbs from the next reading up.
+    final peak = _peakSinceReset;
     final writeFair = rel(stats.writeFairActivations, (b) => b.writeFairActivations);
     final prioStarts = rel(stats.priorityRecordStarts, (b) => b.priorityRecordStarts);
     final prioStops = rel(stats.priorityRecordStops, (b) => b.priorityRecordStops);
