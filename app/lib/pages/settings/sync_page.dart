@@ -634,6 +634,45 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
   }
 
+  // Companion Device Pairing applies immediately — it has side effects (a
+  // disconnect/reconnect, and the system pairing chooser when enabling), so it sits
+  // outside any save/discard flow. OFF: reconnect so native manageDevice clears the
+  // association now. ON: disconnect (so the Omi advertises), pop the system companion
+  // chooser, then reconnect. Both directions need the disconnect first —
+  // ensureConnection(force) is a no-op while connected (so manageDevice wouldn't re-run),
+  // and a connected Omi (MAX_CONN=1) isn't advertising for the chooser to find.
+  Future<void> _setCompanionDevicePairing(bool value) async {
+    SharedPreferencesUtil().companionDeviceEnabled = value;
+    setState(() {});
+
+    final deviceId = SharedPreferencesUtil().btDevice.id;
+    if (deviceId.isEmpty) return; // no paired device — applies on next connect
+
+    final deviceService = ServiceManager.instance().device;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(SnackBar(
+      content: Text(value ? 'Enabling companion pairing…' : 'Disabling companion pairing…'),
+    ));
+
+    try {
+      await deviceService.disconnectDevice(isManual: true);
+
+      if (value && !(await deviceService.hasCompanionDeviceAssociation())) {
+        final addr = await deviceService.requestCompanionDeviceAssociation(deviceId);
+        if (addr.isEmpty) {
+          // Chooser cancelled — revert so the toggle reflects reality.
+          SharedPreferencesUtil().companionDeviceEnabled = false;
+          if (mounted) setState(() {});
+        }
+      }
+
+      // Reconnect: native manageDevice clears the association when off, no-op when on.
+      await deviceService.ensureConnection(deviceId, force: true);
+    } catch (e) {
+      Logger.error('SyncPage: companion pairing toggle failed: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -665,6 +704,35 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 style: const TextStyle(color: Colors.white, fontSize: 16),
               ),
               const SizedBox(height: 24),
+              // Companion Device Pairing (Android) — default ON. A troubleshooting toggle
+              // for the rare OEM where registering as a system companion makes Bluetooth
+              // reconnection worse; lives here in Debug Tools so it stays reachable when the
+              // device won't connect. Applies immediately via _setCompanionDevicePairing
+              // (reconnect on off, system chooser on on).
+              if (Platform.isAndroid) ...[
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1C1C1E),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Companion Device Pairing',
+                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                    subtitle: Text(
+                      SharedPreferencesUtil().companionDeviceEnabled
+                          ? 'On (recommended) — lets the app fix a stuck Bluetooth connection on its own, instead of you having to toggle phone Bluetooth. Turn off only if reconnecting gets worse with this on.'
+                          : "Off — the app connects without registering as a system companion. Turn on (recommended) to help it recover from stuck Bluetooth connections; it'll reconnect and show a pairing dialog.",
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    ),
+                    value: SharedPreferencesUtil().companionDeviceEnabled,
+                    onChanged: (value) => _setCompanionDevicePairing(value),
+                    activeThumbColor: Colors.deepPurpleAccent,
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
