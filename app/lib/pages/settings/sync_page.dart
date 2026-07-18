@@ -71,6 +71,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   // Bumped whenever the subscription intent is invalidated (teardown / stop) so an
   // in-flight subscribe or a stale onClosed can't act on a superseded generation.
   int _dropSubGen = 0;
+  // Device the currently-shown diagnostics belong to. When the connected device changes
+  // we must clear the per-device state (stats, peak high-water, baselines) so the new
+  // device doesn't inherit the previous one's numbers.
+  String? _dropDeviceId;
   DeviceDropStats? _dropStats;
   // Snapshot used to render "since baseline" deltas; null = show absolute totals.
   DeviceDropStats? _dropBaseline;
@@ -564,6 +568,15 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
     final dev = deviceProvider.connectedDevice;
     if (dev == null) return;
+    // Connected device changed → the previous device's counters, peak high-water, and
+    // baselines no longer apply. Clear them (and re-restore baselines for the new device)
+    // so its lower peak doesn't read inflated and the old baseline can't suppress its
+    // drops. Runs before the health check so it fires even when the old sub still looks
+    // "healthy".
+    if (_dropDeviceId != null && _dropDeviceId != dev.id) {
+      _resetPerDeviceDiagnostics();
+    }
+    _dropDeviceId = dev.id;
     // Fast path only if the live subscription belongs to the *currently* connected
     // device. A device switch while this page stays mounted must tear down and
     // re-subscribe; otherwise the card keeps showing the previous device's counters.
@@ -707,6 +720,20 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // Peak depth has no baseline to subtract — zero our high-water mark so it
     // re-climbs from the next reading (the next value > 0), not from the old peak.
     setState(() => _peakSinceReset = 0);
+  }
+
+  // Clears everything that is specific to one device, so a device switch doesn't carry
+  // the previous device's numbers over. `_baselineRestored` is reset so the new device's
+  // own persisted baseline (if any) is re-restored on the next tick.
+  void _resetPerDeviceDiagnostics() {
+    if (!mounted) return;
+    setState(() {
+      _dropStats = null;
+      _peakSinceReset = 0;
+      _dropBaseline = null;
+      _connFailBaseline = null;
+      _baselineRestored = false;
+    });
   }
 
   /// Counts `.bin` files in the isolated Adjustment Mode folder.
