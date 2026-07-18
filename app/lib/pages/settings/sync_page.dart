@@ -1412,6 +1412,21 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final emptyRot = rel(stats.emptyBinRotations, (b) => b.emptyBinRotations);
     final seEmits = rel(stats.sessionEndMarkerEmits, (b) => b.sessionEndMarkerEmits);
     final pauseSaves = rel(stats.markerPauseGateSaves, (b) => b.markerPauseGateSaves);
+    final gcRuns = rel(stats.idleGcRuns, (b) => b.idleGcRuns);
+    // idleGcMaxMs is a lifetime high-water mark (longest single refill), not an
+    // incremental counter, so it isn't delta-subtracted — shown raw like the device
+    // uptime. It answers "how long a mid-recording allocator scan would have been."
+    final gcMaxMs = stats.idleGcMaxMs;
+    // Peak thread stack usage vs the configured stack sizes (firmware constants:
+    // SD_WORKER_STACK_SIZE=16384, codec_stack=19000). Gauges, shown raw. Large unused
+    // headroom = the stack is over-provisioned and can be trimmed to reclaim RAM.
+    // Highlighted only when usage is close to the ceiling (>85% = overflow risk).
+    const int sdWorkerStackSize = 16384;
+    const int codecStackSize = 19000;
+    String stackLabel(int used, int size) =>
+        used == 0 ? '—' : '${(used / 1024).toStringAsFixed(1)} / ${(size / 1024).toStringAsFixed(1)} KB';
+    final sdStackHot = stats.sdWorkerStackUsed > sdWorkerStackSize * 0.85;
+    final codecStackHot = stats.codecStackUsed > codecStackSize * 0.85;
     final hasFreshDrops = blocks > 0 || frames > 0 || codec > 0;
     final connFails = _connFailBaseline == null ? stats.failedConnCount : (stats.failedConnCount - _connFailBaseline!);
     final estabFails = _estabFailBaseline == null ? stats.estabFailCount : (stats.estabFailCount - _estabFailBaseline!);
@@ -1462,10 +1477,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           _dropStatRow('Device uptime', _formatDuration(stats.currentUptimeMs), false),
           // Write-path headroom. Peak depth is a high-water mark, so after a reset it
           // reads 0 until the queue climbs past where it stood at the reset, then
-          // shows that live peak out of the queue limit (100); near 100 means the
+          // shows that live peak out of the queue limit (120); near 120 means the
           // write path is riding the drop edge, low means plenty of headroom. Fairness
           // activations just show the read-vs-write arbiter engaging — not a fault.
-          _dropStatRow('SD queue peak depth', '$peak / 100', peak >= 80),
+          _dropStatRow('SD queue peak depth', '$peak / 120', peak >= 96),
           _dropStatRow('Write-fairness activations', writeFair.toString(), false),
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 6),
@@ -1491,6 +1506,24 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           // failure these counters exist to catch.
           _dropStatRow('Session-end marker emits', seEmits.toString(), prioStops > 0 && seEmits == 0),
           _dropStatRow('Markers kept at SD pause gate', pauseSaves.toString(), false),
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 6),
+            child: Divider(color: Color(0xFF2C2C2E), height: 1),
+          ),
+          // Idle allocator refills (0x0062). The firmware pre-warms LittleFS's block
+          // allocator during AAD silence so the periodic full-FS traversal doesn't
+          // stall the write path mid-recording. "Longest refill" is roughly how long
+          // that traversal WOULD have blocked writes had it fired while recording —
+          // if it's several seconds and the SD queue peak above stays clear of the
+          // ceiling, the scan is being absorbed in silence, as intended.
+          _dropStatRow('Idle allocator refills', gcRuns.toString(), false),
+          _dropStatRow('Longest refill', gcMaxMs > 0 ? _formatDuration(gcMaxMs) : '—', false),
+          // Peak thread stack usage (0x0062). Read after a heavy session (an allocator
+          // scan is the SD worker's deepest path; busy encoding is the codec's) so the
+          // high-water reflects the worst case. Big gap below the configured size means
+          // reclaimable RAM; amber = riding the ceiling (overflow risk, do NOT trim).
+          _dropStatRow('SD worker stack', stackLabel(stats.sdWorkerStackUsed, sdWorkerStackSize), sdStackHot),
+          _dropStatRow('Codec stack', stackLabel(stats.codecStackUsed, codecStackSize), codecStackHot),
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 6),
             child: Divider(color: Color(0xFF2C2C2E), height: 1),
