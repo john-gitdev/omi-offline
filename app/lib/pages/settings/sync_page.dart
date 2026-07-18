@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
 import 'package:omi/providers/device_provider.dart';
+import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/device_drop_stats.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
@@ -43,6 +44,18 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   // subscribed, so counters keep updating during a sync — a GATT read would race
   // the sync stream (Error 133 on Android).
   StreamSubscription<List<int>>? _dropStatsSub;
+  // Connection we subscribed on, kept so we can unsubscribe at the BLE layer
+  // (CCCD=0) on teardown even from dispose(), where we can't await a fresh lookup.
+  DeviceConnection? _dropConn;
+  // Last time a notification actually arrived. Drives the liveness watchdog: the
+  // native subscribe (CCCD write) is fire-and-forget, so a live-but-silent stream
+  // (failed write, or a link recycled onto a new controller) can't be detected any
+  // other way. Must exceed the firmware's 15 s idle heartbeat.
+  DateTime? _lastDropNotifyAt;
+  static const _dropSilenceTimeout = Duration(seconds: 35);
+  // Bumped whenever the subscription intent is invalidated (teardown / stop) so an
+  // in-flight subscribe or a stale onClosed can't act on a superseded generation.
+  int _dropSubGen = 0;
   DeviceDropStats? _dropStats;
   // Snapshot used to render "since baseline" deltas; null = show absolute totals.
   DeviceDropStats? _dropBaseline;
@@ -111,8 +124,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   void _stopDropPolling() {
     _dropPollTimer?.cancel();
     _dropPollTimer = null;
-    unawaited(_dropStatsSub?.cancel());
-    _dropStatsSub = null;
+    unawaited(_teardownDropSubscription());
     _dropStats = null;
     _dropBaseline = null;
     _peakSinceReset = 0;
@@ -120,6 +132,24 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     _estabFailBaseline = null;
     _dropsSubscribing = false;
     _baselineRestored = false;
+  }
+
+  /// Drop the notify subscription at both the Dart and BLE layers, and invalidate
+  /// the current generation so any in-flight subscribe / stale onClosed is ignored.
+  /// The generation bump runs synchronously (before the first await), so callers
+  /// that fire-and-forget this still invalidate in-flight work immediately.
+  Future<void> _teardownDropSubscription() async {
+    _dropSubGen++;
+    final sub = _dropStatsSub;
+    final conn = _dropConn;
+    _dropStatsSub = null;
+    _dropConn = null;
+    _lastDropNotifyAt = null;
+    await sub?.cancel();
+    // Write CCCD=0 so the firmware stops pushing, and drop the transport's stream
+    // controller so a later re-subscribe issues a fresh CCCD write. Best-effort;
+    // a real disconnect also unsubscribes, and it no-ops on a recycled connection.
+    await conn?.unsubscribeDropStats();
   }
 
   void _startLogPolling() {
@@ -487,28 +517,65 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     });
   }
 
+  // Healthy = we have a subscription that has produced a notification within the
+  // silence window. The native subscribe is fire-and-forget, so a subscription
+  // object alone doesn't prove notifications are flowing.
+  bool get _dropSubHealthy {
+    if (_dropStatsSub == null) return false;
+    final last = _lastDropNotifyAt;
+    return last != null && DateTime.now().difference(last) < _dropSilenceTimeout;
+  }
+
   Future<void> _ensureDropSubscription() async {
-    // Already subscribed — notifications drive _dropStats directly.
-    if (_dropStatsSub != null || _dropsSubscribing) return;
+    if (_dropsSubscribing) return;
+    // Healthy subscription — notifications drive _dropStats directly.
+    if (_dropSubHealthy) return;
     if (!mounted) return;
     final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
     final dev = deviceProvider.connectedDevice;
     if (dev == null) return;
     _dropsSubscribing = true;
+    // Tear down any dead/silent subscription first, awaiting the BLE unsubscribe so
+    // the transport's stream controller is gone before we re-subscribe — otherwise
+    // getCharacteristicStream reuses the stale controller and skips the CCCD write.
+    if (_dropStatsSub != null || _dropConn != null) await _teardownDropSubscription();
+    final gen = _dropSubGen;
     try {
       final conn = await ServiceManager.instance().device.ensureConnection(dev.id);
-      if (conn == null) return;
-      final sub = await conn.getDropStatsListener(onDropStats: (stats) {
-        if (!mounted) return;
-        setState(() {
-          _dropStats = stats;
-          if (stats.msgqPeakDepth > _peakSinceReset) _peakSinceReset = stats.msgqPeakDepth;
-        });
-        _tryRestoreBaseline(stats);
-      });
+      // Bail if the connection died, the widget went away, or stop()/another
+      // teardown superseded this attempt while we awaited.
+      if (conn == null || !mounted || gen != _dropSubGen) return;
+      final sub = await conn.getDropStatsListener(
+        onDropStats: (stats) {
+          if (!mounted || gen != _dropSubGen) return;
+          _lastDropNotifyAt = DateTime.now();
+          setState(() {
+            _dropStats = stats;
+            if (stats.msgqPeakDepth > _peakSinceReset) _peakSinceReset = stats.msgqPeakDepth;
+          });
+          _tryRestoreBaseline(stats);
+        },
+        // Stream closed (disconnect) — the transport re-subscribes on reconnect
+        // via a new controller this sub isn't attached to, so drop it and let the
+        // next tick re-establish. Ignored if a newer generation already took over.
+        onClosed: () {
+          if (!mounted || gen != _dropSubGen) return;
+          _dropStatsSub = null;
+          _lastDropNotifyAt = null;
+        },
+      );
+      if (!mounted || gen != _dropSubGen) {
+        await sub?.cancel();
+        return;
+      }
       // Subscribe writes the CCCD; during a transfer that write can lose the race
-      // (Error 133) and return null — just retry on the next tick until it lands.
-      if (sub != null) _dropStatsSub = sub;
+      // (Error 133) and return null — retry next tick. Seed the silence clock so
+      // the watchdog re-subscribes if no notification ever arrives.
+      if (sub != null) {
+        _dropStatsSub = sub;
+        _dropConn = conn;
+        _lastDropNotifyAt = DateTime.now();
+      }
     } catch (_) {
       // Transient BLE error — retry on the next tick.
     } finally {
@@ -633,7 +700,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   void dispose() {
     _pollTimer?.cancel();
     _dropPollTimer?.cancel();
-    unawaited(_dropStatsSub?.cancel());
+    // Cancel the Dart sub and tell the device to stop pushing (CCCD=0); can't await
+    // in dispose, so fire-and-forget — the generation bump runs synchronously.
+    unawaited(_teardownDropSubscription());
     _logPollTimer?.cancel();
     super.dispose();
   }
