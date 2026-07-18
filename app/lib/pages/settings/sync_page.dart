@@ -559,15 +559,19 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // Healthy subscription — notifications drive _dropStats directly. isLocked skips
     // ticks while a subscribe/teardown is already running (acquire sets it
     // synchronously on the uncontended path, so this guard is race-free).
-    if (_dropSubHealthy || _dropMutex.isLocked) return;
+    if (_dropMutex.isLocked) return;
     if (!mounted) return;
     final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
     final dev = deviceProvider.connectedDevice;
     if (dev == null) return;
+    // Fast path only if the live subscription belongs to the *currently* connected
+    // device. A device switch while this page stays mounted must tear down and
+    // re-subscribe; otherwise the card keeps showing the previous device's counters.
+    if (_dropSubHealthy && _dropConn?.device.id == dev.id) return;
     await _dropMutex.acquire();
     try {
       // Re-check under the lock — a teardown/subscribe may have run while we waited.
-      if (_dropSubHealthy) return;
+      if (_dropSubHealthy && _dropConn?.device.id == dev.id) return;
       // Tear down any dead/silent subscription first (awaited, under the lock) so the
       // transport's stream controller is gone before we re-subscribe — otherwise
       // getCharacteristicStream reuses the stale controller and skips the CCCD write.
