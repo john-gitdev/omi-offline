@@ -196,9 +196,9 @@ uint32_t sd_get_marker_pause_gate_saves(void);
 /**
  * @brief Get the number of opportunistic allocator-lookahead refills (idle-gc).
  *
- * Incremented each time the REQ_PAUSE_IO handler runs lfs_fs_gc during an AAD silence
- * pause to pre-warm the block allocator off the write path. Monotonic since boot.
- * Safe to call from any thread.
+ * Incremented each time the worker's idle tick runs lfs_fs_gc during a sustained AAD
+ * silence pause to pre-warm the block allocator off the write path. Monotonic since
+ * boot. Safe to call from any thread.
  */
 uint32_t sd_get_idle_gc_runs(void);
 
