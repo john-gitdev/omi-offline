@@ -206,6 +206,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   // callback (including the per-file fileDone tick that fires after each
   // delete) so a slow delete cycle never false-triggers.
   DateTime _lastProgressAt = DateTime.fromMillisecondsSinceEpoch(0);
+  // Last on-disk size of the active download the syncing watchdog observed, or -1
+  // when no transfer is active. Lets _poll re-anchor _lastProgressAt on real
+  // intra-file byte growth even when the per-packet progress callback is throttled
+  // (paused isolate) — see the liveness sample in _poll.
+  int _lastLivenessBytes = -1;
   DateTime _lastNotificationUpdate = DateTime.fromMillisecondsSinceEpoch(0);
   static const _notificationUpdateInterval = Duration(seconds: 5);
   // syncing: per-packet progress fires ~50 Hz during a healthy transfer; the
@@ -453,6 +458,27 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       }
       _pollHeyPocket();
       return;
+    }
+
+    // Intra-file transfer liveness. The per-packet sync-progress callback that
+    // normally bumps _lastProgressAt is throttled while the isolate is paused, so
+    // it only advances at file boundaries — a single large file over background-
+    // throttled BLE then looks "stalled" for >_syncingStallTimeout and the watchdog
+    // below force-recovers a healthy transfer (recycling the link mid-download,
+    // which is what drove the repeated background partial syncs). Native writes the
+    // .bin incrementally regardless of Dart timer throttling, so sample its on-disk
+    // size directly here — this poll runs often enough (the >10s grace above guards
+    // the case where it doesn't). Any growth is real progress the callback missed.
+    if (serviceIsSyncing) {
+      final liveBytes = syncs.activeTransferBytesOnDisk;
+      if (liveBytes != null) {
+        if (liveBytes != _lastLivenessBytes) {
+          _lastLivenessBytes = liveBytes;
+          _lastProgressAt = now;
+        }
+      } else {
+        _lastLivenessBytes = -1;
+      }
     }
 
     // Stall watchdog: a wedged native transfer leaves serviceIsSyncing stuck

@@ -80,6 +80,15 @@ abstract class SDCardWalSync implements IWalSync {
   void setGlobalProgressListener(IWalSyncProgressListener? listener);
   bool get isDeviceRecordingFailed;
   double get currentSpeedKBps;
+
+  /// On-disk size (bytes) of the .bin currently being downloaded, read fresh via
+  /// stat; null when no transfer is active. The sync stall-watchdog samples this
+  /// so it can observe intra-file byte progress even when the per-packet progress
+  /// callback is starved by background timer throttling — otherwise a single large
+  /// file over throttled background BLE looks "stalled" for the whole download and
+  /// gets force-recovered mid-transfer.
+  int? get activeTransferBytesOnDisk;
+
   int get recordingsCount;
   int get estimatedTotalSegments;
 

@@ -38,6 +38,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   bool _isCancelled = false;
   bool _isSyncing = false;
   int _lastSegmentBoundaryOffset = 0;
+  // Absolute path of the .bin the native downloader is currently writing, or null
+  // between transfers. Exposed (statted fresh) via [activeTransferBytesOnDisk] so
+  // the stall watchdog sees real intra-file progress under background throttling.
+  String? _activeDownloadPath;
   Completer<void>? _activeTransferCompleter;
   Completer<void>? _cancelCompleter;
   IWalSyncProgressListener? _globalProgressListener;
@@ -48,6 +52,18 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   bool get isDeviceRecordingFailed => false;
   @override
   Future<void>? get cancelFuture => _cancelCompleter?.future;
+  @override
+  int? get activeTransferBytesOnDisk {
+    final p = _activeDownloadPath;
+    if (p == null) return null;
+    try {
+      final f = File(p);
+      return f.existsSync() ? f.lengthSync() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   @override
   void setGlobalProgressListener(IWalSyncProgressListener? listener) {
     _globalProgressListener = listener;
@@ -879,6 +895,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       } catch (_) {}
     });
 
+    _activeDownloadPath = outputPath;
     try {
       await hostApi.downloadStorageFile(
         _device!.id,
@@ -888,6 +905,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         outputPath,
       );
     } finally {
+      _activeDownloadPath = null;
       pollTimer.cancel();
       await connection.stopStorageSync();
     }
