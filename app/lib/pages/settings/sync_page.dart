@@ -174,14 +174,16 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   /// Direct READ of the drop counters (0x0062), the MTU-agnostic fallback when the
-  /// notify path can't deliver. Gated on the storage mutex being free — a GATT read
-  /// during an active transfer races the sync stream (Error 133 on Android). Does not
-  /// touch _lastDropNotifyElapsed, so the notify watchdog keeps trying to re-establish
-  /// notifications (they resume automatically if the MTU later negotiates up).
+  /// notify path can't deliver. getDropStats() serializes the read against storage
+  /// commands inside the connection (non-blocking: it returns null while a transfer
+  /// holds the storage mutex), so the read can't race the sync stream (Error 133 on
+  /// Android) — even if a sync starts right after this call — and two ticks can't read
+  /// concurrently. Does not touch _lastDropNotifyElapsed, so the notify watchdog keeps
+  /// trying to re-establish notifications (they resume if the MTU later negotiates up).
   Future<void> _readDropStatsFallback() async {
     if (!mounted) return;
     final conn = _dropConn;
-    if (conn == null || conn.isStorageBusy) return;
+    if (conn == null) return;
     final gen = _dropSubGen;
     DeviceDropStats? stats;
     try {
