@@ -1536,9 +1536,11 @@ class DeviceProvider extends ChangeNotifier
       // Log the persisted BLE connect-failure counters on every connect so they land
       // in 'Save Diagnostic Logs to File'. The counts survive a reboot, so after
       // power-cycling to reconnect, this captures failures from before the reboot.
-      // See NOTES.md "BLE: advertising but won't connect". Skip if a sync is already
-      // transferring — a GATT read racing the storage stream throws Error 133 on
-      // Android (next connect logs it instead).
+      // See NOTES.md "BLE: advertising but won't connect". getDropStats() self-skips
+      // (returns null) while a sync holds the storage mutex — a GATT read racing the
+      // storage stream throws Error 133 on Android — so the next connect logs it
+      // instead. The skip is internal to the read, not a separate check-then-act here
+      // that a sync could slip through between the check and the read.
       //
       // Logged whatever the values are, including all-zero. Counters that did not move
       // across an outage are the reading that acquits the peripheral — it never heard
@@ -1546,7 +1548,7 @@ class DeviceProvider extends ChangeNotifier
       // on `> 0` made that case indistinguishable from a read that never happened.
       // The counters are cumulative across boots, so only their movement between two
       // consecutive lines means anything.
-      final dropStats = conn.isStorageBusy ? null : await conn.getDropStats();
+      final dropStats = await conn.getDropStats();
       if (dropStats != null) {
         if (dropStats.failedConnCount > 0 || dropStats.estabFailCount > 0) {
           Logger.warning('Device BLE connect-fail counters: conn=${dropStats.failedConnCount} '
