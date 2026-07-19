@@ -117,6 +117,23 @@ class MockDeviceConnection implements DeviceConnection {
   Future<DeviceDropStats?> performGetDropStats() async => null;
 
   @override
+  Future<StreamSubscription<List<int>>?> getDropStatsListener({
+    required void Function(DeviceDropStats stats) onDropStats,
+    void Function()? onClosed,
+  }) async =>
+      null;
+
+  @override
+  Future<StreamSubscription<List<int>>?> performGetDropStatsListener({
+    required void Function(DeviceDropStats stats) onDropStats,
+    void Function()? onClosed,
+  }) async =>
+      null;
+
+  @override
+  Future<void> unsubscribeDropStats() async {}
+
+  @override
   Future<bool> deleteFile(StorageFile file, {int? timestamp}) async {
     globalDeletedTimestamps.add(file.timestamp);
     return true;
