@@ -59,12 +59,22 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   final Stopwatch _dropClock = Stopwatch()..start();
   Duration? _dropSubscribedElapsed;
   Duration? _lastDropNotifyElapsed;
+  // Poll-start reference for the READ-fallback staleness check when no notification
+  // has ever arrived (small-MTU link). Set in _startDropPolling, cleared on stop.
+  Duration? _dropPollStartElapsed;
   // Pending (subscribed, no notification yet): the firmware pushes immediately on
   // subscribe, so a short window is enough — if nothing arrives the CCCD write
   // failed and we re-subscribe. Established: allow gaps up to the timeout, which
   // must exceed the firmware's 15 s idle heartbeat.
   static const _dropPendingTimeout = Duration(seconds: 6);
   static const _dropSilenceTimeout = Duration(seconds: 35);
+  // Notify path considered stale after this long with no notification (measured from
+  // the last real notification, or poll-start if none ever arrived). Sits above the
+  // 15 s idle notify cadence so a healthy idle stream never trips it. On a link whose
+  // MTU can't fit the 76 B notification the firmware can't push at all (-EMSGSIZE); a
+  // plain READ (ATT read-blob, not MTU-bounded) is the fallback. See _dropTick /
+  // _readDropStatsFallback.
+  static const _dropReadFallbackAfter = Duration(seconds: 20);
   // Serializes subscribe vs teardown so an async teardown's BLE unsubscribe can't
   // land on a freshly re-subscribed stream (fast Show-Diagnostics off/on).
   final Mutex _dropMutex = Mutex();
@@ -78,11 +88,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   DeviceDropStats? _dropStats;
   // Snapshot used to render "since baseline" deltas; null = show absolute totals.
   DeviceDropStats? _dropBaseline;
-  // SD-queue peak depth is a monotonic since-boot high-water mark in firmware, so
-  // it can't be delta-subtracted like the cumulative counters. Instead we keep our
-  // own high-water mark of the values seen since the last "Zero all counters" tap:
-  // reset it to 0 and let it re-climb from the next reading upward.
-  int _peakSinceReset = 0;
   // True once we've attempted to restore the persisted baseline this polling session.
   bool _baselineRestored = false;
 
@@ -130,12 +135,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   void _startDropPolling() {
-    // The timer's only job is to establish (and, if it drops, re-establish) the
-    // notify subscription; once subscribed, notifications — not the timer — drive
-    // the UI. A subscribe during an active transfer can lose the CCCD-write race,
-    // so the tick retries until it lands.
-    _dropPollTimer ??= Timer.periodic(const Duration(seconds: 2), (_) => _ensureDropSubscription());
-    unawaited(_ensureDropSubscription());
+    // The timer establishes (and, if it drops, re-establishes) the notify
+    // subscription; once subscribed, notifications — not the timer — drive the UI.
+    // A subscribe during an active transfer can lose the CCCD-write race, so the tick
+    // retries until it lands. The tick also runs the READ-fallback for links whose
+    // MTU can't carry the notification (see _dropTick).
+    _dropPollStartElapsed = _dropClock.elapsed;
+    _dropPollTimer ??= Timer.periodic(const Duration(seconds: 2), (_) => _dropTick());
+    unawaited(_dropTick());
   }
 
   void _stopDropPolling() {
@@ -144,10 +151,48 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     unawaited(_teardownDropSubscription());
     _dropStats = null;
     _dropBaseline = null;
-    _peakSinceReset = 0;
+    _dropPollStartElapsed = null;
     _connFailBaseline = null;
     _estabFailBaseline = null;
     _baselineRestored = false;
+  }
+
+  /// One poll tick: keep the notify subscription alive, then — if notifications
+  /// aren't arriving — fall back to a direct READ. On a link whose MTU can't fit the
+  /// 76 B notification the firmware can't push at all (-EMSGSIZE), but a plain READ
+  /// (not MTU-bounded) still works, so the card keeps updating.
+  Future<void> _dropTick() async {
+    await _ensureDropSubscription();
+    if (!mounted) return;
+    // Reference is the last real notification, or poll-start if none ever arrived
+    // (small-MTU link, where no notification is coming). The threshold sits above the
+    // 15 s idle notify cadence so a healthy idle stream never triggers a redundant read.
+    final ref = _lastDropNotifyElapsed ?? _dropPollStartElapsed;
+    if (ref != null && _dropClock.elapsed - ref > _dropReadFallbackAfter) {
+      await _readDropStatsFallback();
+    }
+  }
+
+  /// Direct READ of the drop counters (0x0062), the MTU-agnostic fallback when the
+  /// notify path can't deliver. Gated on the storage mutex being free — a GATT read
+  /// during an active transfer races the sync stream (Error 133 on Android). Does not
+  /// touch _lastDropNotifyElapsed, so the notify watchdog keeps trying to re-establish
+  /// notifications (they resume automatically if the MTU later negotiates up).
+  Future<void> _readDropStatsFallback() async {
+    if (!mounted) return;
+    final conn = _dropConn;
+    if (conn == null || conn.isStorageBusy) return;
+    final gen = _dropSubGen;
+    DeviceDropStats? stats;
+    try {
+      stats = await conn.getDropStats();
+    } catch (_) {
+      return; // Transient BLE error — the next tick retries.
+    }
+    final s = stats;
+    if (s == null || !mounted || gen != _dropSubGen) return;
+    setState(() => _dropStats = s);
+    _tryRestoreBaseline(s);
   }
 
   /// Cancel the Dart sub and stop the device pushing (CCCD=0). Assumes the caller
@@ -598,10 +643,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         onDropStats: (stats) {
           if (!mounted || gen != _dropSubGen) return;
           _lastDropNotifyElapsed = _dropClock.elapsed;
-          setState(() {
-            _dropStats = stats;
-            if (stats.msgqPeakDepth > _peakSinceReset) _peakSinceReset = stats.msgqPeakDepth;
-          });
+          setState(() => _dropStats = stats);
           _tryRestoreBaseline(stats);
         },
         // Stream closed (disconnect) — the transport re-subscribes on reconnect
@@ -717,9 +759,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   void _resetAllDiagnostics() {
     _snapshotDropBaseline();
     _snapshotConnFailBaseline();
-    // Peak depth has no baseline to subtract — zero our high-water mark so it
-    // re-climbs from the next reading (the next value > 0), not from the old peak.
-    setState(() => _peakSinceReset = 0);
+    // SD-queue peak depth is intentionally not reset: it's the firmware's monotonic
+    // since-boot high-water mark, so a "reset" would snap straight back on the next
+    // reading. It's labelled "(since boot)" and excluded from the baseline.
   }
 
   // Clears everything that is specific to one device, so a device switch doesn't carry
@@ -729,7 +771,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (!mounted) return;
     setState(() {
       _dropStats = null;
-      _peakSinceReset = 0;
       _dropBaseline = null;
       _connFailBaseline = null;
       _estabFailBaseline = null;
@@ -1437,10 +1478,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final frames = rel(stats.streamFrameDrops, (b) => b.streamFrameDrops);
     final codec = rel(stats.codecFrameDrops, (b) => b.codecFrameDrops);
     final boot = rel(stats.bootFrameDrops, (b) => b.bootFrameDrops);
-    // Peak depth is a monotonic high-water mark, not an incremental counter, so it
-    // can't be delta-subtracted. Show our own high-water mark since the last reset:
-    // "Zero all counters" sets it to 0 and it re-climbs from the next reading up.
-    final peak = _peakSinceReset;
+    // Peak depth is the firmware's monotonic since-boot high-water mark, not an
+    // incremental counter, so it can't be delta-subtracted or meaningfully reset
+    // (a reset snaps straight back on the next reading). Shown raw, as-is.
+    final peak = stats.msgqPeakDepth;
     final writeFair = rel(stats.writeFairActivations, (b) => b.writeFairActivations);
     final prioStarts = rel(stats.priorityRecordStarts, (b) => b.priorityRecordStarts);
     final prioStops = rel(stats.priorityRecordStops, (b) => b.priorityRecordStops);
@@ -1506,13 +1547,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           _dropStatRow('Boot-window frame drops', boot.toString(), false),
           _dropStatRow('Last block drop', lastDropLabel, hasFreshDrops),
           _dropStatRow('Device uptime', _formatDuration(stats.currentUptimeMs), false),
-          // Write-path headroom. Peak depth is a high-water mark, so after a reset it
-          // reads 0 until the queue climbs past where it stood at the reset, then shows
-          // that live peak out of the firmware's queue limit (stats.sdQueueMax — 120 on
-          // oo-2.6.2+, 100 on older firmware); near the limit means the write path is
-          // riding the drop edge. Fairness activations just show the read-vs-write
-          // arbiter engaging — not a fault.
-          _dropStatRow('SD queue peak depth', '$peak / ${stats.sdQueueMax}', peak >= (stats.sdQueueMax * 0.8).round()),
+          // Write-path headroom. Peak depth is the firmware's since-boot high-water mark
+          // out of the queue limit (stats.sdQueueMax — 120 on oo-2.6.2+, 100 on older
+          // firmware); near the limit means the write path is riding the drop edge. It's
+          // monotonic on-device, so it's shown since boot and excluded from "Zero all
+          // counters". Fairness activations just show the read-vs-write arbiter engaging
+          // — not a fault.
+          _dropStatRow('SD queue peak depth (since boot)', '$peak / ${stats.sdQueueMax}',
+              peak >= (stats.sdQueueMax * 0.8).round()),
           _dropStatRow('Write-fairness activations', writeFair.toString(), false),
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 6),
@@ -1582,8 +1624,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           const Padding(
             padding: EdgeInsets.only(top: 6),
             child: Text(
-              'Snapshots the current values as a baseline so every counter above reads 0 from now. '
-              'Nothing is cleared on the device — it keeps its own totals until it reboots.',
+              'Snapshots the current values as a baseline so the drop and failure counters above read 0 '
+              'from now. Since-boot gauges (peak depth, stacks, uptime) are left live. Nothing is cleared '
+              'on the device — it keeps its own totals until it reboots.',
               style: TextStyle(color: Colors.white38, fontSize: 11, height: 1.3),
             ),
           ),
