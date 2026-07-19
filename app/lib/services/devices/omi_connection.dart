@@ -198,12 +198,22 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<DeviceDropStats?> performGetDropStats() async {
+    // A GATT read racing the storage notify stream drops the link (Error 133 on
+    // Android), so serialize against the storage commands via the same mutex. The
+    // acquire is non-blocking (tryAcquire, zero timeout): if a transfer holds the
+    // lock this returns null instead of blocking or racing. That closes the
+    // check-then-read gap a caller's isStorageBusy guard would otherwise leave (a
+    // sync can start in the gap) and prevents two concurrent reads from overlapping.
+    final acquired = await _storageMutex.tryAcquire(timeout: Duration.zero);
+    if (!acquired) return null;
     try {
       final data = await transport.readCharacteristic(diagnosticsServiceUuid, diagnosticsDropsCharacteristicUuid);
       return _parseDropStats(data);
     } catch (e) {
       Logger.debug('Drop stats char not available (older firmware): $e');
       return null;
+    } finally {
+      _storageMutex.release();
     }
   }
 
