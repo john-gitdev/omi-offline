@@ -146,4 +146,13 @@ int transport_set_adv_fast(void);
  */
 void transport_mark_activity(void);
 
+/**
+ * @brief Immediately re-arm the diagnostics (0x0062) notify cadence.
+ *
+ * Call from the storage thread when a transfer becomes active so the live 2 s
+ * sync cadence engages at once instead of after the current 15 s idle interval
+ * expires. No-op when no client is subscribed.
+ */
+void transport_diagnostics_kick(void);
+
 #endif // TRANSPORT_H

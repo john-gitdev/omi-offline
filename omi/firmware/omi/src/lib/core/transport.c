@@ -647,6 +647,19 @@ static void diagnostics_drops_ccc_changed(const struct bt_gatt_attr *attr, uint1
     }
 }
 
+/* Re-arm the diagnostics notify cadence immediately. Called from the storage thread
+ * when a transfer becomes active: the notify handler only re-evaluates idle (15 s) vs
+ * sync (2 s) cadence when it next fires, so a sync starting mid-idle-interval would
+ * otherwise coast up to 15 s on the stale slow cadence before the live 2 s updates
+ * kick in. Firing it now switches to the 2 s cadence at once (~0 s lag). No-op when
+ * nothing is subscribed. */
+void transport_diagnostics_kick(void)
+{
+    if (atomic_get(&diag_notify_subscribed)) {
+        k_work_reschedule(&diagnostics_notify_work, K_NO_WAIT);
+    }
+}
+
 // --- Button Service ---
 // Service UUID: 23BA7924-0000-1000-7450-346EAC492E92
 // Characteristics:
