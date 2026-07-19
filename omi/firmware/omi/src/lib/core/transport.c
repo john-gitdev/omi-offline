@@ -1155,7 +1155,9 @@ void broadcast_battery_level(struct k_work *work_item)
          * often long, duration of a sync). It's a 1-byte notify on the battery-refresh
          * cadence, so it can't starve the transfer. A transient -ENOMEM mid-sync is
          * retried off-thread (charging_notify_try) so the state stays live without
-         * blocking this workqueue handler. */
+         * blocking this workqueue handler. Cancel any retry still pending from a prior
+         * cycle first, so a stale byte can't land after this newer state. */
+        k_work_cancel_delayable(&charging_notify_retry_work);
         atomic_set(&charging_retry_left, 2);
         charging_notify_try((uint8_t) is_charging);
 
