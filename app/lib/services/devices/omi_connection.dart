@@ -78,6 +78,7 @@ class OmiDeviceConnection extends DeviceConnection {
 
   StreamSubscription<List<int>>? _chargingSubscription;
   StreamSubscription<List<int>>? _muteSubscription;
+  StreamSubscription<List<int>>? _dropStatsSubscription;
 
   // Cached audio codec to avoid redundant BLE reads
   BleAudioCodec? _cachedAudioCodec;
@@ -199,39 +200,99 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<DeviceDropStats?> performGetDropStats() async {
     try {
       final data = await transport.readCharacteristic(diagnosticsServiceUuid, diagnosticsDropsCharacteristicUuid);
-      if (data.length < 20) return null;
-      return DeviceDropStats(
-        blockDrops: data.getUint32LittleEndian(0),
-        lastBlockDropUptimeMs: data.getUint32LittleEndian(4),
-        streamFrameDrops: data.getUint32LittleEndian(8),
-        bootFrameDrops: data.getUint32LittleEndian(12),
-        currentUptimeMs: data.getUint32LittleEndian(16),
-        // Appended fields (28-byte firmware); 0 / false on older 20-byte builds.
-        failedConnCount: data.length >= 28 ? data.getUint32LittleEndian(20) : 0,
-        lastFailedConnDuringSlowAdv: data.length >= 28 && data.getUint32LittleEndian(24) == 1,
-        // codec_drops appended at offset 28 (32-byte firmware); 0 on older builds.
-        codecFrameDrops: data.length >= 32 ? data.getUint32LittleEndian(28) : 0,
-        // sd_msgq peak depth (32) + write-fairness activations (36), 40-byte firmware; 0 on older.
-        msgqPeakDepth: data.length >= 36 ? data.getUint32LittleEndian(32) : 0,
-        writeFairActivations: data.length >= 40 ? data.getUint32LittleEndian(36) : 0,
-        // establishment failures (0x3e) appended at offset 40 (44-byte firmware); 0 on older.
-        estabFailCount: data.length >= 44 ? data.getUint32LittleEndian(40) : 0,
-        // Priority Recording lifecycle appended at offsets 44/48/52/56 (60-byte firmware);
-        // 0 on older builds that return only the first 44 bytes.
-        priorityRecordStarts: data.length >= 48 ? data.getUint32LittleEndian(44) : 0,
-        priorityRecordStops: data.length >= 52 ? data.getUint32LittleEndian(48) : 0,
-        markerWriteDrops: data.length >= 56 ? data.getUint32LittleEndian(52) : 0,
-        emptyBinRotations: data.length >= 60 ? data.getUint32LittleEndian(56) : 0,
-        // Session-end emit attempts (60) + pause-gate marker saves (64), 68-byte
-        // firmware; 0 on older builds that return only the first 60 bytes.
-        sessionEndMarkerEmits: data.length >= 64 ? data.getUint32LittleEndian(60) : 0,
-        markerPauseGateSaves: data.length >= 68 ? data.getUint32LittleEndian(64) : 0,
-        readAt: DateTime.now(),
-      );
+      return _parseDropStats(data);
     } catch (e) {
       Logger.debug('Drop stats char not available (older firmware): $e');
       return null;
     }
+  }
+
+  /// Parse the drop-counter payload (0x0062). Shared by the on-demand read and
+  /// the notify listener. Appended fields default to 0/false on shorter payloads
+  /// from older firmware (length grew 20→28→32→40→44→60→68 B). Returns null on a
+  /// too-short read (tells us nothing) rather than a false all-zero reading.
+  static DeviceDropStats? _parseDropStats(List<int> data) {
+    if (data.length < 20) return null;
+    return DeviceDropStats(
+      blockDrops: data.getUint32LittleEndian(0),
+      lastBlockDropUptimeMs: data.getUint32LittleEndian(4),
+      streamFrameDrops: data.getUint32LittleEndian(8),
+      bootFrameDrops: data.getUint32LittleEndian(12),
+      currentUptimeMs: data.getUint32LittleEndian(16),
+      // Appended fields (28-byte firmware); 0 / false on older 20-byte builds.
+      failedConnCount: data.length >= 28 ? data.getUint32LittleEndian(20) : 0,
+      lastFailedConnDuringSlowAdv: data.length >= 28 && data.getUint32LittleEndian(24) == 1,
+      // codec_drops appended at offset 28 (32-byte firmware); 0 on older builds.
+      codecFrameDrops: data.length >= 32 ? data.getUint32LittleEndian(28) : 0,
+      // sd_msgq peak depth (32) + write-fairness activations (36), 40-byte firmware; 0 on older.
+      msgqPeakDepth: data.length >= 36 ? data.getUint32LittleEndian(32) : 0,
+      writeFairActivations: data.length >= 40 ? data.getUint32LittleEndian(36) : 0,
+      // establishment failures (0x3e) appended at offset 40 (44-byte firmware); 0 on older.
+      estabFailCount: data.length >= 44 ? data.getUint32LittleEndian(40) : 0,
+      // Priority Recording lifecycle appended at offsets 44/48/52/56 (60-byte firmware);
+      // 0 on older builds that return only the first 44 bytes.
+      priorityRecordStarts: data.length >= 48 ? data.getUint32LittleEndian(44) : 0,
+      priorityRecordStops: data.length >= 52 ? data.getUint32LittleEndian(48) : 0,
+      markerWriteDrops: data.length >= 56 ? data.getUint32LittleEndian(52) : 0,
+      emptyBinRotations: data.length >= 60 ? data.getUint32LittleEndian(56) : 0,
+      // Session-end emit attempts (60) + pause-gate marker saves (64), 68-byte
+      // firmware; 0 on older builds that return only the first 60 bytes.
+      sessionEndMarkerEmits: data.length >= 64 ? data.getUint32LittleEndian(60) : 0,
+      markerPauseGateSaves: data.length >= 68 ? data.getUint32LittleEndian(64) : 0,
+      // Peak thread stack usage (sd_worker @68, codec @72), 76-byte firmware; 0 on
+      // older builds that return only the first 68 bytes.
+      sdWorkerStackUsed: data.length >= 72 ? data.getUint32LittleEndian(68) : 0,
+      codecStackUsed: data.length >= 76 ? data.getUint32LittleEndian(72) : 0,
+      // Derived, not a wire field: the 76-byte payload is only produced by oo-2.6.2,
+      // which is the build that raised SD_REQ_QUEUE_MSGS 100→120. A shorter payload is
+      // older firmware still at 100. Keeps the peak-depth denominator honest.
+      sdQueueMax: data.length >= 76 ? 120 : 100,
+      readAt: DateTime.now(),
+    );
+  }
+
+  @override
+  Future<StreamSubscription<List<int>>?> performGetDropStatsListener({
+    required void Function(DeviceDropStats stats) onDropStats,
+    void Function()? onClosed,
+  }) async {
+    try {
+      final stream =
+          await transport.getCharacteristicStream(diagnosticsServiceUuid, diagnosticsDropsCharacteristicUuid);
+      await _dropStatsSubscription?.cancel();
+      // onDone/onError fire when the transport closes this stream — notably on a
+      // BLE disconnect (the transport re-subscribes on reconnect using a *new*
+      // controller this subscription isn't attached to). Surface it so the caller
+      // can drop the dead subscription and re-establish one.
+      _dropStatsSubscription = stream.listen(
+        (v) {
+          final stats = _parseDropStats(v);
+          if (stats != null) onDropStats(stats);
+        },
+        onError: (_) => onClosed?.call(),
+        onDone: () => onClosed?.call(),
+      );
+      return _dropStatsSubscription;
+    } catch (e) {
+      // Subscribing writes the CCCD; during an active transfer that GATT write
+      // can race the notify stream (Error 133 on Android). Return null so the
+      // caller retries — once it lands, notifications flow without any further
+      // reads/writes racing the stream.
+      Logger.debug('OmiDeviceConnection: Error subscribing to drop stats: $e');
+      return null;
+    }
+  }
+
+  @override
+  Future<void> unsubscribeDropStats() async {
+    await _dropStatsSubscription?.cancel();
+    _dropStatsSubscription = null;
+    // Write CCCD=0 so the firmware stops pushing drop-counter notifications for
+    // the rest of the connection, and drop the controller so a later re-subscribe
+    // re-issues a fresh CCCD write (a failed initial write leaves it silent).
+    try {
+      await transport.unsubscribeCharacteristic(diagnosticsServiceUuid, diagnosticsDropsCharacteristicUuid);
+    } catch (_) {}
   }
 
   Future<void> stop() async {
@@ -382,6 +443,10 @@ class OmiDeviceConnection extends DeviceConnection {
     _chargingSubscription = null;
     await _muteSubscription?.cancel();
     _muteSubscription = null;
+    // Do NOT cancel the drop-stats sub here: cancelling suppresses onDone, which is
+    // how the diagnostics page learns the stream closed and re-subscribes. Just drop
+    // our reference — super.disconnect() closes the stream, firing onDone/onClosed.
+    _dropStatsSubscription = null;
     await stop();
     await super.disconnect(isManual: isManual);
   }

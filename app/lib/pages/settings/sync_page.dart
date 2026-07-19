@@ -7,11 +7,13 @@ import 'package:path_provider/path_provider.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
 import 'package:omi/providers/device_provider.dart';
+import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/device_drop_stats.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/services/wals.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/utils/mutex.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/pages/settings/widgets/debug_button.dart';
@@ -39,12 +41,48 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   Timer? _pollTimer;
   Timer? _dropPollTimer;
   Timer? _logPollTimer;
+  // Live drop-counter notifications (0x0062). The firmware pushes these while
+  // subscribed, so counters keep updating during a sync — a GATT read would race
+  // the sync stream (Error 133 on Android).
+  StreamSubscription<List<int>>? _dropStatsSub;
+  // Connection we subscribed on, kept so we can unsubscribe at the BLE layer
+  // (CCCD=0) on teardown even from dispose(), where we can't await a fresh lookup.
+  DeviceConnection? _dropConn;
+  // Liveness tracking. The native subscribe (CCCD write) is fire-and-forget, so a
+  // live-but-silent stream (failed write, or a link recycled onto a new controller)
+  // can't be detected any other way.
+  // Tracked against a monotonic clock (_dropClock), NOT DateTime.now(): a backward
+  // wall-clock adjustment (NTP/DST/manual) would otherwise make a dead stream look
+  // freshly-active and defeat the stale-subscription watchdog.
+  // _dropSubscribedElapsed: _dropClock.elapsed when the sub was established.
+  // _lastDropNotifyElapsed: _dropClock.elapsed at the last notification (null = none yet).
+  final Stopwatch _dropClock = Stopwatch()..start();
+  Duration? _dropSubscribedElapsed;
+  Duration? _lastDropNotifyElapsed;
+  // Pending (subscribed, no notification yet): the firmware pushes immediately on
+  // subscribe, so a short window is enough — if nothing arrives the CCCD write
+  // failed and we re-subscribe. Established: allow gaps up to the timeout, which
+  // must exceed the firmware's 15 s idle heartbeat.
+  static const _dropPendingTimeout = Duration(seconds: 6);
+  static const _dropSilenceTimeout = Duration(seconds: 35);
+  // Serializes subscribe vs teardown so an async teardown's BLE unsubscribe can't
+  // land on a freshly re-subscribed stream (fast Show-Diagnostics off/on).
+  final Mutex _dropMutex = Mutex();
+  // Bumped whenever the subscription intent is invalidated (teardown / stop) so an
+  // in-flight subscribe or a stale onClosed can't act on a superseded generation.
+  int _dropSubGen = 0;
+  // Device the currently-shown diagnostics belong to. When the connected device changes
+  // we must clear the per-device state (stats, peak high-water, baselines) so the new
+  // device doesn't inherit the previous one's numbers.
+  String? _dropDeviceId;
   DeviceDropStats? _dropStats;
   // Snapshot used to render "since baseline" deltas; null = show absolute totals.
   DeviceDropStats? _dropBaseline;
-  bool _dropsUnsupported = false;
-  bool _dropsReading = false;
-  bool _dropsWaitingSync = false;
+  // SD-queue peak depth is a monotonic since-boot high-water mark in firmware, so
+  // it can't be delta-subtracted like the cumulative counters. Instead we keep our
+  // own high-water mark of the values seen since the last "Zero all counters" tap:
+  // reset it to 0 and let it re-climb from the next reading upward.
+  int _peakSinceReset = 0;
   // True once we've attempted to restore the persisted baseline this polling session.
   bool _baselineRestored = false;
 
@@ -92,20 +130,54 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   void _startDropPolling() {
-    _dropPollTimer ??= Timer.periodic(const Duration(seconds: 2), (_) => _refreshDropStats());
-    unawaited(_refreshDropStats());
+    // The timer's only job is to establish (and, if it drops, re-establish) the
+    // notify subscription; once subscribed, notifications — not the timer — drive
+    // the UI. A subscribe during an active transfer can lose the CCCD-write race,
+    // so the tick retries until it lands.
+    _dropPollTimer ??= Timer.periodic(const Duration(seconds: 2), (_) => _ensureDropSubscription());
+    unawaited(_ensureDropSubscription());
   }
 
   void _stopDropPolling() {
     _dropPollTimer?.cancel();
     _dropPollTimer = null;
+    unawaited(_teardownDropSubscription());
     _dropStats = null;
     _dropBaseline = null;
+    _peakSinceReset = 0;
     _connFailBaseline = null;
     _estabFailBaseline = null;
-    _dropsUnsupported = false;
-    _dropsWaitingSync = false;
     _baselineRestored = false;
+  }
+
+  /// Cancel the Dart sub and stop the device pushing (CCCD=0). Assumes the caller
+  /// already holds [_dropMutex].
+  Future<void> _dropTeardownLocked() async {
+    final sub = _dropStatsSub;
+    final conn = _dropConn;
+    _dropStatsSub = null;
+    _dropConn = null;
+    _dropSubscribedElapsed = null;
+    _lastDropNotifyElapsed = null;
+    await sub?.cancel();
+    // Write CCCD=0 so the firmware stops pushing, and drop the transport's stream
+    // controller so a later re-subscribe issues a fresh CCCD write. Best-effort;
+    // a real disconnect also unsubscribes, and it no-ops on a recycled connection.
+    await conn?.unsubscribeDropStats();
+  }
+
+  /// Teardown for stop()/dispose(). Bumps the generation synchronously (so a
+  /// fire-and-forget call invalidates in-flight work immediately), then serializes
+  /// the actual cancel/unsubscribe behind [_dropMutex] so it can't interleave with
+  /// a concurrent re-subscribe.
+  Future<void> _teardownDropSubscription() async {
+    _dropSubGen++;
+    await _dropMutex.acquire();
+    try {
+      await _dropTeardownLocked();
+    } finally {
+      _dropMutex.release();
+    }
   }
 
   void _startLogPolling() {
@@ -473,35 +545,97 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     });
   }
 
-  Future<void> _refreshDropStats() async {
-    if (_dropsUnsupported || _dropsReading) return;
+  // Healthy = we have a subscription that is actually delivering. The native
+  // subscribe is fire-and-forget, so a subscription object alone doesn't prove
+  // notifications flow: while pending (subscribed, no notification yet) we allow
+  // only a short window before re-subscribing; once established, gaps up to the
+  // silence timeout are fine.
+  bool get _dropSubHealthy {
+    if (_dropStatsSub == null) return false;
+    final now = _dropClock.elapsed;
+    final last = _lastDropNotifyElapsed;
+    if (last != null) return now - last < _dropSilenceTimeout;
+    final since = _dropSubscribedElapsed;
+    return since != null && now - since < _dropPendingTimeout;
+  }
+
+  Future<void> _ensureDropSubscription() async {
+    // Healthy subscription — notifications drive _dropStats directly. isLocked skips
+    // ticks while a subscribe/teardown is already running (acquire sets it
+    // synchronously on the uncontended path, so this guard is race-free).
+    if (_dropMutex.isLocked) return;
     if (!mounted) return;
     final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
     final dev = deviceProvider.connectedDevice;
     if (dev == null) return;
-    _dropsReading = true;
+    // Connected device changed → the previous device's counters, peak high-water, and
+    // baselines no longer apply. Clear them (and re-restore baselines for the new device)
+    // so its lower peak doesn't read inflated and the old baseline can't suppress its
+    // drops. Runs before the health check so it fires even when the old sub still looks
+    // "healthy".
+    if (_dropDeviceId != null && _dropDeviceId != dev.id) {
+      _resetPerDeviceDiagnostics();
+    }
+    _dropDeviceId = dev.id;
+    // Fast path only if the live subscription belongs to the *currently* connected
+    // device. A device switch while this page stays mounted must tear down and
+    // re-subscribe; otherwise the card keeps showing the previous device's counters.
+    if (_dropSubHealthy && _dropConn?.device.id == dev.id) return;
+    await _dropMutex.acquire();
     try {
+      // Re-check under the lock — a teardown/subscribe may have run while we waited.
+      if (_dropSubHealthy && _dropConn?.device.id == dev.id) return;
+      // Tear down any dead/silent subscription first (awaited, under the lock) so the
+      // transport's stream controller is gone before we re-subscribe — otherwise
+      // getCharacteristicStream reuses the stale controller and skips the CCCD write.
+      if (_dropStatsSub != null || _dropConn != null) await _dropTeardownLocked();
+      final gen = _dropSubGen;
       final conn = await ServiceManager.instance().device.ensureConnection(dev.id);
-      if (conn == null) return;
-      // Skip during active file transfer — a GATT read racing with the notification
-      // stream causes Error 133 on Android and drops the connection.
-      if (conn.isStorageBusy) {
-        if (!_dropsWaitingSync) setState(() => _dropsWaitingSync = true);
+      // Bail if the connection died, the widget went away, or stop()/another
+      // teardown superseded this attempt while we awaited.
+      if (conn == null || !mounted || gen != _dropSubGen) return;
+      final sub = await conn.getDropStatsListener(
+        onDropStats: (stats) {
+          if (!mounted || gen != _dropSubGen) return;
+          _lastDropNotifyElapsed = _dropClock.elapsed;
+          setState(() {
+            _dropStats = stats;
+            if (stats.msgqPeakDepth > _peakSinceReset) _peakSinceReset = stats.msgqPeakDepth;
+          });
+          _tryRestoreBaseline(stats);
+        },
+        // Stream closed (disconnect) — the transport re-subscribes on reconnect
+        // via a new controller this sub isn't attached to, so drop it and let the
+        // next tick re-establish. Ignored if a newer generation already took over.
+        onClosed: () {
+          if (gen != _dropSubGen) return;
+          _dropStatsSub = null;
+          _dropSubscribedElapsed = null;
+          _lastDropNotifyElapsed = null;
+        },
+      );
+      if (!mounted || gen != _dropSubGen) {
+        // stop()/dispose ran while we awaited; its teardown found nothing because we
+        // hadn't stored the sub/conn yet. Tear down what we just created via the
+        // connection — this cancels the Dart sub AND writes CCCD=0 / drops the
+        // controller — or the device keeps notifying to a listener-less stream.
+        await conn.unsubscribeDropStats();
         return;
       }
-      if (_dropsWaitingSync) setState(() => _dropsWaitingSync = false);
-      final stats = await conn.getDropStats();
-      if (!mounted) return;
-      if (stats == null) {
-        setState(() => _dropsUnsupported = true);
-      } else {
-        setState(() => _dropStats = stats);
-        _tryRestoreBaseline(stats);
+      // Subscribe writes the CCCD; during a transfer that write can lose the race
+      // (Error 133) and return null — retry next tick. Mark it pending (not yet
+      // notified); the pending-timeout watchdog re-subscribes if the CCCD write
+      // silently failed and no notification ever arrives.
+      if (sub != null) {
+        _dropStatsSub = sub;
+        _dropConn = conn;
+        _dropSubscribedElapsed = _dropClock.elapsed;
+        _lastDropNotifyElapsed = null;
       }
     } catch (_) {
-      // Transient BLE errors are fine — try again on the next tick.
+      // Transient BLE error — retry on the next tick.
     } finally {
-      _dropsReading = false;
+      _dropMutex.release();
     }
   }
 
@@ -516,11 +650,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // can move one backwards), which the saved baseline would otherwise
     // over-subtract. Uptime is intentionally not used for this: it wraps every
     // ~49.7 days on the firmware's uint32-ms clock, which is not a reboot.
-    final savedJson = prefs.getString(_kBaselineJson);
+    final savedJson = prefs.getString(_devKey(_kBaselineJson));
     if (savedJson.isNotEmpty) {
       final saved = DeviceDropStats.fromBaselineJson(savedJson);
       if (saved == null || stats.looksRebootedFrom(saved)) {
-        unawaited(prefs.remove(_kBaselineJson));
+        unawaited(prefs.remove(_devKey(_kBaselineJson)));
       } else {
         setState(() => _dropBaseline = saved);
       }
@@ -537,19 +671,19 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // BLE connect-fail baselines: SURVIVE reboot (firmware counters are flash-
     // persisted). Only discard if a counter went backwards — i.e. the device's
     // flash was wiped / re-flashed below the saved baseline.
-    final savedConnFail = prefs.getInt(_kBaselineConnFail, defaultValue: -1);
+    final savedConnFail = prefs.getInt(_devKey(_kBaselineConnFail), defaultValue: -1);
     if (savedConnFail >= 0) {
       if (stats.failedConnCount < savedConnFail) {
-        unawaited(prefs.remove(_kBaselineConnFail));
+        unawaited(prefs.remove(_devKey(_kBaselineConnFail)));
       } else {
         setState(() => _connFailBaseline = savedConnFail);
       }
     }
 
-    final savedEstabFail = prefs.getInt(_kBaselineEstabFail, defaultValue: -1);
+    final savedEstabFail = prefs.getInt(_devKey(_kBaselineEstabFail), defaultValue: -1);
     if (savedEstabFail >= 0) {
       if (stats.estabFailCount < savedEstabFail) {
-        unawaited(prefs.remove(_kBaselineEstabFail));
+        unawaited(prefs.remove(_devKey(_kBaselineEstabFail)));
       } else {
         setState(() => _estabFailBaseline = savedEstabFail);
       }
@@ -559,7 +693,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   void _snapshotDropBaseline() {
     final stats = _dropStats;
     if (stats == null) return;
-    unawaited(SharedPreferencesUtil().saveString(_kBaselineJson, stats.toBaselineJson()));
+    unawaited(SharedPreferencesUtil().saveString(_devKey(_kBaselineJson), stats.toBaselineJson()));
     setState(() => _dropBaseline = stats);
   }
 
@@ -567,8 +701,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final stats = _dropStats;
     if (stats == null) return;
     final prefs = SharedPreferencesUtil();
-    unawaited(prefs.saveInt(_kBaselineConnFail, stats.failedConnCount));
-    unawaited(prefs.saveInt(_kBaselineEstabFail, stats.estabFailCount));
+    unawaited(prefs.saveInt(_devKey(_kBaselineConnFail), stats.failedConnCount));
+    unawaited(prefs.saveInt(_devKey(_kBaselineEstabFail), stats.estabFailCount));
     setState(() {
       _connFailBaseline = stats.failedConnCount;
       _estabFailBaseline = stats.estabFailCount;
@@ -583,7 +717,29 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   void _resetAllDiagnostics() {
     _snapshotDropBaseline();
     _snapshotConnFailBaseline();
+    // Peak depth has no baseline to subtract — zero our high-water mark so it
+    // re-climbs from the next reading (the next value > 0), not from the old peak.
+    setState(() => _peakSinceReset = 0);
   }
+
+  // Clears everything that is specific to one device, so a device switch doesn't carry
+  // the previous device's numbers over. `_baselineRestored` is reset so the new device's
+  // own persisted baseline (if any) is re-restored on the next tick.
+  void _resetPerDeviceDiagnostics() {
+    if (!mounted) return;
+    setState(() {
+      _dropStats = null;
+      _peakSinceReset = 0;
+      _dropBaseline = null;
+      _connFailBaseline = null;
+      _estabFailBaseline = null;
+      _baselineRestored = false;
+    });
+  }
+
+  // Baselines belong to one device, not globally — a device switch must not apply
+  // device A's reset baseline to device B. Suffix each pref key with the device id.
+  String _devKey(String base) => '${base}_${_dropDeviceId ?? 'unknown'}';
 
   /// Counts `.bin` files in the isolated Adjustment Mode folder.
   Future<void> _refreshAdjustmentBinCount() async {
@@ -619,6 +775,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   void dispose() {
     _pollTimer?.cancel();
     _dropPollTimer?.cancel();
+    // Cancel the Dart sub and tell the device to stop pushing (CCCD=0); can't await
+    // in dispose, so fire-and-forget — the generation bump runs synchronously.
+    unawaited(_teardownDropSubscription());
     _logPollTimer?.cancel();
     super.dispose();
   }
@@ -1255,28 +1414,13 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       );
     }
 
-    if (_dropsUnsupported) {
-      return const Row(
-        children: [
-          FaIcon(FontAwesomeIcons.circleInfo, size: 13, color: Colors.white38),
-          SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              'Diagnostics unavailable (older firmware).',
-              style: TextStyle(color: Colors.white38, fontSize: 12),
-            ),
-          ),
-        ],
-      );
-    }
     final stats = _dropStats;
     if (stats == null) {
-      final waitLabel = _dropsWaitingSync ? 'Waiting for sync to complete…' : 'Reading drop counters…';
-      return Row(
+      return const Row(
         children: [
-          const FaIcon(FontAwesomeIcons.circleNotch, size: 13, color: Colors.white38),
-          const SizedBox(width: 8),
-          Text(waitLabel, style: const TextStyle(color: Colors.white38, fontSize: 12)),
+          FaIcon(FontAwesomeIcons.circleNotch, size: 13, color: Colors.white38),
+          SizedBox(width: 8),
+          Text('Reading drop counters…', style: TextStyle(color: Colors.white38, fontSize: 12)),
         ],
       );
     }
@@ -1293,10 +1437,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final frames = rel(stats.streamFrameDrops, (b) => b.streamFrameDrops);
     final codec = rel(stats.codecFrameDrops, (b) => b.codecFrameDrops);
     final boot = rel(stats.bootFrameDrops, (b) => b.bootFrameDrops);
-    // Peak depth is a high-water mark, not an incremental counter, so it can't be
-    // delta-subtracted. Show the live peak once it climbs past where it stood at the
-    // reset (i.e. genuinely new queue pressure), otherwise 0.
-    final peak = baseline == null || stats.msgqPeakDepth > baseline.msgqPeakDepth ? stats.msgqPeakDepth : 0;
+    // Peak depth is a monotonic high-water mark, not an incremental counter, so it
+    // can't be delta-subtracted. Show our own high-water mark since the last reset:
+    // "Zero all counters" sets it to 0 and it re-climbs from the next reading up.
+    final peak = _peakSinceReset;
     final writeFair = rel(stats.writeFairActivations, (b) => b.writeFairActivations);
     final prioStarts = rel(stats.priorityRecordStarts, (b) => b.priorityRecordStarts);
     final prioStops = rel(stats.priorityRecordStops, (b) => b.priorityRecordStops);
@@ -1304,6 +1448,16 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final emptyRot = rel(stats.emptyBinRotations, (b) => b.emptyBinRotations);
     final seEmits = rel(stats.sessionEndMarkerEmits, (b) => b.sessionEndMarkerEmits);
     final pauseSaves = rel(stats.markerPauseGateSaves, (b) => b.markerPauseGateSaves);
+    // Peak thread stack usage vs the configured stack sizes (firmware constants:
+    // SD_WORKER_STACK_SIZE=16384, codec_stack=19000). Gauges, shown raw. Large unused
+    // headroom = the stack is over-provisioned and can be trimmed to reclaim RAM.
+    // Highlighted only when usage is close to the ceiling (>85% = overflow risk).
+    const int sdWorkerStackSize = 16384;
+    const int codecStackSize = 19000;
+    String stackLabel(int used, int size) =>
+        used == 0 ? '—' : '${(used / 1024).toStringAsFixed(1)} / ${(size / 1024).toStringAsFixed(1)} KB';
+    final sdStackHot = stats.sdWorkerStackUsed > sdWorkerStackSize * 0.85;
+    final codecStackHot = stats.codecStackUsed > codecStackSize * 0.85;
     final hasFreshDrops = blocks > 0 || frames > 0 || codec > 0;
     final connFails = _connFailBaseline == null ? stats.failedConnCount : (stats.failedConnCount - _connFailBaseline!);
     final estabFails = _estabFailBaseline == null ? stats.estabFailCount : (stats.estabFailCount - _estabFailBaseline!);
@@ -1353,11 +1507,12 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           _dropStatRow('Last block drop', lastDropLabel, hasFreshDrops),
           _dropStatRow('Device uptime', _formatDuration(stats.currentUptimeMs), false),
           // Write-path headroom. Peak depth is a high-water mark, so after a reset it
-          // reads 0 until the queue climbs past where it stood at the reset, then
-          // shows that live peak out of the queue limit (100); near 100 means the
-          // write path is riding the drop edge, low means plenty of headroom. Fairness
-          // activations just show the read-vs-write arbiter engaging — not a fault.
-          _dropStatRow('SD queue peak depth', '$peak / 100', peak >= 80),
+          // reads 0 until the queue climbs past where it stood at the reset, then shows
+          // that live peak out of the firmware's queue limit (stats.sdQueueMax — 120 on
+          // oo-2.6.2+, 100 on older firmware); near the limit means the write path is
+          // riding the drop edge. Fairness activations just show the read-vs-write
+          // arbiter engaging — not a fault.
+          _dropStatRow('SD queue peak depth', '$peak / ${stats.sdQueueMax}', peak >= (stats.sdQueueMax * 0.8).round()),
           _dropStatRow('Write-fairness activations', writeFair.toString(), false),
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 6),
@@ -1383,6 +1538,16 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           // failure these counters exist to catch.
           _dropStatRow('Session-end marker emits', seEmits.toString(), prioStops > 0 && seEmits == 0),
           _dropStatRow('Markers kept at SD pause gate', pauseSaves.toString(), false),
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 6),
+            child: Divider(color: Color(0xFF2C2C2E), height: 1),
+          ),
+          // Peak thread stack usage (0x0062). Read after a heavy session (an allocator
+          // scan is the SD worker's deepest path; busy encoding is the codec's) so the
+          // high-water reflects the worst case. Big gap below the configured size means
+          // reclaimable RAM; amber = riding the ceiling (overflow risk, do NOT trim).
+          _dropStatRow('SD worker stack', stackLabel(stats.sdWorkerStackUsed, sdWorkerStackSize), sdStackHot),
+          _dropStatRow('Codec stack', stackLabel(stats.codecStackUsed, codecStackSize), codecStackHot),
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 6),
             child: Divider(color: Color(0xFF2C2C2E), height: 1),

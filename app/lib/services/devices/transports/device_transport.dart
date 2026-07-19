@@ -21,6 +21,11 @@ abstract class DeviceTransport {
 
   Future<Stream<List<int>>> getCharacteristicStream(String serviceUuid, String characteristicUuid);
 
+  /// Tear down a single characteristic subscription: write CCCD=0 on the device
+  /// and drop the local stream controller so the next getCharacteristicStream
+  /// re-subscribes cleanly. No-op by default; only the BLE transport implements it.
+  Future<void> unsubscribeCharacteristic(String serviceUuid, String characteristicUuid) async {}
+
   Future<List<int>> readCharacteristic(String serviceUuid, String characteristicUuid);
   Future<void> writeCharacteristic(String serviceUuid, String characteristicUuid, List<int> data);
 

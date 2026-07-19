@@ -34,7 +34,7 @@ class DeviceDropStats {
   final int codecFrameDrops;
 
   /// High-water mark of the firmware SD write queue (sd_msgq) occupancy since
-  /// boot, out of SD_REQ_QUEUE_MSGS (100). Shows how close the write path runs
+  /// boot, out of SD_REQ_QUEUE_MSGS (120). Shows how close the write path runs
   /// to the drop edge — low peak = plenty of headroom. Appended at offset 32;
   /// 0 on older firmware.
   final int msgqPeakDepth;
@@ -90,6 +90,23 @@ class DeviceDropStats {
   /// now it counts rescues, so a nonzero value with recordings finalizing means the
   /// fix is firing.
   final int markerPauseGateSaves;
+
+  /// Peak stack usage (bytes) of the SD worker and codec/encode threads since boot,
+  /// appended at offsets 68–72 (76-byte firmware); 0 on older builds or when the
+  /// firmware's stack-info configs are off. These are gauges (high-water since boot),
+  /// not counters — displayed raw against the configured stack sizes, never
+  /// baseline-subtracted. Large unused headroom (`used` well below the configured
+  /// size) means the stack is over-provisioned and reclaimable.
+  final int sdWorkerStackUsed;
+  final int codecStackUsed;
+
+  /// The firmware's SD write-queue size (`SD_REQ_QUEUE_MSGS`), used as the denominator
+  /// for [msgqPeakDepth]. The firmware doesn't send this as a field; it's derived from
+  /// the payload length in the parser — the 76-byte payload is only produced by the
+  /// build that also raised the queue to 120, so a shorter payload means the old 100.
+  /// Prevents reporting a peak of 96 as `96/120` (healthy-looking) on firmware whose
+  /// real ceiling is 100.
+  final int sdQueueMax;
   final DateTime readAt;
 
   const DeviceDropStats({
@@ -110,6 +127,9 @@ class DeviceDropStats {
     this.emptyBinRotations = 0,
     this.sessionEndMarkerEmits = 0,
     this.markerPauseGateSaves = 0,
+    this.sdWorkerStackUsed = 0,
+    this.codecStackUsed = 0,
+    this.sdQueueMax = 120,
     required this.readAt,
   });
 

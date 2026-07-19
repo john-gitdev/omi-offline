@@ -80,7 +80,27 @@ int16_t codec_input_samples[CODEC_PACKAGE_SAMPLES];
 uint8_t codec_output_bytes[CODEC_OUTPUT_MAX_BYTES];
 K_THREAD_STACK_DEFINE(codec_stack, 19000);
 static struct k_thread codec_thread;
+/* Set once codec_thread has been k_thread_create()d. Guards codec_get_stack_used
+ * against a 0x0062 read that races an early BLE connection before codec_start() has
+ * initialized the thread object — k_thread_stack_space_get on an uninitialized
+ * k_thread would read a zeroed stack_info and report a bogus figure. */
+static atomic_t codec_thread_started = ATOMIC_INIT(0);
 uint16_t execute_codec();
+
+/* Peak stack usage (bytes) of the codec/encode thread since boot, for the 0x0062
+ * diagnostics. Defined here — after codec_stack / codec_thread — so both symbols are
+ * in scope. Needs CONFIG_INIT_STACKS (sentinel fill) + CONFIG_THREAD_STACK_INFO
+ * (stack bounds); returns 0 if either is off or the thread isn't up yet. */
+uint32_t codec_get_stack_used(void)
+{
+#if defined(CONFIG_THREAD_STACK_INFO) && defined(CONFIG_INIT_STACKS)
+    size_t unused = 0;
+    if (atomic_get(&codec_thread_started) && k_thread_stack_space_get(&codec_thread, &unused) == 0) {
+        return (uint32_t)(K_THREAD_STACK_SIZEOF(codec_stack) - unused);
+    }
+#endif
+    return 0;
+}
 
 #if CODEC_OPUS
 #if (CONFIG_OPUS_MODE == CONFIG_OPUS_MODE_CELT)
@@ -155,6 +175,7 @@ int codec_start()
                     K_PRIO_PREEMPT(7),
                     0,
                     K_NO_WAIT);
+    atomic_set(&codec_thread_started, 1);
 
     // Success
     return 0;

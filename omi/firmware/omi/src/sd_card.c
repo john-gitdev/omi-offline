@@ -45,7 +45,7 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 #endif
 
 #define DISK_DRIVE_NAME CONFIG_SDMMC_VOLUME_NAME
-#define SD_REQ_QUEUE_MSGS 100
+#define SD_REQ_QUEUE_MSGS 120
 #define SD_PRIO_QUEUE_MSGS 10
 /* Write fairness: the priority (read) queue is normally drained first, but a
  * steady read stream (active sync) must not starve audio writes. Force a write
@@ -117,10 +117,17 @@ static uint8_t lfs_prog_buf[LFS_CACHE_SIZE];
  * (lfs_alloc_scan → lfs_fs_traverse_) which reads every block in every file.
  * With 200 MB of data (~50K blocks) this costs 10-50+ seconds per scan over SPI.
  *
- * 2048 bytes = 16384 blocks = 64 MB window → only ~8 scans to cover entire disk.
- * Reduces scan frequency from every ~4 MB written to every ~64 MB written.
- * Cost: 1920 bytes extra static RAM (nRF52840 has 256 KB). */
-#define LFS_LOOKAHEAD_SIZE 2048
+ * The traversal runs on the single sd_worker thread and is the dominant source of
+ * intermittent sd_msgq saturation (peak-depth spikes toward SD_REQ_QUEUE_MSGS): it
+ * fires only when the window drains, and its duration tracks how full the SD is.
+ *
+ * 4096 bytes = 32768 blocks = 128 MB window → ~4 scans to cover entire disk.
+ * Reduces scan frequency to every ~128 MB written (vs ~64 MB at 2048), halving how
+ * often the write path eats a full-FS traversal. Does NOT shorten each scan — that
+ * cost is O(data on disk), so prompt app-side sync+delete (keeping the FS emptier)
+ * remains the biggest lever on stall *duration*.
+ * Cost: 2048 bytes extra static RAM vs the prior 2048-byte window. */
+#define LFS_LOOKAHEAD_SIZE 4096
 static uint8_t lfs_lookahead_buf[LFS_LOOKAHEAD_SIZE];
 
 /* Shared temp sector buffer â€” only used from worker thread, safe as static */
@@ -232,7 +239,7 @@ static struct lfs_config lfs_cfg = {
     .block_size = LFS_BLOCK_SIZE,
     .block_count = 0,                     /* set at mount time */
     .cache_size = LFS_CACHE_SIZE,         /* 4096: full-block cache → multi-sector I/O */
-    .lookahead_size = LFS_LOOKAHEAD_SIZE, /* 2048 bytes = 16384 blocks = 64 MB window */
+    .lookahead_size = LFS_LOOKAHEAD_SIZE, /* 4096 bytes = 32768 blocks = 128 MB window */
 
     .read_buffer = lfs_read_buf,
     .prog_buffer = lfs_prog_buf,
@@ -2526,6 +2533,17 @@ uint32_t sd_get_empty_bin_rotations(void)
 uint32_t sd_get_marker_pause_gate_saves(void)
 {
     return (uint32_t)atomic_get(&marker_pause_gate_saves);
+}
+
+uint32_t sd_get_worker_stack_used(void)
+{
+#if defined(CONFIG_THREAD_STACK_INFO) && defined(CONFIG_INIT_STACKS)
+    size_t unused = 0;
+    if (sd_worker_tid != NULL && k_thread_stack_space_get(sd_worker_tid, &unused) == 0) {
+        return (uint32_t)(K_THREAD_STACK_SIZEOF(sd_worker_stack) - unused);
+    }
+#endif
+    return 0;
 }
 
 int app_sd_init(void)

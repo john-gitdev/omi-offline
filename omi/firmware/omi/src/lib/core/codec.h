@@ -18,6 +18,13 @@ int codec_receive_pcm(int16_t *data, size_t len);
 uint32_t codec_get_dropped_frames(void);
 
 /**
+ * @brief Peak stack usage (bytes) of the codec/encode thread since boot.
+ *        High-water mark via k_thread_stack_space_get; 0 if unavailable. Compare
+ *        against the codec stack size to gauge reclaimable stack. Any thread.
+ */
+uint32_t codec_get_stack_used(void);
+
+/**
  * @brief Initialize the Codec
  *
  * Initializes the codec
