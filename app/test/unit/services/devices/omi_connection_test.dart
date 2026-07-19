@@ -51,6 +51,9 @@ class MockDeviceTransport implements DeviceTransport {
   }
 
   @override
+  Future<void> unsubscribeCharacteristic(String serviceUuid, String characteristicUuid) async {}
+
+  @override
   Future<List<int>> readCharacteristic(String serviceUuid, String characteristicUuid) async {
     if (throwReads.contains(characteristicUuid)) {
       throw Exception('char unsupported');
