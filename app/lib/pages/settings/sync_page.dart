@@ -650,11 +650,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // can move one backwards), which the saved baseline would otherwise
     // over-subtract. Uptime is intentionally not used for this: it wraps every
     // ~49.7 days on the firmware's uint32-ms clock, which is not a reboot.
-    final savedJson = prefs.getString(_kBaselineJson);
+    final savedJson = prefs.getString(_devKey(_kBaselineJson));
     if (savedJson.isNotEmpty) {
       final saved = DeviceDropStats.fromBaselineJson(savedJson);
       if (saved == null || stats.looksRebootedFrom(saved)) {
-        unawaited(prefs.remove(_kBaselineJson));
+        unawaited(prefs.remove(_devKey(_kBaselineJson)));
       } else {
         setState(() => _dropBaseline = saved);
       }
@@ -671,19 +671,19 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // BLE connect-fail baselines: SURVIVE reboot (firmware counters are flash-
     // persisted). Only discard if a counter went backwards — i.e. the device's
     // flash was wiped / re-flashed below the saved baseline.
-    final savedConnFail = prefs.getInt(_kBaselineConnFail, defaultValue: -1);
+    final savedConnFail = prefs.getInt(_devKey(_kBaselineConnFail), defaultValue: -1);
     if (savedConnFail >= 0) {
       if (stats.failedConnCount < savedConnFail) {
-        unawaited(prefs.remove(_kBaselineConnFail));
+        unawaited(prefs.remove(_devKey(_kBaselineConnFail)));
       } else {
         setState(() => _connFailBaseline = savedConnFail);
       }
     }
 
-    final savedEstabFail = prefs.getInt(_kBaselineEstabFail, defaultValue: -1);
+    final savedEstabFail = prefs.getInt(_devKey(_kBaselineEstabFail), defaultValue: -1);
     if (savedEstabFail >= 0) {
       if (stats.estabFailCount < savedEstabFail) {
-        unawaited(prefs.remove(_kBaselineEstabFail));
+        unawaited(prefs.remove(_devKey(_kBaselineEstabFail)));
       } else {
         setState(() => _estabFailBaseline = savedEstabFail);
       }
@@ -693,7 +693,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   void _snapshotDropBaseline() {
     final stats = _dropStats;
     if (stats == null) return;
-    unawaited(SharedPreferencesUtil().saveString(_kBaselineJson, stats.toBaselineJson()));
+    unawaited(SharedPreferencesUtil().saveString(_devKey(_kBaselineJson), stats.toBaselineJson()));
     setState(() => _dropBaseline = stats);
   }
 
@@ -701,8 +701,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final stats = _dropStats;
     if (stats == null) return;
     final prefs = SharedPreferencesUtil();
-    unawaited(prefs.saveInt(_kBaselineConnFail, stats.failedConnCount));
-    unawaited(prefs.saveInt(_kBaselineEstabFail, stats.estabFailCount));
+    unawaited(prefs.saveInt(_devKey(_kBaselineConnFail), stats.failedConnCount));
+    unawaited(prefs.saveInt(_devKey(_kBaselineEstabFail), stats.estabFailCount));
     setState(() {
       _connFailBaseline = stats.failedConnCount;
       _estabFailBaseline = stats.estabFailCount;
@@ -732,9 +732,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       _peakSinceReset = 0;
       _dropBaseline = null;
       _connFailBaseline = null;
+      _estabFailBaseline = null;
       _baselineRestored = false;
     });
   }
+
+  // Baselines belong to one device, not globally — a device switch must not apply
+  // device A's reset baseline to device B. Suffix each pref key with the device id.
+  String _devKey(String base) => '${base}_${_dropDeviceId ?? 'unknown'}';
 
   /// Counts `.bin` files in the isolated Adjustment Mode folder.
   Future<void> _refreshAdjustmentBinCount() async {
