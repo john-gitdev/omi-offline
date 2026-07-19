@@ -812,6 +812,10 @@ void storage_write(void)
             }
             if (res >= 0) {
                 transport_started = 1;
+                /* Transfer is now active (remaining_length > 0): switch the diagnostics
+                 * notify cadence to 2 s at once instead of waiting out the 15 s idle
+                 * interval, so live counters update promptly during the sync. */
+                transport_diagnostics_kick();
             }
         }
 
