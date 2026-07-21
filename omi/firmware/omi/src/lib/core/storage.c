@@ -204,7 +204,7 @@ static ssize_t storage_read_characteristic(struct bt_conn *conn,
     payload[0] = (uint32_t)sd_get_cached_total_size(); /* total used bytes */
     payload[1] = sd_get_cached_file_count();           /* number of audio files */
     payload[2] = sd_get_cached_free_bytes();           /* free bytes remaining on SD */
-    payload[3] = app_settings_get_storage_backend();   /* status_flags: low byte = active backend */
+    payload[3] = sd_get_active_backend();   /* status_flags: low byte = the MOUNTED backend */
     
     LOG_INF("Storage read: used=%u bytes, files=%u, free=%u", payload[0], payload[1], payload[2]);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
@@ -1029,9 +1029,13 @@ void storage_write(void)
                 sys_reboot(SYS_REBOOT_COLD);
             }
         }
-        if (atomic_cas(&backend_switch_requested, 1, 0)) {
-            /* Persist the new backend and cold-reboot so boot mounts (or formats
-             * to) the selected backend. ACK before the link drops. */
+        if (atomic_get(&backend_switch_requested)) {
+            /* Persist the new backend and cold-reboot so boot mounts (or formats to)
+             * the selected backend. ACK before the link drops. Read backend_switch_value
+             * while the in-flight flag is STILL set so a racing CMD_SET_BACKEND is
+             * rejected (busy) and can't overwrite it before we persist; clear the flag
+             * only on a save FAILURE (to allow a retry). On success we cold-reboot, so
+             * the flag never needs clearing. */
             uint8_t val = backend_switch_value;
             int serr = app_settings_save_storage_backend(val);
             if (conn) {
@@ -1045,6 +1049,8 @@ void storage_write(void)
                 }
                 k_msleep(500);
                 sys_reboot(SYS_REBOOT_COLD);
+            } else {
+                atomic_clear(&backend_switch_requested); /* failed save — allow a retry */
             }
         }
         if (atomic_get(&stop_started)) {
