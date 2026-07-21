@@ -392,13 +392,17 @@ int sd_ring_mount(uint32_t total_sectors)
         if (read_sectors(sec, stage, 1) != 0) {
             /* Partial tail sector is unreadable. Do NOT fail the mount (the caller
              * would fall back to LittleFS and lfs_format() the volume, wiping every
-             * synced-but-undrained recording), and do NOT overwrite the bad sector.
-             * Instead close/truncate the last segment at the last good boundary — so
-             * no closed recording claims unreadable bytes and the open one cannot span
-             * a gap — then resume recording just PAST the bad sector, leaving it as
-             * dead space owned by no segment. Persisting the table is best-effort:
-             * because the bad sector is never overwritten, a failed write just re-runs
-             * this harmlessly on the next mount; no corruption is possible either way. */
+             * synced-but-undrained recording) and do NOT overwrite the bad sector in
+             * this traversal. Close/truncate the last segment at the last good sector
+             * boundary — so no closed recording claims unreadable bytes and the open
+             * one cannot span a gap — then resume recording just PAST the bad sector,
+             * leaving it as dead space owned by no segment.
+             * LIMITATION: the raw log has no bad-block remapping, so a full ring wrap
+             * (only reachable if the phone never drains for ~26 h of continuous
+             * recording) would eventually re-address this physical sector; a
+             * persistently-bad sector then surfaces as an ordinary write drop /
+             * sd_write_blocked, not corruption. LittleFS (the FTL-backed default) is
+             * the answer for a genuinely failing card. */
             uint64_t bnd = head_abs - stage_fill; /* last good sector boundary */
             LOG_WRN("ring mount: partial tail unreadable — closing at %llu, skipping bad sector",
                     (unsigned long long) bnd);
@@ -421,9 +425,17 @@ int sd_ring_mount(uint32_t total_sectors)
             head_abs = bnd + RING_SECTOR_SIZE; /* resume past the dead bad sector */
             stage_fill = 0;
             if (changed) {
-                (void) write_segtable();
-                (void) sync_disk();
-                (void) write_cursor();
+                /* The reconciled table MUST be durable before the cursor advances to
+                 * the skipped head: otherwise a reboot pairs the skipped cursor with
+                 * the STALE on-disk table, whose last segment still spans the bad
+                 * sector. If the table write/sync fails, leave the cursor at the old
+                 * head (reboot re-runs this recovery) and mark the table dirty so the
+                 * first normal sync retries it before committing any cursor. */
+                if (write_segtable() == 0 && sync_disk() == 0) {
+                    (void) write_cursor();
+                } else {
+                    segtab_dirty = true;
+                }
             }
         }
     }
