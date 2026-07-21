@@ -205,6 +205,21 @@ uint32_t sd_get_marker_pause_gate_saves(void);
 uint32_t sd_get_worker_stack_used(void);
 
 /**
+ * @brief Diagnostics (ring backend): slowest single SD primitive since boot,
+ *        packed as (tag << 24) | duration_ms, tag 1=write 2=read 3=CTRL_SYNC.
+ *        Pinpoints a queue-full drop burst to the exact stalling disk op. 0 when
+ *        the ring backend is inactive. Safe to call from any thread.
+ */
+uint32_t sd_get_ring_max_io_ms(void);
+
+/**
+ * @brief Diagnostics (ring backend): count of write_sectors / CTRL_SYNC failures
+ *        (EIO) since boot — distinguishes "NAND rejected writes" from "NAND was
+ *        merely slow". 0 when the ring backend is inactive. Any thread.
+ */
+uint32_t sd_get_ring_io_errors(void);
+
+/**
  * @brief Put the SD card interface (controller) into a low-power (suspend) state.
  *        Note: This typically suspends the SPI controller managing the SD card slot.
  *
