@@ -50,6 +50,10 @@ static uint8_t g_backend = STORAGE_BACKEND_LITTLEFS;
 static uint32_t ring_total_sectors; /* disk sector count, captured at mount for reformat */
 static size_t ring_bytes_since_sync;
 static uint32_t ring_last_seg_ts;   /* last segment identity ts — bump on same-second collision */
+/* An explicit (priority/manual) REQ_CREATE_NEW_FILE rotation whose durability sync
+ * failed — the write path completes it before appending, so the requested boundary
+ * is never silently dropped and later audio can't land in the previous segment. */
+static bool ring_pending_explicit_rotate;
 /* Cursor is durably advanced at least every RING_SYNC_BYTES of continuous audio
  * (~6.4 s at ~5 KB/s). Each sync is a partial-sector write + CTRL_SYNC + cursor
  * write; at 4 KB this fired ~1.25x/s — ~75x the LittleFS fsync cadence
@@ -2569,6 +2573,12 @@ sd_boot_done:
                 res = sd_ring_sync();
                 if (res == 0) {
                     ring_bytes_since_sync = 0;
+                } else {
+                    /* Explicit rotation could not be made durable now — mark it
+                     * pending so the write path completes it BEFORE accepting more
+                     * audio; otherwise this requested boundary is lost and the next
+                     * recording's audio lands in the current segment. */
+                    ring_pending_explicit_rotate = true;
                 }
             } else
 #endif
@@ -3016,6 +3026,25 @@ static void process_write_data_req_ring(const sd_req_t *req)
         } else {
             return; /* no I/O performed */
         }
+    }
+
+    /* Complete a deferred explicit rotation (a priority/manual REQ_CREATE_NEW_FILE
+     * whose sync failed) BEFORE appending, so the requested boundary is honored and
+     * this block does not land in the previous segment. On failure, stay pending and
+     * block rather than append into the wrong segment. */
+    if (ring_pending_explicit_rotate) {
+        if (sd_ring_sync() != 0) {
+            last_write_error_uptime_ms = k_uptime_get();
+            sd_write_blocked = true;
+            goto ring_done;
+        }
+        ring_bytes_since_sync = 0;
+        if (ring_create_segment() < 0) {
+            last_write_error_uptime_ms = k_uptime_get();
+            sd_write_blocked = true;
+            goto ring_done;
+        }
+        ring_pending_explicit_rotate = false;
     }
 
     /* SPI is already awake here — do NOT power-cycle it per block. The worker loop
