@@ -86,6 +86,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   // device doesn't inherit the previous one's numbers.
   String? _dropDeviceId;
   DeviceDropStats? _dropStats;
+  // Active storage backend read once per subscription (0=LittleFS, 1=ring). null
+  // until read, or when the firmware predates the status_flags field.
+  int? _storageBackend;
   // Snapshot used to render "since baseline" deltas; null = show absolute totals.
   DeviceDropStats? _dropBaseline;
   // True once we've attempted to restore the persisted baseline this polling session.
@@ -676,6 +679,19 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         _dropSubscribedElapsed = _dropClock.elapsed;
         _lastDropNotifyElapsed = null;
       }
+      // One-shot read of the active storage backend (LittleFS vs ring). Only while
+      // still unknown, so it doesn't re-read every re-subscribe once resolved. null
+      // (old firmware without status_flags) leaves it unknown → row renders "—".
+      if (_storageBackend == null) {
+        try {
+          final stats = await conn.getStorageFileStats();
+          if (mounted && gen == _dropSubGen && stats?.storageBackend != null) {
+            setState(() => _storageBackend = stats!.storageBackend);
+          }
+        } catch (_) {
+          // Best-effort — retry on the next re-subscribe.
+        }
+      }
     } catch (_) {
       // Transient BLE error — retry on the next tick.
     } finally {
@@ -773,6 +789,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (!mounted) return;
     setState(() {
       _dropStats = null;
+      _storageBackend = null;
       _dropBaseline = null;
       _connFailBaseline = null;
       _estabFailBaseline = null;
@@ -985,6 +1002,67 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   },
                   activeThumbColor: Colors.deepPurpleAccent,
                   contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Storage Backend',
+                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Switch how the Omi stores audio on its SD card. Ring is experimental: an '
+                      'append-only circular log that avoids the LittleFS allocator scan that drops '
+                      'audio on a near-full card. Switching REFORMATS the SD and reboots — sync first, '
+                      'un-synced recordings are lost.',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    ),
+                    const SizedBox(height: 12),
+                    ElevatedButton(
+                      onPressed: () async {
+                        final dev = context.read<DeviceProvider>().connectedDevice;
+                        if (dev == null) {
+                          setState(() => _statusMessage = 'Connect a device first');
+                          return;
+                        }
+                        final choice = await showDialog<int>(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            backgroundColor: const Color(0xFF1C1C1E),
+                            title: const Text('Switch storage backend', style: TextStyle(color: Colors.white)),
+                            content: const Text(
+                              'This REFORMATS the SD card and reboots the Omi. Any recordings not yet '
+                              'synced will be lost.\n\nLittleFS is the safe default. Ring is experimental.',
+                              style: TextStyle(color: Colors.white70),
+                            ),
+                            actions: [
+                              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+                              TextButton(onPressed: () => Navigator.pop(ctx, 0), child: const Text('LittleFS')),
+                              TextButton(onPressed: () => Navigator.pop(ctx, 1), child: const Text('Ring')),
+                            ],
+                          ),
+                        );
+                        if (choice == null) return;
+                        final conn = await ServiceManager.instance().device.ensureConnection(dev.id);
+                        if (conn == null) {
+                          setState(() => _statusMessage = 'Not connected');
+                          return;
+                        }
+                        await conn.sendSetStorageBackendCommand(choice);
+                        setState(() => _statusMessage =
+                            'Backend switch sent (${choice == 1 ? 'Ring' : 'LittleFS'}) — Omi is reformatting + rebooting…');
+                      },
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.blueGrey.shade800),
+                      child: const Text('Switch backend…', style: TextStyle(color: Colors.white)),
+                    ),
+                  ],
                 ),
               ),
               if (SharedPreferencesUtil().devLogsToFileEnabled) ...[
@@ -1491,12 +1569,13 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final emptyRot = rel(stats.emptyBinRotations, (b) => b.emptyBinRotations);
     final seEmits = rel(stats.sessionEndMarkerEmits, (b) => b.sessionEndMarkerEmits);
     final pauseSaves = rel(stats.markerPauseGateSaves, (b) => b.markerPauseGateSaves);
-    // Peak thread stack usage vs the configured stack sizes (firmware constants:
-    // SD_WORKER_STACK_SIZE=16384, codec_stack=19000). Gauges, shown raw. Large unused
-    // headroom = the stack is over-provisioned and can be trimmed to reclaim RAM.
+    // Peak thread stack usage vs the configured stack sizes (firmware constants,
+    // oo-2.7.2+: SD_WORKER_STACK_SIZE=12288, codec_stack=23096 — the rebalance moved
+    // 4 KB from the over-provisioned SD worker to the codec thread). Gauges, shown
+    // raw. Keep in sync with the firmware or the percentage/hot-threshold is wrong.
     // Highlighted only when usage is close to the ceiling (>85% = overflow risk).
-    const int sdWorkerStackSize = 16384;
-    const int codecStackSize = 19000;
+    const int sdWorkerStackSize = 12288;
+    const int codecStackSize = 23096;
     String stackLabel(int used, int size) =>
         used == 0 ? '—' : '${(used / 1024).toStringAsFixed(1)} / ${(size / 1024).toStringAsFixed(1)} KB';
     final sdStackHot = stats.sdWorkerStackUsed > sdWorkerStackSize * 0.85;
@@ -1543,6 +1622,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
             ],
           ),
           const SizedBox(height: 10),
+          // Which audio backend the firmware mounted this boot. "Ring" = the raw
+          // circular-log backend (no LittleFS allocator scan); "LittleFS" = the
+          // default. "—" when unknown (firmware predates the status_flags byte, or
+          // not yet read).
+          _dropStatRow(
+              'Storage backend',
+              _storageBackend == 1 ? 'Ring' : (_storageBackend == 0 ? 'LittleFS' : '—'),
+              false),
           _dropStatRow('440 B blocks dropped', blocks.toString(), hasFreshDrops),
           _dropStatRow('Audio frames dropped (SD queue)', frames.toString(), hasFreshDrops),
           _dropStatRow('Audio dropped pre-encode (codec)', codec.toString(), codec > 0),
