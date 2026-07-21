@@ -498,7 +498,7 @@ static inline void pack_u32_le(uint8_t *dst, uint32_t v)
     dst[3] = (uint8_t) (v >> 24);
 }
 
-/* Pack the 76-byte drop-counter payload. Shared by the read handler (0x0062)
+/* Pack the 84-byte drop-counter payload. Shared by the read handler (0x0062)
  * and the notify path (diagnostics_drops_notify) so the wire layout has exactly
  * one definition. */
 static void diagnostics_drops_pack(uint8_t payload[84])
@@ -524,13 +524,13 @@ static void diagnostics_drops_pack(uint8_t payload[84])
     uint32_t ring_max_io = sd_get_ring_max_io_ms();
     uint32_t ring_io_errs = sd_get_ring_io_errors();
 
-    /* 76 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
+    /* 84 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
      * codec_drops + sd_msgq peak depth + write-fairness activations + establishment
      * failures + Priority Recording lifecycle (starts / stops / marker drops /
      * empty-bin rotations) + session-end emit attempts + pause-gate marker saves +
-     * sd_worker & codec peak stack used. Each field is appended at the end so older app
-     * builds (which read only the first 20 / 28 / 32 / 40 / 44 / 60 / 68 bytes) keep
-     * working unchanged. */
+     * sd_worker & codec peak stack used + ring_max_io_ms + ring_io_errors. Each field
+     * is appended at the end so older app builds (which read only the first
+     * 20 / 28 / 32 / 40 / 44 / 60 / 68 / 76 bytes) keep working unchanged. */
     pack_u32_le(payload + 0, block_drops);
     pack_u32_le(payload + 4, last_drop_ms);
     pack_u32_le(payload + 8, sd_stream_drops);
