@@ -72,6 +72,15 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   int _totalBytesDownloaded = 0;
   DateTime? _downloadStartTime;
   double _currentSpeedKBps = 0.0;
+
+  // Canonical sync progress for the current session — the SINGLE source both the
+  // recordings card and the foreground-service notification read, so they can't
+  // disagree. `_syncProgressFraction` is the last reported 0..1 progress across the
+  // batch; `totalSegments`/`syncedSegments` (below) derive the displayed pair from
+  // it + the peak segment count, and persist across the native downloader's silent
+  // inter-file gaps instead of resetting to 0. Cleared in _resetSyncState().
+  double _syncProgressFraction = 0.0;
+  int _syncSessionTotal = 0;
   DateTime? _lastWalPersistAt;
   static const Duration _walPersistInterval = Duration(seconds: 1);
 
@@ -103,6 +112,24 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         )
         .toList();
     return pending.length;
+  }
+
+  @override
+  int get totalSegments {
+    if (!_isSyncing) return 0;
+    // Monotonic peak: estimatedTotalSegments shrinks as files finish + delete, but
+    // the "of N" denominator must not count down. Float it up and hold the peak.
+    final est = estimatedTotalSegments;
+    if (est > _syncSessionTotal) _syncSessionTotal = est;
+    return _syncSessionTotal;
+  }
+
+  @override
+  int get syncedSegments {
+    final total = totalSegments;
+    if (total == 0) return 0;
+    final s = (_syncProgressFraction * total).round();
+    return s < 0 ? 0 : (s > total ? total : s);
   }
 
   SDCardWalSyncImpl(
@@ -939,8 +966,18 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     _totalBytesDownloaded = 0;
     _downloadStartTime = null;
     _currentSpeedKBps = 0.0;
+    _syncProgressFraction = 0.0;
+    _syncSessionTotal = 0;
     _cancelCompleter = null;
     _activeTransferCompleter = null;
+  }
+
+  // Record the latest 0..1 batch progress into the canonical session state. Called
+  // wherever the sync loop reports progress, so the card + notification read one
+  // consistent number regardless of which listener (foreground controller or
+  // background notifier) is active at the moment.
+  void _recordSyncProgress(double fraction) {
+    _syncProgressFraction = fraction.clamp(0.0, 1.0);
   }
 
   Future<void> _checkDiskSpaceBeforeSync(int totalBytesToDownload) async {
@@ -1104,6 +1141,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                     ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset)
                     : 1.0;
                 final double clamped = ((i + (withinWal.clamp(0.0, 1.0) * 0.9)) / wals.length).clamp(0.0, 1.0);
+                _recordSyncProgress(clamped);
                 progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
                 _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
               },
@@ -1223,6 +1261,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         wal.status = WalStatus.synced;
         wal.isSyncing = false;
         listener.onWalUpdated();
+        // The native downloader is silent per-packet, so log the completion here:
+        // this confirms the whole file arrived (received == device-advertised) right
+        // before it's deleted, making a healthy sync verifiable from the log alone.
+        Logger.debug('SDCardWalSync: full file received ts=${wal.timerStart} '
+            '(${wal.walOffset}/${wal.storageTotalBytes} B) — synced, deleting');
 
         // Diagnostic: a bin the DEVICE itself advertised as 0 bytes in CMD_LIST_FILES
         // means the firmware opened+rotated the file but never persisted a single
@@ -1249,6 +1292,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         }
 
         final double fileDone = ((i + 1.0) / wals.length).clamp(0.0, 1.0);
+        _recordSyncProgress(fileDone);
         progress?.onWalSyncedProgress(fileDone, speedKBps: _currentSpeedKBps);
         _globalProgressListener?.onWalSyncedProgress(fileDone, speedKBps: _currentSpeedKBps);
       } catch (e) {
@@ -1437,6 +1481,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                   ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset)
                   : 1.0;
               final double clamped = progressPercent.clamp(0.0, 1.0);
+              _recordSyncProgress(clamped);
               progress?.onWalSyncedProgress(
                 clamped,
                 speedKBps: _currentSpeedKBps,
