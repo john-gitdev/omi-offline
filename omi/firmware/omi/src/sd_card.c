@@ -2235,8 +2235,15 @@ sd_boot_done:
         if (ring_active()) {
             if (ring_bytes_since_sync > 0) {
                 sd_set_io_low_power(false);
-                sd_ring_sync();
-                ring_bytes_since_sync = 0;
+                if (sd_ring_sync() == 0) {
+                    ring_bytes_since_sync = 0;
+                } else {
+                    /* Keep ring_bytes_since_sync so the next timeout retries the
+                     * failed cursor commit, and enter the same recovery the threshold
+                     * path uses — don't silently drop the pending audio. */
+                    last_write_error_uptime_ms = k_uptime_get();
+                    sd_write_blocked = true;
+                }
                 sd_set_io_low_power(true);
             }
             continue;
@@ -2578,7 +2585,9 @@ sd_boot_done:
 #ifdef CONFIG_OMI_AUDIO_RING
             if (ring_active()) {
                 int fr = sd_ring_sync();
-                ring_bytes_since_sync = 0;
+                if (fr == 0) {
+                    ring_bytes_since_sync = 0; /* keep pending on failure so it retries */
+                }
                 if (req.u.create_file.resp) {
                     req.u.create_file.resp->res = fr;
                     k_sem_give(&req.u.create_file.resp->sem);
@@ -2684,11 +2693,20 @@ sd_boot_done:
         case REQ_PAUSE_IO: {
 #ifdef CONFIG_OMI_AUDIO_RING
             if (ring_active()) {
-                sd_ring_sync();
-                ring_bytes_since_sync = 0;
+                int psr = sd_ring_sync();
+                if (psr == 0) {
+                    ring_bytes_since_sync = 0;
+                } else {
+                    /* Durability sync failed at the pause boundary — keep the bytes
+                     * pending and enter recovery (the write-wait-timeout retries the
+                     * sync) so the final audio/marker isn't silently lost, and report
+                     * the error to the caller instead of ack'ing success. */
+                    last_write_error_uptime_ms = k_uptime_get();
+                    sd_write_blocked = true;
+                }
                 sd_write_pause(true);
                 if (req.u.create_file.resp) {
-                    req.u.create_file.resp->res = 0;
+                    req.u.create_file.resp->res = psr;
                     k_sem_give(&req.u.create_file.resp->sem);
                 }
                 break;
@@ -2840,6 +2858,18 @@ uint32_t sd_get_ring_io_errors(void)
     if (ring_active()) return sd_ring_io_errors();
 #endif
     return 0;
+}
+
+uint8_t sd_get_active_backend(void)
+{
+    /* What is ACTUALLY mounted this boot — authoritative even when a ring
+     * mount/format failure reverted to LittleFS but the persisted-selector write
+     * didn't land. */
+#ifdef CONFIG_OMI_AUDIO_RING
+    return ring_active() ? STORAGE_BACKEND_RING : STORAGE_BACKEND_LITTLEFS;
+#else
+    return STORAGE_BACKEND_LITTLEFS;
+#endif
 }
 
 #ifdef CONFIG_OMI_AUDIO_RING
@@ -3092,8 +3122,10 @@ static int ring_refresh_file_cache(void)
     }
     cached_stats_valid_until_ms = k_uptime_get() + FILE_CACHE_TTL_MS;
     file_cache_valid = true;
-    sd_write_blocked = false;
-    writing_error_counter = 0;
+    /* Do NOT clear sd_write_blocked / writing_error_counter here: listing reads the
+     * in-RAM segment table and never touches the write path, so a successful list
+     * says nothing about a pending write fault. Let the write path's own timed
+     * recovery clear it, or a fault would be masked and retried too early. */
 
     k_mutex_unlock(&file_cache_mutex);
     return 0;
