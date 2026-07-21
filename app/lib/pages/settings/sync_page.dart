@@ -682,7 +682,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       // One-shot read of the active storage backend (LittleFS vs ring). Only while
       // still unknown, so it doesn't re-read every re-subscribe once resolved. null
       // (old firmware without status_flags) leaves it unknown → row renders "—".
-      if (_storageBackend == null) {
+      // Skip it while a storage transfer is active: this GATT read on the storage
+      // characteristic races the storage notify stream and throws Error 133 (which
+      // drops the link mid-sync). Retry on a later subscription when idle.
+      if (_storageBackend == null && !ServiceManager.instance().wal.getSyncs().isSyncing) {
         try {
           final stats = await conn.getStorageFileStats();
           if (mounted && gen == _dropSubGen && stats?.storageBackend != null) {
@@ -1049,8 +1052,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                             ],
                           ),
                         );
-                        if (choice == null) return;
+                        if (choice == null || !mounted) return;
                         final conn = await ServiceManager.instance().device.ensureConnection(dev.id);
+                        if (!mounted) return;
                         if (conn == null) {
                           setState(() => _statusMessage = 'Not connected');
                           return;
