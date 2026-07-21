@@ -190,6 +190,14 @@ int sd_ring_sync(void);
 int sd_ring_begin_segment(uint32_t timestamp, uint32_t session_id);
 
 /**
+ * @brief Discard the currently-open segment (roll back sd_ring_begin_segment) when
+ *        its inline header could not be persisted, so a header-write failure doesn't
+ *        leak a phantom zero-length entry into the fixed segment table.
+ * @return 0 on success (or nothing open), negative errno on a table-write error.
+ */
+int sd_ring_discard_open_segment(void);
+
+/**
  * @brief Number of CLOSED segments available to sync (excludes the open one).
  */
 int sd_ring_segment_count(void);
