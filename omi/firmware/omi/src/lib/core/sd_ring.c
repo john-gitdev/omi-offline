@@ -390,15 +390,16 @@ int sd_ring_mount(uint32_t total_sectors)
     if (stage_fill != 0) {
         uint32_t sec = abs_to_sector(head_abs - stage_fill);
         if (read_sectors(sec, stage, 1) != 0) {
-            /* Can't read the committed partial tail. Do NOT keep the zeroed stage —
-             * flushing it would write zeros back over the on-disk partial bytes,
-             * corrupting the open recording. Instead skip to the next sector
-             * boundary: the unreadable sector is left intact on NAND and the open
-             * segment gets a small gap; every CLOSED recording is untouched.
-             * (Failing the mount here would abandon ALL un-synced recordings over a
-             * single-sector read error, which is worse.) */
-            LOG_WRN("ring mount: partial tail sector unreadable — skipping to boundary");
-            head_abs += (RING_SECTOR_SIZE - stage_fill);
+            /* Can't read the committed partial tail sector. REWIND the head to the
+             * sector boundary just BEFORE it, dropping the <512 unreadable partial
+             * bytes: the next append overwrites that sector with fresh audio, so the
+             * open recording stays contiguous and its eventual length can never span
+             * never-appended (stale/hole) bytes. Chosen over: keeping the zeroed
+             * stage (writes zeros over committed bytes), skipping FORWARD a sector
+             * (leaves a gap the closed segment would span), or failing the mount
+             * (abandons every un-synced recording over one bad sector). */
+            LOG_WRN("ring mount: partial tail sector unreadable — rewinding to boundary");
+            head_abs -= stage_fill;
             stage_fill = 0;
         }
     }
