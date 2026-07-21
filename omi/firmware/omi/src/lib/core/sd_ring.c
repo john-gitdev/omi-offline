@@ -656,7 +656,13 @@ int sd_ring_discard_open_segment(void)
      * leaking into the fixed-size table on a header-write failure. */
     if (segtab.count > 0 && (segtab.entries[segtab.count - 1].flags & RING_SEG_FLAG_OPEN)) {
         segtab.count--;
-        return write_segtable();
+        int rc = write_segtable();
+        if (rc != 0) {
+            /* In-RAM table now diverges from disk — mark dirty so the next sync
+             * retries it (matching every other table-mutating site). */
+            segtab_dirty = true;
+        }
+        return rc;
     }
     return 0;
 }
