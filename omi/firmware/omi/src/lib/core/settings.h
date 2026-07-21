@@ -5,6 +5,14 @@
 #include <stdint.h>
 #include <zephyr/drivers/rtc.h>
 
+/* Audio storage backend selector (persisted; see app_settings_get_storage_backend). */
+#define STORAGE_BACKEND_LITTLEFS 0 /* default — file-per-segment over LittleFS */
+#define STORAGE_BACKEND_RING     1 /* raw append-only circular log (sd_ring.c) */
+
+/* Consecutive post-crash boots with the ring backend active before it
+ * auto-reverts to LittleFS (anti-brick self-heal). */
+#define RING_BOOT_FAIL_LIMIT     3
+
 /**
  * @brief Initialize the settings subsystem.
  *
@@ -72,6 +80,37 @@ int app_settings_save_priority_record_max_minutes(uint16_t minutes);
  * @brief Get the Priority Recording safety-cap duration in minutes (0 = no cap).
  */
 uint16_t app_settings_get_priority_record_max_minutes(void);
+
+/**
+ * @brief Persist the active audio storage backend.
+ *
+ * @param backend STORAGE_BACKEND_LITTLEFS (0, default) or STORAGE_BACKEND_RING (1).
+ * @return 0 on success, -EINVAL for an unknown backend, or a persist error.
+ *
+ * NOTE: switching backends requires the SD to be (re)formatted to the target
+ * layout; the caller is responsible for triggering that (see sd_card init /
+ * the backend-switch command in storage.c). The value itself lives in internal
+ * NVS; the audio + ring metadata it selects live on the SD NAND.
+ */
+int app_settings_save_storage_backend(uint8_t backend);
+
+/**
+ * @brief Get the active audio storage backend (STORAGE_BACKEND_*; default
+ *        STORAGE_BACKEND_LITTLEFS when nothing is persisted).
+ */
+uint8_t app_settings_get_storage_backend(void);
+
+/**
+ * @brief Persist the consecutive ring-backend post-crash boot counter.
+ *
+ * Bumped at boot when the ring backend is active and the reset cause was a
+ * watchdog/lockup; reset once a boot proves healthy. Drives the anti-brick
+ * auto-revert to LittleFS at RING_BOOT_FAIL_LIMIT.
+ */
+int app_settings_save_ring_boot_fails(uint8_t fails);
+
+/** @brief Get the consecutive ring-backend post-crash boot counter. */
+uint8_t app_settings_get_ring_boot_fails(void);
 
 /**
  * @brief Save the RTC timestamp setting.
