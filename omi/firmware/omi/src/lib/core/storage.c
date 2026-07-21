@@ -598,7 +598,13 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
 
     if (command == CMD_REBOOT) {
         /* Defer to the storage thread so we can ACK before the link drops on the
-         * cold reboot; sys_reboot() never returns. */
+         * cold reboot; sys_reboot() never returns. Reject while a backend switch is
+         * pending: the storage thread services the reboot before the switch, so a
+         * plain reboot here would fire first and silently drop the switch (which
+         * cold-reboots anyway once it persists). */
+        if (atomic_get(&backend_switch_requested)) {
+            return 1; /* busy — a backend switch (which reboots) is pending */
+        }
         LOG_INF("CMD_REBOOT: received reboot command");
         atomic_set(&reboot_requested, 1);
         return 0xFF;  /* ACK + reboot handled by storage thread */
@@ -606,7 +612,11 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
 
     if (command == CMD_POWER_OFF) {
         /* Defer to the storage thread so we can ACK before turnoff_all() tears
-         * down BLE; it ends in sys_poweroff() and never returns. */
+         * down BLE; it ends in sys_poweroff() and never returns. Reject while a
+         * backend switch is pending (same reason as CMD_REBOOT). */
+        if (atomic_get(&backend_switch_requested)) {
+            return 1; /* busy — a backend switch is pending */
+        }
         LOG_INF("CMD_POWER_OFF: received power-off command");
         atomic_set(&power_off_requested, 1);
         return 0xFF;  /* ACK + power-off handled by storage thread */
