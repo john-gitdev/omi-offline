@@ -1073,13 +1073,36 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                           ),
                         );
                         if (choice == null || !mounted) return;
+                        // The switch reformats the SD and cold-reboots. Doing that while a
+                        // sync owns the storage stream would corrupt/lose the in-flight
+                        // transfer, so refuse while syncing.
+                        if (ServiceManager.instance().wal.getSyncs().isSyncing) {
+                          setState(() => _statusMessage =
+                              'A sync is in progress — cancel or let it finish before switching backends.');
+                          return;
+                        }
                         final conn = await ServiceManager.instance().device.ensureConnection(dev.id);
                         if (!mounted) return;
                         if (conn == null) {
                           setState(() => _statusMessage = 'Not connected');
                           return;
                         }
-                        await conn.sendSetStorageBackendCommand(choice);
+                        // Serialize with the storage lock and re-check under it, so a sync
+                        // starting between the check above and the command can't be mid-
+                        // transfer when the device reformats + reboots.
+                        try {
+                          await conn.acquireStorageLock('backendSwitch');
+                          if (ServiceManager.instance().wal.getSyncs().isSyncing) {
+                            if (mounted) {
+                              setState(() => _statusMessage =
+                                  'A sync just started — try switching again once it finishes.');
+                            }
+                            return;
+                          }
+                          await conn.sendSetStorageBackendCommand(choice);
+                        } finally {
+                          conn.releaseStorageLock();
+                        }
                         if (!mounted) return;
                         setState(() {
                           // The device cold-reboots to apply the switch, so the cached
