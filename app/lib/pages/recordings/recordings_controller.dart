@@ -479,6 +479,28 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       } else {
         _lastLivenessBytes = -1;
       }
+
+      // Keep the sync card's segment counter live between download packets. The
+      // per-packet onWalSyncedProgress callback is the only other writer, so during
+      // the device file-list query, inter-file gaps, deletions and reconnects the
+      // card would otherwise fall back to "Scanning device…" while files are visibly
+      // completing (the "deleting synced WAL" log lines). Source it from the WAL
+      // service's own view — total = the most it has reported this run, synced =
+      // those no longer pending — and float both up only, so a new file resetting
+      // its byte percentage can't drag the count backwards.
+      final newTotal = syncs.totalSegments;
+      final newSynced = syncs.syncedSegments;
+      if (newTotal != _totalCount || newSynced != _syncedCount) {
+        _totalCount = newTotal;
+        _syncedCount = newSynced;
+        _syncSpeed = syncs.currentSpeedKBps;
+        // Logged so the card counter is verifiable from the log even though the
+        // native downloader is otherwise silent (Android has no per-packet Dart
+        // hop). Same canonical source the notification reads, so they agree.
+        Logger.debug('RecordingsController: sync card → $_syncedCount/$_totalCount segments'
+            ' (${_syncSpeed.toStringAsFixed(1)} KB/s)');
+        _throttledUpdate();
+      }
     }
 
     // Stall watchdog: a wedged native transfer leaves serviceIsSyncing stuck
@@ -676,21 +698,14 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }) {
     if (_isDisposed) return;
     _lastProgressAt = DateTime.now();
-    _syncSpeed = speedKBps ?? 0.0;
-
-    final currentEstimated = ServiceManager.instance().wal.getSyncs().estimatedTotalSegments;
-    if (currentEstimated > _totalCount) {
-      _totalCount = currentEstimated;
-      Logger.debug(
-        'RecordingsController: Updated totalCount from service: $_totalCount',
-      );
-    }
-
-    if (_totalCount > 0) {
-      _syncedCount = (percentage * _totalCount).round().clamp(0, _totalCount);
-    } else {
-      _syncedCount = 0;
-    }
+    // Read the card's counts from the WAL service's canonical progress so the card
+    // and the foreground-service notification always show the same numbers — both
+    // now source from getSyncs(). The `percentage` arg is just the stall-watchdog
+    // heartbeat here; the displayed value comes from the single source.
+    final syncs = ServiceManager.instance().wal.getSyncs();
+    _syncSpeed = speedKBps ?? syncs.currentSpeedKBps;
+    _totalCount = syncs.totalSegments;
+    _syncedCount = syncs.syncedSegments;
     _throttledUpdate();
   }
 
