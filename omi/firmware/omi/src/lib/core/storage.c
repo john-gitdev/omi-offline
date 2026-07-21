@@ -54,6 +54,7 @@ static uint32_t current_read_offset = 0;
 #define CMD_REBOOT           0x16   // Cold-reboot the device (remote restart)
 #define CMD_POWER_OFF        0x17   // Power off the device (ship mode; button/charger wake)
 #define CMD_ARM_POST_DFU_UNPAIR 0x18 // [0x18, arm]: arm(1)/disarm(0) one-shot bond wipe on next new-image boot
+#define CMD_SET_BACKEND      0x1A   // [0x1A, backend]: switch storage backend (0=LittleFS,1=ring), reboots to apply
 
 #define INVALID_COMMAND 6
 #define FILE_NOT_FOUND 7
@@ -88,6 +89,8 @@ static atomic_t rotate_file_requested = ATOMIC_INIT(0);
 static atomic_t clear_storage_requested = ATOMIC_INIT(0);
 static atomic_t reboot_requested = ATOMIC_INIT(0);
 static atomic_t power_off_requested = ATOMIC_INIT(0);
+static atomic_t backend_switch_requested = ATOMIC_INIT(0);
+static uint8_t  backend_switch_value = 0;
 
 static atomic_t delete_request_pending = ATOMIC_INIT(0);
 static int16_t  delete_file_index = -1;
@@ -201,7 +204,7 @@ static ssize_t storage_read_characteristic(struct bt_conn *conn,
     payload[0] = (uint32_t)sd_get_cached_total_size(); /* total used bytes */
     payload[1] = sd_get_cached_file_count();           /* number of audio files */
     payload[2] = sd_get_cached_free_bytes();           /* free bytes remaining on SD */
-    payload[3] = 0;                                    /* status_flags */
+    payload[3] = app_settings_get_storage_backend();   /* status_flags: low byte = active backend */
     
     LOG_INF("Storage read: used=%u bytes, files=%u, free=%u", payload[0], payload[1], payload[2]);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
@@ -625,6 +628,19 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
         return err ? 1 : 0;  /* non-zero ACK signals a persist failure to the client */
     }
 
+    if (command == CMD_SET_BACKEND) {
+        /* [0x1A][backend]: persist the storage backend and reboot to apply it.
+         * The reboot re-runs boot, which mounts the selected backend or formats
+         * the SD to it on first use (the one-time wipe). Fail-closed on a short
+         * write. The app should sync everything first — switching reformats. */
+        if (len < 2) {
+            return INVALID_COMMAND;
+        }
+        backend_switch_value = ((uint8_t *) buf)[1];
+        atomic_set(&backend_switch_requested, 1);
+        return 0xFF; /* storage thread saves + reboots */
+    }
+
     if (command == CMD_CLEAR_STORAGE) {
         /* CMD_CLEAR_STORAGE (0x14) - defer wipe to storage thread to prevent GATT 133 */
         atomic_set(&clear_storage_requested, 1);
@@ -1006,6 +1022,24 @@ void storage_write(void)
                 sys_reboot(SYS_REBOOT_COLD);
             }
         }
+        if (atomic_cas(&backend_switch_requested, 1, 0)) {
+            /* Persist the new backend and cold-reboot so boot mounts (or formats
+             * to) the selected backend. ACK before the link drops. */
+            uint8_t val = backend_switch_value;
+            int serr = app_settings_save_storage_backend(val);
+            if (conn) {
+                uint8_t ack[2] = {PACKET_ACK, serr ? 1 : 0};
+                STORAGE_NOTIFY(conn, ack, sizeof(ack));
+            }
+            LOG_INF("CMD_SET_BACKEND: backend=%u saved=%d — rebooting to apply", val, serr);
+            if (serr == 0) {
+                if (is_sd_on()) {
+                    app_sd_off(); /* flush + unmount cleanly first */
+                }
+                k_msleep(500);
+                sys_reboot(SYS_REBOOT_COLD);
+            }
+        }
         if (atomic_get(&stop_started)) {
             atomic_clear(&remaining_length);
             atomic_clear(&stop_started);
@@ -1062,6 +1096,7 @@ void storage_write(void)
             !atomic_get(&list_files_requested) && !atomic_get(&delete_request_pending) &&
             !atomic_get(&rotate_file_requested) && !atomic_get(&clear_storage_requested) &&
             !atomic_get(&reboot_requested) && !atomic_get(&power_off_requested) &&
+            !atomic_get(&backend_switch_requested) &&
             !atomic_get(&read_request_pending)) {
             struct bt_conn *idle_conn = get_current_connection();
             uint32_t idle_sleep_ms = idle_conn
