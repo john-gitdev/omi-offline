@@ -771,6 +771,14 @@ int sd_ring_ack_segment(int index)
         segtab_dirty = true;
         return -EIO;
     }
+    /* Flush the table to NAND before the cursor commits the advanced tail — like
+     * sd_ring_sync() does. Otherwise a power loss with the cursor sector durable but
+     * the table not yet flushed mounts the newer tail against the stale table,
+     * leaving segments now below tail listed-but-unreadable. */
+    if (sync_disk() != 0) {
+        segtab_dirty = true;
+        return -EIO;
+    }
     return write_cursor(); /* persist the advanced tail */
 }
 
