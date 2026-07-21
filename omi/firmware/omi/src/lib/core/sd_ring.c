@@ -390,15 +390,41 @@ int sd_ring_mount(uint32_t total_sectors)
     if (stage_fill != 0) {
         uint32_t sec = abs_to_sector(head_abs - stage_fill);
         if (read_sectors(sec, stage, 1) != 0) {
-            /* Can't read the committed partial tail sector. Salvaging it in place is a
-             * nest of edge cases — writing the zeroed stage back overwrites committed
-             * bytes, skipping forward leaves a gap the open segment spans, and
-             * rewinding can overwrite a closed segment's tail — so on a card unhealthy
-             * enough to fail this read we simply fail the mount. The caller falls back
-             * to LittleFS (recoverable); the only loss is this session's un-synced ring
-             * audio, which a card in this state has likely already compromised. */
-            LOG_ERR("ring mount: partial tail sector unreadable — failing mount");
-            return -EIO;
+            /* Partial tail sector is unreadable. Do NOT fail the mount (the caller
+             * would fall back to LittleFS and lfs_format() the volume, wiping every
+             * synced-but-undrained recording), and do NOT overwrite the bad sector.
+             * Instead close/truncate the last segment at the last good boundary — so
+             * no closed recording claims unreadable bytes and the open one cannot span
+             * a gap — then resume recording just PAST the bad sector, leaving it as
+             * dead space owned by no segment. Persisting the table is best-effort:
+             * because the bad sector is never overwritten, a failed write just re-runs
+             * this harmlessly on the next mount; no corruption is possible either way. */
+            uint64_t bnd = head_abs - stage_fill; /* last good sector boundary */
+            LOG_WRN("ring mount: partial tail unreadable — closing at %llu, skipping bad sector",
+                    (unsigned long long) bnd);
+            bool changed = false;
+            while (segtab.count > 0) {
+                ring_segment_t *last = &segtab.entries[segtab.count - 1];
+                if (last->start_abs >= bnd) {
+                    segtab.count--; /* wholly inside the bad region — drop */
+                    changed = true;
+                    continue;
+                }
+                uint32_t keep = (uint32_t) (bnd - last->start_abs);
+                if ((last->flags & RING_SEG_FLAG_OPEN) || last->length > keep) {
+                    last->length = keep; /* close / truncate at the good boundary */
+                    last->flags &= ~RING_SEG_FLAG_OPEN;
+                    changed = true;
+                }
+                break; /* earlier segments end before the boundary — untouched */
+            }
+            head_abs = bnd + RING_SECTOR_SIZE; /* resume past the dead bad sector */
+            stage_fill = 0;
+            if (changed) {
+                (void) write_segtable();
+                (void) sync_disk();
+                (void) write_cursor();
+            }
         }
     }
 
