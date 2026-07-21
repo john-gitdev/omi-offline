@@ -390,55 +390,15 @@ int sd_ring_mount(uint32_t total_sectors)
     if (stage_fill != 0) {
         uint32_t sec = abs_to_sector(head_abs - stage_fill);
         if (read_sectors(sec, stage, 1) != 0) {
-            /* Can't read the committed partial tail sector. REWIND the head to the
-             * sector boundary before it (dropping the <512 unreadable partial bytes)
-             * and let the next append overwrite that sector with fresh audio, so the
-             * open recording stays contiguous. But a recent rotation may have left a
-             * CLOSED segment whose tail lies inside that soon-overwritten sector — its
-             * persisted length would then claim bytes the append replaces, corrupting
-             * that FINISHED recording. So reconcile the table to the boundary first:
-             * drop any segment now starting at/after it, truncate one that straddles
-             * it, and persist the table+cursor before the overwrite is allowed.
-             * (Chosen over keeping the zeroed stage / skipping forward / failing the
-             * mount — the latter abandons every un-synced recording over one bad
-             * sector.) */
-            uint64_t bnd = head_abs - stage_fill; /* sector boundary before the bad sector */
-            head_abs = bnd;
-            stage_fill = 0;
-            LOG_WRN("ring mount: partial tail sector unreadable — rewinding to %llu",
-                    (unsigned long long) bnd);
-            bool reconciled = false;
-            while (segtab.count > 0) {
-                ring_segment_t *last = &segtab.entries[segtab.count - 1];
-                if (last->start_abs >= bnd) {
-                    segtab.count--; /* wholly inside the overwritten region — drop */
-                    reconciled = true;
-                    continue;
-                }
-                if (!(last->flags & RING_SEG_FLAG_OPEN)) {
-                    uint32_t keep = (uint32_t) (bnd - last->start_abs);
-                    if (last->length > keep) {
-                        last->length = keep; /* closed tail was in the bad sector */
-                        reconciled = true;
-                    }
-                }
-                break; /* earlier segments end before the boundary — untouched */
-            }
-            if (reconciled) {
-                /* The reconciled table + rewound cursor MUST be durable before the
-                 * mount completes — otherwise the next append overwrites the bad
-                 * sector while the on-disk table still claims those bytes for a
-                 * closed segment, and a reboot would expose the overwritten bytes as
-                 * a finished recording. If any step fails, fail the mount (the caller
-                 * falls back to LittleFS — recoverable) rather than allow the
-                 * overwrite. Ordered table -> sync -> cursor -> sync; short-circuits
-                 * on the first failure. */
-                if (write_segtable() != 0 || sync_disk() != 0 ||
-                    write_cursor() != 0 || sync_disk() != 0) {
-                    LOG_ERR("ring mount: could not persist tail reconciliation — failing mount");
-                    return -EIO;
-                }
-            }
+            /* Can't read the committed partial tail sector. Salvaging it in place is a
+             * nest of edge cases — writing the zeroed stage back overwrites committed
+             * bytes, skipping forward leaves a gap the open segment spans, and
+             * rewinding can overwrite a closed segment's tail — so on a card unhealthy
+             * enough to fail this read we simply fail the mount. The caller falls back
+             * to LittleFS (recoverable); the only loss is this session's un-synced ring
+             * audio, which a card in this state has likely already compromised. */
+            LOG_ERR("ring mount: partial tail sector unreadable — failing mount");
+            return -EIO;
         }
     }
 
