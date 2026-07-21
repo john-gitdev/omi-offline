@@ -253,6 +253,10 @@ class OmiDeviceConnection extends DeviceConnection {
       // older builds that return only the first 68 bytes.
       sdWorkerStackUsed: data.length >= 72 ? data.getUint32LittleEndian(68) : 0,
       codecStackUsed: data.length >= 76 ? data.getUint32LittleEndian(72) : 0,
+      // Ring SD-primitive diagnostics (offsets 76/80), 84-byte firmware; 0 on
+      // older builds / LittleFS. ringMaxIoRaw packs (tag<<24)|ms.
+      ringMaxIoRaw: data.length >= 80 ? data.getUint32LittleEndian(76) : 0,
+      ringIoErrors: data.length >= 84 ? data.getUint32LittleEndian(80) : 0,
       // Derived, not a wire field: the 76-byte payload is only produced by oo-2.6.2,
       // which is the build that raised SD_REQ_QUEUE_MSGS 100→120. A shorter payload is
       // older firmware still at 100. Keeps the peak-depth denominator honest.
@@ -328,6 +332,9 @@ class OmiDeviceConnection extends DeviceConnection {
           totalUsedBytes: data.getUint32LittleEndian(0),
           fileCount: data.getUint32LittleEndian(4),
           freeBytes: data.length >= 12 ? data.getUint32LittleEndian(8) : 0,
+          // status_flags (bytes 12-15); low byte = active backend (0=LittleFS,
+          // 1=ring). null on firmware predating the field (payload < 16 bytes).
+          storageBackend: data.length >= 16 ? (data.getUint32LittleEndian(12) & 0xFF) : null,
         );
       }
     } catch (e) {
@@ -879,6 +886,20 @@ class OmiDeviceConnection extends DeviceConnection {
     try {
       await transport
           .writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x18, arm ? 1 : 0]);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> sendSetStorageBackendCommand(int backend) async {
+    // [0x1A][backend]: 0 = LittleFS, 1 = ring. The device persists it and cold-
+    // reboots to apply (reformatting the SD to the selected backend on first use),
+    // so the connection drops right after — a thrown write is expected and fine.
+    try {
+      await transport
+          .writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x1A, backend & 0xFF]);
       return true;
     } catch (_) {
       return false;
