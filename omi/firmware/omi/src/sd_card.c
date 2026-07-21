@@ -2776,6 +2776,19 @@ sd_boot_done:
                  * (no directory to rename); the app anchors timing to each
                  * segment's inline header. */
                 if (current_filename[0] == '\0' || current_file_needs_rename) {
+                    /* If an open (TMP) segment will be closed by this rotation, make
+                     * its head durable first: create_audio_file_with_timestamp ->
+                     * begin_segment publishes the closing length from head_abs, so an
+                     * un-synced head could expose uncommitted bytes past the recovered
+                     * cursor after a power cut. On sync failure, defer — a later
+                     * rotation retries with a durable head. */
+                    if (current_filename[0] != '\0') {
+                        if (sd_ring_sync() != 0) {
+                            atomic_set(&timesync_rename_pending, 0);
+                            break;
+                        }
+                        ring_bytes_since_sync = 0;
+                    }
                     create_audio_file_with_timestamp();
                 }
                 atomic_set(&timesync_rename_pending, 0);
