@@ -1065,9 +1065,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                           // command left the phone).
                           _storageBackend = null;
                           _statusMessage = ok
-                              ? 'Backend switch sent (${choice == 1 ? 'Ring' : 'LittleFS'}) — Omi is rebooting; '
-                                  'Diagnostics will confirm the backend on reconnect'
-                              : 'Backend switch not confirmed (BLE write failed) — check the Storage backend row after the Omi reconnects';
+                              ? 'Backend switch sent (${choice == 1 ? 'Ring' : 'LittleFS'}) — Omi is rebooting. '
+                                  'Turn on Show Diagnostics after it reconnects to confirm the active backend.'
+                              : 'Backend switch not confirmed (BLE write failed) — turn on Show Diagnostics after the '
+                                  'Omi reconnects to check the active backend.';
                         });
                       },
                       style: ElevatedButton.styleFrom(backgroundColor: Colors.blueGrey.shade800),
