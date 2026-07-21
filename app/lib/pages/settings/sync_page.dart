@@ -609,6 +609,31 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     return since != null && now - since < _dropPendingTimeout;
   }
 
+  // One-shot read of the active storage backend, serialized against storage
+  // transfers. A raw GATT read on the storage characteristic during a sync races the
+  // storage notify stream and can drop the link (Error 133), so take the storage
+  // lock and re-check sync state under it. No-op once resolved or while a sync holds
+  // the path; _ensureDropSubscription retries it on later ticks until it resolves.
+  Future<void> _readStorageBackendIfIdle(DeviceConnection conn) async {
+    if (_storageBackend != null) return;
+    if (ServiceManager.instance().wal.getSyncs().isSyncing) return;
+    try {
+      await conn.acquireStorageLock('diagBackendRead');
+      try {
+        // Re-check under the lock: a sync could have started while we waited for it.
+        if (!mounted || ServiceManager.instance().wal.getSyncs().isSyncing) return;
+        final stats = await conn.getStorageFileStats();
+        if (mounted && stats?.storageBackend != null) {
+          setState(() => _storageBackend = stats!.storageBackend);
+        }
+      } finally {
+        conn.releaseStorageLock();
+      }
+    } catch (_) {
+      // Best-effort — retried on a later tick.
+    }
+  }
+
   Future<void> _ensureDropSubscription() async {
     // Healthy subscription — notifications drive _dropStats directly. isLocked skips
     // ticks while a subscribe/teardown is already running (acquire sets it
@@ -630,7 +655,15 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // Fast path only if the live subscription belongs to the *currently* connected
     // device. A device switch while this page stays mounted must tear down and
     // re-subscribe; otherwise the card keeps showing the previous device's counters.
-    if (_dropSubHealthy && _dropConn?.device.id == dev.id) return;
+    if (_dropSubHealthy && _dropConn?.device.id == dev.id) {
+      // Sub already healthy — but retry the one-shot backend read here so a read
+      // skipped earlier (device was mid-sync) still resolves instead of staying "—".
+      final healthyConn = _dropConn;
+      if (_storageBackend == null && healthyConn != null) {
+        unawaited(_readStorageBackendIfIdle(healthyConn));
+      }
+      return;
+    }
     await _dropMutex.acquire();
     try {
       // Re-check under the lock — a teardown/subscribe may have run while we waited.
@@ -679,22 +712,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         _dropSubscribedElapsed = _dropClock.elapsed;
         _lastDropNotifyElapsed = null;
       }
-      // One-shot read of the active storage backend (LittleFS vs ring). Only while
-      // still unknown, so it doesn't re-read every re-subscribe once resolved. null
-      // (old firmware without status_flags) leaves it unknown → row renders "—".
-      // Skip it while a storage transfer is active: this GATT read on the storage
-      // characteristic races the storage notify stream and throws Error 133 (which
-      // drops the link mid-sync). Retry on a later subscription when idle.
-      if (_storageBackend == null && !ServiceManager.instance().wal.getSyncs().isSyncing) {
-        try {
-          final stats = await conn.getStorageFileStats();
-          if (mounted && gen == _dropSubGen && stats?.storageBackend != null) {
-            setState(() => _storageBackend = stats!.storageBackend);
-          }
-        } catch (_) {
-          // Best-effort — retry on the next re-subscribe.
-        }
-      }
+      // Read the active storage backend once, serialized with storage transfers via
+      // _readStorageBackendIfIdle (see there). Retried by later ticks until resolved.
+      await _readStorageBackendIfIdle(conn);
     } catch (_) {
       // Transient BLE error — retry on the next tick.
     } finally {
@@ -1059,20 +1079,19 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                           setState(() => _statusMessage = 'Not connected');
                           return;
                         }
-                        final ok = await conn.sendSetStorageBackendCommand(choice);
+                        await conn.sendSetStorageBackendCommand(choice);
                         if (!mounted) return;
                         setState(() {
                           // The device cold-reboots to apply the switch, so the cached
-                          // backend is now stale — clear it so the Diagnostics row
-                          // re-reads and confirms the REAL applied backend on reconnect
-                          // (that read is the ground truth; the write only tells us the
-                          // command left the phone).
+                          // backend is stale — clear it so the Diagnostics row re-reads
+                          // the REAL applied backend on reconnect. Deliberately neutral:
+                          // the reboot routinely drops the write before it acks, so a
+                          // thrown/failed write is NOT a failed switch — the re-read row
+                          // is the source of truth, not the write result.
                           _storageBackend = null;
-                          _statusMessage = ok
-                              ? 'Backend switch sent (${choice == 1 ? 'Ring' : 'LittleFS'}) — Omi is rebooting. '
-                                  'Turn on Show Diagnostics after it reconnects to confirm the active backend.'
-                              : 'Backend switch not confirmed (BLE write failed) — turn on Show Diagnostics after the '
-                                  'Omi reconnects to check the active backend.';
+                          _statusMessage = 'Backend switch requested (${choice == 1 ? 'Ring' : 'LittleFS'}) — '
+                              'Omi is rebooting to apply. Turn on Show Diagnostics after it reconnects to confirm '
+                              'the active backend.';
                         });
                       },
                       style: ElevatedButton.styleFrom(backgroundColor: Colors.blueGrey.shade800),
