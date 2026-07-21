@@ -636,6 +636,13 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
         if (len < 2) {
             return INVALID_COMMAND;
         }
+        /* Reject a second switch while one is already pending: the handler saves +
+         * cold-reboots, so a racing later request would be accepted and then lost to
+         * the first request's reboot. (BLE writes on one link are serialized, so the
+         * check-then-set here is race-free.) */
+        if (atomic_get(&backend_switch_requested)) {
+            return 1; /* busy — a backend switch is already in flight */
+        }
         backend_switch_value = ((uint8_t *) buf)[1];
         atomic_set(&backend_switch_requested, 1);
         return 0xFF; /* storage thread saves + reboots */
