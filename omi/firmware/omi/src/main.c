@@ -433,8 +433,11 @@ int main(void)
          * boot-time fault window), clear the ring crash-loop counter so only
          * CONSECUTIVE bad boots accumulate toward the auto-revert. */
         static bool ring_fails_cleared = false;
-        if (!ring_fails_cleared && k_uptime_get() > 120000 &&
-            app_settings_get_storage_backend() == STORAGE_BACKEND_RING) {
+        if (!ring_fails_cleared && k_uptime_get() > 120000) {
+            /* Clear regardless of the CURRENT backend: a healthy LittleFS boot must
+             * also reset the count, otherwise stale failures from an earlier Ring
+             * trial would make the next Ring trial auto-revert on its first crash
+             * instead of after RING_BOOT_FAIL_LIMIT consecutive ones. */
             if (app_settings_get_ring_boot_fails() != 0) {
                 app_settings_save_ring_boot_fails(0);
             }
