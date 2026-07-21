@@ -22,9 +22,15 @@ class StorageFileStats {
   final int fileCount;
   final int freeBytes;
 
+  /// Active storage backend, from the storage status read (low byte of
+  /// status_flags): 0 = LittleFS, 1 = ring. null when the firmware predates the
+  /// field (payload shorter than 16 bytes).
+  final int? storageBackend;
+
   StorageFileStats({
     required this.totalUsedBytes,
     required this.fileCount,
     required this.freeBytes,
+    this.storageBackend,
   });
 }
