@@ -389,7 +389,18 @@ int sd_ring_mount(uint32_t total_sectors)
     memset(stage, 0, sizeof(stage));
     if (stage_fill != 0) {
         uint32_t sec = abs_to_sector(head_abs - stage_fill);
-        (void) read_sectors(sec, stage, 1); /* best-effort; already-synced partial bytes */
+        if (read_sectors(sec, stage, 1) != 0) {
+            /* Can't read the committed partial tail. Do NOT keep the zeroed stage —
+             * flushing it would write zeros back over the on-disk partial bytes,
+             * corrupting the open recording. Instead skip to the next sector
+             * boundary: the unreadable sector is left intact on NAND and the open
+             * segment gets a small gap; every CLOSED recording is untouched.
+             * (Failing the mount here would abandon ALL un-synced recordings over a
+             * single-sector read error, which is worse.) */
+            LOG_WRN("ring mount: partial tail sector unreadable — skipping to boundary");
+            head_abs += (RING_SECTOR_SIZE - stage_fill);
+            stage_fill = 0;
+        }
     }
 
     ring_mounted = true;
@@ -542,7 +553,14 @@ int sd_ring_sync(void)
         stage_fill = partial;
     }
     if (segtab_dirty) {
-        (void) write_segtable(); /* persist a keep-newest prune; non-fatal if it fails */
+        /* The pruned table (keep-newest dropped segments + advanced tail) MUST reach
+         * NAND before the cursor commits that advanced tail — otherwise a reboot
+         * loads the stale table whose leading segments now sit below tail_abs and
+         * fail reads. On failure keep segtab_dirty and do NOT advance the durable
+         * cursor; the next sync retries the table first. */
+        if (write_segtable() != 0) {
+            return -EIO;
+        }
     }
     int rc = sync_disk();
     if (rc) {
@@ -707,9 +725,14 @@ int sd_ring_ack_segment(int index)
         segtab.count--;
     }
 
-    int rc = write_segtable();
-    if (rc) {
-        return rc;
+    /* The table (segment dropped + tail advanced) must be durable before the cursor
+     * persists the advanced tail. On a table-write failure mark it dirty and bail
+     * WITHOUT the cursor, so the next sd_ring_sync() retries the table before any
+     * cursor commit — otherwise a later cursor could advance the tail past segments
+     * a stale on-disk table still lists. */
+    if (write_segtable() != 0) {
+        segtab_dirty = true;
+        return -EIO;
     }
     return write_cursor(); /* persist the advanced tail */
 }
