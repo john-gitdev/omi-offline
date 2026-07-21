@@ -1254,12 +1254,22 @@ static int sd_unmount(void)
 #ifdef CONFIG_OMI_AUDIO_RING
     if (ring_active()) {
         /* Flush the partial sector + cursor so the shutdown is a clean durability
-         * point, then drop power. No LittleFS handles are open in ring mode. */
-        sd_ring_sync();
+         * point, then drop power. No LittleFS handles are open in ring mode. Retry
+         * once on failure (transient SD hiccup at a reboot/backend-switch boundary),
+         * and surface the result instead of reporting a clean unmount — app_sd_off()
+         * uses this path, so the caller can see the final batch wasn't persisted. */
+        int sr = sd_ring_sync();
+        if (sr != 0) {
+            sr = sd_ring_sync();
+        }
         is_mounted = false;
         sd_enable_power(false);
-        LOG_INF("ring unmounted");
-        return 0;
+        if (sr != 0) {
+            LOG_ERR("ring unmount: final sync failed (%d) — up to the last batch may be lost", sr);
+        } else {
+            LOG_INF("ring unmounted");
+        }
+        return sr;
     }
 #endif
     close_read_handle();
@@ -2549,16 +2559,25 @@ sd_boot_done:
              * stay self-contained: [0xFFFFFFF8 .. audio .. 0xFFFFFFFC]). Reuses the
              * same helper REQ_UNMOUNT uses; name is historical, behaviour is generic. */
             drain_pending_write_queue_for_shutdown();
+            res = 0;
 #ifdef CONFIG_OMI_AUDIO_RING
             if (ring_active()) {
-                sd_ring_sync();
-                ring_bytes_since_sync = 0;
+                /* Head must be durable before create_audio_file_with_timestamp ->
+                 * begin_segment publishes the closing segment's length. If the sync
+                 * fails, don't rotate: report the error and let the caller/next write
+                 * retry, rather than committing an over-claimed close. */
+                res = sd_ring_sync();
+                if (res == 0) {
+                    ring_bytes_since_sync = 0;
+                }
             } else
 #endif
             {
                 flush_batch_buffer_chunked();
             }
-            res = create_audio_file_with_timestamp();
+            if (res == 0) {
+                res = create_audio_file_with_timestamp();
+            }
             if (req.u.create_file.resp) {
                 req.u.create_file.resp->res = res;
                 k_sem_give(&req.u.create_file.resp->sem);
@@ -2948,18 +2967,21 @@ static int ring_create_segment(void)
     } else {
         (void) sd_ring_sync();
     }
-    ring_bytes_since_sync = 0;
     if (rc < 0) {
-        /* The 0xFFFFFFFB segment header did not reach NAND. Don't accept audio into
-         * a headerless segment: clear the active file so the next write re-creates
-         * the segment with a fresh header once the card recovers, and surface the
-         * error so the caller blocks writes rather than treating this as success. */
+        /* The 0xFFFFFFFB segment header did not reach NAND. Discard the segment that
+         * begin_segment just opened, else a phantom zero-length entry leaks into the
+         * fixed 168-slot table and later closes as a bogus file. Keep
+         * ring_bytes_since_sync pending so the worker timeout retries the sync, clear
+         * the active file so the next write re-creates a fresh segment, and surface
+         * the error so the caller blocks writes instead of treating this as success. */
         LOG_ERR("[SD_WORK] ring segment header not persisted: %d", rc);
+        (void) sd_ring_discard_open_segment();
         k_mutex_lock(&current_filename_lock, K_FOREVER);
         current_filename[0] = '\0';
         k_mutex_unlock(&current_filename_lock);
         return rc;
     }
+    ring_bytes_since_sync = 0;
 
     current_file_size = sizeof(RecordingHeader_v1_t);
     bytes_since_sync = 0;
@@ -3012,7 +3034,16 @@ static void process_write_data_req_ring(const sd_req_t *req)
     }
 
     if (!sd_suppress_auto_rotate && should_rotate_file()) {
-        sd_ring_sync();
+        /* Make the current head durable BEFORE rotating: ring_create_segment ->
+         * begin_segment publishes the closing segment's length from head_abs, so if
+         * this sync fails and we rotate anyway, a reboot restores an older cursor
+         * head and the closed length over-claims un-synced bytes. On failure, don't
+         * rotate — block + retry; the rotation happens once the sync succeeds. */
+        if (sd_ring_sync() != 0) {
+            last_write_error_uptime_ms = k_uptime_get();
+            sd_write_blocked = true;
+            goto ring_done;
+        }
         ring_bytes_since_sync = 0;
         if (ring_create_segment() < 0) {
             last_write_error_uptime_ms = k_uptime_get();
