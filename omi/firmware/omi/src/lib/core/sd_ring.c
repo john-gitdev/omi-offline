@@ -646,6 +646,21 @@ int sd_ring_begin_segment(uint32_t timestamp, uint32_t session_id)
     return write_segtable();
 }
 
+int sd_ring_discard_open_segment(void)
+{
+    if (!ring_mounted) {
+        return -ENODEV;
+    }
+    /* Remove the currently-open segment (the one begin_segment appended) if its
+     * inline header never became durable — prevents a phantom zero-length entry from
+     * leaking into the fixed-size table on a header-write failure. */
+    if (segtab.count > 0 && (segtab.entries[segtab.count - 1].flags & RING_SEG_FLAG_OPEN)) {
+        segtab.count--;
+        return write_segtable();
+    }
+    return 0;
+}
+
 int sd_ring_segment_count(void)
 {
     if (!ring_mounted) {
