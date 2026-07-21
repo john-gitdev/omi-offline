@@ -1092,6 +1092,16 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                         // transfer when the device reformats + reboots.
                         try {
                           await conn.acquireStorageLock('backendSwitch');
+                        } catch (_) {
+                          // Acquire timed out / failed — another op holds the lock. Do NOT
+                          // release here (that would drop THEIR lock); just bail.
+                          if (mounted) {
+                            setState(() => _statusMessage =
+                                'Storage is busy — try switching again in a moment.');
+                          }
+                          return;
+                        }
+                        try {
                           if (ServiceManager.instance().wal.getSyncs().isSyncing) {
                             if (mounted) {
                               setState(() => _statusMessage =
