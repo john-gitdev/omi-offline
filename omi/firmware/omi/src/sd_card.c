@@ -1160,20 +1160,21 @@ static int sd_mount(void)
             LOG_WRN("[SD] no ring on card — formatting as ring (one-time SD wipe)");
             rr = sd_ring_format(sector_count);
         }
-        if (rr != 0) {
-            /* Fail-safe, never fatal: keep the mounted flag so boot completes and
-             * BLE/DFU stays reachable; block writes (no audio) until the next boot
-             * rather than fault the worker. */
-            LOG_ERR("[SD] ring mount/format failed: %d — writes blocked", rr);
+        if (rr == 0) {
             is_mounted = true;
             sd_ready = true;
-            sd_write_blocked = true;
+            LOG_INF("[SD] ring backend mounted OK");
             return 0;
         }
-        is_mounted = true;
-        sd_ready = true;
-        LOG_INF("[SD] ring backend mounted OK");
-        return 0;
+        /* Ring couldn't mount OR format (persistent SD init failure that isn't a
+         * crash, so the crash-loop auto-revert in main.c won't catch it). Don't
+         * strand the device recording-blocked forever: revert the persisted
+         * selection to LittleFS, flip g_backend so ring_active() is now false, and
+         * fall through to the LittleFS mount below for this boot — a recoverable
+         * state instead of a silent brick. */
+        LOG_ERR("[SD] ring mount/format failed: %d — reverting to LittleFS", rr);
+        (void) app_settings_save_storage_backend(STORAGE_BACKEND_LITTLEFS);
+        g_backend = STORAGE_BACKEND_LITTLEFS;
     }
 #endif
 
@@ -2172,7 +2173,20 @@ sd_boot_done:
         if (atomic_cas(&pending_flush_on_ble_connect, 1, 0)) {
             if (!atomic_get(&current_file_deleted) && current_filename[0] != '\0') {
                 sd_set_io_low_power(false);
-                int sr = lfs_file_sync(&lfs_fs, &lfs_fil_data);
+                int sr;
+#ifdef CONFIG_OMI_AUDIO_RING
+                if (ring_active()) {
+                    /* Ring mode: lfs_fil_data is never opened — flush the cursor via
+                     * the ring backend instead of the inactive LittleFS handle. */
+                    sr = sd_ring_sync();
+                    if (sr == 0) {
+                        ring_bytes_since_sync = 0;
+                    }
+                } else
+#endif
+                {
+                    sr = lfs_file_sync(&lfs_fs, &lfs_fil_data);
+                }
                 sd_set_io_low_power(true);
                 if (sr < 0) {
                     atomic_set(&pending_flush_on_ble_connect, 1);
@@ -2861,9 +2875,11 @@ static int ring_create_segment(void)
     uint32_t seg_ts = rtc_valid ? utc : (k_uptime_get_32() / 1000U);
     /* Two rotations in the same second (e.g. a priority-record boundary landing
      * on a natural rotation) would otherwise share a (ts,sid) identity and make
-     * the read/delete lookup ambiguous. Bump like the LittleFS LFS_O_EXCL path. */
-    if (seg_ts == ring_last_seg_ts) {
-        seg_ts++;
+     * the read/delete lookup ambiguous. Force strictly increasing (not just !=):
+     * once a bump pushes the key ahead of wall-clock seconds, a plain equality
+     * check would let the next same-second rotation reuse an already-issued key. */
+    if (seg_ts <= ring_last_seg_ts) {
+        seg_ts = ring_last_seg_ts + 1;
     }
     ring_last_seg_ts = seg_ts;
 
@@ -2897,11 +2913,23 @@ static int ring_create_segment(void)
     header.imu_ticks = (lsm6dsl_timestamp_read(&imu_ts) == 0) ? imu_ts : 0;
 
     rc = sd_ring_append((const uint8_t *) &header, sizeof(header));
-    if (rc < 0) {
-        LOG_ERR("[SD_WORK] ring header append failed: %d", rc);
+    if (rc == 0) {
+        rc = sd_ring_sync();
+    } else {
+        (void) sd_ring_sync();
     }
-    sd_ring_sync();
     ring_bytes_since_sync = 0;
+    if (rc < 0) {
+        /* The 0xFFFFFFFB segment header did not reach NAND. Don't accept audio into
+         * a headerless segment: clear the active file so the next write re-creates
+         * the segment with a fresh header once the card recovers, and surface the
+         * error so the caller blocks writes rather than treating this as success. */
+        LOG_ERR("[SD_WORK] ring segment header not persisted: %d", rc);
+        k_mutex_lock(&current_filename_lock, K_FOREVER);
+        current_filename[0] = '\0';
+        k_mutex_unlock(&current_filename_lock);
+        return rc;
+    }
 
     current_file_size = sizeof(RecordingHeader_v1_t);
     bytes_since_sync = 0;
@@ -2976,8 +3004,16 @@ static void process_write_data_req_ring(const sd_req_t *req)
      * lost to a power cut before the next periodic sync. */
     if (block_has_marker(req->u.write.buf, req->u.write.len) ||
         ring_bytes_since_sync >= RING_SYNC_BYTES) {
-        sd_ring_sync();
-        ring_bytes_since_sync = 0;
+        if (sd_ring_sync() == 0) {
+            ring_bytes_since_sync = 0;
+        } else {
+            /* Sync failed — the appended bytes (and any marker) are NOT durable yet.
+             * Keep ring_bytes_since_sync non-zero so the write-wait-timeout sync and
+             * the next threshold retry it, and block writes so the 2 s recovery runs
+             * instead of silently deferring durability by another RING_SYNC_BYTES. */
+            last_write_error_uptime_ms = k_uptime_get();
+            sd_write_blocked = true;
+        }
     }
 
 ring_done:
@@ -3025,24 +3061,30 @@ static int ring_refresh_file_cache(void)
     int n = sd_ring_segment_count();
     int list_count = 0;
     uint64_t total_size = 0;
-    for (int i = 0; i < n && list_count < MAX_AUDIO_FILES; i++) {
+    for (int i = 0; i < n; i++) {
         ring_segment_t seg;
         if (sd_ring_get_segment(i, &seg) < 0) {
             continue;
         }
-        AudioFileMeta_t *meta = &cached_file_meta[list_count++];
-        memset(meta, 0, sizeof(*meta));
-        meta->timestamp = seg.timestamp;
-        meta->uptime_offset = seg.session_id;
-        meta->file_size = seg.length;
-        meta->is_tmp = (seg.timestamp < 946684800U); /* pre-time-sync key → unorganized */
+        /* Count every closed segment toward the storage stats, so used-bytes /
+         * file-count stay accurate even past the cache cap... */
         total_size += seg.length;
+        /* ...but only the first MAX_AUDIO_FILES fit the BLE-indexed list cache (the
+         * app drains + deletes, freeing slots, well before this bound in practice). */
+        if (list_count < MAX_AUDIO_FILES) {
+            AudioFileMeta_t *meta = &cached_file_meta[list_count++];
+            memset(meta, 0, sizeof(*meta));
+            meta->timestamp = seg.timestamp;
+            meta->uptime_offset = seg.session_id;
+            meta->file_size = seg.length;
+            meta->is_tmp = (seg.timestamp < 946684800U); /* pre-time-sync key → unorganized */
+        }
     }
 
     cached_file_list_count = list_count;
-    cached_total_file_count = (uint32_t) list_count;
+    cached_total_file_count = (uint32_t) n;
     cached_total_file_size = total_size;
-    cached_stats_file_count = (uint32_t) list_count;
+    cached_stats_file_count = (uint32_t) n;
     cached_stats_total_size = total_size;
     {
         uint64_t freeb = sd_ring_free_bytes();
