@@ -425,10 +425,19 @@ int sd_ring_mount(uint32_t total_sectors)
                 break; /* earlier segments end before the boundary — untouched */
             }
             if (reconciled) {
-                (void) write_segtable();
-                (void) sync_disk();
-                (void) write_cursor();
-                (void) sync_disk();
+                /* The reconciled table + rewound cursor MUST be durable before the
+                 * mount completes — otherwise the next append overwrites the bad
+                 * sector while the on-disk table still claims those bytes for a
+                 * closed segment, and a reboot would expose the overwritten bytes as
+                 * a finished recording. If any step fails, fail the mount (the caller
+                 * falls back to LittleFS — recoverable) rather than allow the
+                 * overwrite. Ordered table -> sync -> cursor -> sync; short-circuits
+                 * on the first failure. */
+                if (write_segtable() != 0 || sync_disk() != 0 ||
+                    write_cursor() != 0 || sync_disk() != 0) {
+                    LOG_ERR("ring mount: could not persist tail reconciliation — failing mount");
+                    return -EIO;
+                }
             }
         }
     }
