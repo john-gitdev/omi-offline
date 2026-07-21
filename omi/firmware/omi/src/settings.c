@@ -13,11 +13,26 @@ LOG_MODULE_REGISTER(app_settings, CONFIG_LOG_DEFAULT_LEVEL);
 #define DEFAULT_VAD_THRESHOLD 32769
 #define DEFAULT_PRIORITY_RECORD_MAX_MINUTES 120 // 2 h; 0 = no cap
 
+/* Active audio storage backend. Persisted in NVS (on internal flash) — the
+ * backend CHOICE is a tiny value; the audio + ring metadata it selects live on
+ * the SD NAND. Default 0 = LittleFS (unchanged behaviour); 1 = raw ring buffer.
+ * A device with no stored value (factory / pre-ring firmware) reads the default,
+ * so shipping the ring code never changes an existing device's backend until the
+ * user opts in from the app. */
+#define DEFAULT_STORAGE_BACKEND STORAGE_BACKEND_LITTLEFS
+
 // In-memory cache for the settings
 static uint8_t dim_light_ratio = DEFAULT_DIM_LIGHT_RATIO;
 static uint8_t mic_gain = DEFAULT_MIC_GAIN;
 static uint16_t vad_threshold = DEFAULT_VAD_THRESHOLD;
 static uint16_t priority_record_max_minutes = DEFAULT_PRIORITY_RECORD_MAX_MINUTES;
+static uint8_t storage_backend = DEFAULT_STORAGE_BACKEND;
+/* Consecutive post-crash (watchdog/lockup) boots observed while the ring backend
+ * is active. Anti-brick: at RING_BOOT_FAIL_LIMIT the device auto-reverts to the
+ * known-good LittleFS backend so a ring bug can't crash-loop it into needing a
+ * reflash (BLE/DFU is up before the SD wait, so it's reachable regardless — this
+ * also gets recording working again). Cleared once a boot proves healthy. */
+static uint8_t ring_boot_fails = 0;
 static struct rtc_time rtc_timestamp = {0};
 static uint64_t rtc_epoch = 0;
 
@@ -124,6 +139,33 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         rc = read_cb(cb_arg, &priority_record_max_minutes, sizeof(priority_record_max_minutes));
         if (rc >= 0) {
             LOG_INF("Loaded prio_rec_max: %u", priority_record_max_minutes);
+            return 0;
+        }
+        return rc;
+    }
+
+    if (settings_name_steq(name, "storage_backend", &next) && !next) {
+        if (len != sizeof(storage_backend)) {
+            return -EINVAL;
+        }
+        rc = read_cb(cb_arg, &storage_backend, sizeof(storage_backend));
+        if (rc >= 0) {
+            if (storage_backend > STORAGE_BACKEND_RING) {
+                storage_backend = DEFAULT_STORAGE_BACKEND; /* reject an out-of-range persisted value */
+            }
+            LOG_INF("Loaded storage_backend: %u", storage_backend);
+            return 0;
+        }
+        return rc;
+    }
+
+    if (settings_name_steq(name, "ring_boot_fails", &next) && !next) {
+        if (len != sizeof(ring_boot_fails)) {
+            return -EINVAL;
+        }
+        rc = read_cb(cb_arg, &ring_boot_fails, sizeof(ring_boot_fails));
+        if (rc >= 0) {
+            LOG_INF("Loaded ring_boot_fails: %u", ring_boot_fails);
             return 0;
         }
         return rc;
@@ -425,6 +467,41 @@ int app_settings_save_vad_threshold(uint16_t new_threshold)
 uint16_t app_settings_get_vad_threshold(void)
 {
     return vad_threshold;
+}
+
+int app_settings_save_storage_backend(uint8_t backend)
+{
+    if (backend > STORAGE_BACKEND_RING) {
+        return -EINVAL;
+    }
+    storage_backend = backend;
+    int err = settings_save_one("omi/storage_backend", &storage_backend, sizeof(storage_backend));
+    if (err) {
+        LOG_ERR("Failed to save storage_backend (err %d)", err);
+    } else {
+        LOG_INF("Saved storage_backend: %u", storage_backend);
+    }
+    return err;
+}
+
+uint8_t app_settings_get_storage_backend(void)
+{
+    return storage_backend;
+}
+
+int app_settings_save_ring_boot_fails(uint8_t fails)
+{
+    ring_boot_fails = fails;
+    int err = settings_save_one("omi/ring_boot_fails", &ring_boot_fails, sizeof(ring_boot_fails));
+    if (err) {
+        LOG_ERR("Failed to save ring_boot_fails (err %d)", err);
+    }
+    return err;
+}
+
+uint8_t app_settings_get_ring_boot_fails(void)
+{
+    return ring_boot_fails;
 }
 
 int app_settings_save_priority_record_max_minutes(uint16_t minutes)
