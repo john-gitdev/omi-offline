@@ -474,14 +474,17 @@ int app_settings_save_storage_backend(uint8_t backend)
     if (backend > STORAGE_BACKEND_RING) {
         return -EINVAL;
     }
-    storage_backend = backend;
-    int err = settings_save_one("omi/storage_backend", &storage_backend, sizeof(storage_backend));
+    /* Only update the in-memory selector after the NVS write succeeds, so a failed
+     * save leaves the cache consistent with the persisted value and the mounted
+     * backend (a nonzero ACK then honestly reports "unchanged"). */
+    int err = settings_save_one("omi/storage_backend", &backend, sizeof(backend));
     if (err) {
         LOG_ERR("Failed to save storage_backend (err %d)", err);
-    } else {
-        LOG_INF("Saved storage_backend: %u", storage_backend);
+        return err;
     }
-    return err;
+    storage_backend = backend;
+    LOG_INF("Saved storage_backend: %u", storage_backend);
+    return 0;
 }
 
 uint8_t app_settings_get_storage_backend(void)
