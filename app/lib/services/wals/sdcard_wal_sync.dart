@@ -128,7 +128,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   int get syncedSegments {
     final total = totalSegments;
     if (total == 0) return 0;
-    final s = (_syncProgressFraction * total).round();
+    // Floor, not round: a segment counts as synced only once it fully completes (the
+    // fraction crosses its boundary), so mid-transfer batch progress can't tick the
+    // "N of M" counter forward past a file that's still downloading.
+    final s = (_syncProgressFraction * total).floor();
     return s < 0 ? 0 : (s > total ? total : s);
   }
 
