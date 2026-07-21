@@ -220,6 +220,13 @@ uint32_t sd_get_ring_max_io_ms(void);
 uint32_t sd_get_ring_io_errors(void);
 
 /**
+ * @brief The storage backend ACTUALLY mounted this boot (STORAGE_BACKEND_LITTLEFS
+ *        or STORAGE_BACKEND_RING) — authoritative even after a ring->LittleFS mount
+ *        fallback, unlike the persisted selector. Any thread.
+ */
+uint8_t sd_get_active_backend(void);
+
+/**
  * @brief Put the SD card interface (controller) into a low-power (suspend) state.
  *        Note: This typically suspends the SPI controller managing the SD card slot.
  *
