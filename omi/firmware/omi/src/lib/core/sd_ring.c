@@ -292,7 +292,10 @@ static void load_segtable(void)
 }
 
 /* Map a caller-facing closed-segment index (0-based, oldest first) to an index
- * into segtab.entries[]. Closed = not currently open. Returns -1 if out of range. */
+ * into segtab.entries[]. Closed = not open AND not already acked (a non-oldest
+ * acked segment lingers in the table until tail reclamation removes it — excluding
+ * it here keeps it out of the BLE file list so it can't be re-downloaded/deleted).
+ * Returns -1 if out of range. */
 static int closed_global_index(int closed_index)
 {
     if (closed_index < 0) {
@@ -300,7 +303,7 @@ static int closed_global_index(int closed_index)
     }
     int seen = 0;
     for (uint32_t i = 0; i < segtab.count; i++) {
-        if (segtab.entries[i].flags & RING_SEG_FLAG_OPEN) {
+        if (segtab.entries[i].flags & (RING_SEG_FLAG_OPEN | RING_SEG_FLAG_ACKED)) {
             continue;
         }
         if (seen == closed_index) {
@@ -674,7 +677,9 @@ int sd_ring_segment_count(void)
     }
     int n = 0;
     for (uint32_t i = 0; i < segtab.count; i++) {
-        if (!(segtab.entries[i].flags & RING_SEG_FLAG_OPEN)) {
+        /* Count only closed, un-acked segments — mirrors closed_global_index so the
+         * count and the enumerated list agree (acked-but-not-reclaimed excluded). */
+        if (!(segtab.entries[i].flags & (RING_SEG_FLAG_OPEN | RING_SEG_FLAG_ACKED))) {
             n++;
         }
     }
