@@ -410,6 +410,7 @@ class OmiBleForegroundService : Service() {
             if (recoveredFromWedge) {
                 WedgeDiagnostics.captureRecovery(
                     context = this@OmiBleForegroundService,
+                    bleManager = bleManager,
                     address = addr,
                     wedgeStartedAtMs = wedgeStartedAtMs,
                     failuresBeforeRecovery = failuresBeforeRecovery,
