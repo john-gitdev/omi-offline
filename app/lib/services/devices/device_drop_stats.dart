@@ -100,6 +100,35 @@ class DeviceDropStats {
   final int sdWorkerStackUsed;
   final int codecStackUsed;
 
+  /// Ring backend only: the slowest single SD primitive since boot, packed as
+  /// `(tag << 24) | duration_ms`, tag 1=write 2=read 3=CTRL_SYNC. Appended at
+  /// offset 76; 0 on older firmware or the LittleFS backend. Pinpoints a
+  /// queue-full drop burst to the exact stalling disk op — see [ringMaxIoMs] /
+  /// [ringMaxIoOp].
+  final int ringMaxIoRaw;
+
+  /// Ring backend only: count of write_sectors / CTRL_SYNC failures (EIO) since
+  /// boot (offset 80; 0 on older firmware / LittleFS). A nonzero value with a
+  /// small [ringMaxIoMs] means the NAND was *rejecting* writes, not merely slow.
+  final int ringIoErrors;
+
+  /// Duration (ms) of the slowest SD primitive, decoded from [ringMaxIoRaw].
+  int get ringMaxIoMs => ringMaxIoRaw & 0x00FFFFFF;
+
+  /// The disk op behind [ringMaxIoMs]: 'write', 'read', 'sync', or '—'.
+  String get ringMaxIoOp {
+    switch ((ringMaxIoRaw >> 24) & 0xFF) {
+      case 1:
+        return 'write';
+      case 2:
+        return 'read';
+      case 3:
+        return 'sync';
+      default:
+        return '—';
+    }
+  }
+
   /// The firmware's SD write-queue size (`SD_REQ_QUEUE_MSGS`), used as the denominator
   /// for [msgqPeakDepth]. The firmware doesn't send this as a field; it's derived from
   /// the payload length in the parser — the 76-byte payload is only produced by the
@@ -129,6 +158,8 @@ class DeviceDropStats {
     this.markerPauseGateSaves = 0,
     this.sdWorkerStackUsed = 0,
     this.codecStackUsed = 0,
+    this.ringMaxIoRaw = 0,
+    this.ringIoErrors = 0,
     this.sdQueueMax = 120,
     required this.readAt,
   });

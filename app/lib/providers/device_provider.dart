@@ -1572,7 +1572,10 @@ class DeviceProvider extends ChangeNotifier
         final String dropMsg = 'Device SD-drop counters: blocks=${dropStats.blockDrops} '
             'streamFrames=${dropStats.streamFrameDrops} bootFrames=${dropStats.bootFrameDrops} '
             'codecFrames=${dropStats.codecFrameDrops} msgqPeak=${dropStats.msgqPeakDepth} '
-            'writeFair=${dropStats.writeFairActivations} liveUptime=$liveUptimeStr';
+            'writeFair=${dropStats.writeFairActivations} '
+            // Ring stall pinpoint: slowest SD op + which op, and NAND write/sync errors.
+            'ringMaxIo=${dropStats.ringMaxIoMs}ms(${dropStats.ringMaxIoOp}) ringIoErr=${dropStats.ringIoErrors} '
+            'liveUptime=$liveUptimeStr';
         if (dropStats.hasAnyDrops) {
           Logger.warning('$dropMsg — on-device audio drops since boot');
         } else {
@@ -1585,6 +1588,9 @@ class DeviceProvider extends ChangeNotifier
           'codec_frame_drops': dropStats.codecFrameDrops,
           'msgq_peak_depth': dropStats.msgqPeakDepth,
           'write_fair_activations': dropStats.writeFairActivations,
+          'ring_max_io_ms': dropStats.ringMaxIoMs,
+          'ring_max_io_op': dropStats.ringMaxIoOp,
+          'ring_io_errors': dropStats.ringIoErrors,
           // Thread-stack telemetry is logged here unconditionally — it applies to every
           // device, not just ones with Priority-Recording activity (the priority block
           // below is gated and would otherwise drop it on quiet devices). 0 on firmware
@@ -1760,7 +1766,6 @@ class DeviceProvider extends ChangeNotifier
 
 class _BackgroundSyncProgress implements IWalSyncProgressListener {
   DateTime _lastNotif = DateTime.fromMillisecondsSinceEpoch(0);
-  int _totalCount = 0;
 
   @override
   void onWalSyncedProgress(double percentage, {double? speedKBps, SyncPhase? phase}) {
@@ -1771,9 +1776,9 @@ class _BackgroundSyncProgress implements IWalSyncProgressListener {
     final now = DateTime.now();
     if (now.difference(_lastNotif) < const Duration(seconds: 1)) return;
     _lastNotif = now;
-    final estimated = ServiceManager.instance().wal.getSyncs().estimatedTotalSegments;
-    if (estimated > _totalCount) _totalCount = estimated;
-    final synced = (percentage * _totalCount).round().clamp(0, _totalCount);
-    SyncNotification.syncing(RecordingsController.syncingNotificationText(synced, _totalCount));
+    // Read the WAL service's canonical counts — the exact same source the in-app
+    // card reads — so the background notification can never disagree with the card.
+    final syncs = ServiceManager.instance().wal.getSyncs();
+    SyncNotification.syncing(RecordingsController.syncingNotificationText(syncs.syncedSegments, syncs.totalSegments));
   }
 }

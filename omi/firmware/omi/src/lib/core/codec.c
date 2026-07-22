@@ -78,7 +78,10 @@ int codec_receive_pcm(int16_t *data, size_t len) // this gets called after mic d
 
 int16_t codec_input_samples[CODEC_PACKAGE_SAMPLES];
 uint8_t codec_output_bytes[CODEC_OUTPUT_MAX_BYTES];
-K_THREAD_STACK_DEFINE(codec_stack, 19000);
+/* 23096 = old 19000 + the 4 KB reclaimed from SD_WORKER_STACK_SIZE (16384→12288).
+ * The Opus/CELT encode path ran at ~17.5 KB (94% of the old 19000) — ~1 KB from
+ * overflow; this lifts headroom to ~5.5 KB (~76%). Net RAM vs before: zero. */
+K_THREAD_STACK_DEFINE(codec_stack, 23096);
 static struct k_thread codec_thread;
 /* Set once codec_thread has been k_thread_create()d. Guards codec_get_stack_used
  * against a 0x0062 read that races an early BLE connection before codec_start() has

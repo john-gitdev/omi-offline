@@ -14,6 +14,10 @@
 #include "lib/core/sd_card.h"
 #include "lib/core/transport.h"
 #include "lib/core/storage.h"
+#include "lib/core/settings.h"
+#ifdef CONFIG_OMI_AUDIO_RING
+#include "lib/core/sd_ring.h"
+#endif
 
 #include <ctype.h>
 #include <lfs.h>
@@ -32,6 +36,42 @@
 #include "imu.h"
 
 LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
+
+/* ------------------------------------------------------------------ */
+/* Storage backend selector (LittleFS default / raw ring)             */
+/* ------------------------------------------------------------------ */
+/* Read once at sd_worker boot from the persisted setting. Switching backends
+ * requires a reboot (the switch command sets the setting + reboots), so this is
+ * stable for the life of a boot. When CONFIG_OMI_AUDIO_RING is off, the ring
+ * code is not compiled and ring_active() is a compile-time false so every fork
+ * below folds to the LittleFS path. */
+static uint8_t g_backend = STORAGE_BACKEND_LITTLEFS;
+#ifdef CONFIG_OMI_AUDIO_RING
+static uint32_t ring_total_sectors; /* disk sector count, captured at mount for reformat */
+static size_t ring_bytes_since_sync;
+static uint32_t ring_last_seg_ts;   /* last segment identity ts — bump on same-second collision */
+/* An explicit (priority/manual) REQ_CREATE_NEW_FILE rotation whose durability sync
+ * failed — the write path completes it before appending, so the requested boundary
+ * is never silently dropped and later audio can't land in the previous segment. */
+static bool ring_pending_explicit_rotate;
+/* Cursor is durably advanced at least every RING_SYNC_BYTES of continuous audio
+ * (~6.4 s at ~5 KB/s). Each sync is a partial-sector write + CTRL_SYNC + cursor
+ * write; at 4 KB this fired ~1.25x/s — ~75x the LittleFS fsync cadence
+ * (SD_FSYNC_INTERVAL_MS = 60 s) — adding needless flush pressure on the worker.
+ * A larger batch is safe here: whenever audio PAUSES, the write-wait-timeout
+ * branch syncs within 50-500 ms, and any marker block forces an immediate sync,
+ * so only a hard crash mid-continuous-speech loses up to this many bytes. */
+#define RING_SYNC_BYTES 32768
+static inline bool ring_active(void)
+{
+    return g_backend == STORAGE_BACKEND_RING;
+}
+#else
+static inline bool ring_active(void)
+{
+    return false;
+}
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Power Management Helpers                                           */
@@ -358,7 +398,13 @@ static atomic_t sd_dev_pm_supported = ATOMIC_INIT(1);
  * recording until a reboot. */
 
 /* Worker thread & task definitions */
-#define SD_WORKER_STACK_SIZE 16384
+/* 12 KB: on-device the sd_worker high-water is ~5.8 KB on the ring path and, after
+ * shrinking sd_ring_format()'s zeroing buffer (4 KB→512 B), its peak stays ~6 KB;
+ * the LittleFS path's lfs ops (incl. the traverse scan) are iterative/bounded and
+ * fit comfortably too. The 4 KB reclaimed vs the old 16 KB is handed to the codec
+ * thread, which ran at ~17.5/18.6 KB (94%). Net RAM change: zero. Verify after a
+ * backend switch that the LittleFS-path high-water stays well under this. */
+#define SD_WORKER_STACK_SIZE 12288
 #define SD_WORKER_PRIORITY 7
 K_THREAD_STACK_DEFINE(sd_worker_stack, SD_WORKER_STACK_SIZE);
 static struct k_thread sd_worker_thread_data;
@@ -538,8 +584,23 @@ static void sd_set_io_low_power(bool enable);
 static int sd_unmount(void);
 static int sd_remount_and_reopen_info(void);
 
+#ifdef CONFIG_OMI_AUDIO_RING
+/* Ring-backend variants of the LittleFS operations, dispatched behind
+ * ring_active(). Defined together near the end of this file. */
+static int ring_create_segment(void);
+static void process_write_data_req_ring(const sd_req_t *req);
+static int ring_refresh_file_cache(void);
+static int ring_find_segment_index(uint32_t timestamp, uint32_t session_id);
+static void ring_handle_read_req(const sd_req_t *req);
+#endif
+
 static void process_save_offset_req(const sd_req_t *req)
 {
+    /* The read-resume offset lives in LittleFS info.txt. The ring tracks the read
+     * position via the app's WAL + the ring tail, so this is a no-op there. */
+    if (ring_active()) {
+        return;
+    }
     if (sd_write_blocked) {
         if ((k_uptime_get() - last_write_error_uptime_ms) > 2000) {
             sd_write_blocked = false;
@@ -671,6 +732,13 @@ static int flush_batch_buffer_chunked(void)
 
 static void process_write_data_req(const sd_req_t *req)
 {
+#ifdef CONFIG_OMI_AUDIO_RING
+    if (ring_active()) {
+        process_write_data_req_ring(req);
+        return;
+    }
+#endif
+
     bool spi_woken = false;
 
     if (sd_write_blocked) {
@@ -1085,6 +1153,35 @@ static int sd_mount(void)
             sector_size,
             (unsigned) ((uint64_t) sector_count * sector_size >> 20));
 
+#ifdef CONFIG_OMI_AUDIO_RING
+    if (ring_active()) {
+        /* Raw ring backend: the disk is initialised; hand it to sd_ring. No
+         * LittleFS mount. Mount an existing ring, or format one on first use
+         * (foreign FS / fresh card / backend switch — the one-time SD wipe). */
+        ring_total_sectors = sector_count;
+        int rr = sd_ring_mount(sector_count);
+        if (rr == -ENOENT) {
+            LOG_WRN("[SD] no ring on card — formatting as ring (one-time SD wipe)");
+            rr = sd_ring_format(sector_count);
+        }
+        if (rr == 0) {
+            is_mounted = true;
+            sd_ready = true;
+            LOG_INF("[SD] ring backend mounted OK");
+            return 0;
+        }
+        /* Ring couldn't mount OR format (persistent SD init failure that isn't a
+         * crash, so the crash-loop auto-revert in main.c won't catch it). Don't
+         * strand the device recording-blocked forever: revert the persisted
+         * selection to LittleFS, flip g_backend so ring_active() is now false, and
+         * fall through to the LittleFS mount below for this boot — a recoverable
+         * state instead of a silent brick. */
+        LOG_ERR("[SD] ring mount/format failed: %d — reverting to LittleFS", rr);
+        (void) app_settings_save_storage_backend(STORAGE_BACKEND_LITTLEFS);
+        g_backend = STORAGE_BACKEND_LITTLEFS;
+    }
+#endif
+
     /* read/prog stay at sector granularity (512);
      * cache = full block (4096) for multi-sector I/O. */
     uint32_t ss = (sector_size > 0) ? sector_size : DISK_SECTOR_SIZE;
@@ -1158,6 +1255,27 @@ static int sd_mount(void)
 static int sd_unmount(void)
 {
     sd_ready = false;
+#ifdef CONFIG_OMI_AUDIO_RING
+    if (ring_active()) {
+        /* Flush the partial sector + cursor so the shutdown is a clean durability
+         * point, then drop power. No LittleFS handles are open in ring mode. Retry
+         * once on failure (transient SD hiccup at a reboot/backend-switch boundary),
+         * and surface the result instead of reporting a clean unmount — app_sd_off()
+         * uses this path, so the caller can see the final batch wasn't persisted. */
+        int sr = sd_ring_sync();
+        if (sr != 0) {
+            sr = sd_ring_sync();
+        }
+        is_mounted = false;
+        sd_enable_power(false);
+        if (sr != 0) {
+            LOG_ERR("ring unmount: final sync failed (%d) — up to the last batch may be lost", sr);
+        } else {
+            LOG_INF("ring unmounted");
+        }
+        return sr;
+    }
+#endif
     close_read_handle();
     lfs_close_files();
     if (is_mounted) {
@@ -1378,6 +1496,11 @@ static int try_continue_latest_file(void)
 
 static int create_audio_file_with_timestamp(void)
 {
+#ifdef CONFIG_OMI_AUDIO_RING
+    if (ring_active()) {
+        return ring_create_segment();
+    }
+#endif
 
     bool rtc_valid = rtc_is_valid();
     uint32_t timestamp = 0;
@@ -1664,6 +1787,15 @@ static int refresh_file_cache(void)
         return -ENODEV;
     }
 
+#ifdef CONFIG_OMI_AUDIO_RING
+    if (ring_active()) {
+        if (is_storage_sync_active() && file_cache_valid) {
+            return 0; /* keep frozen indices stable during an active sync session */
+        }
+        return ring_refresh_file_cache();
+    }
+#endif
+
     if (is_storage_sync_active() && file_cache_valid) {
         LOG_DBG("refresh_file_cache: session active, skipping refresh to maintain stable indices");
         return 0;
@@ -1777,6 +1909,15 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
 {
     if (!is_mounted)
         return;
+
+    /* Ring segments carry their timestamp in the table and are not renamed:
+     * pre-time-sync segments keep their uptime-based key (shown "unorganized",
+     * like LittleFS TMP files before rename) and the app anchors real timing to
+     * each segment's inline 0xFFFFFFFB header. The REQ_TIME_SYNCED handler just
+     * rotates to a fresh UTC-keyed segment; there is no directory to walk here. */
+    if (ring_active()) {
+        return;
+    }
 
     /* Calculate the UTC offset between uptime and real-world time */
     uint32_t rtc_offset = synced_utc_time - (uint32_t)(k_uptime_get() / 1000U);
@@ -1893,6 +2034,10 @@ void sd_worker_thread(void)
     sd_req_t req;
     int res;
 
+    /* Select the storage backend for this boot (persisted; a switch reboots). */
+    g_backend = app_settings_get_storage_backend();
+    LOG_INF("[SD_BOOT] storage backend: %s", ring_active() ? "ring" : "littlefs");
+
     /* ---- Mount ---- */
     res = sd_mount();
     if (res != 0) {
@@ -1900,6 +2045,16 @@ void sd_worker_thread(void)
         sd_write_blocked = true;
         return;
     }
+
+#ifdef CONFIG_OMI_AUDIO_RING
+    if (ring_active()) {
+        /* sd_mount() already brought the ring up. None of the LittleFS boot steps
+         * (audio dir, allocator pre-warm, info.txt, initial-file continuation)
+         * apply — the first audio write lazily opens the first segment. Skip
+         * straight to marking the SD ready so BLE bring-up / boot warming proceed. */
+        goto sd_boot_done;
+    }
+#endif
 
     /* ---- Ensure audio directory exists ---- */
     struct lfs_info dir_info;
@@ -2003,6 +2158,9 @@ void sd_worker_thread(void)
     }
 
     /* ---- SD boot init complete, allow writes ---- */
+#ifdef CONFIG_OMI_AUDIO_RING
+sd_boot_done:
+#endif
     atomic_set(&sd_boot_ready, 1);
     {
         long dropped = (long)atomic_get(&boot_dropped_frames);
@@ -2029,7 +2187,20 @@ void sd_worker_thread(void)
         if (atomic_cas(&pending_flush_on_ble_connect, 1, 0)) {
             if (!atomic_get(&current_file_deleted) && current_filename[0] != '\0') {
                 sd_set_io_low_power(false);
-                int sr = lfs_file_sync(&lfs_fs, &lfs_fil_data);
+                int sr;
+#ifdef CONFIG_OMI_AUDIO_RING
+                if (ring_active()) {
+                    /* Ring mode: lfs_fil_data is never opened — flush the cursor via
+                     * the ring backend instead of the inactive LittleFS handle. */
+                    sr = sd_ring_sync();
+                    if (sr == 0) {
+                        ring_bytes_since_sync = 0;
+                    }
+                } else
+#endif
+                {
+                    sr = lfs_file_sync(&lfs_fs, &lfs_fil_data);
+                }
                 sd_set_io_low_power(true);
                 if (sr < 0) {
                     atomic_set(&pending_flush_on_ble_connect, 1);
@@ -2071,6 +2242,28 @@ void sd_worker_thread(void)
             goto handle_req;
         }
 
+#ifdef CONFIG_OMI_AUDIO_RING
+        /* Ring: no batch buffer. On the write-wait timeout, make any audio
+         * appended since the last cursor write durable (bounds power-loss to the
+         * quiet gap). Cheap: one partial-sector + one cursor sector. */
+        if (ring_active()) {
+            if (ring_bytes_since_sync > 0) {
+                sd_set_io_low_power(false);
+                if (sd_ring_sync() == 0) {
+                    ring_bytes_since_sync = 0;
+                } else {
+                    /* Keep ring_bytes_since_sync so the next timeout retries the
+                     * failed cursor commit, and enter the same recovery the threshold
+                     * path uses — don't silently drop the pending audio. */
+                    last_write_error_uptime_ms = k_uptime_get();
+                    sd_write_blocked = true;
+                }
+                sd_set_io_low_power(true);
+            }
+            continue;
+        }
+#endif
+
         /* Timeout: flush batch if data is waiting. */
         if (write_batch_offset > 0) {
             sd_set_io_low_power(false);
@@ -2096,7 +2289,20 @@ void sd_worker_thread(void)
         switch (req.type) {
 
         /* ---- Write data ---- */
-        case REQ_WRITE_DATA:
+        case REQ_WRITE_DATA: {
+#ifdef CONFIG_OMI_AUDIO_RING
+            /* Ring writes touch the SD every block (append + periodic cursor sync),
+             * unlike the LittleFS path which only buffers to RAM here. Wake the bus
+             * ONCE for the whole write burst (this req + the drain loop below) and
+             * suspend after — never per block. The LittleFS path stays suspended
+             * while buffering and wakes only on a flush; the ring must mirror that
+             * or the per-block pm_device power-cycle starves sd_msgq. */
+            bool ring_spi_woken = false;
+            if (ring_active()) {
+                sd_set_io_low_power(false);
+                ring_spi_woken = true;
+            }
+#endif
             process_write_data_req(&req);
             reads_since_write = 0;
             /* Drain up to 16 additional write/save_offset messages in one pass
@@ -2115,10 +2321,22 @@ void sd_worker_thread(void)
                 else if (_next.type == REQ_SAVE_OFFSET)
                     process_save_offset_req(&_next);
             }
+#ifdef CONFIG_OMI_AUDIO_RING
+            if (ring_spi_woken) {
+                sd_set_io_low_power(true);
+            }
+#endif
             break;
+        }
 
         /* ---- Read audio data (uses persistent file handle) ---- */
         case REQ_READ_DATA: {
+#ifdef CONFIG_OMI_AUDIO_RING
+            if (ring_active()) {
+                ring_handle_read_req(&req);
+                break;
+            }
+#endif
             char read_path[64];
             build_file_path(req.u.read.filename, read_path, sizeof(read_path));
 
@@ -2246,6 +2464,27 @@ void sd_worker_thread(void)
 
         /* ---- Clear audio directory ---- */
         case REQ_CLEAR_AUDIO_DIR: {
+#ifdef CONFIG_OMI_AUDIO_RING
+            if (ring_active()) {
+                /* Reformat the ring (wipes all segments) and reopen a fresh one. */
+                int cr = sd_ring_format(ring_total_sectors);
+                k_mutex_lock(&current_filename_lock, K_FOREVER);
+                current_filename[0] = '\0';
+                current_file_path[0] = '\0';
+                k_mutex_unlock(&current_filename_lock);
+                current_file_size = 0;
+                ring_bytes_since_sync = 0;
+                invalidate_file_cache();
+                if (cr == 0) {
+                    cr = create_audio_file_with_timestamp();
+                }
+                if (req.u.clear_dir.resp) {
+                    req.u.clear_dir.resp->res = cr;
+                    k_sem_give(&req.u.clear_dir.resp->sem);
+                }
+                break;
+            }
+#endif
             flush_batch_buffer_chunked();
             close_read_handle();
             lfs_file_close(&lfs_fs, &lfs_fil_data);
@@ -2324,8 +2563,31 @@ void sd_worker_thread(void)
              * stay self-contained: [0xFFFFFFF8 .. audio .. 0xFFFFFFFC]). Reuses the
              * same helper REQ_UNMOUNT uses; name is historical, behaviour is generic. */
             drain_pending_write_queue_for_shutdown();
-            flush_batch_buffer_chunked();
-            res = create_audio_file_with_timestamp();
+            res = 0;
+#ifdef CONFIG_OMI_AUDIO_RING
+            if (ring_active()) {
+                /* Head must be durable before create_audio_file_with_timestamp ->
+                 * begin_segment publishes the closing segment's length. If the sync
+                 * fails, don't rotate: report the error and let the caller/next write
+                 * retry, rather than committing an over-claimed close. */
+                res = sd_ring_sync();
+                if (res == 0) {
+                    ring_bytes_since_sync = 0;
+                } else {
+                    /* Explicit rotation could not be made durable now — mark it
+                     * pending so the write path completes it BEFORE accepting more
+                     * audio; otherwise this requested boundary is lost and the next
+                     * recording's audio lands in the current segment. */
+                    ring_pending_explicit_rotate = true;
+                }
+            } else
+#endif
+            {
+                flush_batch_buffer_chunked();
+            }
+            if (res == 0) {
+                res = create_audio_file_with_timestamp();
+            }
             if (req.u.create_file.resp) {
                 req.u.create_file.resp->res = res;
                 k_sem_give(&req.u.create_file.resp->sem);
@@ -2349,6 +2611,19 @@ void sd_worker_thread(void)
 
         /* ---- Flush current file ---- */
         case REQ_FLUSH_FILE: {
+#ifdef CONFIG_OMI_AUDIO_RING
+            if (ring_active()) {
+                int fr = sd_ring_sync();
+                if (fr == 0) {
+                    ring_bytes_since_sync = 0; /* keep pending on failure so it retries */
+                }
+                if (req.u.create_file.resp) {
+                    req.u.create_file.resp->res = fr;
+                    k_sem_give(&req.u.create_file.resp->sem);
+                }
+                break;
+            }
+#endif
             int flush_res = 0;
             if (!atomic_get(&current_file_deleted) && current_filename[0] != '\0') {
                 flush_res = flush_batch_buffer_chunked();
@@ -2389,6 +2664,22 @@ void sd_worker_thread(void)
 
         /* ---- Delete file ---- */
         case REQ_DELETE_FILE: {
+#ifdef CONFIG_OMI_AUDIO_RING
+            if (ring_active()) {
+                /* Deletion = ack the segment; the ring advances its tail past
+                 * leading acked segments to reclaim space. */
+                AudioFileMeta_t m;
+                parse_filename_to_meta(req.u.delete_file.filename, 0, &m);
+                int idx = ring_find_segment_index(m.timestamp, m.uptime_offset);
+                int rc = (idx >= 0) ? sd_ring_ack_segment(idx) : 0; /* absent = already gone */
+                invalidate_file_cache();
+                if (req.u.delete_file.resp) {
+                    req.u.delete_file.resp->res = (rc < 0) ? rc : 0;
+                    k_sem_give(&req.u.delete_file.resp->sem);
+                }
+                break;
+            }
+#endif
             char del_path[64];
             build_file_path(req.u.delete_file.filename, del_path, sizeof(del_path));
 
@@ -2429,6 +2720,27 @@ void sd_worker_thread(void)
 
         /* ---- Pause IO ---- */
         case REQ_PAUSE_IO: {
+#ifdef CONFIG_OMI_AUDIO_RING
+            if (ring_active()) {
+                int psr = sd_ring_sync();
+                if (psr == 0) {
+                    ring_bytes_since_sync = 0;
+                } else {
+                    /* Durability sync failed at the pause boundary — keep the bytes
+                     * pending and enter recovery (the write-wait-timeout retries the
+                     * sync) so the final audio/marker isn't silently lost, and report
+                     * the error to the caller instead of ack'ing success. */
+                    last_write_error_uptime_ms = k_uptime_get();
+                    sd_write_blocked = true;
+                }
+                sd_write_pause(true);
+                if (req.u.create_file.resp) {
+                    req.u.create_file.resp->res = psr;
+                    k_sem_give(&req.u.create_file.resp->sem);
+                }
+                break;
+            }
+#endif
             flush_batch_buffer_chunked();
             if (current_filename[0] != '\0') {
                 lfs_file_sync(&lfs_fs, &lfs_fil_data);
@@ -2457,6 +2769,32 @@ void sd_worker_thread(void)
 
         /* ---- Time synced ---- */
         case REQ_TIME_SYNCED:
+#ifdef CONFIG_OMI_AUDIO_RING
+            if (ring_active()) {
+                /* Rotate to a fresh UTC-keyed segment so subsequent audio is
+                 * organized. Existing pre-sync segments keep their uptime key
+                 * (no directory to rename); the app anchors timing to each
+                 * segment's inline header. */
+                if (current_filename[0] == '\0' || current_file_needs_rename) {
+                    /* If an open (TMP) segment will be closed by this rotation, make
+                     * its head durable first: create_audio_file_with_timestamp ->
+                     * begin_segment publishes the closing length from head_abs, so an
+                     * un-synced head could expose uncommitted bytes past the recovered
+                     * cursor after a power cut. On sync failure, defer — a later
+                     * rotation retries with a durable head. */
+                    if (current_filename[0] != '\0') {
+                        if (sd_ring_sync() != 0) {
+                            atomic_set(&timesync_rename_pending, 0);
+                            break;
+                        }
+                        ring_bytes_since_sync = 0;
+                    }
+                    create_audio_file_with_timestamp();
+                }
+                atomic_set(&timesync_rename_pending, 0);
+                break;
+            }
+#endif
             if (current_filename[0] != '\0' && current_file_needs_rename) {
                 /*
                  * Time sync received while recording to a temporary file.
@@ -2545,6 +2883,327 @@ uint32_t sd_get_worker_stack_used(void)
 #endif
     return 0;
 }
+
+/* Ring SD-primitive diagnostics: slowest disk op (packed tag+ms) and write/sync
+ * error count. 0 when the ring backend is compiled out or not active. */
+uint32_t sd_get_ring_max_io_ms(void)
+{
+#ifdef CONFIG_OMI_AUDIO_RING
+    if (ring_active()) return sd_ring_max_io_ms();
+#endif
+    return 0;
+}
+
+uint32_t sd_get_ring_io_errors(void)
+{
+#ifdef CONFIG_OMI_AUDIO_RING
+    if (ring_active()) return sd_ring_io_errors();
+#endif
+    return 0;
+}
+
+uint8_t sd_get_active_backend(void)
+{
+    /* What is ACTUALLY mounted this boot — authoritative even when a ring
+     * mount/format failure reverted to LittleFS but the persisted-selector write
+     * didn't land. */
+#ifdef CONFIG_OMI_AUDIO_RING
+    return ring_active() ? STORAGE_BACKEND_RING : STORAGE_BACKEND_LITTLEFS;
+#else
+    return STORAGE_BACKEND_LITTLEFS;
+#endif
+}
+
+#ifdef CONFIG_OMI_AUDIO_RING
+/* ================================================================== */
+/* Ring backend glue — dispatched behind ring_active().               */
+/* All functions run on the sd_worker thread, like their LittleFS      */
+/* counterparts.                                                       */
+/* ================================================================== */
+
+/* Open a new ring segment and write its inline 0xFFFFFFFB RecordingHeader,
+ * mirroring create_audio_file_with_timestamp(). Reuses the shared
+ * current_filename / current_file_size / rotation-timer state so
+ * should_rotate_file() and the marker plumbing work unchanged. */
+static int ring_create_segment(void)
+{
+    bool rtc_valid = rtc_is_valid();
+    uint32_t utc = 0;
+    if (rtc_valid) {
+        utc = get_utc_time();
+        if (utc == 0 || utc < 1700000000U) {
+            rtc_valid = false;
+        }
+    }
+    uint32_t sid = (uint32_t) atomic_get(&device_session_id);
+
+    /* Empty-bin diagnostic: previous segment closed holding only its header. */
+    if (current_filename[0] != '\0' && current_file_size <= sizeof(RecordingHeader_v1_t)) {
+        atomic_inc(&empty_bin_rotations);
+    }
+
+    /* Pre-time-sync segments key on uptime seconds (sorts < 946684800 → shown
+     * "unorganized", like LittleFS TMP files); unique per segment. */
+    uint32_t seg_ts = rtc_valid ? utc : (k_uptime_get_32() / 1000U);
+    /* Two rotations in the same second (e.g. a priority-record boundary landing
+     * on a natural rotation) would otherwise share a (ts,sid) identity and make
+     * the read/delete lookup ambiguous. Force strictly increasing (not just !=):
+     * once a bump pushes the key ahead of wall-clock seconds, a plain equality
+     * check would let the next same-second rotation reuse an already-issued key. */
+    if (seg_ts <= ring_last_seg_ts) {
+        seg_ts = ring_last_seg_ts + 1;
+    }
+    ring_last_seg_ts = seg_ts;
+
+    int rc = sd_ring_begin_segment(seg_ts, sid);
+    if (rc < 0) {
+        LOG_ERR("[SD_WORK] ring begin_segment failed: %d", rc);
+        return rc;
+    }
+
+    /* Synthetic filename so the shared list/read/delete/marker plumbing keys on
+     * it exactly like the LittleFS path (identity = <ts>_<sid>). */
+    k_mutex_lock(&current_filename_lock, K_FOREVER);
+    if (rtc_valid) {
+        snprintf(current_filename, sizeof(current_filename), "%08X_%08X.txt", seg_ts, sid);
+    } else {
+        snprintf(current_filename, sizeof(current_filename), "TMP_%08X_%08X.txt", seg_ts, sid);
+    }
+    current_file_path[0] = '\0';
+    current_file_needs_rename = !rtc_valid;
+    k_mutex_unlock(&current_filename_lock);
+
+    RecordingHeader_v1_t header = {
+        .marker = 0xFFFFFFFB,
+        .payload_len = 28,
+        .utc_start_ms = rtc_get_utc_time_ms(),
+        .uptime_start_ms = (uint64_t) k_uptime_get(),
+        .session_id = sid,
+        .version = 1,
+    };
+    uint32_t imu_ts = 0;
+    header.imu_ticks = (lsm6dsl_timestamp_read(&imu_ts) == 0) ? imu_ts : 0;
+
+    rc = sd_ring_append((const uint8_t *) &header, sizeof(header));
+    if (rc == 0) {
+        rc = sd_ring_sync();
+    } else {
+        (void) sd_ring_sync();
+    }
+    if (rc < 0) {
+        /* The 0xFFFFFFFB segment header did not reach NAND. Discard the segment that
+         * begin_segment just opened, else a phantom zero-length entry leaks into the
+         * fixed 168-slot table and later closes as a bogus file. Keep
+         * ring_bytes_since_sync pending so the worker timeout retries the sync, clear
+         * the active file so the next write re-creates a fresh segment, and surface
+         * the error so the caller blocks writes instead of treating this as success. */
+        LOG_ERR("[SD_WORK] ring segment header not persisted: %d", rc);
+        (void) sd_ring_discard_open_segment();
+        k_mutex_lock(&current_filename_lock, K_FOREVER);
+        current_filename[0] = '\0';
+        k_mutex_unlock(&current_filename_lock);
+        return rc;
+    }
+    ring_bytes_since_sync = 0;
+
+    current_file_size = sizeof(RecordingHeader_v1_t);
+    bytes_since_sync = 0;
+    current_file_created_uptime_ms = k_uptime_get();
+    last_file_sync_uptime_ms = k_uptime_get();
+    writing_error_counter = 0;
+    sd_write_blocked = false;
+    invalidate_file_cache_deferrable();
+    return 0;
+}
+
+/* Ring write path: 2 s soft-recovery + pause-gate marker rescue + lazy segment
+ * open + rotation + append + bounded cursor sync. Mirrors the control flow of
+ * the LittleFS process_write_data_req() minus the batch buffer and remount. */
+static void process_write_data_req_ring(const sd_req_t *req)
+{
+    if (sd_write_blocked) {
+        if ((k_uptime_get() - last_write_error_uptime_ms) > 2000) {
+            sd_write_blocked = false;
+            writing_error_counter = 0;
+        } else {
+            return;
+        }
+    }
+
+    /* Pause gate: a pause is a power optimization, not a correctness gate. Keep
+     * marker-bearing blocks (session-end / priority-start / tap / mute / resume)
+     * through a pause; drop only plain audio. */
+    if (!sd_draining && atomic_get(&sd_write_paused)) {
+        if (block_has_marker(req->u.write.buf, req->u.write.len)) {
+            atomic_inc(&marker_pause_gate_saves);
+        } else {
+            return; /* no I/O performed */
+        }
+    }
+
+    /* Complete a deferred explicit rotation (a priority/manual REQ_CREATE_NEW_FILE
+     * whose sync failed) BEFORE appending, so the requested boundary is honored and
+     * this block does not land in the previous segment. On failure, stay pending and
+     * block rather than append into the wrong segment. */
+    if (ring_pending_explicit_rotate) {
+        if (sd_ring_sync() != 0) {
+            last_write_error_uptime_ms = k_uptime_get();
+            sd_write_blocked = true;
+            goto ring_done;
+        }
+        ring_bytes_since_sync = 0;
+        if (ring_create_segment() < 0) {
+            last_write_error_uptime_ms = k_uptime_get();
+            sd_write_blocked = true;
+            goto ring_done;
+        }
+        ring_pending_explicit_rotate = false;
+    }
+
+    /* SPI is already awake here — do NOT power-cycle it per block. The worker loop
+     * wakes the bus once around the whole write burst (the REQ_WRITE_DATA case +
+     * its drain loop), and the non-write handlers that reach this path via the
+     * shutdown drain (REQ_CREATE_NEW_FILE / REQ_UNMOUNT) wake it too. A per-block
+     * pm_device RESUME/SUSPEND re-inits the SD card (tens of ms) ~12x/s, which
+     * pegged sd_msgq at 120/120 and dropped audio instead of draining it. */
+    if (current_filename[0] == '\0') {
+        if (ring_create_segment() < 0) {
+            last_write_error_uptime_ms = k_uptime_get();
+            sd_write_blocked = true;
+            goto ring_done;
+        }
+        atomic_clear(&current_file_deleted);
+    }
+
+    if (!sd_suppress_auto_rotate && should_rotate_file()) {
+        /* Make the current head durable BEFORE rotating: ring_create_segment ->
+         * begin_segment publishes the closing segment's length from head_abs, so if
+         * this sync fails and we rotate anyway, a reboot restores an older cursor
+         * head and the closed length over-claims un-synced bytes. On failure, don't
+         * rotate — block + retry; the rotation happens once the sync succeeds. */
+        if (sd_ring_sync() != 0) {
+            last_write_error_uptime_ms = k_uptime_get();
+            sd_write_blocked = true;
+            goto ring_done;
+        }
+        ring_bytes_since_sync = 0;
+        if (ring_create_segment() < 0) {
+            last_write_error_uptime_ms = k_uptime_get();
+            sd_write_blocked = true;
+            goto ring_done;
+        }
+    }
+
+    if (sd_ring_append(req->u.write.buf, req->u.write.len) < 0) {
+        atomic_inc(&stat_dropped_frames);
+        last_write_error_uptime_ms = k_uptime_get();
+        goto ring_done;
+    }
+    current_file_size += req->u.write.len;
+    ring_bytes_since_sync += req->u.write.len;
+
+    /* Durability: sync the cursor at least every RING_SYNC_BYTES of audio, and
+     * immediately for any marker-bearing block so a stop / priority marker is not
+     * lost to a power cut before the next periodic sync. */
+    if (block_has_marker(req->u.write.buf, req->u.write.len) ||
+        ring_bytes_since_sync >= RING_SYNC_BYTES) {
+        if (sd_ring_sync() == 0) {
+            ring_bytes_since_sync = 0;
+        } else {
+            /* Sync failed — the appended bytes (and any marker) are NOT durable yet.
+             * Keep ring_bytes_since_sync non-zero so the write-wait-timeout sync and
+             * the next threshold retry it, and block writes so the 2 s recovery runs
+             * instead of silently deferring durability by another RING_SYNC_BYTES. */
+            last_write_error_uptime_ms = k_uptime_get();
+            sd_write_blocked = true;
+        }
+    }
+
+ring_done:
+    return; /* SPI is suspended by the caller after the whole write burst. */
+}
+
+/* Resolve a segment index from the app's (timestamp, session_id) key. */
+static int ring_find_segment_index(uint32_t timestamp, uint32_t session_id)
+{
+    int n = sd_ring_segment_count();
+    for (int i = 0; i < n; i++) {
+        ring_segment_t seg;
+        if (sd_ring_get_segment(i, &seg) == 0 &&
+            seg.timestamp == timestamp && seg.session_id == session_id) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* REQ_READ_DATA handler for the ring: map filename → segment → byte range. */
+static void ring_handle_read_req(const sd_req_t *req)
+{
+    AudioFileMeta_t m;
+    parse_filename_to_meta(req->u.read.filename, 0, &m);
+    int idx = ring_find_segment_index(m.timestamp, m.uptime_offset);
+    int br = (idx >= 0) ? sd_ring_read_segment(idx, req->u.read.offset, req->u.read.out_buf,
+                                               req->u.read.length)
+                        : -1;
+    if (req->u.read.resp) {
+        req->u.read.resp->res = (br < 0) ? br : 0;
+        req->u.read.resp->read_bytes = (br < 0) ? 0 : br;
+        k_sem_give(&req->u.read.resp->sem);
+    }
+}
+
+/* Build the file-list cache from the ring's CLOSED segments (oldest first). The
+ * open segment is excluded by sd_ring_segment_count(), matching the LittleFS
+ * "exclude the currently-recording file" behaviour. */
+static int ring_refresh_file_cache(void)
+{
+    k_mutex_lock(&file_cache_mutex, K_FOREVER);
+    memset(cached_file_meta, 0, sizeof(cached_file_meta));
+
+    int n = sd_ring_segment_count();
+    int list_count = 0;
+    uint64_t total_size = 0;
+    for (int i = 0; i < n; i++) {
+        ring_segment_t seg;
+        if (sd_ring_get_segment(i, &seg) < 0) {
+            continue;
+        }
+        /* Count every closed segment toward the storage stats, so used-bytes /
+         * file-count stay accurate even past the cache cap... */
+        total_size += seg.length;
+        /* ...but only the first MAX_AUDIO_FILES fit the BLE-indexed list cache (the
+         * app drains + deletes, freeing slots, well before this bound in practice). */
+        if (list_count < MAX_AUDIO_FILES) {
+            AudioFileMeta_t *meta = &cached_file_meta[list_count++];
+            memset(meta, 0, sizeof(*meta));
+            meta->timestamp = seg.timestamp;
+            meta->uptime_offset = seg.session_id;
+            meta->file_size = seg.length;
+            meta->is_tmp = (seg.timestamp < 946684800U); /* pre-time-sync key → unorganized */
+        }
+    }
+
+    cached_file_list_count = list_count;
+    cached_total_file_count = (uint32_t) n;
+    cached_total_file_size = total_size;
+    cached_stats_file_count = (uint32_t) n;
+    cached_stats_total_size = total_size;
+    {
+        uint64_t freeb = sd_ring_free_bytes();
+        cached_free_bytes = (freeb > UINT32_MAX) ? UINT32_MAX : (uint32_t) freeb;
+    }
+    cached_stats_valid_until_ms = k_uptime_get() + FILE_CACHE_TTL_MS;
+    file_cache_valid = true;
+    /* Do NOT clear sd_write_blocked / writing_error_counter here: listing reads the
+     * in-RAM segment table and never touches the write path, so a successful list
+     * says nothing about a pending write fault. Let the write path's own timed
+     * recovery clear it, or a fault would be masked and retried too early. */
+
+    k_mutex_unlock(&file_cache_mutex);
+    return 0;
+}
+#endif /* CONFIG_OMI_AUDIO_RING */
 
 int app_sd_init(void)
 {

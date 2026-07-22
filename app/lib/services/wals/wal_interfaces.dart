@@ -92,6 +92,16 @@ abstract class SDCardWalSync implements IWalSync {
   int get recordingsCount;
   int get estimatedTotalSegments;
 
+  /// Canonical sync progress for the CURRENT session — the single source both the
+  /// recordings card and the foreground-service notification read, so they always
+  /// agree. [totalSegments] is the monotonic peak of [estimatedTotalSegments] this
+  /// session (the "of N" denominator that never counts down); [syncedSegments] is
+  /// that scaled by the last reported download fraction, so it persists across the
+  /// native downloader's silent inter-file gaps instead of resetting. Both are 0
+  /// when no sync session is active.
+  int get totalSegments;
+  int get syncedSegments;
+
   /// Lightweight check — returns true if the device has at least one file
   /// exceeding the sync threshold. Avoids building full WAL objects.
   /// Fast path: uses in-memory WAL list if already populated by [setDevice].

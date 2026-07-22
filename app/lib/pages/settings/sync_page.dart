@@ -86,6 +86,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   // device doesn't inherit the previous one's numbers.
   String? _dropDeviceId;
   DeviceDropStats? _dropStats;
+  // Active storage backend read once per subscription (0=LittleFS, 1=ring). null
+  // until read, or when the firmware predates the status_flags field.
+  int? _storageBackend;
   // Snapshot used to render "since baseline" deltas; null = show absolute totals.
   DeviceDropStats? _dropBaseline;
   // True once we've attempted to restore the persisted baseline this polling session.
@@ -606,6 +609,31 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     return since != null && now - since < _dropPendingTimeout;
   }
 
+  // One-shot read of the active storage backend, serialized against storage
+  // transfers. A raw GATT read on the storage characteristic during a sync races the
+  // storage notify stream and can drop the link (Error 133), so take the storage
+  // lock and re-check sync state under it. No-op once resolved or while a sync holds
+  // the path; _ensureDropSubscription retries it on later ticks until it resolves.
+  Future<void> _readStorageBackendIfIdle(DeviceConnection conn) async {
+    if (_storageBackend != null) return;
+    if (ServiceManager.instance().wal.getSyncs().isSyncing) return;
+    try {
+      await conn.acquireStorageLock('diagBackendRead');
+      try {
+        // Re-check under the lock: a sync could have started while we waited for it.
+        if (!mounted || ServiceManager.instance().wal.getSyncs().isSyncing) return;
+        final stats = await conn.getStorageFileStats();
+        if (mounted && stats?.storageBackend != null) {
+          setState(() => _storageBackend = stats!.storageBackend);
+        }
+      } finally {
+        conn.releaseStorageLock();
+      }
+    } catch (_) {
+      // Best-effort — retried on a later tick.
+    }
+  }
+
   Future<void> _ensureDropSubscription() async {
     // Healthy subscription — notifications drive _dropStats directly. isLocked skips
     // ticks while a subscribe/teardown is already running (acquire sets it
@@ -627,7 +655,15 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // Fast path only if the live subscription belongs to the *currently* connected
     // device. A device switch while this page stays mounted must tear down and
     // re-subscribe; otherwise the card keeps showing the previous device's counters.
-    if (_dropSubHealthy && _dropConn?.device.id == dev.id) return;
+    if (_dropSubHealthy && _dropConn?.device.id == dev.id) {
+      // Sub already healthy — but retry the one-shot backend read here so a read
+      // skipped earlier (device was mid-sync) still resolves instead of staying "—".
+      final healthyConn = _dropConn;
+      if (_storageBackend == null && healthyConn != null) {
+        unawaited(_readStorageBackendIfIdle(healthyConn));
+      }
+      return;
+    }
     await _dropMutex.acquire();
     try {
       // Re-check under the lock — a teardown/subscribe may have run while we waited.
@@ -676,6 +712,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         _dropSubscribedElapsed = _dropClock.elapsed;
         _lastDropNotifyElapsed = null;
       }
+      // Read the active storage backend once, serialized with storage transfers via
+      // _readStorageBackendIfIdle (see there). Retried by later ticks until resolved.
+      await _readStorageBackendIfIdle(conn);
     } catch (_) {
       // Transient BLE error — retry on the next tick.
     } finally {
@@ -773,6 +812,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (!mounted) return;
     setState(() {
       _dropStats = null;
+      _storageBackend = null;
       _dropBaseline = null;
       _connFailBaseline = null;
       _estabFailBaseline = null;
@@ -985,6 +1025,112 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   },
                   activeThumbColor: Colors.deepPurpleAccent,
                   contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Storage Backend',
+                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Switch how the Omi stores audio on its SD card. Ring is experimental: an '
+                      'append-only circular log that avoids the LittleFS allocator scan that drops '
+                      'audio on a near-full card. Switching REFORMATS the SD and reboots — sync first, '
+                      'un-synced recordings are lost.',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    ),
+                    const SizedBox(height: 12),
+                    ElevatedButton(
+                      onPressed: () async {
+                        final dev = context.read<DeviceProvider>().connectedDevice;
+                        if (dev == null) {
+                          setState(() => _statusMessage = 'Connect a device first');
+                          return;
+                        }
+                        final choice = await showDialog<int>(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            backgroundColor: const Color(0xFF1C1C1E),
+                            title: const Text('Switch storage backend', style: TextStyle(color: Colors.white)),
+                            content: const Text(
+                              'This REFORMATS the SD card and reboots the Omi. Any recordings not yet '
+                              'synced will be lost.\n\nLittleFS is the safe default. Ring is experimental.',
+                              style: TextStyle(color: Colors.white70),
+                            ),
+                            actions: [
+                              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+                              TextButton(onPressed: () => Navigator.pop(ctx, 0), child: const Text('LittleFS')),
+                              TextButton(onPressed: () => Navigator.pop(ctx, 1), child: const Text('Ring')),
+                            ],
+                          ),
+                        );
+                        if (choice == null || !mounted) return;
+                        // The switch reformats the SD and cold-reboots. Doing that while a
+                        // sync owns the storage stream would corrupt/lose the in-flight
+                        // transfer, so refuse while syncing.
+                        if (ServiceManager.instance().wal.getSyncs().isSyncing) {
+                          setState(() => _statusMessage =
+                              'A sync is in progress — cancel or let it finish before switching backends.');
+                          return;
+                        }
+                        final conn = await ServiceManager.instance().device.ensureConnection(dev.id);
+                        if (!mounted) return;
+                        if (conn == null) {
+                          setState(() => _statusMessage = 'Not connected');
+                          return;
+                        }
+                        // Serialize with the storage lock and re-check under it, so a sync
+                        // starting between the check above and the command can't be mid-
+                        // transfer when the device reformats + reboots.
+                        try {
+                          await conn.acquireStorageLock('backendSwitch');
+                        } catch (_) {
+                          // Acquire timed out / failed — another op holds the lock. Do NOT
+                          // release here (that would drop THEIR lock); just bail.
+                          if (mounted) {
+                            setState(() => _statusMessage =
+                                'Storage is busy — try switching again in a moment.');
+                          }
+                          return;
+                        }
+                        try {
+                          if (ServiceManager.instance().wal.getSyncs().isSyncing) {
+                            if (mounted) {
+                              setState(() => _statusMessage =
+                                  'A sync just started — try switching again once it finishes.');
+                            }
+                            return;
+                          }
+                          await conn.sendSetStorageBackendCommand(choice);
+                        } finally {
+                          conn.releaseStorageLock();
+                        }
+                        if (!mounted) return;
+                        setState(() {
+                          // The device cold-reboots to apply the switch, so the cached
+                          // backend is stale — clear it so the Diagnostics row re-reads
+                          // the REAL applied backend on reconnect. Deliberately neutral:
+                          // the reboot routinely drops the write before it acks, so a
+                          // thrown/failed write is NOT a failed switch — the re-read row
+                          // is the source of truth, not the write result.
+                          _storageBackend = null;
+                          _statusMessage = 'Backend switch requested (${choice == 1 ? 'Ring' : 'LittleFS'}) — '
+                              'Omi is rebooting to apply. Turn on Show Diagnostics after it reconnects to confirm '
+                              'the active backend.';
+                        });
+                      },
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.blueGrey.shade800),
+                      child: const Text('Switch backend…', style: TextStyle(color: Colors.white)),
+                    ),
+                  ],
                 ),
               ),
               if (SharedPreferencesUtil().devLogsToFileEnabled) ...[
@@ -1491,12 +1637,13 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final emptyRot = rel(stats.emptyBinRotations, (b) => b.emptyBinRotations);
     final seEmits = rel(stats.sessionEndMarkerEmits, (b) => b.sessionEndMarkerEmits);
     final pauseSaves = rel(stats.markerPauseGateSaves, (b) => b.markerPauseGateSaves);
-    // Peak thread stack usage vs the configured stack sizes (firmware constants:
-    // SD_WORKER_STACK_SIZE=16384, codec_stack=19000). Gauges, shown raw. Large unused
-    // headroom = the stack is over-provisioned and can be trimmed to reclaim RAM.
+    // Peak thread stack usage vs the configured stack sizes (firmware constants,
+    // oo-2.7.2+: SD_WORKER_STACK_SIZE=12288, codec_stack=23096 — the rebalance moved
+    // 4 KB from the over-provisioned SD worker to the codec thread). Gauges, shown
+    // raw. Keep in sync with the firmware or the percentage/hot-threshold is wrong.
     // Highlighted only when usage is close to the ceiling (>85% = overflow risk).
-    const int sdWorkerStackSize = 16384;
-    const int codecStackSize = 19000;
+    const int sdWorkerStackSize = 12288;
+    const int codecStackSize = 23096;
     String stackLabel(int used, int size) =>
         used == 0 ? '—' : '${(used / 1024).toStringAsFixed(1)} / ${(size / 1024).toStringAsFixed(1)} KB';
     final sdStackHot = stats.sdWorkerStackUsed > sdWorkerStackSize * 0.85;
@@ -1543,6 +1690,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
             ],
           ),
           const SizedBox(height: 10),
+          // Which audio backend the firmware mounted this boot. "Ring" = the raw
+          // circular-log backend (no LittleFS allocator scan); "LittleFS" = the
+          // default. "—" when unknown (firmware predates the status_flags byte, or
+          // not yet read).
+          _dropStatRow(
+              'Storage backend',
+              _storageBackend == 1 ? 'Ring' : (_storageBackend == 0 ? 'LittleFS' : '—'),
+              false),
           _dropStatRow('440 B blocks dropped', blocks.toString(), hasFreshDrops),
           _dropStatRow('Audio frames dropped (SD queue)', frames.toString(), hasFreshDrops),
           _dropStatRow('Audio dropped pre-encode (codec)', codec.toString(), codec > 0),

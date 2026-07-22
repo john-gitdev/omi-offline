@@ -14,6 +14,20 @@ config OMI_ENABLE_OFFLINE_STORAGE
         "Enable the offline storage support. Requires a SD Card."
 	default n
 
+config OMI_AUDIO_RING
+    bool "Raw circular-log audio backend (ring buffer) selectable at runtime"
+    depends on OMI_ENABLE_OFFLINE_STORAGE
+    default y
+    help
+        "Compile in the raw circular-log (ring buffer) storage backend
+         alongside the default LittleFS backend. The active backend is chosen
+         at RUNTIME from a persisted setting (default: LittleFS), so this only
+         controls whether the ring code is built — flipping backends never
+         needs a reflash. The ring writes audio as an append-only circular log
+         over a reserved sector range on the SD NAND (no filesystem), which
+         removes the LittleFS block-allocator full-FS traversal that stalls the
+         write path and drops audio frames on a near-full card."
+
 config OMI_ENABLE_ACCELEROMETER
     bool "Accelerometer Support"
     help
