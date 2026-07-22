@@ -242,13 +242,59 @@ object WedgeDiagnostics {
         onProbeComplete: (verdict: ProbeVerdict) -> Unit,
     ) {
         val addr = address.uppercase()
-        val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-        val adapter = btManager?.adapter
+        val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+
+        val bondState = try {
+            adapter?.bondedDevices?.firstOrNull { it.address.uppercase() == addr }
+                ?.let { bondStateName(it.bondState) } ?: "not_bonded"
+        } catch (e: Exception) {
+            "unreadable"
+        }
+
+        // Wedge-specific fields first, then the shared environment snapshot — the same fields
+        // captureRecovery records, so the two can be diffed to explain how the outage resolved.
+        val fields = linkedMapOf<String, Any?>(
+            "device" to addr,
+            "consecutive_failures" to consecutiveFailures,
+            "retry_count" to retryCount,
+            // -1 is our own connect backstop firing, i.e. Android never reported a
+            // status. Any other value is the framework's, and is the useful one.
+            "last_gatt_status" to lastStatus,
+            // The most recent status Android actually delivered this outage (null if it
+            // never did — an all-timeout outage where the initiator wedged with zero
+            // callbacks). This is what survives the -1 masking: `-1` + `147` means the
+            // stack was rejecting, `-1` + null means it went completely silent.
+            "last_real_gatt_status" to lastRealStatus,
+            "bond_state" to bondState,
+            "uptime_ms" to SystemClock.elapsedRealtime(),
+        )
+        fields.putAll(environmentSnapshot(context, bleManager, addr))
+        logEvent(context, "ble_wedge", fields)
+
+        probeAdvertising(context, adapter, addr, onProbeComplete)
+    }
+
+    /**
+     * The phone-side environment both ends of an outage record share: adapter state, every
+     * contending LE link, and the screen/Doze state that governs how much radio time the stack
+     * gives us. Captured at *both* wedge-detection and recovery on purpose — a wedge that clears
+     * on its own leaves no trace of *why* unless these same fields, taken at both moments, can be
+     * diffed. A contention count that fell, a screen that woke, or Doze that exited between the two
+     * is the most likely cause of a spontaneous recovery, and the only one these logs can name.
+     *
+     * Every read is defensive: a throw in any one field must not cost the log line it is part of.
+     */
+    private fun environmentSnapshot(
+        context: Context,
+        bleManager: OmiBleManager,
+        addr: String,
+    ): Map<String, Any?> {
+        val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
         val power = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
 
-        // Every LE link the system holds right now, ours included. Contention alone was
-        // measured not to cause the failure, but the count is the first thing to check
-        // against that conclusion when a new outage looks different.
+        // Every LE link the system holds right now, ours included. Contention alone was measured
+        // not to cause the failure, but a count that *moved* across the outage is the first thing
+        // to check when a wedge clears with nothing else having changed.
         val otherLinks = JSONArray()
         var omiInGattList = false
         try {
@@ -263,41 +309,16 @@ object WedgeDiagnostics {
             Log.w(TAG, "Cannot enumerate LE links: ${e.message}")
         }
 
-        val bondState = try {
-            adapter?.bondedDevices?.firstOrNull { it.address.uppercase() == addr }
-                ?.let { bondStateName(it.bondState) } ?: "not_bonded"
-        } catch (e: Exception) {
-            "unreadable"
-        }
-
-        logEvent(
-            context, "ble_wedge", mapOf(
-                "device" to addr,
-                "consecutive_failures" to consecutiveFailures,
-                "retry_count" to retryCount,
-                // -1 is our own connect backstop firing, i.e. Android never reported a
-                // status. Any other value is the framework's, and is the useful one.
-                "last_gatt_status" to lastStatus,
-                // The most recent status Android actually delivered this outage (null if it
-                // never did — an all-timeout outage where the initiator wedged with zero
-                // callbacks). This is what survives the -1 masking: `-1` + `147` means the
-                // stack was rejecting, `-1` + null means it went completely silent.
-                "last_real_gatt_status" to lastRealStatus,
-                "adapter_state" to (adapter?.let { adapterStateName(it.state) } ?: "no_adapter"),
-                "bond_state" to bondState,
-                // Both false means no stale link is holding the peripheral's single
-                // connection slot — the state seen throughout the 2026-07-08 outage.
-                "omi_in_gatt_list" to omiInGattList,
-                "omi_acl_connected" to bleManager.isAclConnectedTo(addr),
-                "other_le_links" to otherLinks,
-                "le_link_count" to (otherLinks.length() + if (omiInGattList) 1 else 0),
-                "screen_interactive" to (power?.isInteractive ?: false),
-                "doze_mode" to (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) power?.isDeviceIdleMode else null),
-                "uptime_ms" to SystemClock.elapsedRealtime(),
-            )
+        return linkedMapOf(
+            "adapter_state" to (adapter?.let { adapterStateName(it.state) } ?: "no_adapter"),
+            // Both false means no stale link is holding the peripheral's single connection slot.
+            "omi_in_gatt_list" to omiInGattList,
+            "omi_acl_connected" to bleManager.isAclConnectedTo(addr),
+            "other_le_links" to otherLinks,
+            "le_link_count" to (otherLinks.length() + if (omiInGattList) 1 else 0),
+            "screen_interactive" to (power?.isInteractive ?: false),
+            "doze_mode" to (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) power?.isDeviceIdleMode else null),
         )
-
-        probeAdvertising(context, adapter, addr, onProbeComplete)
     }
 
     /**
@@ -467,14 +488,27 @@ object WedgeDiagnostics {
         }, PROBE_DURATION_MS)
     }
 
-    /** Logged when a connect finally lands after [captureWedge] fired, closing the record. */
-    fun captureRecovery(context: Context, address: String, wedgeStartedAtMs: Long, failuresBeforeRecovery: Int) {
-        logEvent(
-            context, "ble_wedge_recovered", mapOf(
-                "device" to address.uppercase(),
-                "wedge_duration_ms" to (if (wedgeStartedAtMs > 0) SystemClock.elapsedRealtime() - wedgeStartedAtMs else null),
-                "failures_before_recovery" to failuresBeforeRecovery,
-            )
+    /**
+     * Logged when a connect finally lands after [captureWedge] fired, closing the record. Carries
+     * the same [environmentSnapshot] the `ble_wedge` line took at detection: diff the two to see
+     * what changed as the link came back — a dropped contending link, a woken screen, or Doze
+     * exiting is the cause a *self*-recovery (no Bluetooth toggle in the log before it) would
+     * otherwise never name. See NOTES.md "advertising but won't connect".
+     */
+    fun captureRecovery(
+        context: Context,
+        bleManager: OmiBleManager,
+        address: String,
+        wedgeStartedAtMs: Long,
+        failuresBeforeRecovery: Int,
+    ) {
+        val addr = address.uppercase()
+        val fields = linkedMapOf<String, Any?>(
+            "device" to addr,
+            "wedge_duration_ms" to (if (wedgeStartedAtMs > 0) SystemClock.elapsedRealtime() - wedgeStartedAtMs else null),
+            "failures_before_recovery" to failuresBeforeRecovery,
         )
+        fields.putAll(environmentSnapshot(context, bleManager, addr))
+        logEvent(context, "ble_wedge_recovered", fields)
     }
 }
