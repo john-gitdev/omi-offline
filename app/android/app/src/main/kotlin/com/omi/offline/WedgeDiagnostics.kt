@@ -309,12 +309,30 @@ object WedgeDiagnostics {
             Log.w(TAG, "Cannot enumerate LE links: ${e.message}")
         }
 
+        // Guarded at the call site like connectedLeLinks() above: isAclConnectedTo resolves the
+        // address via remoteLeDevice(), which throws IllegalArgumentException on a malformed one.
+        // This snapshot now runs inside onGattServicesDiscovered (via captureRecovery), which
+        // finishes the connection (MTU → device-ready) immediately after — a diagnostic must never
+        // be able to abort the recovery it is recording, so it degrades to false rather than throw.
+        val aclConnected = try {
+            bleManager.isAclConnectedTo(addr)
+        } catch (e: Exception) {
+            Log.w(TAG, "Cannot read ACL state: ${e.message}")
+            false
+        }
+
         return linkedMapOf(
             "adapter_state" to (adapter?.let { adapterStateName(it.state) } ?: "no_adapter"),
             // Both false means no stale link is holding the peripheral's single connection slot.
             "omi_in_gatt_list" to omiInGattList,
-            "omi_acl_connected" to bleManager.isAclConnectedTo(addr),
+            "omi_acl_connected" to aclConnected,
             "other_le_links" to otherLinks,
+            // Contenders only — excludes the Omi's own link, which is absent at wedge (it is
+            // failing to connect) and present at recovery (it just connected). le_link_count folds
+            // that +1 into the total, so a lone contender dropping across the two events reads
+            // identically (wedge other=1/omi=0 and recovery other=0/omi=1 both total 1). Diff THIS
+            // field for the contention signal; le_link_count stays as the raw system-wide total.
+            "contending_le_links" to otherLinks.length(),
             "le_link_count" to (otherLinks.length() + if (omiInGattList) 1 else 0),
             "screen_interactive" to (power?.isInteractive ?: false),
             "doze_mode" to (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) power?.isDeviceIdleMode else null),
