@@ -2268,6 +2268,38 @@ class RecordingsManager {
         'RecordingsManager: Deleted processed recordings for ${batch.dateString}',
       );
     }
+
+    // Markers are grouped in the UI by their own wall-clock date (markerTime),
+    // but a marker's EDL is filed under its backing *segment's* date folder (see
+    // _writeMarkerEdl). For a marker tapped just after midnight but anchored to
+    // audio that started before midnight, those dates differ — so the recursive
+    // folder delete above misses the EDL, and the marker keeps showing under this
+    // day in the markers-only view. Sweep every folder for marker EDLs whose
+    // markerTimestampMs falls on this local date and delete those too.
+    try {
+      final recordingsRoot = Directory('${directory.path}/recordings');
+      if (await recordingsRoot.exists()) {
+        await for (final folder in recordingsRoot.list()) {
+          if (folder is! Directory) continue;
+          await for (final entity in folder.list()) {
+            if (entity is! File) continue;
+            final name = entity.uri.pathSegments.last;
+            if (!name.startsWith('marker_') || !name.endsWith('.edl')) continue;
+            try {
+              final json = jsonDecode(await entity.readAsString()) as Map<String, dynamic>;
+              final markerMs = json['markerTimestampMs'] as int?;
+              if (markerMs == null || _dateStringFromMillis(markerMs) != batch.dateString) continue;
+              await entity.delete();
+              Logger.debug(
+                'RecordingsManager: deleteDay removed stray marker $name (display date ${batch.dateString})',
+              );
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (e) {
+      Logger.error('RecordingsManager: deleteDay marker sweep failed: $e');
+    }
   }
 
   /// Batch-updates the starting timestamp for an entire hardware session.

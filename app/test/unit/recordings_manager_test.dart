@@ -1381,6 +1381,53 @@ void main() {
     });
   });
 
+  group('deleteDay marker sweep', () {
+    Batch batchFor(String dateStr) => Batch(
+          dateString: dateStr,
+          date: DateTime.parse(dateStr),
+          rawSegments: [],
+          draftRecordings: [],
+          finalizedRecordings: [],
+          markerTimestamps: [],
+          discards: [],
+        );
+
+    void writeEdl(String dateFolder, int markerMs, {String segmentFilename = ''}) {
+      final dir = Directory(p.join(tempDir.path, 'recordings', dateFolder))..createSync(recursive: true);
+      File(p.join(dir.path, 'marker_$markerMs.edl')).writeAsStringSync(jsonEncode({
+        'markerTimestampMs': markerMs,
+        'segmentFilename': segmentFilename,
+        'markerOffsetMs': 0,
+        'cropStartMs': 0,
+        'cropEndMs': 0,
+        'userSaved': false,
+      }));
+    }
+
+    test('removes a cross-midnight marker whose EDL lives in the previous day folder', () async {
+      // Marker tapped 00:15 on 2026-05-02, anchored to audio that started 23:55
+      // on 2026-05-01 → EDL filed under 2026-05-01 but displayed under 2026-05-02.
+      final markerMs = DateTime(2026, 5, 2, 0, 15, 0).millisecondsSinceEpoch;
+      writeEdl('2026-05-01', markerMs, segmentFilename: 'recording_123.wav');
+      final edl = File(p.join(tempDir.path, 'recordings', '2026-05-01', 'marker_$markerMs.edl'));
+      expect(edl.existsSync(), isTrue);
+
+      await RecordingsManager().deleteDay(batchFor('2026-05-02'));
+
+      expect(edl.existsSync(), isFalse, reason: 'marker displayed under the deleted day must be removed');
+    });
+
+    test('leaves markers belonging to other days untouched', () async {
+      final keepMs = DateTime(2026, 5, 3, 9, 0, 0).millisecondsSinceEpoch;
+      writeEdl('2026-05-03', keepMs, segmentFilename: 'recording_456.wav');
+      final keep = File(p.join(tempDir.path, 'recordings', '2026-05-03', 'marker_$keepMs.edl'));
+
+      await RecordingsManager().deleteDay(batchFor('2026-05-02'));
+
+      expect(keep.existsSync(), isTrue, reason: 'a marker on a different day must survive');
+    });
+  });
+
   group('processAll UI calculations', () {
     test('minutesRemaining and processingProgress are initialized correctly', () async {
       // Create some dummy raw segments
