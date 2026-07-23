@@ -635,6 +635,18 @@ int app_settings_arm_post_dfu_unpair(bool arm, const char *current_fw)
         strncpy(buf, current_fw, sizeof(buf) - 1);
     }
     /* buf is the empty string when disarming. */
+    /* Skip the flash write when the value isn't actually changing. The app
+     * arms/disarms this on EVERY DFU — including a disarm on every update where
+     * the "reset pairing after update" option is off — and this NVS instance is
+     * the same one that holds the BLE bond keys. Rewriting the marker to the
+     * value it already has, then rebooting for the flash moments later, is a
+     * needless write next to the bonds right before a power event (a suspected
+     * cause of bonds not surviving an update). A genuine arm/disarm — including
+     * clearing a real stale arm from an earlier failed flash — still writes. */
+    if (memcmp(buf, unpair_armed_fw, sizeof(buf)) == 0) {
+        LOG_INF("post-DFU unpair: already %s, skipping redundant flash write", arm ? "armed" : "disarmed");
+        return 0;
+    }
     int err = settings_save_one("omi/unpair_armed_fw", buf, sizeof(buf));
     if (err) {
         LOG_ERR("Failed to save unpair_armed_fw (err %d)", err);
