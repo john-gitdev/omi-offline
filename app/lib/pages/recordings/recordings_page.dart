@@ -965,8 +965,10 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                           // on narrow phones can't fit a sixth 48dp action. Only
                           // surfaced when there are ghosts to manage and not in
                           // markers-only view. Persisted; suppresses rows only (the
-                          // discards stay on disk, recoverable). Splash suppressed
-                          // to match the flush-right filter glyph beside it.
+                          // discards stay on disk, recoverable). A full 48dp hit
+                          // area (Material minimum) with the small glyph pinned
+                          // flush-right so it still reads as a compact edge control;
+                          // splash suppressed to match the filter glyph beside it.
                           if (!_showMarkersOnly && controller.batches.any((b) => b.discards.isNotEmpty))
                             Theme(
                               data: Theme.of(context).copyWith(
@@ -975,8 +977,9 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                                 hoverColor: Colors.transparent,
                               ),
                               child: IconButton(
-                                padding: const EdgeInsets.fromLTRB(12, 8, 0, 8),
-                                constraints: const BoxConstraints(),
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+                                alignment: Alignment.centerRight,
                                 tooltip: _hideGhosts ? 'Show ghosts' : 'Hide ghosts',
                                 onPressed: () => setState(() {
                                   _hideGhosts = !_hideGhosts;
