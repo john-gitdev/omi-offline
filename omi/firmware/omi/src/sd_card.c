@@ -359,54 +359,48 @@ static atomic_t empty_bin_rotations;
  * recordings finalizing = the rescue firing. Read via 0x19B10062. */
 static atomic_t marker_pause_gate_saves;
 
-/* True if a 440-byte storage block carries any inline marker header (session-end /
- * priority-start / button-tap / mute / VAD-resume). Scans 4-byte-aligned words for
- * the header sentinels; markers are always 4-byte aligned by the transport, so a
- * match is real. Only called on the rare pause-gate drop path, never per audio
- * frame, so the scan cost is irrelevant. */
-static bool block_has_marker(const uint8_t *buf, size_t len)
+/* Scan a 440-byte storage block for inline marker headers. Markers are always
+ * 4-byte aligned by the transport, so scanning 4-byte-aligned words is exact. The
+ * sentinel list lives here ONCE; `include_resume` selects the marker SET so the two
+ * wrappers below can't drift out of sync as marker types / alignment change:
+ *   - block_has_marker (include_resume = true): EVERY marker type, incl. 0xFFFFFFFD
+ *     VAD-resume. Used at the sd_write_paused rescue so NO marker is dropped through
+ *     a pause. Before oo-2.5.9 that block was silently discarded.
+ *   - block_has_critical_marker (include_resume = false): boundary + user markers
+ *     only (priority-start / mute-off / mute-on / session-end / button-tap). Used to
+ *     decide the immediate force-sync (an out-of-band CTRL_SYNC + cursor write).
+ *     0xFFFFFFFD is excluded there because it fires on EVERY speech-after-silence
+ *     wake (many/hr in auto mode) and carries only a timestamp re-anchor, so an
+ *     ungraceful cut loses at most one re-anchor, not a boundary — it rides the
+ *     RING_SYNC_BYTES periodic sync instead, and was the main reason ring's flush
+ *     cadence ran ~10x LittleFS's.
+ * Only called on the rare pause-gate / marker paths, never per audio frame, so the
+ * scan cost is irrelevant. */
+static bool block_scan_markers(const uint8_t *buf, size_t len, bool include_resume)
 {
     for (size_t i = 0; i + 4 <= len; i += 4) {
         uint32_t w = (uint32_t) buf[i] | ((uint32_t) buf[i + 1] << 8) | ((uint32_t) buf[i + 2] << 16) |
                      ((uint32_t) buf[i + 3] << 24);
         if (w == 0xFFFFFFF8u /* priority-start */ || w == 0xFFFFFFF9u /* mute-off */ ||
             w == 0xFFFFFFFAu /* mute-on */ || w == 0xFFFFFFFCu /* session-end */ ||
-            w == 0xFFFFFFFDu /* VAD-resume */ || w == 0xFFFFFFFEu /* button-tap */) {
+            w == 0xFFFFFFFEu /* button-tap */ ||
+            (include_resume && w == 0xFFFFFFFDu) /* VAD-resume — critical set excludes */) {
             return true;
         }
     }
     return false;
 }
 
-/* Subset of block_has_marker used ONLY to decide the immediate force-sync on the
- * ring write path (an extra CTRL_SYNC + cursor write). Every marker type is still
- * persisted through the pause gate via block_has_marker; this narrower predicate
- * is purely about which markers are worth paying an out-of-band NAND commit for.
- *
- * Included (rare + boundary/user-critical — losing one to a power cut breaks a
- * recording or drops an explicit user action, and force-syncing them costs
- * nothing measurable because they fire at most a handful of times a day):
- *   0xFFFFFFF8 priority-start, 0xFFFFFFFC session-end  — recording boundaries;
- *   0xFFFFFFFE button-tap, 0xFFFFFFF9/0xFFFFFFFA mute-off/on — user actions.
- * Excluded:
- *   0xFFFFFFFD VAD-resume — fires on EVERY speech-after-silence wake (many
- *   times/hour in auto mode) and only carries a timestamp re-anchor. It rides the
- *   RING_SYNC_BYTES periodic sync (and the sub-second write-wait-timeout sync at
- *   the next audio pause), so an ungraceful cut loses at most one re-anchor, not a
- *   boundary. This marker was the main reason ring's flush cadence ran ~10x
- *   LittleFS's. */
-static bool block_has_critical_marker(const uint8_t *buf, size_t len)
+/* Any marker (incl. VAD-resume) — pause-gate rescue predicate. */
+static inline bool block_has_marker(const uint8_t *buf, size_t len)
 {
-    for (size_t i = 0; i + 4 <= len; i += 4) {
-        uint32_t w = (uint32_t) buf[i] | ((uint32_t) buf[i + 1] << 8) | ((uint32_t) buf[i + 2] << 16) |
-                     ((uint32_t) buf[i + 3] << 24);
-        if (w == 0xFFFFFFF8u /* priority-start */ || w == 0xFFFFFFF9u /* mute-off */ ||
-            w == 0xFFFFFFFAu /* mute-on */ || w == 0xFFFFFFFCu /* session-end */ ||
-            w == 0xFFFFFFFEu /* button-tap */) {
-            return true;
-        }
-    }
-    return false;
+    return block_scan_markers(buf, len, true);
+}
+
+/* Boundary/user markers only (VAD-resume excluded) — force-sync predicate. */
+static inline bool block_has_critical_marker(const uint8_t *buf, size_t len)
+{
+    return block_scan_markers(buf, len, false);
 }
 
 /* Protects current_filename / current_file_path across threads.
@@ -2299,16 +2293,26 @@ sd_boot_done:
          * crash in the sub-interval window loses at most the same bytes the byte cap
          * already tolerates. */
         if (ring_active()) {
-            if (ring_bytes_since_sync > 0 &&
-                (k_uptime_get() - last_file_sync_uptime_ms) >= SD_FSYNC_INTERVAL_MS) {
+            /* Commit when the periodic gate elapses OR a prior commit failed and its
+             * 2 s soft-recovery has passed: the SD_FSYNC_INTERVAL_MS gate throttles
+             * ROUTINE periodic commits, but must NOT delay recovering undurable data —
+             * notably a failed session-end marker after audio has stopped, when no
+             * further write arrives to retry it via the write path. The retry honors
+             * the same 2 s backoff the write path uses so a persistently-failing card
+             * isn't hammered every timeout tick. */
+            bool ring_sync_due = (k_uptime_get() - last_file_sync_uptime_ms) >= SD_FSYNC_INTERVAL_MS;
+            bool ring_retry_due = sd_write_blocked &&
+                                  (k_uptime_get() - last_write_error_uptime_ms) > 2000;
+            if (ring_bytes_since_sync > 0 && (ring_sync_due || ring_retry_due)) {
                 sd_set_io_low_power(false);
                 if (sd_ring_sync() == 0) {
                     ring_bytes_since_sync = 0;
                     last_file_sync_uptime_ms = k_uptime_get();
+                    sd_write_blocked = false; /* recovered — unblock the write path */
+                    writing_error_counter = 0;
                 } else {
-                    /* Keep ring_bytes_since_sync so the next timeout retries the
-                     * failed cursor commit, and enter the same recovery the threshold
-                     * path uses — don't silently drop the pending audio. */
+                    /* Still failing: keep ring_bytes_since_sync pending and stay
+                     * blocked so ring_retry_due fires again after the 2 s backoff. */
                     last_write_error_uptime_ms = k_uptime_get();
                     sd_write_blocked = true;
                 }
