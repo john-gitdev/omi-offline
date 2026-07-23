@@ -208,12 +208,17 @@ bool _foldPendingTrailingGhost(
 /// view (across all batches) so a cross-midnight ghost is matched against a draft
 /// in the previous day's batch, mirroring the stitch pass's global lookup. When
 /// null it falls back to this batch's own drafts (same-day only).
+///
+/// [hideGhosts] drops every discard regardless of tab or duration — the app-bar
+/// "hide ghosts" toggle. Recordings are unaffected; the discard records stay on
+/// disk (this only suppresses the rows).
 ({List<Conversation> recordings, List<DiscardRecord> discards}) filterBatchRows(
   Batch batch,
   RecordingFilterMode filterMode,
   int minFilterSeconds, {
   Duration foldWindow = Duration.zero,
   List<Conversation>? openDrafts,
+  bool hideGhosts = false,
 }) {
   // Enforce the contract: enabling suppression (foldWindow > 0) requires the
   // global open-draft set, or cross-midnight ghosts silently fall back to
@@ -232,20 +237,21 @@ bool _foldPendingTrailingGhost(
           RecordingFilterMode.all => conversations,
         }
       : conversations;
-  var discards = minFilterSeconds > 0
-      ? switch (filterMode) {
-          RecordingFilterMode.visible =>
-            batch.discards.where((d) => d.audioDuration.inSeconds >= minFilterSeconds).toList(),
-          RecordingFilterMode.hidden =>
-            batch.discards.where((d) => d.audioDuration.inSeconds < minFilterSeconds).toList(),
-          RecordingFilterMode.all => [...batch.discards],
-        }
-      : [...batch.discards];
+  var discards = hideGhosts
+      ? <DiscardRecord>[]
+      : minFilterSeconds > 0
+          ? switch (filterMode) {
+              RecordingFilterMode.visible =>
+                batch.discards.where((d) => d.audioDuration.inSeconds >= minFilterSeconds).toList(),
+              RecordingFilterMode.hidden =>
+                batch.discards.where((d) => d.audioDuration.inSeconds < minFilterSeconds).toList(),
+              RecordingFilterMode.all => [...batch.discards],
+            }
+          : [...batch.discards];
   final drafts = openDrafts ?? batch.draftRecordings;
   if (foldWindow > Duration.zero && filterMode == RecordingFilterMode.visible && drafts.isNotEmpty) {
-    discards = discards
-        .where((d) => !_foldPendingTrailingGhost(d, drafts, batch.finalizedRecordings, foldWindow))
-        .toList();
+    discards =
+        discards.where((d) => !_foldPendingTrailingGhost(d, drafts, batch.finalizedRecordings, foldWindow)).toList();
   }
   return (recordings: recordings, discards: discards);
 }
@@ -599,6 +605,7 @@ class _DayMenuRow extends StatelessWidget {
 
 class BatchCard extends StatelessWidget {
   final Batch batch;
+
   /// Every open draft in view (across all batches), so a cross-midnight trailing
   /// ghost in this batch can be matched against a draft in an adjacent day's
   /// batch — mirroring the stitch pass's global fold. Null ⇒ same-day only.
@@ -606,6 +613,10 @@ class BatchCard extends StatelessWidget {
   final Map<String, List<MarkerConversation>> markerMap;
   final bool anyIntegrationEnabled;
   final RecordingFilterMode filterMode;
+
+  /// When true, ghost (discard) rows are dropped from this card entirely — the
+  /// app-bar "hide ghosts" toggle. Recordings still render normally.
+  final bool hideGhosts;
   final UploadStatus Function(Conversation) uploadStatus;
   final int Function(Conversation) uploadCount;
   final bool Function(String) isUploading;
@@ -637,6 +648,7 @@ class BatchCard extends StatelessWidget {
     required this.markerMap,
     required this.anyIntegrationEnabled,
     required this.filterMode,
+    this.hideGhosts = false,
     required this.uploadStatus,
     required this.uploadCount,
     required this.isUploading,
@@ -670,6 +682,7 @@ class BatchCard extends StatelessWidget {
       minFilterSeconds,
       foldWindow: Duration(seconds: SharedPreferencesUtil().vadSplitSeconds),
       openDrafts: openDrafts,
+      hideGhosts: hideGhosts,
     );
     final filtered = rows.recordings;
     final discards = rows.discards;
