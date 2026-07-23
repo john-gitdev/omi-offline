@@ -969,7 +969,13 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                           // area (Material minimum) with the small glyph pinned
                           // flush-right so it still reads as a compact edge control;
                           // splash suppressed to match the filter glyph beside it.
-                          if (!_showMarkersOnly && controller.batches.any((b) => b.discards.isNotEmpty))
+                          // Hidden during a ghost multi-select: hiding would filter
+                          // out the very rows being selected, stranding the picked
+                          // IDs behind Recover/Delete actions that then no-op. (A
+                          // recording selection is unaffected, so the toggle stays.)
+                          if (!_showMarkersOnly &&
+                              !(_inSelectionMode && _selType == RecordingRowType.ghost) &&
+                              controller.batches.any((b) => b.discards.isNotEmpty))
                             Theme(
                               data: Theme.of(context).copyWith(
                                 splashColor: Colors.transparent,
