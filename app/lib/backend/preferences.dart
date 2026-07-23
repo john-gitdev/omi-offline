@@ -46,6 +46,13 @@ class SharedPreferencesUtil {
   bool get showHighPriorityMarker => getBool('showHighPriorityMarker', defaultValue: true);
   set showHighPriorityMarker(bool v) => saveBool('showHighPriorityMarker', v);
 
+  // UI-visibility only: whether "ghost" rows (VAD-dropped / muted stretches, the
+  // discards.jsonl entries) show in the conversations list. Hiding them only
+  // suppresses the rows — the underlying discard records stay on disk and remain
+  // recoverable once shown again.
+  bool get hideGhosts => getBool('hideGhosts', defaultValue: false);
+  set hideGhosts(bool v) => saveBool('hideGhosts', v);
+
   // Per-mode button-action configs (6 slots: single / single-hold / double /
   // double-hold / triple / triple-hold; values are button_action_t indices
   // 0=None,1=Mute,2=Marker,3=Toggle LED,4=Record Start,5=Record Stop). The app
