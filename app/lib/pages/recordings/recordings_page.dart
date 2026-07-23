@@ -44,6 +44,9 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
 
   bool _showMarkersOnly = false;
   RecordingFilterMode _filterMode = RecordingFilterMode.visible;
+  // Persisted app-bar toggle: when true, ghost (discard) rows are dropped from
+  // the conversations list. Only suppresses rows — the discards stay on disk.
+  late bool _hideGhosts = _prefs.hideGhosts;
 
   // ─── Multi-select state ─────────────────────────────────────────────────
   // Selection is scoped to one day (_selDate) and one type (_selType) so a
@@ -124,6 +127,7 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
       _prefs.filterMinDurationSeconds,
       foldWindow: Duration(seconds: _prefs.vadSplitSeconds),
       openDrafts: controller.batches.expand((batch) => batch.draftRecordings).toList(),
+      hideGhosts: _hideGhosts,
     );
   }
 
@@ -954,6 +958,46 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                             ),
                           ),
                           const Spacer(),
+                          // Ghost-visibility toggle — hides/shows every discard
+                          // ("ghost") row across the conversations list. It lives
+                          // here beside the filter (both are list-view controls)
+                          // rather than in the already action-dense app bar, which
+                          // on narrow phones can't fit a sixth 48dp action. Only
+                          // surfaced when there are ghosts to manage and not in
+                          // markers-only view. Persisted; suppresses rows only (the
+                          // discards stay on disk, recoverable). A full 48dp hit
+                          // area (Material minimum) with the small glyph pinned
+                          // flush-right so it still reads as a compact edge control;
+                          // splash suppressed to match the filter glyph beside it.
+                          // Hidden during a ghost multi-select: hiding would filter
+                          // out the very rows being selected, stranding the picked
+                          // IDs behind Recover/Delete actions that then no-op. (A
+                          // recording selection is unaffected, so the toggle stays.)
+                          if (!_showMarkersOnly &&
+                              !(_inSelectionMode && _selType == RecordingRowType.ghost) &&
+                              controller.batches.any((b) => b.discards.isNotEmpty))
+                            Theme(
+                              data: Theme.of(context).copyWith(
+                                splashColor: Colors.transparent,
+                                highlightColor: Colors.transparent,
+                                hoverColor: Colors.transparent,
+                              ),
+                              child: IconButton(
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+                                alignment: Alignment.centerRight,
+                                tooltip: _hideGhosts ? 'Show ghosts' : 'Hide ghosts',
+                                onPressed: () => setState(() {
+                                  _hideGhosts = !_hideGhosts;
+                                  _prefs.hideGhosts = _hideGhosts;
+                                }),
+                                icon: FaIcon(
+                                  FontAwesomeIcons.ghost,
+                                  size: 16,
+                                  color: _hideGhosts ? Colors.grey.shade600 : Colors.orange.shade300,
+                                ),
+                              ),
+                            ),
                           // Filter menu — only meaningful when short conversations
                           // are hidden. Off (filterMinDurationSeconds == 0) → no
                           // overflow menu at all. Using `child:` (not `icon:`)
@@ -1182,32 +1226,40 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
 
                                 final markerMap = _buildMarkerMap();
                                 final minSeconds = _prefs.filterMinDurationSeconds;
+                                // With ghosts hidden, a day carries content only via
+                                // its recordings/raw segments — discard-only days must
+                                // drop out so they don't render as blank cards (and the
+                                // empty-state can appear when nothing else remains).
                                 final visibleBatches = minSeconds > 0
                                     ? switch (_filterMode) {
                                         RecordingFilterMode.visible => controller.batches
                                             .where((b) =>
                                                 b.rawSegments.isNotEmpty ||
                                                 b.finalizedRecordings.any((c) => c.duration.inSeconds >= minSeconds) ||
-                                                b.discards.any((d) => d.duration.inSeconds >= minSeconds))
+                                                // audioDuration (not wall-clock duration) so card
+                                                // inclusion matches filterBatchRows' row filter.
+                                                (!_hideGhosts &&
+                                                    b.discards.any((d) => d.audioDuration.inSeconds >= minSeconds)))
                                             .toList(),
                                         RecordingFilterMode.hidden => controller.batches
                                             .where((b) =>
                                                 b.rawSegments.isNotEmpty ||
                                                 b.finalizedRecordings.any((c) => c.duration.inSeconds < minSeconds) ||
-                                                b.discards.any((d) => d.duration.inSeconds < minSeconds))
+                                                (!_hideGhosts &&
+                                                    b.discards.any((d) => d.audioDuration.inSeconds < minSeconds)))
                                             .toList(),
                                         RecordingFilterMode.all => controller.batches
                                             .where((b) =>
                                                 b.rawSegments.isNotEmpty ||
                                                 b.finalizedRecordings.isNotEmpty ||
-                                                b.discards.isNotEmpty)
+                                                (!_hideGhosts && b.discards.isNotEmpty))
                                             .toList(),
                                       }
                                     : controller.batches
                                         .where((b) =>
                                             b.rawSegments.isNotEmpty ||
                                             b.finalizedRecordings.isNotEmpty ||
-                                            b.discards.isNotEmpty)
+                                            (!_hideGhosts && b.discards.isNotEmpty))
                                         .toList();
                                 final unknownRecordings = visibleBatches
                                     .expand((b) => b.finalizedRecordings)
@@ -1228,8 +1280,7 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                                 // Global open-draft set (across every batch), computed once so each
                                 // BatchCard can match a cross-midnight trailing ghost against a draft
                                 // in an adjacent day's batch — mirroring the stitch pass's global fold.
-                                final allOpenDrafts =
-                                    controller.batches.expand((b) => b.draftRecordings).toList();
+                                final allOpenDrafts = controller.batches.expand((b) => b.draftRecordings).toList();
                                 return RefreshIndicator(
                                   color: Colors.deepPurpleAccent,
                                   onRefresh: () {
@@ -1329,6 +1380,7 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                                               markerMap: markerMap,
                                               anyIntegrationEnabled: anyIntegrationEnabled,
                                               filterMode: _filterMode,
+                                              hideGhosts: _hideGhosts,
                                               uploadStatus: controller.uploadStatus,
                                               uploadCount: controller.actionableIntegrationCount,
                                               isUploading: controller.uploadingFiles.contains,

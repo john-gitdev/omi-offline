@@ -177,4 +177,46 @@ void main() {
       expect(rows.discards, isEmpty);
     });
   });
+
+  group('filterBatchRows hideGhosts toggle', () {
+    final rec = Conversation(
+      file: File('/tmp/recording_hg.wav'),
+      startTime: DateTime(2026, 7, 9, 18, 11),
+      duration: const Duration(minutes: 5),
+    );
+    final standaloneGhost = ghost(DateTime(2026, 7, 9, 19, 0)); // no draft in view → normally shown
+
+    test('drops every discard when hideGhosts is set, keeping recordings', () {
+      final rows = filterBatchRows(
+        batch(discards: [standaloneGhost], finalized: [rec]),
+        RecordingFilterMode.visible,
+        0,
+        hideGhosts: true,
+      );
+      expect(rows.discards, isEmpty);
+      expect(rows.recordings, [rec]);
+    });
+
+    test('keeps discards when hideGhosts is false (default)', () {
+      final rows = filterBatchRows(
+        batch(discards: [standaloneGhost], finalized: [rec]),
+        RecordingFilterMode.visible,
+        0,
+      );
+      expect(rows.discards, [standaloneGhost]);
+    });
+
+    test('hides ghosts across every tab, including a bin-less muted ghost', () {
+      final muted = ghost(DateTime(2026, 7, 9, 19, 30), bins: const [], reason: 'muted');
+      for (final mode in RecordingFilterMode.values) {
+        final rows = filterBatchRows(
+          batch(discards: [standaloneGhost, muted]),
+          mode,
+          0,
+          hideGhosts: true,
+        );
+        expect(rows.discards, isEmpty, reason: 'mode=$mode must hide all ghosts');
+      }
+    });
+  });
 }
