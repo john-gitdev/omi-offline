@@ -77,9 +77,12 @@ class SharedPreferencesUtil {
   // its first boot after a successful flash) and the phone (removeBond, after a
   // successful flash) as part of a firmware update. An OTA can reset the
   // device's pairing keys; clearing both sides sidesteps the "won't reconnect"
-  // mismatch that otherwise needs the manual repair steps. Default on. iOS can't
-  // clear a bond programmatically, so the toggle is hidden there.
-  bool get wipeBondsOnFirmwareUpdate => getBool('wipeBondsOnFirmwareUpdate', defaultValue: true);
+  // mismatch that otherwise needs the manual repair steps. iOS can't clear a
+  // bond programmatically, so the toggle is hidden there. Default OFF and the
+  // UI control is hidden for now (see _showResetPairingToggle): bonds are
+  // expected to survive a DFU, and oo-2.7.3 dropped the pre-flash bond-NVS write
+  // that was the suspected cause of post-update unpairing.
+  bool get wipeBondsOnFirmwareUpdate => getBool('wipeBondsOnFirmwareUpdate', defaultValue: false);
   set wipeBondsOnFirmwareUpdate(bool v) => saveBool('wipeBondsOnFirmwareUpdate', v);
 
   /// Make a 6-slot button config valid for the given recording-button style,
