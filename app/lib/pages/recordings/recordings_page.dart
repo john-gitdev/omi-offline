@@ -873,23 +873,6 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                     onPressed: () => setState(() => _showMarkersOnly = !_showMarkersOnly),
                     tooltip: 'Toggle markers only',
                   ),
-                // Ghost-visibility toggle — hides/shows every discard ("ghost")
-                // row across the conversations list. Only surfaced when there are
-                // ghosts to manage and not while viewing markers only. Persisted;
-                // suppresses rows only (the discards stay on disk, recoverable).
-                if (!_showMarkersOnly && controller.batches.any((b) => b.discards.isNotEmpty))
-                  IconButton(
-                    icon: FaIcon(
-                      FontAwesomeIcons.ghost,
-                      color: _hideGhosts ? Colors.grey.shade700 : Colors.orange.shade300,
-                      size: 20,
-                    ),
-                    onPressed: () => setState(() {
-                      _hideGhosts = !_hideGhosts;
-                      _prefs.hideGhosts = _hideGhosts;
-                    }),
-                    tooltip: _hideGhosts ? 'Show ghosts' : 'Hide ghosts',
-                  ),
                 // Mute toggle — auto mode only (mute is unavailable in manual mode).
                 // Red mic-off when muted; disabled until connected.
                 if (!_prefs.manualMode)
@@ -975,6 +958,37 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                             ),
                           ),
                           const Spacer(),
+                          // Ghost-visibility toggle — hides/shows every discard
+                          // ("ghost") row across the conversations list. It lives
+                          // here beside the filter (both are list-view controls)
+                          // rather than in the already action-dense app bar, which
+                          // on narrow phones can't fit a sixth 48dp action. Only
+                          // surfaced when there are ghosts to manage and not in
+                          // markers-only view. Persisted; suppresses rows only (the
+                          // discards stay on disk, recoverable). Splash suppressed
+                          // to match the flush-right filter glyph beside it.
+                          if (!_showMarkersOnly && controller.batches.any((b) => b.discards.isNotEmpty))
+                            Theme(
+                              data: Theme.of(context).copyWith(
+                                splashColor: Colors.transparent,
+                                highlightColor: Colors.transparent,
+                                hoverColor: Colors.transparent,
+                              ),
+                              child: IconButton(
+                                padding: const EdgeInsets.fromLTRB(12, 8, 0, 8),
+                                constraints: const BoxConstraints(),
+                                tooltip: _hideGhosts ? 'Show ghosts' : 'Hide ghosts',
+                                onPressed: () => setState(() {
+                                  _hideGhosts = !_hideGhosts;
+                                  _prefs.hideGhosts = _hideGhosts;
+                                }),
+                                icon: FaIcon(
+                                  FontAwesomeIcons.ghost,
+                                  size: 16,
+                                  color: _hideGhosts ? Colors.grey.shade600 : Colors.orange.shade300,
+                                ),
+                              ),
+                            ),
                           // Filter menu — only meaningful when short conversations
                           // are hidden. Off (filterMinDurationSeconds == 0) → no
                           // overflow menu at all. Using `child:` (not `icon:`)
@@ -1213,15 +1227,17 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                                             .where((b) =>
                                                 b.rawSegments.isNotEmpty ||
                                                 b.finalizedRecordings.any((c) => c.duration.inSeconds >= minSeconds) ||
+                                                // audioDuration (not wall-clock duration) so card
+                                                // inclusion matches filterBatchRows' row filter.
                                                 (!_hideGhosts &&
-                                                    b.discards.any((d) => d.duration.inSeconds >= minSeconds)))
+                                                    b.discards.any((d) => d.audioDuration.inSeconds >= minSeconds)))
                                             .toList(),
                                         RecordingFilterMode.hidden => controller.batches
                                             .where((b) =>
                                                 b.rawSegments.isNotEmpty ||
                                                 b.finalizedRecordings.any((c) => c.duration.inSeconds < minSeconds) ||
                                                 (!_hideGhosts &&
-                                                    b.discards.any((d) => d.duration.inSeconds < minSeconds)))
+                                                    b.discards.any((d) => d.audioDuration.inSeconds < minSeconds)))
                                             .toList(),
                                         RecordingFilterMode.all => controller.batches
                                             .where((b) =>
