@@ -34,6 +34,14 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
   // the pref; hidden on iOS (no programmatic bond removal there).
   bool _wipeBonds = SharedPreferencesUtil().wipeBondsOnFirmwareUpdate;
 
+  // Temporarily hidden: bonds are expected to survive a DFU (the flash never
+  // reaches the bond storage), and oo-2.7.3 removes the needless pre-flash write
+  // next to the bonds that was the suspected cause of post-update unpairing. Flip
+  // this back to true (and the pref default) to re-expose the "Reset pairing
+  // after update" control. While false the feature is fully inert regardless of
+  // any stored pref value.
+  static const bool _showResetPairingToggle = false;
+
   // Store reference to provider for safe disposal
   DeviceProvider? _deviceProvider;
 
@@ -512,8 +520,10 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
         if (shouldUpdate) ...[
           // Android-only: clear the pairing on both sides during the flash so
           // the device reconnects cleanly afterward. iOS can't remove a bond
-          // programmatically, so the toggle is hidden there.
-          if (Platform.isAndroid) ...[
+          // programmatically, so the toggle is hidden there. Also gated on
+          // _showResetPairingToggle (currently off) so the control stays hidden
+          // while bonds are expected to survive a DFU on their own.
+          if (Platform.isAndroid && _showResetPairingToggle) ...[
             Container(
               decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(14)),
               child: SwitchListTile(
@@ -560,7 +570,9 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
 
               deviceProvider.setFirmwareUpdateInProgress(true);
 
-              final wipeBonds = Platform.isAndroid && _wipeBonds;
+              // While the feature is hidden, force it off so a stale stored pref
+              // can't silently trigger a bond wipe on an update.
+              final wipeBonds = Platform.isAndroid && _wipeBonds && _showResetPairingToggle;
               if (widget.localZipPath != null) {
                 await startDfu(widget.device!, zipFilePath: widget.localZipPath, wipeBonds: wipeBonds);
               } else {
