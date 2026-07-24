@@ -1129,7 +1129,22 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     notifyListeners();
 
     _persistProgress();
-    await RecordingsManager.pruneConsumedBins();
+    // Protect still-mid-transfer bins from the exact-membership sweep too: it
+    // deletes any bin a finalized recording lists, which on a Force run can be a
+    // partially-transferred one (Force decodes the newest bin deliberately). That
+    // bin is the next sync's resume target. Re-read rather than reuse the set from
+    // the top of this method — a long processing pass can outlast the transfer
+    // state it was computed from. If it can't be read, skip the prune; reclaiming
+    // bins can always wait for the next run.
+    Set<String>? incompleteForPrune;
+    try {
+      incompleteForPrune = await _incompleteBins(failClosed: true);
+    } catch (_) {
+      // _incompleteBins already logged the cause.
+    }
+    if (incompleteForPrune != null) {
+      await RecordingsManager.pruneConsumedBins(protectedRelBins: incompleteForPrune);
+    }
     await reloadBatchesSilently();
     await _finishPipelineRun();
   }

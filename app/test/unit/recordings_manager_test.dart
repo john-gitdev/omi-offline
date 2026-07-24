@@ -35,9 +35,15 @@ void main() {
     // Re-init so SharedPreferencesUtil._preferences picks up the fresh mock
     // backing store.
     await SharedPreferencesUtil.init();
+    // No ServiceManager here, so the mid-transfer lookup would throw and put
+    // every processAll run on its fail-closed "delete nothing" branch, silently
+    // retiring the bin-deletion path from these tests. Default to "nothing is
+    // mid-transfer"; the tests that care install their own set.
+    RecordingsManager.incompleteBinResolverForTest = () async => const {};
   });
 
   tearDown(() {
+    RecordingsManager.incompleteBinResolverForTest = null;
     if (tempDir.existsSync()) {
       tempDir.deleteSync(recursive: true);
     }
@@ -945,6 +951,39 @@ void main() {
       expect(bin.existsSync(), true, reason: 'a bin still claimed by an in-progress draft must not be pruned');
     });
 
+    test('a still-mid-transfer bin is protected even when a finalized recording lists it', () async {
+      // The exact-membership rule is blind to sync state, so a bin a Force run
+      // (or an app build predating the mid-transfer guard) finalized over the
+      // PREFIX of would otherwise be deleted while the transfer is still
+      // resumable — destroying the file the next sync appends into and forcing a
+      // full re-fetch of the whole bin. Callers pass the incomplete-transfer set
+      // (WalSync.incompleteBinRelPaths) so the sweep leaves it alone.
+      final recStartMs = DateTime.utc(2026, 5, 27, 13, 0, 0).millisecondsSinceEpoch;
+      final tsSec = recStartMs ~/ 1000;
+      final rel = '$tsSec/${tsSec}_11.bin';
+      final bin = await writeBin(timerStartSec: tsSec, sessionId: 11, durationSec: 4 * 60);
+      await writeRecordingWithBins(startMs: recStartMs, durationMs: 4 * 60 * 1000, relativeBins: [rel]);
+
+      final deleted = await RecordingsManager.pruneConsumedBins(protectedRelBins: {rel});
+
+      expect(deleted, 0);
+      expect(bin.existsSync(), true, reason: 'a mid-transfer bin is the next sync resume target — never prune it');
+    });
+
+    test('protecting an unrelated bin still prunes the consumed one', () async {
+      // The protection is per-path, not a global off switch.
+      final recStartMs = DateTime.utc(2026, 5, 27, 14, 0, 0).millisecondsSinceEpoch;
+      final tsSec = recStartMs ~/ 1000;
+      final rel = '$tsSec/${tsSec}_12.bin';
+      final bin = await writeBin(timerStartSec: tsSec, sessionId: 12, durationSec: 4 * 60);
+      await writeRecordingWithBins(startMs: recStartMs, durationMs: 4 * 60 * 1000, relativeBins: [rel]);
+
+      final deleted = await RecordingsManager.pruneConsumedBins(protectedRelBins: {'999/999_1.bin'});
+
+      expect(deleted, 1);
+      expect(bin.existsSync(), false);
+    });
+
     test('legacy recording with no bin-list retains its bins', () async {
       // Pre-bin-list .meta (writeRecording writes no relativeBins) contributes
       // nothing to the consumed set, so the bin is conservatively retained.
@@ -1469,6 +1508,91 @@ void main() {
 
       // processingProgress is reset to 0.0 in finally block
       expect(RecordingsManager.processingProgress.value, 0.0);
+    });
+
+    // Force paths (backgroundMode: false) decode the newest, still-arriving bin on
+    // purpose — but must never DELETE it. That file is where the next sync resumes
+    // its append; deleting it rewinds the transfer to 0, re-fetches the whole bin
+    // and re-decodes the prefix into a second, overlapping recording. The strip
+    // guard doesn't cover this (Force skips it by design), so the protection has to
+    // live in the delete_segments handler.
+    test('a mid-transfer bin survives a force run that consumes it', () async {
+      // Forward slashes, not p.join: the app is POSIX-path-only (bins are keyed by
+      // `'$docs/raw_segments/$rel'` and split on '/raw_segments/'), so a Windows
+      // test host must build the same shape or the protection lookup can't match.
+      await Directory('${tempDir.path}/raw_segments/1000').create(recursive: true);
+      // Zero-filled: decodes to 0 speech frames, so the pass consumes both bins
+      // and asks for both to be deleted.
+      final whole = File('${tempDir.path}/raw_segments/1000/1000_1.bin');
+      await whole.writeAsBytes(List.filled(252000, 0));
+      final partial = File('${tempDir.path}/raw_segments/1000/1000_2.bin');
+      await partial.writeAsBytes(List.filled(126000, 0));
+
+      RecordingsManager.incompleteBinResolverForTest = () async => {'1000/1000_2.bin'};
+
+      final batch = Batch(
+        dateString: '2026-05-12',
+        date: DateTime(2026, 5, 12),
+        rawSegments: [whole, partial],
+        draftRecordings: [],
+        finalizedRecordings: [],
+        markerTimestamps: [],
+        discards: [],
+      );
+
+      try {
+        await RecordingsManager().processAll([batch], (_, __) {}, backgroundMode: false);
+      } catch (_) {
+        // Isolate/VAD-channel failures are irrelevant here — only the delete
+        // decisions the main isolate made are under test.
+      }
+
+      expect(partial.existsSync(), true, reason: 'the mid-transfer bin is the next sync resume target');
+      expect(whole.existsSync(), false, reason: 'a fully-transferred consumed bin is still reclaimed');
+    });
+
+    test('an unreadable WAL makes a force run delete nothing (fail-closed)', () async {
+      // A bare "bin still exists" assertion would pass for the wrong reason: with
+      // no MethodChannel mock the isolate can die before delete_segments ever
+      // runs, so retention wouldn't prove the guard fired. Establish a CONTROL
+      // first — the identical bin under a readable (empty) WAL — and require it to
+      // be DELETED. That proves the pass reaches delete_segments and would reclaim
+      // this bin, so retaining it in the fail-closed phase is attributable to the
+      // guard, not an early crash.
+      final binPath = '${tempDir.path}/raw_segments/2000/2000_1.bin';
+      Batch batchFor(File f) => Batch(
+            dateString: '2026-05-12',
+            date: DateTime(2026, 5, 12),
+            rawSegments: [f],
+            draftRecordings: [],
+            finalizedRecordings: [],
+            markerTimestamps: [],
+            discards: [],
+          );
+      // Recreates the bin (and its folder — deleting the last bin also removes the
+      // now-empty session folder).
+      File writeBinFile() {
+        Directory('${tempDir.path}/raw_segments/2000').createSync(recursive: true);
+        return File(binPath)..writeAsBytesSync(List.filled(252000, 0));
+      }
+
+      // Control: WAL readable, nothing mid-transfer → the consumed bin is deleted.
+      final control = writeBinFile();
+      RecordingsManager.incompleteBinResolverForTest = () async => const {};
+      try {
+        await RecordingsManager().processAll([batchFor(control)], (_, __) {}, backgroundMode: false);
+      } catch (_) {}
+      expect(control.existsSync(), false,
+          reason: 'control: with a readable WAL the pass reaches delete_segments and reclaims the consumed bin');
+
+      // Fail-closed: same bin, WAL now unreadable → deletion is skipped entirely.
+      final failClosed = writeBinFile();
+      RecordingsManager.incompleteBinResolverForTest = () async => throw const FormatException('bad wals.json');
+      try {
+        await RecordingsManager().processAll([batchFor(failClosed)], (_, __) {}, backgroundMode: false);
+      } catch (_) {}
+      expect(failClosed.existsSync(), true,
+          reason: 'sync status unknown for every bin — retain and let pruneConsumedBins reclaim later');
     });
 
     test('Isolate died prematurely exception is thrown', () async {
