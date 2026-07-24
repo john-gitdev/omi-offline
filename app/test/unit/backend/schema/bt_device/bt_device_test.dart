@@ -54,6 +54,9 @@ class MockDeviceTransport implements DeviceTransport {
 
   @override
   Future<void> writeCharacteristic(String serviceUuid, String characteristicUuid, List<int> data) async {}
+
+  @override
+  Future<void> unsubscribeCharacteristic(String serviceUuid, String characteristicUuid) async {}
 }
 
 class MockDeviceConnection extends DeviceConnection {
