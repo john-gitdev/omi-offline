@@ -33,11 +33,11 @@ static uint8_t storage_backend = DEFAULT_STORAGE_BACKEND;
  * reflash (BLE/DFU is up before the SD wait, so it's reachable regardless — this
  * also gets recording working again). Cleared once a boot proves healthy. */
 static uint8_t ring_boot_fails = 0;
-/* Armed by the backend-switch command; consumed at the next sd_mount() to force a
- * fresh format of the target backend (a plain mount can otherwise pick up stale
- * on-card metadata from the previous backend and mount OK onto overwritten bytes).
- * Cleared back to 0 once the fresh format succeeds so an organic reboot never re-wipes. */
-static uint8_t storage_format_pending = 0;
+/* Armed by the backend-switch command with the TARGET backend to format; consumed at the
+ * next sd_mount() (a plain mount can otherwise pick up stale on-card metadata from the
+ * previous backend and mount OK onto overwritten bytes). Holds STORAGE_FORMAT_PENDING_NONE
+ * when disarmed — the default, so an existing device that upgrades never force-formats. */
+static uint8_t storage_format_pending = STORAGE_FORMAT_PENDING_NONE;
 static struct rtc_time rtc_timestamp = {0};
 static uint64_t rtc_epoch = 0;
 
@@ -524,15 +524,16 @@ uint8_t app_settings_get_ring_boot_fails(void)
     return ring_boot_fails;
 }
 
-int app_settings_save_storage_format_pending(uint8_t pending)
+int app_settings_save_storage_format_pending(uint8_t target)
 {
-    pending = pending ? 1 : 0;
-    int err = settings_save_one("omi/storage_format_pending", &pending, sizeof(pending));
+    /* target is a STORAGE_BACKEND_* to format, or STORAGE_FORMAT_PENDING_NONE to disarm.
+     * Stored verbatim — the mount validates it against the backend it actually mounts. */
+    int err = settings_save_one("omi/storage_format_pending", &target, sizeof(target));
     if (err) {
         LOG_ERR("Failed to save storage_format_pending (err %d)", err);
         return err;
     }
-    storage_format_pending = pending;
+    storage_format_pending = target;
     LOG_INF("Saved storage_format_pending: %u", storage_format_pending);
     return 0;
 }
