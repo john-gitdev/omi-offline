@@ -1047,34 +1047,51 @@ void storage_write(void)
              * only on a save FAILURE (to allow a retry). On success we cold-reboot, so
              * the flag never needs clearing. */
             uint8_t val = backend_switch_value;
-            /* Arm a fresh format FOR THIS TARGET backend, then persist the new backend.
-             * Without the wipe, boot mounts the previous backend's card as-is and can pick
-             * up stale metadata (a still-valid ring header under freshly-written LittleFS
-             * data) that mounts OK but points at overwritten bytes — the device then records
-             * nothing. Arm-first, and arm the TARGET (not a bare flag): the mount only
-             * force-formats when the armed target matches the backend it mounts, so an
-             * interruption after this arm but before the backend save (reboot: old backend +
-             * armed=new) can't wipe the current storage. If arming fails we never touch the
-             * backend; if the backend save then fails we best-effort disarm (a lingering arm
-             * is harmless anyway — it won't match the unchanged backend). */
-            int perr = app_settings_save_storage_format_pending(val);
-            int serr = perr ? perr : app_settings_save_storage_backend(val);
-            if (serr && !perr) {
-                (void) app_settings_save_storage_format_pending(STORAGE_FORMAT_PENDING_NONE);
-            }
-            if (conn) {
-                uint8_t ack[2] = {PACKET_ACK, serr ? 1 : 0};
-                STORAGE_NOTIFY(conn, ack, sizeof(ack));
-            }
-            LOG_INF("CMD_SET_BACKEND: backend=%u saved=%d — rebooting to apply (format armed)", val, serr);
-            if (serr == 0) {
-                if (is_sd_on()) {
-                    app_sd_off(); /* flush + unmount cleanly first */
+            uint8_t cur = app_settings_get_storage_backend();
+            if (val == cur) {
+                /* Re-selecting the ACTIVE backend is not a switch: don't arm a format or
+                 * reboot — that would wipe the user's recordings though nothing changed.
+                 * ACK success and drop the request. (A deliberate wipe-in-place is a
+                 * separate CLEAR_STORAGE, not a no-op backend "switch".) */
+                LOG_INF("CMD_SET_BACKEND: backend=%u already active — no reformat, no reboot", val);
+                if (conn) {
+                    uint8_t ack[2] = {PACKET_ACK, 0};
+                    STORAGE_NOTIFY(conn, ack, sizeof(ack));
                 }
-                k_msleep(500);
-                sys_reboot(SYS_REBOOT_COLD);
+                atomic_clear(&backend_switch_requested);
             } else {
-                atomic_clear(&backend_switch_requested); /* failed save — allow a retry */
+                /* Real switch. Arm a fresh format FOR THE TARGET backend, then persist the
+                 * backend. Without the wipe, boot mounts the previous backend's card as-is and
+                 * can pick up stale metadata (a still-valid ring header under freshly-written
+                 * LittleFS data) that mounts OK but points at overwritten bytes — the device
+                 * then records nothing. Arm-first, and arm the TARGET (not a bare flag): the
+                 * mount only force-formats when the armed target matches the backend it mounts,
+                 * so an interruption after this arm but before the backend save (reboot: old
+                 * backend + armed=new) can't wipe the current storage. The arm stays durable
+                 * until the boot mount both formats AND mounts the target and then clears it
+                 * (sd_card.c consume_format_pending) — a transient format/mount failure leaves
+                 * it armed so the next boot re-formats. If arming fails we never touch the
+                 * backend; if the backend save then fails we best-effort disarm. */
+                int perr = app_settings_save_storage_format_pending(val);
+                int serr = perr ? perr : app_settings_save_storage_backend(val);
+                if (serr && !perr) {
+                    (void) app_settings_save_storage_format_pending(STORAGE_FORMAT_PENDING_NONE);
+                }
+                if (conn) {
+                    uint8_t ack[2] = {PACKET_ACK, serr ? 1 : 0};
+                    STORAGE_NOTIFY(conn, ack, sizeof(ack));
+                }
+                if (serr == 0) {
+                    LOG_INF("CMD_SET_BACKEND: backend=%u armed — rebooting to apply fresh format", val);
+                    if (is_sd_on()) {
+                        app_sd_off(); /* flush + unmount cleanly first */
+                    }
+                    k_msleep(500);
+                    sys_reboot(SYS_REBOOT_COLD);
+                } else {
+                    LOG_ERR("CMD_SET_BACKEND: backend=%u NOT applied (save err %d) — no reboot", val, serr);
+                    atomic_clear(&backend_switch_requested); /* failed save — allow a retry */
+                }
             }
         }
         if (atomic_get(&stop_started)) {
