@@ -647,11 +647,13 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
         child: Builder(builder: (context) {
           final filtering = _filterMode != RecordingFilterMode.visible;
           final tint = filtering ? Colors.deepPurpleAccent : Colors.grey.shade400;
-          return Padding(
-            // Right padding 0 keeps the funnel flush to the card's right edge so
-            // the whole control group reads as right-aligned; left/vertical hold
-            // the tap target.
-            padding: const EdgeInsets.fromLTRB(8, 10, 0, 10),
+          // Full 48dp Material hit area to match the sibling toggles; centerRight
+          // keeps the funnel flush to the card's right edge (left padding 12
+          // widens the target without shifting the glyph off the edge).
+          return Container(
+            constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+            alignment: Alignment.centerRight,
+            padding: const EdgeInsets.only(left: 12),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
