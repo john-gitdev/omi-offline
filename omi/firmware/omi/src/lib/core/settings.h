@@ -115,14 +115,15 @@ uint8_t app_settings_get_storage_backend(void);
  * @param target the STORAGE_BACKEND_* to format on the next mount, or
  *        STORAGE_FORMAT_PENDING_NONE to disarm.
  *
- * Armed by the backend-switch command with the TARGET backend (not a bare flag), then
- * the backend itself is persisted. sd_mount() force-formats only when this target equals
- * the backend it is actually mounting — so an interruption between the two writes (target
- * armed, backend not yet saved) leaves target != mounted-backend and never wipes the
- * current storage. sd_mount() DISARMS this (back to NONE) BEFORE it wipes, so a mount that
- * succeeds always implies it is already disarmed (the runtime remount path can't
- * force-format), and a failed disarm defers the format rather than risking a re-wipe.
- * NONE is the default and steady state.
+ * Armed by the backend-switch command with the TARGET backend (not a bare flag), then the
+ * backend itself is persisted. The boot mount force-formats only when this target equals the
+ * backend it actually mounts — so an interruption between the two writes (target armed, backend
+ * not yet saved) leaves target != mounted-backend and never wipes the current storage. The
+ * record stays ARMED across the wipe and is cleared (back to NONE) only AFTER the target both
+ * formats and mounts (sd_card.c consume_format_pending), so a reset mid-format re-formats next
+ * boot instead of mounting stale metadata; a persistent clear failure fails the mount rather
+ * than accepting writes a re-wipe would destroy. Only the boot mount consumes it — runtime
+ * remounts never force-format. NONE is the default and steady state.
  */
 int app_settings_save_storage_format_pending(uint8_t target);
 
