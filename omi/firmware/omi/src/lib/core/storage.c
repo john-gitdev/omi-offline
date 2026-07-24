@@ -1047,12 +1047,23 @@ void storage_write(void)
              * only on a save FAILURE (to allow a retry). On success we cold-reboot, so
              * the flag never needs clearing. */
             uint8_t val = backend_switch_value;
-            int serr = app_settings_save_storage_backend(val);
+            /* Arm a fresh format of the target backend FIRST, then persist the new
+             * backend. Without the wipe, boot mounts the previous backend's card as-is
+             * and can pick up stale metadata (a still-valid ring header under
+             * freshly-written LittleFS data) that mounts OK but points at overwritten
+             * bytes — the device then records nothing. If arming fails we never touch
+             * the backend (clean bail); if the backend save then fails we roll the arm
+             * back so a later organic reboot can't wipe unexpectedly. */
+            int perr = app_settings_save_storage_format_pending(1);
+            int serr = perr ? perr : app_settings_save_storage_backend(val);
+            if (serr && !perr) {
+                (void) app_settings_save_storage_format_pending(0); /* roll back the armed wipe */
+            }
             if (conn) {
                 uint8_t ack[2] = {PACKET_ACK, serr ? 1 : 0};
                 STORAGE_NOTIFY(conn, ack, sizeof(ack));
             }
-            LOG_INF("CMD_SET_BACKEND: backend=%u saved=%d — rebooting to apply", val, serr);
+            LOG_INF("CMD_SET_BACKEND: backend=%u saved=%d — rebooting to apply (format armed)", val, serr);
             if (serr == 0) {
                 if (is_sd_on()) {
                     app_sd_off(); /* flush + unmount cleanly first */
