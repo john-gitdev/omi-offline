@@ -1047,17 +1047,20 @@ void storage_write(void)
              * only on a save FAILURE (to allow a retry). On success we cold-reboot, so
              * the flag never needs clearing. */
             uint8_t val = backend_switch_value;
-            /* Arm a fresh format of the target backend FIRST, then persist the new
-             * backend. Without the wipe, boot mounts the previous backend's card as-is
-             * and can pick up stale metadata (a still-valid ring header under
-             * freshly-written LittleFS data) that mounts OK but points at overwritten
-             * bytes — the device then records nothing. If arming fails we never touch
-             * the backend (clean bail); if the backend save then fails we roll the arm
-             * back so a later organic reboot can't wipe unexpectedly. */
-            int perr = app_settings_save_storage_format_pending(1);
+            /* Arm a fresh format FOR THIS TARGET backend, then persist the new backend.
+             * Without the wipe, boot mounts the previous backend's card as-is and can pick
+             * up stale metadata (a still-valid ring header under freshly-written LittleFS
+             * data) that mounts OK but points at overwritten bytes — the device then records
+             * nothing. Arm-first, and arm the TARGET (not a bare flag): the mount only
+             * force-formats when the armed target matches the backend it mounts, so an
+             * interruption after this arm but before the backend save (reboot: old backend +
+             * armed=new) can't wipe the current storage. If arming fails we never touch the
+             * backend; if the backend save then fails we best-effort disarm (a lingering arm
+             * is harmless anyway — it won't match the unchanged backend). */
+            int perr = app_settings_save_storage_format_pending(val);
             int serr = perr ? perr : app_settings_save_storage_backend(val);
             if (serr && !perr) {
-                (void) app_settings_save_storage_format_pending(0); /* roll back the armed wipe */
+                (void) app_settings_save_storage_format_pending(STORAGE_FORMAT_PENDING_NONE);
             }
             if (conn) {
                 uint8_t ack[2] = {PACKET_ACK, serr ? 1 : 0};
