@@ -1144,7 +1144,33 @@ static int write_magic(void)
     return 0;
 }
 
-static int sd_mount(void)
+/* Before accepting writes on `backend`, make sure no format-pending intent for it lingers.
+ * We reach the call sites either having just force-formatted `backend` for a switch, or having
+ * mounted an already-formatted one while the flag was left armed (a prior boot's clear failed).
+ * The flag MUST be durably cleared before recording — otherwise the next reboot's force-format
+ * wipes whatever we record now. Returns 0 when the flag isn't armed for `backend` (NONE, or
+ * armed for the other backend) or was cleared; on a persistent clear failure returns non-zero so
+ * the caller fails the mount and refuses writes (the freshly/previously formatted card is empty,
+ * so nothing is lost and the next boot re-formats + retries the clear). */
+static int consume_format_pending(uint8_t backend)
+{
+    if (app_settings_get_storage_format_pending() != backend) {
+        return 0;
+    }
+    int err = app_settings_save_storage_format_pending(STORAGE_FORMAT_PENDING_NONE);
+    if (err) {
+        err = app_settings_save_storage_format_pending(STORAGE_FORMAT_PENDING_NONE); /* one retry */
+    }
+    if (err) {
+        LOG_ERR("[SD] could not clear format-pending for backend %u (%d) — failing mount", backend, err);
+    }
+    return err;
+}
+
+/* allow_switch_format gates the one-shot backend-switch reformat to the BOOT mount only; the
+ * runtime remount path (sd_remount_and_reopen_info) passes false so it can never wipe a live
+ * session's recordings. */
+static int sd_mount(bool allow_switch_format)
 {
     if (is_mounted) {
         return 0;
@@ -1194,30 +1220,18 @@ static int sd_mount(void)
 
     /* A backend switch armed a fresh format of a specific TARGET backend
      * (storage_format_pending holds that STORAGE_BACKEND_*, or STORAGE_FORMAT_PENDING_NONE
-     * when disarmed). Force-format only when the armed target matches the backend we are
-     * actually mounting: this makes the switch's two NVS writes (arm target, then save
-     * backend) safe against an interruption between them — a reboot still on the OLD backend
-     * won't match, so a switch that never committed can't wipe the user's current storage.
-     *
-     * Consume the flag by DISARMING IT FIRST, before any wipe. If we can't durably disarm,
-     * do NOT format — bail with the card intact and retry next boot. That guarantees a
-     * successful mount always implies the flag is already clear, so the runtime remount path
-     * (sd_remount_and_reopen_info) can never force-format mid-session; and a post-format
-     * clear can't fail and leave the flag armed to re-wipe the recordings made this boot. */
-    uint8_t fmt_target = app_settings_get_storage_format_pending();
-    bool force_format = (fmt_target != STORAGE_FORMAT_PENDING_NONE && fmt_target == g_backend);
-    if (force_format) {
-        int derr = app_settings_save_storage_format_pending(STORAGE_FORMAT_PENDING_NONE);
-        if (derr) {
-            derr = app_settings_save_storage_format_pending(STORAGE_FORMAT_PENDING_NONE); /* one retry */
-        }
-        if (derr) {
-            LOG_ERR("[SD] cannot disarm format-pending (%d) — deferring the switch's format to "
-                    "avoid an undismissable re-wipe; leaving the card intact this boot", derr);
-            sd_enable_power(false);
-            return derr;
-        }
-    }
+     * when disarmed). Force-format only when BOTH hold:
+     *   - allow_switch_format: this is the boot mount, not a runtime remount. A mid-session
+     *     remount must never wipe — it may be sitting on recordings not yet synced.
+     *   - the armed target equals the backend we are actually mounting. This makes the
+     *     switch's two NVS writes (arm target, then save backend) safe against an interruption
+     *     between them: a reboot still on the OLD backend won't match, so a switch that never
+     *     committed can't wipe the current storage. (NONE == 0xFF never matches a real backend.)
+     * The intent stays ARMED across the wipe and is cleared only AFTER the format commits
+     * (consume_format_pending at each success path), so a reset mid-format re-formats next boot
+     * rather than falling through to a normal mount of stale target metadata. */
+    bool force_format = allow_switch_format &&
+                        (app_settings_get_storage_format_pending() == g_backend);
 
 #ifdef CONFIG_OMI_AUDIO_RING
     if (ring_active()) {
@@ -1237,6 +1251,14 @@ static int sd_mount(void)
             }
         }
         if (rr == 0) {
+            /* Clear the switch's format intent now that the ring is committed; a failed clear
+             * is an incomplete switch — fail the mount so nothing we record gets wiped by the
+             * re-armed next boot (the just/previously formatted ring is empty, nothing lost). */
+            if (consume_format_pending(g_backend) != 0) {
+                is_mounted = false;
+                sd_enable_power(false);
+                return -EIO;
+            }
             is_mounted = true;
             sd_ready = true;
             LOG_INF("[SD] ring backend mounted OK");
@@ -1292,6 +1314,13 @@ static int sd_mount(void)
             lfs_unmount(&lfs_fs);
             sd_enable_power(false);
             return ret;
+        }
+        /* Format + cookie committed — clear the intent; fail the mount if it won't persist
+         * (incomplete switch; next boot re-formats, nothing recorded to lose). */
+        if (consume_format_pending(g_backend) != 0) {
+            lfs_unmount(&lfs_fs);
+            sd_enable_power(false);
+            return -EIO;
         }
         is_mounted = true;
         sd_ready = true;
@@ -1350,6 +1379,14 @@ static int sd_mount(void)
         }
     }
 
+    /* A runtime remount after a boot that force-formatted this backend but couldn't clear the
+     * flag can reach here with the intent still armed; clear it before accepting writes, or the
+     * next reboot re-wipes what we record. No-op on the normal path (flag already NONE). */
+    if (consume_format_pending(g_backend) != 0) {
+        lfs_unmount(&lfs_fs);
+        sd_enable_power(false);
+        return -EIO;
+    }
     is_mounted = true;
     sd_ready = true;
     LOG_INF("LittleFS mounted OK (block_size=%u, block_count=%u, lookahead=%u bytes = %u blocks window)",
@@ -1404,7 +1441,7 @@ static int sd_remount_and_reopen_info(void)
 {
     int64_t t0 = k_uptime_get();
 
-    int res = sd_mount();
+    int res = sd_mount(false); /* runtime remount: never force-format (may hold live recordings) */
     if (res != 0) {
         LOG_ERR("[SD] remount failed: %d", res);
         return res;
@@ -2147,7 +2184,7 @@ void sd_worker_thread(void)
     LOG_INF("[SD_BOOT] storage backend: %s", ring_active() ? "ring" : "littlefs");
 
     /* ---- Mount ---- */
-    res = sd_mount();
+    res = sd_mount(true); /* boot mount: allowed to apply a pending backend-switch reformat */
     if (res != 0) {
         LOG_ERR("[SD_WORK] mount failed: %d", res);
         sd_write_blocked = true;
