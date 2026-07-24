@@ -1167,10 +1167,11 @@ static int consume_format_pending(uint8_t backend)
     return err;
 }
 
-/* allow_switch_format gates the one-shot backend-switch reformat to the BOOT mount only; the
- * runtime remount path (sd_remount_and_reopen_info) passes false so it can never wipe a live
- * session's recordings. */
-static int sd_mount(bool allow_switch_format)
+/* allow_format gates EVERY on-card wipe to the BOOT mount: the one-shot backend-switch reformat,
+ * the ring/LittleFS format-on-first-use / foreign-card fallback, and the migration cookie reformat.
+ * The runtime remount path (sd_remount_and_reopen_info) passes false, so a transient mount failure
+ * mid-session surfaces an error to the caller instead of formatting away live recordings. */
+static int sd_mount(bool allow_format)
 {
     if (is_mounted) {
         return 0;
@@ -1221,7 +1222,7 @@ static int sd_mount(bool allow_switch_format)
     /* A backend switch armed a fresh format of a specific TARGET backend
      * (storage_format_pending holds that STORAGE_BACKEND_*, or STORAGE_FORMAT_PENDING_NONE
      * when disarmed). Force-format only when BOTH hold:
-     *   - allow_switch_format: this is the boot mount, not a runtime remount. A mid-session
+     *   - allow_format: this is the boot mount, not a runtime remount. A mid-session
      *     remount must never wipe — it may be sitting on recordings not yet synced.
      *   - the armed target equals the backend we are actually mounting. This makes the
      *     switch's two NVS writes (arm target, then save backend) safe against an interruption
@@ -1230,7 +1231,7 @@ static int sd_mount(bool allow_switch_format)
      * The intent stays ARMED across the wipe and is cleared only AFTER the format commits
      * (consume_format_pending at each success path), so a reset mid-format re-formats next boot
      * rather than falling through to a normal mount of stale target metadata. */
-    bool force_format = allow_switch_format &&
+    bool force_format = allow_format &&
                         (app_settings_get_storage_format_pending() == g_backend);
 
 #ifdef CONFIG_OMI_AUDIO_RING
@@ -1245,7 +1246,7 @@ static int sd_mount(bool allow_switch_format)
             rr = sd_ring_format(sector_count);
         } else {
             rr = sd_ring_mount(sector_count);
-            if (rr == -ENOENT) {
+            if (rr == -ENOENT && allow_format) {
                 LOG_WRN("[SD] no ring on card — formatting as ring (one-time SD wipe)");
                 rr = sd_ring_format(sector_count);
             }
@@ -1263,6 +1264,14 @@ static int sd_mount(bool allow_switch_format)
             sd_ready = true;
             LOG_INF("[SD] ring backend mounted OK");
             return 0;
+        }
+        if (!allow_format) {
+            /* Runtime remount: the ring holds our live recordings. Don't format it and don't
+             * revert the backend — either would erase live data or persist a spurious switch.
+             * Surface the error so the caller retries / a full boot runs real recovery. */
+            LOG_ERR("[SD] ring remount failed: %d — not formatting/reverting (live data)", rr);
+            sd_enable_power(false);
+            return rr;
         }
         /* Ring couldn't mount OR format (persistent SD init failure that isn't a
          * crash, so the crash-loop auto-revert in main.c won't catch it). Don't
@@ -1292,7 +1301,7 @@ static int sd_mount(bool allow_switch_format)
      * here the ring target no longer matches, so a failed ring switch falls to the normal
      * mount-and-keep path below (which still formats only if the card isn't a valid LittleFS).
      * A genuine LittleFS switch (armed target == LittleFS) still force-formats. */
-    force_format = allow_switch_format &&
+    force_format = allow_format &&
                    (app_settings_get_storage_format_pending() == g_backend);
     if (force_format) {
         LOG_WRN("[SD] backend switch — formatting fresh LittleFS (SD wipe)");
@@ -1337,6 +1346,14 @@ static int sd_mount(bool allow_switch_format)
     ret = lfs_mount(&lfs_fs, &lfs_cfg);
     LOG_INF("[SD_BOOT] lfs_mount took %lld ms (ret=%d)", k_uptime_get() - mount_start_ms, ret);
     if (ret != LFS_ERR_OK) {
+        if (!allow_format) {
+            /* Runtime remount: the card holds our live recordings. A transient mount failure must
+             * NOT trigger a format (that would erase them) — surface the error so the caller
+             * retries / a full boot handles real recovery. */
+            LOG_ERR("[SD] LittleFS remount failed (%d) — not formatting (would erase live data)", ret);
+            sd_enable_power(false);
+            return ret;
+        }
         LOG_WRN("LFS mount failed (%d) — existing data on SD will be ERASED by format", ret);
         LOG_WRN("If this device was previously using FATFS, all old recordings are lost.");
         ret = lfs_format(&lfs_fs, &lfs_cfg);
@@ -1365,6 +1382,15 @@ static int sd_mount(bool allow_switch_format)
          * re-wipes them. */
         int magic_ret = check_magic();
         if (magic_ret != 0) {
+            if (!allow_format) {
+                /* Runtime remount: a cookie check that fails here (our own mounted FS) must not
+                 * trigger a reformat — the card holds live recordings. Surface the error. */
+                LOG_ERR("[SD] LittleFS remount: cookie check failed (%d) — not reformatting (live data)",
+                        magic_ret);
+                lfs_unmount(&lfs_fs);
+                sd_enable_power(false);
+                return -EIO;
+            }
             LOG_WRN("[SD] Mounted volume is not an omi-offline filesystem (%d) — formatting once", magic_ret);
             lfs_unmount(&lfs_fs);
             ret = lfs_format(&lfs_fs, &lfs_cfg);
