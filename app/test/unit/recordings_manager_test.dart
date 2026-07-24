@@ -1552,27 +1552,46 @@ void main() {
     });
 
     test('an unreadable WAL makes a force run delete nothing (fail-closed)', () async {
-      await Directory('${tempDir.path}/raw_segments/2000').create(recursive: true);
-      final bin = File('${tempDir.path}/raw_segments/2000/2000_1.bin');
-      await bin.writeAsBytes(List.filled(252000, 0));
+      // A bare "bin still exists" assertion would pass for the wrong reason: with
+      // no MethodChannel mock the isolate can die before delete_segments ever
+      // runs, so retention wouldn't prove the guard fired. Establish a CONTROL
+      // first — the identical bin under a readable (empty) WAL — and require it to
+      // be DELETED. That proves the pass reaches delete_segments and would reclaim
+      // this bin, so retaining it in the fail-closed phase is attributable to the
+      // guard, not an early crash.
+      final binPath = '${tempDir.path}/raw_segments/2000/2000_1.bin';
+      Batch batchFor(File f) => Batch(
+            dateString: '2026-05-12',
+            date: DateTime(2026, 5, 12),
+            rawSegments: [f],
+            draftRecordings: [],
+            finalizedRecordings: [],
+            markerTimestamps: [],
+            discards: [],
+          );
+      // Recreates the bin (and its folder — deleting the last bin also removes the
+      // now-empty session folder).
+      File writeBinFile() {
+        Directory('${tempDir.path}/raw_segments/2000').createSync(recursive: true);
+        return File(binPath)..writeAsBytesSync(List.filled(252000, 0));
+      }
 
-      RecordingsManager.incompleteBinResolverForTest = () async => throw const FormatException('bad wals.json');
-
-      final batch = Batch(
-        dateString: '2026-05-12',
-        date: DateTime(2026, 5, 12),
-        rawSegments: [bin],
-        draftRecordings: [],
-        finalizedRecordings: [],
-        markerTimestamps: [],
-        discards: [],
-      );
-
+      // Control: WAL readable, nothing mid-transfer → the consumed bin is deleted.
+      final control = writeBinFile();
+      RecordingsManager.incompleteBinResolverForTest = () async => const {};
       try {
-        await RecordingsManager().processAll([batch], (_, __) {}, backgroundMode: false);
+        await RecordingsManager().processAll([batchFor(control)], (_, __) {}, backgroundMode: false);
       } catch (_) {}
+      expect(control.existsSync(), false,
+          reason: 'control: with a readable WAL the pass reaches delete_segments and reclaims the consumed bin');
 
-      expect(bin.existsSync(), true,
+      // Fail-closed: same bin, WAL now unreadable → deletion is skipped entirely.
+      final failClosed = writeBinFile();
+      RecordingsManager.incompleteBinResolverForTest = () async => throw const FormatException('bad wals.json');
+      try {
+        await RecordingsManager().processAll([batchFor(failClosed)], (_, __) {}, backgroundMode: false);
+      } catch (_) {}
+      expect(failClosed.existsSync(), true,
           reason: 'sync status unknown for every bin — retain and let pruneConsumedBins reclaim later');
     });
 
