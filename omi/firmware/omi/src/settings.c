@@ -33,6 +33,11 @@ static uint8_t storage_backend = DEFAULT_STORAGE_BACKEND;
  * reflash (BLE/DFU is up before the SD wait, so it's reachable regardless — this
  * also gets recording working again). Cleared once a boot proves healthy. */
 static uint8_t ring_boot_fails = 0;
+/* Armed by the backend-switch command; consumed at the next sd_mount() to force a
+ * fresh format of the target backend (a plain mount can otherwise pick up stale
+ * on-card metadata from the previous backend and mount OK onto overwritten bytes).
+ * Cleared back to 0 once the fresh format succeeds so an organic reboot never re-wipes. */
+static uint8_t storage_format_pending = 0;
 static struct rtc_time rtc_timestamp = {0};
 static uint64_t rtc_epoch = 0;
 
@@ -166,6 +171,18 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         rc = read_cb(cb_arg, &ring_boot_fails, sizeof(ring_boot_fails));
         if (rc >= 0) {
             LOG_INF("Loaded ring_boot_fails: %u", ring_boot_fails);
+            return 0;
+        }
+        return rc;
+    }
+
+    if (settings_name_steq(name, "storage_format_pending", &next) && !next) {
+        if (len != sizeof(storage_format_pending)) {
+            return -EINVAL;
+        }
+        rc = read_cb(cb_arg, &storage_format_pending, sizeof(storage_format_pending));
+        if (rc >= 0) {
+            LOG_INF("Loaded storage_format_pending: %u", storage_format_pending);
             return 0;
         }
         return rc;
@@ -505,6 +522,24 @@ int app_settings_save_ring_boot_fails(uint8_t fails)
 uint8_t app_settings_get_ring_boot_fails(void)
 {
     return ring_boot_fails;
+}
+
+int app_settings_save_storage_format_pending(uint8_t pending)
+{
+    pending = pending ? 1 : 0;
+    int err = settings_save_one("omi/storage_format_pending", &pending, sizeof(pending));
+    if (err) {
+        LOG_ERR("Failed to save storage_format_pending (err %d)", err);
+        return err;
+    }
+    storage_format_pending = pending;
+    LOG_INF("Saved storage_format_pending: %u", storage_format_pending);
+    return 0;
+}
+
+uint8_t app_settings_get_storage_format_pending(void)
+{
+    return storage_format_pending;
 }
 
 int app_settings_save_priority_record_max_minutes(uint16_t minutes)
