@@ -1192,13 +1192,32 @@ static int sd_mount(void)
             sector_size,
             (unsigned) ((uint64_t) sector_count * sector_size >> 20));
 
-    /* A backend switch armed a fresh format (storage_format_pending). Consume it here
-     * so the target backend is wiped to a clean layout instead of mounting the previous
-     * backend's stale on-card metadata (e.g. a still-valid ring header under freshly
-     * written LittleFS data — mounts OK, points at overwritten bytes, reads nothing).
-     * Cleared only AFTER a format succeeds, so a crash mid-wipe re-formats next boot
-     * (and both backends self-format on a failed mount, so a torn wipe still recovers). */
-    bool force_format = (app_settings_get_storage_format_pending() != 0);
+    /* A backend switch armed a fresh format of a specific TARGET backend
+     * (storage_format_pending holds that STORAGE_BACKEND_*, or STORAGE_FORMAT_PENDING_NONE
+     * when disarmed). Force-format only when the armed target matches the backend we are
+     * actually mounting: this makes the switch's two NVS writes (arm target, then save
+     * backend) safe against an interruption between them — a reboot still on the OLD backend
+     * won't match, so a switch that never committed can't wipe the user's current storage.
+     *
+     * Consume the flag by DISARMING IT FIRST, before any wipe. If we can't durably disarm,
+     * do NOT format — bail with the card intact and retry next boot. That guarantees a
+     * successful mount always implies the flag is already clear, so the runtime remount path
+     * (sd_remount_and_reopen_info) can never force-format mid-session; and a post-format
+     * clear can't fail and leave the flag armed to re-wipe the recordings made this boot. */
+    uint8_t fmt_target = app_settings_get_storage_format_pending();
+    bool force_format = (fmt_target != STORAGE_FORMAT_PENDING_NONE && fmt_target == g_backend);
+    if (force_format) {
+        int derr = app_settings_save_storage_format_pending(STORAGE_FORMAT_PENDING_NONE);
+        if (derr) {
+            derr = app_settings_save_storage_format_pending(STORAGE_FORMAT_PENDING_NONE); /* one retry */
+        }
+        if (derr) {
+            LOG_ERR("[SD] cannot disarm format-pending (%d) — deferring the switch's format to "
+                    "avoid an undismissable re-wipe; leaving the card intact this boot", derr);
+            sd_enable_power(false);
+            return derr;
+        }
+    }
 
 #ifdef CONFIG_OMI_AUDIO_RING
     if (ring_active()) {
@@ -1218,9 +1237,6 @@ static int sd_mount(void)
             }
         }
         if (rr == 0) {
-            if (force_format) {
-                (void) app_settings_save_storage_format_pending(0); /* fresh format done */
-            }
             is_mounted = true;
             sd_ready = true;
             LOG_INF("[SD] ring backend mounted OK");
@@ -1266,8 +1282,17 @@ static int sd_mount(void)
             sd_enable_power(false);
             return -EIO;
         }
-        (void) write_magic();
-        (void) app_settings_save_storage_format_pending(0); /* fresh format done */
+        /* Stamp the format cookie; fail the mount if it doesn't land. Without it the
+         * NEXT boot's check_magic() treats the volume as foreign and reformats — which
+         * would wipe whatever this boot recorded. The flag is already disarmed above, so
+         * that recovery reformat runs via the normal check_magic() path, not this one. */
+        ret = write_magic();
+        if (ret != 0) {
+            LOG_ERR("LFS magic write after switch format failed: %d", ret);
+            lfs_unmount(&lfs_fs);
+            sd_enable_power(false);
+            return ret;
+        }
         is_mounted = true;
         sd_ready = true;
         LOG_INF("LittleFS formatted fresh on backend switch");
