@@ -1068,8 +1068,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                             title: const Text('Switch storage backend', style: TextStyle(color: Colors.white)),
                             content: Text(
                               '${current != null ? 'Currently on ${current == 1 ? 'Ring' : 'LittleFS'}. ' : ''}'
-                              'Switching WIPES the SD card — it reformats fresh to the other backend and '
-                              'reboots the Omi. Sync everything first: any recordings still on the device are '
+                              'Switching WIPES the SD card — it reformats fresh to '
+                              '${current != null ? 'the other' : 'the selected'} backend and reboots the Omi. '
+                              'Sync everything first: any recordings still on the device are '
                               'permanently lost.\n\nLittleFS is the safe default. Ring is experimental.',
                               style: const TextStyle(color: Colors.white70),
                             ),
