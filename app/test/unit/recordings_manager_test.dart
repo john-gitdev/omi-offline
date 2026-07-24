@@ -945,6 +945,39 @@ void main() {
       expect(bin.existsSync(), true, reason: 'a bin still claimed by an in-progress draft must not be pruned');
     });
 
+    test('a still-mid-transfer bin is protected even when a finalized recording lists it', () async {
+      // The exact-membership rule is blind to sync state, so a bin a Force run
+      // (or an app build predating the mid-transfer guard) finalized over the
+      // PREFIX of would otherwise be deleted while the transfer is still
+      // resumable — destroying the file the next sync appends into and forcing a
+      // full re-fetch of the whole bin. Callers pass the incomplete-transfer set
+      // (WalSync.incompleteBinRelPaths) so the sweep leaves it alone.
+      final recStartMs = DateTime.utc(2026, 5, 27, 13, 0, 0).millisecondsSinceEpoch;
+      final tsSec = recStartMs ~/ 1000;
+      final rel = '$tsSec/${tsSec}_11.bin';
+      final bin = await writeBin(timerStartSec: tsSec, sessionId: 11, durationSec: 4 * 60);
+      await writeRecordingWithBins(startMs: recStartMs, durationMs: 4 * 60 * 1000, relativeBins: [rel]);
+
+      final deleted = await RecordingsManager.pruneConsumedBins(protectedRelBins: {rel});
+
+      expect(deleted, 0);
+      expect(bin.existsSync(), true, reason: 'a mid-transfer bin is the next sync resume target — never prune it');
+    });
+
+    test('protecting an unrelated bin still prunes the consumed one', () async {
+      // The protection is per-path, not a global off switch.
+      final recStartMs = DateTime.utc(2026, 5, 27, 14, 0, 0).millisecondsSinceEpoch;
+      final tsSec = recStartMs ~/ 1000;
+      final rel = '$tsSec/${tsSec}_12.bin';
+      final bin = await writeBin(timerStartSec: tsSec, sessionId: 12, durationSec: 4 * 60);
+      await writeRecordingWithBins(startMs: recStartMs, durationMs: 4 * 60 * 1000, relativeBins: [rel]);
+
+      final deleted = await RecordingsManager.pruneConsumedBins(protectedRelBins: {'999/999_1.bin'});
+
+      expect(deleted, 1);
+      expect(bin.existsSync(), false);
+    });
+
     test('legacy recording with no bin-list retains its bins', () async {
       // Pre-bin-list .meta (writeRecording writes no relativeBins) contributes
       // nothing to the consumed set, so the bin is conservatively retained.
