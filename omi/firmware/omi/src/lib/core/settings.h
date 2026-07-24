@@ -88,9 +88,12 @@ uint16_t app_settings_get_priority_record_max_minutes(void);
  * @return 0 on success, -EINVAL for an unknown backend, or a persist error.
  *
  * NOTE: switching backends requires the SD to be (re)formatted to the target
- * layout; the caller is responsible for triggering that (see sd_card init /
- * the backend-switch command in storage.c). The value itself lives in internal
- * NVS; the audio + ring metadata it selects live on the SD NAND.
+ * layout. The backend-switch command (storage.c) arms app_settings_save_storage_
+ * format_pending(1) alongside this so the next boot wipes to a fresh layout — a
+ * plain mount of the previous backend's card can leave stale metadata (e.g. a
+ * still-valid ring header under freshly-written LittleFS data) that mounts OK but
+ * points at overwritten bytes, so nothing is readable. The value itself lives in
+ * internal NVS; the audio + ring metadata it selects live on the SD NAND.
  */
 int app_settings_save_storage_backend(uint8_t backend);
 
@@ -99,6 +102,20 @@ int app_settings_save_storage_backend(uint8_t backend);
  *        STORAGE_BACKEND_LITTLEFS when nothing is persisted).
  */
 uint8_t app_settings_get_storage_backend(void);
+
+/**
+ * @brief Persist the "format the target backend fresh on next boot" flag.
+ *
+ * Armed (1) by the backend-switch command so the next sd_mount() wipes to a clean
+ * target layout instead of mounting the previous backend's stale on-card metadata.
+ * sd_mount() consumes it: on a successful fresh format it clears the flag back to 0
+ * (persisted), so a later organic reboot does NOT re-wipe. Cleared (0) is the
+ * default and the steady state.
+ */
+int app_settings_save_storage_format_pending(uint8_t pending);
+
+/** @brief Get the "format target backend fresh on next boot" flag (0/1). */
+uint8_t app_settings_get_storage_format_pending(void);
 
 /**
  * @brief Persist the consecutive ring-backend post-crash boot counter.
