@@ -35,9 +35,15 @@ void main() {
     // Re-init so SharedPreferencesUtil._preferences picks up the fresh mock
     // backing store.
     await SharedPreferencesUtil.init();
+    // No ServiceManager here, so the mid-transfer lookup would throw and put
+    // every processAll run on its fail-closed "delete nothing" branch, silently
+    // retiring the bin-deletion path from these tests. Default to "nothing is
+    // mid-transfer"; the tests that care install their own set.
+    RecordingsManager.incompleteBinResolverForTest = () async => const {};
   });
 
   tearDown(() {
+    RecordingsManager.incompleteBinResolverForTest = null;
     if (tempDir.existsSync()) {
       tempDir.deleteSync(recursive: true);
     }
@@ -1502,6 +1508,72 @@ void main() {
 
       // processingProgress is reset to 0.0 in finally block
       expect(RecordingsManager.processingProgress.value, 0.0);
+    });
+
+    // Force paths (backgroundMode: false) decode the newest, still-arriving bin on
+    // purpose — but must never DELETE it. That file is where the next sync resumes
+    // its append; deleting it rewinds the transfer to 0, re-fetches the whole bin
+    // and re-decodes the prefix into a second, overlapping recording. The strip
+    // guard doesn't cover this (Force skips it by design), so the protection has to
+    // live in the delete_segments handler.
+    test('a mid-transfer bin survives a force run that consumes it', () async {
+      // Forward slashes, not p.join: the app is POSIX-path-only (bins are keyed by
+      // `'$docs/raw_segments/$rel'` and split on '/raw_segments/'), so a Windows
+      // test host must build the same shape or the protection lookup can't match.
+      await Directory('${tempDir.path}/raw_segments/1000').create(recursive: true);
+      // Zero-filled: decodes to 0 speech frames, so the pass consumes both bins
+      // and asks for both to be deleted.
+      final whole = File('${tempDir.path}/raw_segments/1000/1000_1.bin');
+      await whole.writeAsBytes(List.filled(252000, 0));
+      final partial = File('${tempDir.path}/raw_segments/1000/1000_2.bin');
+      await partial.writeAsBytes(List.filled(126000, 0));
+
+      RecordingsManager.incompleteBinResolverForTest = () async => {'1000/1000_2.bin'};
+
+      final batch = Batch(
+        dateString: '2026-05-12',
+        date: DateTime(2026, 5, 12),
+        rawSegments: [whole, partial],
+        draftRecordings: [],
+        finalizedRecordings: [],
+        markerTimestamps: [],
+        discards: [],
+      );
+
+      try {
+        await RecordingsManager().processAll([batch], (_, __) {}, backgroundMode: false);
+      } catch (_) {
+        // Isolate/VAD-channel failures are irrelevant here — only the delete
+        // decisions the main isolate made are under test.
+      }
+
+      expect(partial.existsSync(), true, reason: 'the mid-transfer bin is the next sync resume target');
+      expect(whole.existsSync(), false, reason: 'a fully-transferred consumed bin is still reclaimed');
+    });
+
+    test('an unreadable WAL makes a force run delete nothing (fail-closed)', () async {
+      await Directory('${tempDir.path}/raw_segments/2000').create(recursive: true);
+      final bin = File('${tempDir.path}/raw_segments/2000/2000_1.bin');
+      await bin.writeAsBytes(List.filled(252000, 0));
+
+      RecordingsManager.incompleteBinResolverForTest = () async => throw const FormatException('bad wals.json');
+
+      final batch = Batch(
+        dateString: '2026-05-12',
+        date: DateTime(2026, 5, 12),
+        rawSegments: [bin],
+        draftRecordings: [],
+        finalizedRecordings: [],
+        markerTimestamps: [],
+        discards: [],
+      );
+
+      try {
+        await RecordingsManager().processAll([batch], (_, __) {}, backgroundMode: false);
+      } catch (_) {}
+
+      expect(bin.existsSync(), true,
+          reason: 'sync status unknown for every bin — retain and let pruneConsumedBins reclaim later');
     });
 
     test('Isolate died prematurely exception is thrown', () async {
