@@ -1192,18 +1192,35 @@ static int sd_mount(void)
             sector_size,
             (unsigned) ((uint64_t) sector_count * sector_size >> 20));
 
+    /* A backend switch armed a fresh format (storage_format_pending). Consume it here
+     * so the target backend is wiped to a clean layout instead of mounting the previous
+     * backend's stale on-card metadata (e.g. a still-valid ring header under freshly
+     * written LittleFS data — mounts OK, points at overwritten bytes, reads nothing).
+     * Cleared only AFTER a format succeeds, so a crash mid-wipe re-formats next boot
+     * (and both backends self-format on a failed mount, so a torn wipe still recovers). */
+    bool force_format = (app_settings_get_storage_format_pending() != 0);
+
 #ifdef CONFIG_OMI_AUDIO_RING
     if (ring_active()) {
-        /* Raw ring backend: the disk is initialised; hand it to sd_ring. No
-         * LittleFS mount. Mount an existing ring, or format one on first use
-         * (foreign FS / fresh card / backend switch — the one-time SD wipe). */
+        /* Raw ring backend: the disk is initialised; hand it to sd_ring. No LittleFS
+         * mount. Format fresh on a backend switch; otherwise mount an existing ring, or
+         * format one on first use (foreign FS / fresh card — the one-time SD wipe). */
         ring_total_sectors = sector_count;
-        int rr = sd_ring_mount(sector_count);
-        if (rr == -ENOENT) {
-            LOG_WRN("[SD] no ring on card — formatting as ring (one-time SD wipe)");
+        int rr;
+        if (force_format) {
+            LOG_WRN("[SD] backend switch — formatting fresh ring (SD wipe)");
             rr = sd_ring_format(sector_count);
+        } else {
+            rr = sd_ring_mount(sector_count);
+            if (rr == -ENOENT) {
+                LOG_WRN("[SD] no ring on card — formatting as ring (one-time SD wipe)");
+                rr = sd_ring_format(sector_count);
+            }
         }
         if (rr == 0) {
+            if (force_format) {
+                (void) app_settings_save_storage_format_pending(0); /* fresh format done */
+            }
             is_mounted = true;
             sd_ready = true;
             LOG_INF("[SD] ring backend mounted OK");
@@ -1229,6 +1246,33 @@ static int sd_mount(void)
     lfs_cfg.cache_size = LFS_CACHE_SIZE;
     lfs_cfg.block_size = LFS_BLOCK_SIZE;
     lfs_cfg.block_count = sector_count / (LFS_BLOCK_SIZE / ss);
+
+    /* Backend switch armed a fresh format: wipe to a clean LittleFS instead of
+     * mounting-and-keeping the previous backend's card (which may hold ring bytes or
+     * stale LittleFS data). This is also the landing spot when a ring switch failed to
+     * mount/format above and reverted here — force_format is still set, so LittleFS
+     * starts clean rather than trying to keep ring bytes. */
+    if (force_format) {
+        LOG_WRN("[SD] backend switch — formatting fresh LittleFS (SD wipe)");
+        ret = lfs_format(&lfs_fs, &lfs_cfg);
+        if (ret != LFS_ERR_OK) {
+            LOG_ERR("LFS switch format failed: %d", ret);
+            sd_enable_power(false);
+            return -EIO;
+        }
+        ret = lfs_mount(&lfs_fs, &lfs_cfg);
+        if (ret != LFS_ERR_OK) {
+            LOG_ERR("LFS mount after switch format failed: %d", ret);
+            sd_enable_power(false);
+            return -EIO;
+        }
+        (void) write_magic();
+        (void) app_settings_save_storage_format_pending(0); /* fresh format done */
+        is_mounted = true;
+        sd_ready = true;
+        LOG_INF("LittleFS formatted fresh on backend switch");
+        return 0;
+    }
 
     /* Try to mount existing filesystem */
     int64_t mount_start_ms = k_uptime_get();
