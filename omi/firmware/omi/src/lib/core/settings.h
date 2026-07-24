@@ -8,6 +8,10 @@
 /* Audio storage backend selector (persisted; see app_settings_get_storage_backend). */
 #define STORAGE_BACKEND_LITTLEFS 0 /* default — file-per-segment over LittleFS */
 #define STORAGE_BACKEND_RING     1 /* raw append-only circular log (sd_ring.c) */
+/* "No format armed" sentinel for storage_format_pending. Any other value is the
+ * STORAGE_BACKEND_* the next mount should format fresh; 0xFF never aliases a real
+ * backend, so an unset/never-armed device (default) never force-formats. */
+#define STORAGE_FORMAT_PENDING_NONE 0xFF
 
 /* Consecutive post-crash boots with the ring backend active before it
  * auto-reverts to LittleFS (anti-brick self-heal). */
@@ -104,17 +108,23 @@ int app_settings_save_storage_backend(uint8_t backend);
 uint8_t app_settings_get_storage_backend(void);
 
 /**
- * @brief Persist the "format the target backend fresh on next boot" flag.
+ * @brief Persist the "format this target backend fresh on next boot" record.
  *
- * Armed (1) by the backend-switch command so the next sd_mount() wipes to a clean
- * target layout instead of mounting the previous backend's stale on-card metadata.
- * sd_mount() consumes it: on a successful fresh format it clears the flag back to 0
- * (persisted), so a later organic reboot does NOT re-wipe. Cleared (0) is the
- * default and the steady state.
+ * @param target the STORAGE_BACKEND_* to format on the next mount, or
+ *        STORAGE_FORMAT_PENDING_NONE to disarm.
+ *
+ * Armed by the backend-switch command with the TARGET backend (not a bare flag), then
+ * the backend itself is persisted. sd_mount() force-formats only when this target equals
+ * the backend it is actually mounting — so an interruption between the two writes (target
+ * armed, backend not yet saved) leaves target != mounted-backend and never wipes the
+ * current storage. sd_mount() DISARMS this (back to NONE) BEFORE it wipes, so a mount that
+ * succeeds always implies it is already disarmed (the runtime remount path can't
+ * force-format), and a failed disarm defers the format rather than risking a re-wipe.
+ * NONE is the default and steady state.
  */
-int app_settings_save_storage_format_pending(uint8_t pending);
+int app_settings_save_storage_format_pending(uint8_t target);
 
-/** @brief Get the "format target backend fresh on next boot" flag (0/1). */
+/** @brief Get the armed format target (a STORAGE_BACKEND_*, or STORAGE_FORMAT_PENDING_NONE). */
 uint8_t app_settings_get_storage_format_pending(void);
 
 /**
