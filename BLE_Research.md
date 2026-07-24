@@ -128,8 +128,14 @@ Record the sub-class in the "Recovery trigger" column below.
 |---|---|---|---|---|---|---|---|---|
 | 1 | 2026-07-22 15:08→15:36 | 28m 16s | SILENT | screen-wake (`screen_interactive` false→true) | **No** | +1 (in 07:34–18:23 window) | fast | 147, then 8 |
 | 2 | 2026-07-22 21:01→21:07 | 5m 54s | SILENT | device-return / self (Doze stayed on, screen off) | **No** | +0 (55→55) | fast | 147 |
+| 3 | 2026-07-24 04:42→04:45 | 3m 12s | *(none — sub-threshold)* | **BT toggle** (`error=bluetooth_off` → immediate reconnect) | **Yes** | +0 (flat at 3) | fast | *none — all `-1`* |
 
-Both observed wedges so far were **self-clearing** — no BT toggle bucket populated yet.
+Wedges 1–2 were **self-clearing**; Wedge 3 is the **first toggle-required** sighting — the
+population §7 was hunting for. Its signature is distinct from the self-clearing pair: **every
+failure was `gatt_status_-1`** (pure connect-timeout, Android never delivered a real status —
+vs. the 147/8 the self-clearing wedges carried), **`estab_fail_count` flat**, and it cleared
+**only** when the adapter cycled. That matches the §7 hypothesis: flat-estab + all-timeout(`-1`)
+= central-side initiator wedge = a toggle (which resets the phone's own controller) is what fixes it.
 
 ### Detail — Wedge 1 (2026-07-22, ~28 min)
 
@@ -174,6 +180,44 @@ Both observed wedges so far were **self-clearing** — no BT toggle bucket popul
 - estab context: `estab_fail_count` 55 @ 18:23 → 55 @ 00:01, i.e. **+0** across this wedge.
   Flat ⟹ Omi never heard the CONNECT_INDs ⟹ central-side, consistent with SILENT.
 - **Bucket: self-clearing (device-return / background recovery).** No BT toggle.
+
+### Detail — Wedge 3 (2026-07-24, ~3 min) — first toggle-required
+
+- Log source: app 0.31.x, device `C3:94:71:EA:A8:D5`, `live_uptime_ms` ~8.4M (2h 20m), firmware
+  clean throughout (`block_drops=0`, `ring_io_errors=0`, `estab_fail_count` flat at 3).
+- **No formal `ble_wedge` / `scan_probe` / `ble_wedge_recovered` emitted** — the outage cleared
+  at failure **3**, below `WEDGE_NOTIFY_AFTER=6`, so the snapshot instrumentation never tripped.
+  Everything below is reconstructed from the connect/transport lines. (This is itself a finding:
+  a toggle-required outage can resolve before the app's own wedge detector fires, so we get no
+  env snapshot / probe verdict for it. Consider lowering the snapshot threshold, or snapshotting
+  on the first `bluetooth_off` during an active reconnect loop.)
+- Preceded by: a clean session — last good activity was a full sync + manual battery-save
+  disconnect @ 04:25:14. No mid-transfer failure led in (unlike Wedge 2). Two *earlier* drops
+  this session (`gatt_status_8` @ 03:15:53, `Error 133` @ 03:55:31) were plain mid-transfer
+  drops that **native auto-reconnect cleared in seconds** — not wedges.
+- Outage start @ 04:42:07 — `[DeviceService] device lookup result: Omi
+  (locator: DeviceLocatorKind.bluetooth)` → **the peripheral was discoverable at outage start**
+  (phone's scanner heard it), then 3 connects each ran the full 30 s `_scanConnectDevice`
+  timeout:
+  - fail 1 @ 04:42:37 (`timed out after 30002ms`) → `gatt_status_-1`
+  - fail 2 @ 04:43:22 (`timed out after 30004ms`) → `gatt_status_-1`
+  - fail 3 @ 04:45:01 (`timed out after 30001ms`) → `gatt_status_-1`, incl.
+    `ignoring transient GATT error during connect (native will retry): gatt_status_-1`.
+  Every failure was `-1` (our own timeout backstop; **Android never reported a real status** —
+  no 147, no 8). Env fields (`screen_interactive`, `doze_mode`, `contending_le_links`,
+  `omi_in_gatt_list`) unavailable — no snapshot fired.
+- scan_probe: **not run** (sub-threshold). But the 04:42:07 lookup hearing `Omi` is a weak
+  ADVERTISING-leaning signal — the peripheral was on the air at the start.
+- **Bluetooth toggle in window? YES** — @ 04:45:15 `[NativeBleTransport] … disconnected
+  (error=bluetooth_off …)`, the only way an ordinary app sees the adapter go off on Android 13+.
+  Recovery landed immediately: @ 04:45:17 `connecting` → @ 04:45:19 `connected`, `device ready
+  after 2126ms` → @ 04:45:21 `SDCardWalSync: Loaded 0 persisted WALs`. Total outage 3m 12s.
+- estab context: `last_failure_adv_mode=fast`; `estab_fail_count` was **3 for the entire
+  session** (04:22 / 03:55 / 03:20 / 03:16 readings all 3); the post-recovery reading is just
+  past the log tail, but flat-3 throughout ⟹ **+0 ⟹ Omi never heard the CONNECT_INDs ⟹
+  central (phone) side.** Consistent with the all-`-1` timeout signature.
+- **Bucket: toggle-required.** The self-clearing recovery mechanisms (screen-wake, device-return
+  alarm) did **not** land in the ~3 min before the user toggled; the adapter cycle is what cleared it.
 
 ---
 
@@ -228,8 +272,12 @@ churn is the #1 cause of daemon wedges, which is why `AUTONOMOUS_RETRY_STOP_AFTE
   SILENT dominates, intervention #1 won't help and #2 (firmware) is the real lever.
 - **Does the toggle-required population have a different signature** — ADVERTISING probe?
   `omi_in_gatt_list=true` (a real ghost, so the purge *should* have fired but didn't)?
-  a rising estab delta? Capturing one toggle-required wedge with full fields is the most
-  valuable next data point.
+  a rising estab delta? *Partially answered by Wedge 3:* its signature was all-`gatt_status_-1`
+  (pure timeout, no real status) + **flat** estab delta + peripheral discoverable at outage
+  start — i.e. **not** a rising/ADVERTISING-establishment signature; it looks central-side. But
+  Wedge 3 cleared sub-threshold so we have **no full env snapshot / probe verdict** for it. Still
+  need one toggle-required wedge that trips the 6-failure snapshot to confirm `omi_in_gatt_list`
+  and the probe verdict.
 - **estab delta on each wedge** — is "rose vs flat" a reliable predictor of toggle-required?
   Hypothesis: flat/SILENT = central-side scanner starvation = toggle helps; rose/ADVERTISING
   = establishment RF failure = toggle only helps by resetting the initiator.
