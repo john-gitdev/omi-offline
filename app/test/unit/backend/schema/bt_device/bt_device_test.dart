@@ -38,6 +38,9 @@ class MockDeviceTransport implements DeviceTransport {
   }
 
   @override
+  Future<void> unsubscribeCharacteristic(String serviceUuid, String characteristicUuid) async {}
+
+  @override
   Future<bool> isConnected() async {
     return true;
   }
