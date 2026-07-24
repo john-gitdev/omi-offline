@@ -1055,21 +1055,31 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                           setState(() => _statusMessage = 'Connect a device first');
                           return;
                         }
+                        // 0 = LittleFS, 1 = Ring, null = not read yet (Show Diagnostics off).
+                        // Only offer the backend(s) that aren't already active: re-selecting the
+                        // current one is a firmware no-op (no wipe, no reboot), so presenting it
+                        // would be a dead end. When unknown, offer both and let the firmware's
+                        // same-backend guard handle a no-op safely.
+                        final current = _storageBackend;
                         final choice = await showDialog<int>(
                           context: context,
                           builder: (ctx) => AlertDialog(
                             backgroundColor: const Color(0xFF1C1C1E),
                             title: const Text('Switch storage backend', style: TextStyle(color: Colors.white)),
-                            content: const Text(
-                              'This WIPES the SD card — it reformats fresh to the chosen backend and reboots '
-                              'the Omi. Sync everything first: any recordings still on the device are '
+                            content: Text(
+                              '${current != null ? 'Currently on ${current == 1 ? 'Ring' : 'LittleFS'}. ' : ''}'
+                              'Switching WIPES the SD card — it reformats fresh to the other backend and '
+                              'reboots the Omi. Sync everything first: any recordings still on the device are '
                               'permanently lost.\n\nLittleFS is the safe default. Ring is experimental.',
-                              style: TextStyle(color: Colors.white70),
+                              style: const TextStyle(color: Colors.white70),
                             ),
                             actions: [
                               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-                              TextButton(onPressed: () => Navigator.pop(ctx, 0), child: const Text('LittleFS')),
-                              TextButton(onPressed: () => Navigator.pop(ctx, 1), child: const Text('Ring')),
+                              if (current != 0)
+                                TextButton(
+                                    onPressed: () => Navigator.pop(ctx, 0), child: const Text('Switch to LittleFS')),
+                              if (current != 1)
+                                TextButton(onPressed: () => Navigator.pop(ctx, 1), child: const Text('Switch to Ring')),
                             ],
                           ),
                         );
