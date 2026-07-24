@@ -1285,11 +1285,15 @@ static int sd_mount(bool allow_switch_format)
     lfs_cfg.block_size = LFS_BLOCK_SIZE;
     lfs_cfg.block_count = sector_count / (LFS_BLOCK_SIZE / ss);
 
-    /* Backend switch armed a fresh format: wipe to a clean LittleFS instead of
-     * mounting-and-keeping the previous backend's card (which may hold ring bytes or
-     * stale LittleFS data). This is also the landing spot when a ring switch failed to
-     * mount/format above and reverted here — force_format is still set, so LittleFS
-     * starts clean rather than trying to keep ring bytes. */
+    /* Re-evaluate against the CURRENT backend before any LittleFS wipe. A failed ring switch
+     * flips g_backend to LittleFS above while the armed target is still Ring; the force_format
+     * captured at the top (computed when g_backend was Ring) must NOT carry into a LittleFS wipe,
+     * or a switch that FAILED would destroy the user's existing LittleFS recordings. Recomputed
+     * here the ring target no longer matches, so a failed ring switch falls to the normal
+     * mount-and-keep path below (which still formats only if the card isn't a valid LittleFS).
+     * A genuine LittleFS switch (armed target == LittleFS) still force-formats. */
+    force_format = allow_switch_format &&
+                   (app_settings_get_storage_format_pending() == g_backend);
     if (force_format) {
         LOG_WRN("[SD] backend switch — formatting fresh LittleFS (SD wipe)");
         ret = lfs_format(&lfs_fs, &lfs_cfg);
