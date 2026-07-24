@@ -591,8 +591,12 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
     if (controller.markerConversations.isNotEmpty) {
       controls.add(noSplash(IconButton(
         padding: EdgeInsets.zero,
-        // Full 48dp Material hit area; the glyph stays compact (centered).
+        // Full 48dp Material hit area; centerRight pins the glyph to the box's
+        // right edge so all three controls share one even, right-aligned rhythm
+        // (matching the flush-right filter funnel) instead of the funnel floating
+        // past a wide gap in the default filter state.
         constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+        alignment: Alignment.centerRight,
         tooltip: 'Toggle markers only',
         onPressed: () => setState(() => _showMarkersOnly = !_showMarkersOnly),
         icon: FaIcon(
@@ -614,8 +618,12 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
         controller.batches.any((b) => b.discards.isNotEmpty)) {
       controls.add(noSplash(IconButton(
         padding: EdgeInsets.zero,
-        // Full 48dp Material hit area; the glyph stays compact (centered).
+        // Full 48dp Material hit area; centerRight pins the glyph to the box's
+        // right edge so all three controls share one even, right-aligned rhythm
+        // (matching the flush-right filter funnel) instead of the funnel floating
+        // past a wide gap in the default filter state.
         constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+        alignment: Alignment.centerRight,
         tooltip: _hideGhosts ? 'Show ghosts' : 'Hide ghosts',
         onPressed: () => setState(() {
           _hideGhosts = !_hideGhosts;
