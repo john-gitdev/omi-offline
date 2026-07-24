@@ -373,6 +373,20 @@ class RecordingsManager {
     }).toList();
   }
 
+  /// Test seam for the mid-transfer bin lookup ([WalSync.incompleteBinRelPaths]).
+  /// Production resolves it through [ServiceManager], which unit tests never
+  /// initialize — without a stub every run would take the fail-closed branch and
+  /// the bin-deletion path would go unexercised. Throwing from the stub simulates
+  /// an unreadable wals.json.
+  @visibleForTesting
+  static Future<Set<String>> Function()? incompleteBinResolverForTest;
+
+  static Future<Set<String>> _resolveIncompleteRelBins() {
+    final override = incompleteBinResolverForTest;
+    if (override != null) return override();
+    return ServiceManager.instance().wal.getSyncs().incompleteBinRelPaths();
+  }
+
   /// Processes all batches as one continuous audio stream.
   ///
   /// Segments are sorted by (deviceSessionId, segmentIndex) across all batches so a
@@ -415,31 +429,41 @@ class RecordingsManager {
       batches = stripBinsByRelPath(batches, await discardedRelBinPaths());
     }
 
-    // Strip bins that are still mid-transfer (walOffset < the device-advertised
-    // size — see Wal.isIncompleteTransfer). An incompletely-synced bin holds only
-    // a PREFIX of the recording: decoding it cuts a draft short AND — because this
-    // pass prunes every bin it consumes — deletes the local file the next sync has
-    // to resume into. That forces a full re-fetch whose re-decode DUPLICATES the
-    // prefix into a second recording (observed: an interrupted active bin folded
-    // into a draft, then re-fetched and re-opened as its own overlapping recording,
-    // ~4 min duplicated). The foreground pipeline (RecordingsController._runProcessing)
-    // already applies this guard; centralize it here so EVERY background/auto caller
-    // of processAll — chiefly processAllCompletedSessions — is covered too. Same gate
-    // as the discard strip: only auto/background runs with no settingsOverride prune;
-    // Force paths (backgroundMode=false) intentionally process the newest/partial bin.
-    // Fail closed: if the WAL state can't be read a bin's sync status is unknown, so
-    // skip the whole run rather than risk pruning a mid-download bin. wals.json is
-    // rewritten by every sync, so the next cycle self-heals. See also the twin guard
-    // and rationale at RecordingsController.isProcessableBin / _incompleteBins.
-    if (backgroundMode && settingsOverride == null) {
-      Set<String> incompleteRelBins;
-      try {
-        incompleteRelBins = await ServiceManager.instance().wal.getSyncs().incompleteBinRelPaths();
-      } catch (e) {
-        Logger.error('RecordingsManager: processAll skipping run — incomplete-bin set '
-            'unavailable, cannot safely prune (fail-closed): $e');
-        return;
-      }
+    // Bins still mid-transfer (walOffset < the device-advertised size — see
+    // Wal.isIncompleteTransfer). Such a bin holds only a PREFIX of the recording,
+    // and its local file is what the next sync RESUMES INTO, so it drives two
+    // different guards:
+    //
+    //  1. DECODE (auto/background only, below): decoding a prefix cuts a draft
+    //     short of the real audio. Force paths deliberately decode the newest,
+    //     still-arriving bin — that is the button's purpose — so only auto runs
+    //     with no settingsOverride strip it, matching the discard strip's gate.
+    //  2. DELETE (every mode, via [_incompleteProtectedPaths] in the
+    //     `delete_segments` handler): this pass prunes every bin it consumes, and
+    //     deleting a half-arrived one destroys the resume target. The next sync
+    //     then rewinds to 0 and re-fetches the WHOLE file, whose re-decode
+    //     DUPLICATES the prefix into a second recording (observed: an interrupted
+    //     active bin folded into a draft, then re-fetched and re-opened as its own
+    //     overlapping recording, ~4 min duplicated). Deleting is never the right
+    //     move for a mid-transfer bin in ANY mode: retained, it is simply
+    //     re-processed once whole, and the draft it fed re-stitches over it.
+    //
+    // Fail closed: an unreadable WAL means a bin's sync status is unknown. An
+    // auto run skips entirely (it can afford to wait); a user-initiated run still
+    // processes but deletes nothing this pass, leaving reclamation to the next
+    // [pruneConsumedBins]. wals.json is rewritten by every sync, so either way the
+    // next cycle self-heals. See the twin guard at
+    // RecordingsController.isProcessableBin / _incompleteBins.
+    final bool autoRun = backgroundMode && settingsOverride == null;
+    Set<String>? incompleteRelBins;
+    try {
+      incompleteRelBins = await _resolveIncompleteRelBins();
+    } catch (e) {
+      Logger.error('RecordingsManager: processAll incomplete-bin set unavailable '
+          '(${autoRun ? 'skipping run' : 'retaining every consumed bin'}, fail-closed): $e');
+      if (autoRun) return;
+    }
+    if (autoRun && incompleteRelBins != null) {
       batches = stripBinsByRelPath(batches, incompleteRelBins);
     }
 
@@ -763,6 +787,16 @@ class RecordingsManager {
           // sibling discards still reference.
           final Set<String> discardProtectedPaths = {...seedProtectedBinPaths};
 
+          // Absolute paths of bins still mid-transfer — never deletable, in any
+          // mode (see the resolve above). `null` means the WAL state was
+          // unreadable on a user-initiated run: status unknown for EVERY bin, so
+          // nothing is deleted this pass. Retaining a consumed bin is the benign
+          // direction — coverage keeps it from being re-decoded and the next
+          // [pruneConsumedBins] reclaims it — while deleting a half-arrived one
+          // costs a full re-download.
+          final Set<String>? incompleteProtectedPaths =
+              incompleteRelBins?.map((rel) => '${directory.path}/raw_segments/$rel').toSet();
+
           await for (final msg in receivePort) {
             if (msg is! Map) continue;
             switch (msg['type'] as String) {
@@ -848,6 +882,18 @@ class RecordingsManager {
               case 'delete_segments':
                 final paths = (msg['paths'] as List).cast<String>();
                 for (final path in paths) {
+                  if (incompleteProtectedPaths == null) {
+                    Logger.debug('RecordingsManager: retaining raw segment — sync status unknown: $path');
+                    continue;
+                  }
+                  if (incompleteProtectedPaths.contains(path)) {
+                    // Still arriving over BLE: this file is the next sync's resume
+                    // target. Leave it exactly where it is — relocating it (as the
+                    // discard branch below does) would break the resume just as
+                    // surely as deleting it.
+                    Logger.debug('RecordingsManager: retaining mid-transfer raw segment: $path');
+                    continue;
+                  }
                   if (discardProtectedPaths.contains(path)) {
                     // A discard claims this fully-processed bin → retain it OUT
                     // of the processing pool by relocating to discarded_segments/
@@ -2068,7 +2114,7 @@ class RecordingsManager {
     // sync, so the next one self-heals.
     Set<String> incompleteRelBins;
     try {
-      incompleteRelBins = await ServiceManager.instance().wal.getSyncs().incompleteBinRelPaths();
+      incompleteRelBins = await _resolveIncompleteRelBins();
     } catch (e) {
       Logger.error('RecordingsManager: processAllCompletedSessions skipping run — incomplete-bin set '
           'unavailable, cannot safely prune (fail-closed): $e');
@@ -2134,7 +2180,7 @@ class RecordingsManager {
     // skip only the prune — the user-requested processing still runs.
     Set<String>? incompleteRelBins;
     try {
-      incompleteRelBins = await ServiceManager.instance().wal.getSyncs().incompleteBinRelPaths();
+      incompleteRelBins = await _resolveIncompleteRelBins();
     } catch (e) {
       Logger.error('RecordingsManager: forceProcessAll skipping prune — incomplete-bin set unavailable: $e');
     }
