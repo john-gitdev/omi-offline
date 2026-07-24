@@ -480,20 +480,12 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
     }
   }
 
-  Future<void> _deleteDayConversations(
-      Batch batch, List<Conversation> toDelete, List<DiscardRecord> toDeleteDiscards) async {
-    if (toDelete.isEmpty && toDeleteDiscards.isEmpty) return;
+  /// "Delete Day" is a whole-day action: it removes everything for the date —
+  /// recordings of any length, priority recordings, markers and discards
+  /// (ghosts) — regardless of the active filter tab or the hide-ghosts toggle.
+  /// (Partial deletes go through multi-select or the "Delete Discards" action.)
+  Future<void> _deleteDayConversations(Batch batch) async {
     final messenger = ScaffoldMessenger.of(context);
-
-    // If tabs are disabled OR we are in "All" mode, we are effectively
-    // deleting everything the user can see for the whole day.
-    final isFullDay = _prefs.filterMinDurationSeconds == 0 || _filterMode == RecordingFilterMode.all;
-
-    final totalCount = toDelete.length + toDeleteDiscards.length;
-    final description = isFullDay
-        ? 'everything for ${batch.dateString}'
-        : '$totalCount ${_filterMode == RecordingFilterMode.hidden ? 'hidden' : 'main'} item${totalCount == 1 ? '' : 's'} for ${batch.dateString}';
-
     bool? confirm = await showDialog<bool>(
       context: context,
       builder: (c) => getDialog(
@@ -501,18 +493,14 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
         () => Navigator.of(c).pop(false),
         () => Navigator.of(c).pop(true),
         'Delete Day',
-        'This will permanently delete $description. This cannot be undone.',
+        'This will permanently delete everything for ${batch.dateString} — recordings, priority recordings, '
+            'markers and discards. This cannot be undone.',
         confirmText: 'Delete',
       ),
     );
     if (confirm != true) return;
     try {
-      if (isFullDay) {
-        await _controller.deleteDay(batch);
-      } else {
-        await _controller.deleteConversations(toDelete);
-        await _controller.deleteDiscards(toDeleteDiscards);
-      }
+      await _controller.deleteDay(batch);
     } catch (e) {
       if (mounted) {
         messenger.showSnackBar(
@@ -577,6 +565,129 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
         ],
       ),
     );
+  }
+
+  /// Right-aligned list-view controls for the Conversations header: the
+  /// markers-only toggle, the ghost-visibility toggle, and the duration filter.
+  /// They live here (as list controls) rather than in the action-dense app bar,
+  /// uniformly sized, vertically centered and evenly spaced, with the tap ink
+  /// flash suppressed so they read as compact edge glyphs. The markers-only
+  /// toggle is shown whenever any markers exist — in both the normal and
+  /// markers-only views — so it is always the way back out of markers-only; the
+  /// ghost + filter controls hide in markers-only view.
+  List<Widget> _buildListControls(RecordingsController controller) {
+    Widget noSplash(Widget child) => Theme(
+          data: Theme.of(context).copyWith(
+            splashColor: Colors.transparent,
+            highlightColor: Colors.transparent,
+            hoverColor: Colors.transparent,
+          ),
+          child: child,
+        );
+
+    final controls = <Widget>[];
+
+    // Markers-only toggle.
+    if (controller.markerConversations.isNotEmpty) {
+      controls.add(noSplash(IconButton(
+        padding: EdgeInsets.zero,
+        // Full 48dp Material hit area; centerRight pins the glyph to the box's
+        // right edge so all three controls share one even, right-aligned rhythm
+        // (matching the flush-right filter funnel) instead of the funnel floating
+        // past a wide gap in the default filter state.
+        constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+        alignment: Alignment.centerRight,
+        tooltip: 'Toggle markers only',
+        onPressed: () => setState(() => _showMarkersOnly = !_showMarkersOnly),
+        icon: FaIcon(
+          _showMarkersOnly ? FontAwesomeIcons.solidBookmark : FontAwesomeIcons.bookmark,
+          size: 18,
+          color: _showMarkersOnly ? Colors.amber : Colors.white,
+        ),
+      )));
+    }
+
+    // Ghost-visibility toggle — hides/shows every discard ("ghost") row across
+    // the list. Only surfaced when there are ghosts to manage. Persisted;
+    // suppresses rows only (the discards stay on disk, recoverable). Hidden
+    // during a ghost multi-select: hiding would filter out the very rows being
+    // selected, stranding the picked IDs behind Recover/Delete actions that then
+    // no-op. (A recording selection is unaffected, so the toggle stays.)
+    if (!_showMarkersOnly &&
+        !(_inSelectionMode && _selType == RecordingRowType.ghost) &&
+        controller.batches.any((b) => b.discards.isNotEmpty)) {
+      controls.add(noSplash(IconButton(
+        padding: EdgeInsets.zero,
+        // Full 48dp Material hit area; centerRight pins the glyph to the box's
+        // right edge so all three controls share one even, right-aligned rhythm
+        // (matching the flush-right filter funnel) instead of the funnel floating
+        // past a wide gap in the default filter state.
+        constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+        alignment: Alignment.centerRight,
+        tooltip: _hideGhosts ? 'Show ghosts' : 'Hide ghosts',
+        onPressed: () => setState(() {
+          _hideGhosts = !_hideGhosts;
+          _prefs.hideGhosts = _hideGhosts;
+        }),
+        icon: FaIcon(
+          FontAwesomeIcons.ghost,
+          size: 16,
+          color: _hideGhosts ? Colors.grey.shade600 : Colors.orange.shade300,
+        ),
+      )));
+    }
+
+    // Duration filter — only meaningful when short conversations are hidden
+    // (filterMinDurationSeconds > 0). The active non-default filter labels
+    // itself, tinted purple so a stray "Hidden"/"All" stands out.
+    if (!_showMarkersOnly && _prefs.filterMinDurationSeconds > 0) {
+      controls.add(noSplash(PopupMenuButton<RecordingFilterMode>(
+        tooltip: 'Filter recordings',
+        color: const Color(0xFF2C2C2E),
+        position: PopupMenuPosition.under,
+        initialValue: _filterMode,
+        onSelected: (mode) => setState(() => _filterMode = mode),
+        itemBuilder: (context) => [
+          _buildFilterMenuItem('Main', RecordingFilterMode.visible),
+          _buildFilterMenuItem('Hidden', RecordingFilterMode.hidden),
+          _buildFilterMenuItem('All', RecordingFilterMode.all),
+        ],
+        child: Builder(builder: (context) {
+          final filtering = _filterMode != RecordingFilterMode.visible;
+          final tint = filtering ? Colors.deepPurpleAccent : Colors.grey.shade400;
+          // Full 48dp Material hit area to match the sibling toggles; centerRight
+          // keeps the funnel flush to the card's right edge (left padding 12
+          // widens the target without shifting the glyph off the edge).
+          return Container(
+            constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+            alignment: Alignment.centerRight,
+            padding: const EdgeInsets.only(left: 12),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (filtering) ...[
+                  Text(
+                    _filterLabel(_filterMode),
+                    style: TextStyle(color: tint, fontSize: 13, fontWeight: FontWeight.w500),
+                  ),
+                  const SizedBox(width: 8),
+                ],
+                FaIcon(FontAwesomeIcons.filter, size: 16, color: tint),
+              ],
+            ),
+          );
+        }),
+      )));
+    }
+
+    // Even spacing between the controls; the group as a whole is right-aligned
+    // (it follows a Spacer in the header row).
+    return [
+      for (int i = 0; i < controls.length; i++) ...[
+        if (i > 0) const SizedBox(width: 6),
+        controls[i],
+      ],
+    ];
   }
 
   Future<void> _deleteConversation(Conversation conversation) async {
@@ -677,6 +788,12 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
       ),
     );
     await _controller.reloadBatchesSilently();
+    // The player page can delete the marker. If that emptied the list while we
+    // were in markers-only view, its toggle disappears — so drop back to the
+    // recordings list here instead of stranding the user on an empty view.
+    if (mounted && _showMarkersOnly && _controller.markerConversations.isEmpty) {
+      setState(() => _showMarkersOnly = false);
+    }
   }
 
   Future<void> _openConversation(Conversation conv) async {
@@ -863,16 +980,9 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                     if (mounted) setState(() {});
                   }),
                 ),
-                if (controller.markerConversations.isNotEmpty)
-                  IconButton(
-                    icon: FaIcon(
-                      _showMarkersOnly ? FontAwesomeIcons.solidBookmark : FontAwesomeIcons.bookmark,
-                      color: _showMarkersOnly ? Colors.amber : Colors.white,
-                      size: 20,
-                    ),
-                    onPressed: () => setState(() => _showMarkersOnly = !_showMarkersOnly),
-                    tooltip: 'Toggle markers only',
-                  ),
+                // Markers-only toggle moved out of the app bar to the Conversations
+                // header, beside the ghost + filter list controls (see
+                // [_buildListControls]).
                 // Mute toggle — auto mode only (mute is unavailable in manual mode).
                 // Red mic-off when muted; disabled until connected.
                 if (!_prefs.manualMode)
@@ -949,117 +1059,27 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
-                          const Text(
-                            'Conversations',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 24,
-                              fontWeight: FontWeight.bold,
+                          // Expanded (not a fixed Text + Spacer) so the title yields
+                          // width and ellipsizes on narrow phones instead of letting
+                          // the control group overflow the row — e.g. a Hidden/All
+                          // filter label plus the markers + ghost toggles.
+                          const Expanded(
+                            child: Text(
+                              'Conversations',
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 24,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
                           ),
-                          const Spacer(),
-                          // Ghost-visibility toggle — hides/shows every discard
-                          // ("ghost") row across the conversations list. It lives
-                          // here beside the filter (both are list-view controls)
-                          // rather than in the already action-dense app bar, which
-                          // on narrow phones can't fit a sixth 48dp action. Only
-                          // surfaced when there are ghosts to manage and not in
-                          // markers-only view. Persisted; suppresses rows only (the
-                          // discards stay on disk, recoverable). A full 48dp hit
-                          // area (Material minimum) with the small glyph pinned
-                          // flush-right so it still reads as a compact edge control;
-                          // splash suppressed to match the filter glyph beside it.
-                          // Hidden during a ghost multi-select: hiding would filter
-                          // out the very rows being selected, stranding the picked
-                          // IDs behind Recover/Delete actions that then no-op. (A
-                          // recording selection is unaffected, so the toggle stays.)
-                          if (!_showMarkersOnly &&
-                              !(_inSelectionMode && _selType == RecordingRowType.ghost) &&
-                              controller.batches.any((b) => b.discards.isNotEmpty))
-                            Theme(
-                              data: Theme.of(context).copyWith(
-                                splashColor: Colors.transparent,
-                                highlightColor: Colors.transparent,
-                                hoverColor: Colors.transparent,
-                              ),
-                              child: IconButton(
-                                padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
-                                alignment: Alignment.centerRight,
-                                tooltip: _hideGhosts ? 'Show ghosts' : 'Hide ghosts',
-                                onPressed: () => setState(() {
-                                  _hideGhosts = !_hideGhosts;
-                                  _prefs.hideGhosts = _hideGhosts;
-                                }),
-                                icon: FaIcon(
-                                  FontAwesomeIcons.ghost,
-                                  size: 16,
-                                  color: _hideGhosts ? Colors.grey.shade600 : Colors.orange.shade300,
-                                ),
-                              ),
-                            ),
-                          // Filter menu — only meaningful when short conversations
-                          // are hidden. Off (filterMinDurationSeconds == 0) → no
-                          // overflow menu at all. Using `child:` (not `icon:`)
-                          // avoids IconButton's 48px min box so the glyph sits
-                          // flush on the section's right edge. The tap ink flash
-                          // is suppressed via the wrapping Theme (transparent
-                          // splash/highlight/hover) — against a flush-right glyph
-                          // the rectangular highlight looked lopsided.
-                          if (!_showMarkersOnly && _prefs.filterMinDurationSeconds > 0)
-                            Theme(
-                                data: Theme.of(context).copyWith(
-                                  splashColor: Colors.transparent,
-                                  highlightColor: Colors.transparent,
-                                  hoverColor: Colors.transparent,
-                                ),
-                                child: PopupMenuButton<RecordingFilterMode>(
-                                  tooltip: 'Filter recordings',
-                                  color: const Color(0xFF2C2C2E),
-                                  position: PopupMenuPosition.under,
-                                  initialValue: _filterMode,
-                                  onSelected: (mode) => setState(() => _filterMode = mode),
-                                  itemBuilder: (context) => [
-                                    _buildFilterMenuItem('Main', RecordingFilterMode.visible),
-                                    _buildFilterMenuItem('Hidden', RecordingFilterMode.hidden),
-                                    _buildFilterMenuItem('All', RecordingFilterMode.all),
-                                  ],
-                                  // Show the active filter as a label on the control
-                                  // (like a select). Tinted purple on a non-default
-                                  // filter so a stray "Hidden"/"All" — where some
-                                  // recordings are held back — stands out.
-                                  child: Builder(builder: (context) {
-                                    final filtering = _filterMode != RecordingFilterMode.visible;
-                                    final tint = filtering ? Colors.deepPurpleAccent : Colors.grey.shade400;
-                                    return Padding(
-                                      padding: const EdgeInsets.fromLTRB(12, 8, 0, 8),
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          // Default filter (Main) shows the funnel
-                                          // alone; only a non-default selection labels
-                                          // itself, tinted purple so it stands out.
-                                          if (filtering) ...[
-                                            Text(
-                                              _filterLabel(_filterMode),
-                                              style: TextStyle(
-                                                color: tint,
-                                                fontSize: 13,
-                                                fontWeight: FontWeight.w500,
-                                              ),
-                                            ),
-                                            const SizedBox(width: 8),
-                                          ],
-                                          FaIcon(
-                                            FontAwesomeIcons.filter,
-                                            size: 16,
-                                            color: tint,
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                  }),
-                                )),
+                          // Right-aligned list-view controls: markers-only toggle,
+                          // ghost-visibility toggle, and the duration filter. Grouped
+                          // here (as list controls) rather than the action-dense app
+                          // bar, uniformly sized, vertically centered and evenly
+                          // spaced. See [_buildListControls].
+                          ..._buildListControls(controller),
                         ],
                       ),
                       // "Last synced …" sits directly under the header; renders
@@ -1184,6 +1204,19 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                           : Builder(
                               builder: (context) {
                                 if (_showMarkersOnly) {
+                                  // Safety net for every path that can empty the
+                                  // markers list while this view is open (player
+                                  // delete, list delete, a background reload after an
+                                  // on-device sync): once empty, the header toggle is
+                                  // gone, so fall back to the recordings list instead
+                                  // of stranding the user here.
+                                  if (controller.markerConversations.isEmpty) {
+                                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                                      if (mounted && _showMarkersOnly && _controller.markerConversations.isEmpty) {
+                                        setState(() => _showMarkersOnly = false);
+                                      }
+                                    });
+                                  }
                                   final byDate = _groupMarkersByDate();
                                   final dates = byDate.keys.toList()..sort((a, b) => b.compareTo(a));
                                   return RefreshIndicator(
@@ -1388,11 +1421,7 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                                               onMarkerTap: _openMarkerConversation,
                                               onExportAll: (conversations) => _exportAll(batch, conversations),
                                               onUploadAll: _uploadAllDay,
-                                              onDeleteDay: (toDelete, toDeleteDiscards) => _deleteDayConversations(
-                                                batch,
-                                                toDelete,
-                                                toDeleteDiscards,
-                                              ),
+                                              onDeleteDay: () => _deleteDayConversations(batch),
                                               onDeleteAllDiscards: (toDeleteDiscards) => _deleteAllDiscards(
                                                 batch,
                                                 toDeleteDiscards,
