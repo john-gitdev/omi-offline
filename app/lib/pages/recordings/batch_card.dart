@@ -624,7 +624,10 @@ class BatchCard extends StatelessWidget {
   final void Function(MarkerConversation) onMarkerTap;
   final void Function(List<Conversation>) onExportAll;
   final void Function(List<Conversation>) onUploadAll;
-  final void Function(List<Conversation>, List<DiscardRecord>) onDeleteDay;
+
+  /// Whole-day delete — removes everything for the date regardless of the active
+  /// filter/ghost toggle (recordings, priority recordings, markers, discards).
+  final VoidCallback onDeleteDay;
   final void Function(List<DiscardRecord>) onDeleteAllDiscards;
   final void Function(MarkerConversation) onDeleteMarkerConversation;
   final Future<void> Function(DiscardRecord) onRecoverDiscard;
@@ -742,9 +745,11 @@ class BatchCard extends StatelessWidget {
                           case 'upload_all':
                             onUploadAll(filtered);
                           case 'discards':
-                            onDeleteAllDiscards(discards);
+                            // Every discard on disk for the day, not just the ones
+                            // visible in the current filter tab.
+                            onDeleteAllDiscards(batch.discards);
                           case 'day':
-                            onDeleteDay(filtered, discards);
+                            onDeleteDay();
                         }
                       },
                       itemBuilder: (context) => [
@@ -767,7 +772,10 @@ class BatchCard extends StatelessWidget {
                               color: Colors.grey.shade300,
                             ),
                           ),
-                        if (discards.isNotEmpty)
+                        // Surfaced whenever the day has any discards on disk, even
+                        // if they're all filtered out of the current tab or hidden —
+                        // so hidden ghosts remain deletable.
+                        if (batch.discards.isNotEmpty)
                           PopupMenuItem(
                             key: Key('delete_discards_${batch.dateString}'),
                             value: 'discards',
