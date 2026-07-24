@@ -1319,8 +1319,8 @@ static int sd_mount(bool allow_format)
         }
         /* Stamp the format cookie; fail the mount if it doesn't land. Without it the
          * NEXT boot's check_magic() treats the volume as foreign and reformats — which
-         * would wipe whatever this boot recorded. The flag is already disarmed above, so
-         * that recovery reformat runs via the normal check_magic() path, not this one. */
+         * would wipe whatever this boot recorded. On failure the target remains armed, so
+         * the next boot retries the backend-switch format rather than accepting this filesystem.
         ret = write_magic();
         if (ret != 0) {
             LOG_ERR("LFS magic write after switch format failed: %d", ret);
