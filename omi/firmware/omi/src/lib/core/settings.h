@@ -93,11 +93,13 @@ uint16_t app_settings_get_priority_record_max_minutes(void);
  *
  * NOTE: switching backends requires the SD to be (re)formatted to the target
  * layout. The backend-switch command (storage.c) arms app_settings_save_storage_
- * format_pending(1) alongside this so the next boot wipes to a fresh layout — a
- * plain mount of the previous backend's card can leave stale metadata (e.g. a
- * still-valid ring header under freshly-written LittleFS data) that mounts OK but
- * points at overwritten bytes, so nothing is readable. The value itself lives in
- * internal NVS; the audio + ring metadata it selects live on the SD NAND.
+ * format_pending(<the selected backend>) alongside this so the next boot wipes to a
+ * fresh layout — a plain mount of the previous backend's card can leave stale
+ * metadata (e.g. a still-valid ring header under freshly-written LittleFS data) that
+ * mounts OK but points at overwritten bytes, so nothing is readable. Pass the TARGET
+ * backend, not a bare flag: the mount only force-formats when the armed value equals
+ * the backend it mounts. The value itself lives in internal NVS; the audio + ring
+ * metadata it selects live on the SD NAND.
  */
 int app_settings_save_storage_backend(uint8_t backend);
 
