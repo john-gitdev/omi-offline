@@ -14,6 +14,7 @@ import 'package:omi/models/recordings/recordings_models.dart';
 import 'package:omi/services/audio/aac_encoder.dart';
 import 'package:omi/services/discard_store.dart';
 import 'package:omi/services/recordings_isolate_worker.dart';
+import 'package:omi/services/services.dart';
 import 'package:omi/services/vad_audio_processor.dart';
 import 'package:omi/services/vad_batch_runner_channel.dart';
 import 'package:omi/utils/logger.dart';
@@ -346,6 +347,32 @@ class RecordingsManager {
     return batches;
   }
 
+  /// Returns [batches] with every raw segment whose `raw_segments/`-relative path
+  /// is in [excludeRelBins] removed. Pure and synchronous so the processing-guard
+  /// filters (discarded bins, mid-transfer bins) are unit-testable without spinning
+  /// up an isolate. A path outside `raw_segments/` is always kept (defensive). Rebuilds
+  /// only the batches that actually change; identity-returns the rest.
+  @visibleForTesting
+  static List<Batch> stripBinsByRelPath(List<Batch> batches, Set<String> excludeRelBins) {
+    if (excludeRelBins.isEmpty) return batches;
+    return batches.map((b) {
+      final filtered = b.rawSegments.where((f) {
+        final parts = f.path.split('/raw_segments/');
+        return parts.length != 2 || !excludeRelBins.contains(parts.last);
+      }).toList();
+      if (filtered.length == b.rawSegments.length) return b;
+      return Batch(
+        dateString: b.dateString,
+        date: b.date,
+        rawSegments: filtered,
+        draftRecordings: b.draftRecordings,
+        finalizedRecordings: b.finalizedRecordings,
+        markerTimestamps: b.markerTimestamps,
+        discards: b.discards,
+      );
+    }).toList();
+  }
+
   /// Processes all batches as one continuous audio stream.
   ///
   /// Segments are sorted by (deviceSessionId, segmentIndex) across all batches so a
@@ -384,25 +411,36 @@ class RecordingsManager {
     // Only strip in background mode when no settings override is provided.
     // Manual runs (Process button, Recover Discard) honor the
     // explicit set of bins provided.
-    final discardedRelBins =
-        (backgroundMode && settingsOverride == null) ? await discardedRelBinPaths() : const <String>{};
-    if (discardedRelBins.isNotEmpty) {
-      batches = batches.map((b) {
-        final filtered = b.rawSegments.where((f) {
-          final parts = f.path.split('/raw_segments/');
-          return parts.length != 2 || !discardedRelBins.contains(parts.last);
-        }).toList();
-        if (filtered.length == b.rawSegments.length) return b;
-        return Batch(
-          dateString: b.dateString,
-          date: b.date,
-          rawSegments: filtered,
-          draftRecordings: b.draftRecordings,
-          finalizedRecordings: b.finalizedRecordings,
-          markerTimestamps: b.markerTimestamps,
-          discards: b.discards,
-        );
-      }).toList();
+    if (backgroundMode && settingsOverride == null) {
+      batches = stripBinsByRelPath(batches, await discardedRelBinPaths());
+    }
+
+    // Strip bins that are still mid-transfer (walOffset < the device-advertised
+    // size — see Wal.isIncompleteTransfer). An incompletely-synced bin holds only
+    // a PREFIX of the recording: decoding it cuts a draft short AND — because this
+    // pass prunes every bin it consumes — deletes the local file the next sync has
+    // to resume into. That forces a full re-fetch whose re-decode DUPLICATES the
+    // prefix into a second recording (observed: an interrupted active bin folded
+    // into a draft, then re-fetched and re-opened as its own overlapping recording,
+    // ~4 min duplicated). The foreground pipeline (RecordingsController._runProcessing)
+    // already applies this guard; centralize it here so EVERY background/auto caller
+    // of processAll — chiefly processAllCompletedSessions — is covered too. Same gate
+    // as the discard strip: only auto/background runs with no settingsOverride prune;
+    // Force paths (backgroundMode=false) intentionally process the newest/partial bin.
+    // Fail closed: if the WAL state can't be read a bin's sync status is unknown, so
+    // skip the whole run rather than risk pruning a mid-download bin. wals.json is
+    // rewritten by every sync, so the next cycle self-heals. See also the twin guard
+    // and rationale at RecordingsController.isProcessableBin / _incompleteBins.
+    if (backgroundMode && settingsOverride == null) {
+      Set<String> incompleteRelBins;
+      try {
+        incompleteRelBins = await ServiceManager.instance().wal.getSyncs().incompleteBinRelPaths();
+      } catch (e) {
+        Logger.error('RecordingsManager: processAll skipping run — incomplete-bin set '
+            'unavailable, cannot safely prune (fail-closed): $e');
+        return;
+      }
+      batches = stripBinsByRelPath(batches, incompleteRelBins);
     }
 
     final activeBatches = batches.where((b) => b.rawSegments.isNotEmpty).toList();
@@ -2009,8 +2047,12 @@ class RecordingsManager {
   static String _dateStringFromMillis(int millis) => fmtDate(DateTime.fromMillisecondsSinceEpoch(millis).toLocal());
 
   /// Background auto-process: processes all batches as one continuous stream.
-  /// Skips the newest segment per DeviceSession (may still be written by firmware).
-  /// Safe to call from a background timer; no-op if a marker process is running.
+  /// Bins still mid-transfer (walOffset < device-advertised size) are held back by
+  /// the incomplete-transfer guard inside [processAll] (backgroundMode gate), so a
+  /// partially-synced active bin is neither decoded nor pruned until fully landed —
+  /// this is what stops an interrupted bin being re-fetched and duplicated into a
+  /// second recording. Safe to call from a background timer; no-op if a marker
+  /// process is running.
   static Future<void> processAllCompletedSessions() async {
     if (_isProcessingAny) return;
     // Idempotency guard: drop any bins whose audio is already covered by an
