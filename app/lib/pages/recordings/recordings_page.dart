@@ -591,7 +591,8 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
     if (controller.markerConversations.isNotEmpty) {
       controls.add(noSplash(IconButton(
         padding: EdgeInsets.zero,
-        constraints: const BoxConstraints(minWidth: 40, minHeight: 44),
+        // Full 48dp Material hit area; the glyph stays compact (centered).
+        constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
         tooltip: 'Toggle markers only',
         onPressed: () => setState(() => _showMarkersOnly = !_showMarkersOnly),
         icon: FaIcon(
@@ -613,7 +614,8 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
         controller.batches.any((b) => b.discards.isNotEmpty)) {
       controls.add(noSplash(IconButton(
         padding: EdgeInsets.zero,
-        constraints: const BoxConstraints(minWidth: 40, minHeight: 44),
+        // Full 48dp Material hit area; the glyph stays compact (centered).
+        constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
         tooltip: _hideGhosts ? 'Show ghosts' : 'Hide ghosts',
         onPressed: () => setState(() {
           _hideGhosts = !_hideGhosts;
@@ -1047,15 +1049,21 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
-                          const Text(
-                            'Conversations',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 24,
-                              fontWeight: FontWeight.bold,
+                          // Expanded (not a fixed Text + Spacer) so the title yields
+                          // width and ellipsizes on narrow phones instead of letting
+                          // the control group overflow the row — e.g. a Hidden/All
+                          // filter label plus the markers + ghost toggles.
+                          const Expanded(
+                            child: Text(
+                              'Conversations',
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 24,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
                           ),
-                          const Spacer(),
                           // Right-aligned list-view controls: markers-only toggle,
                           // ghost-visibility toggle, and the duration filter. Grouped
                           // here (as list controls) rather than the action-dense app
