@@ -2047,19 +2047,38 @@ class RecordingsManager {
   static String _dateStringFromMillis(int millis) => fmtDate(DateTime.fromMillisecondsSinceEpoch(millis).toLocal());
 
   /// Background auto-process: processes all batches as one continuous stream.
-  /// Bins still mid-transfer (walOffset < device-advertised size) are held back by
-  /// the incomplete-transfer guard inside [processAll] (backgroundMode gate), so a
-  /// partially-synced active bin is neither decoded nor pruned until fully landed —
-  /// this is what stops an interrupted bin being re-fetched and duplicated into a
-  /// second recording. Safe to call from a background timer; no-op if a marker
-  /// process is running.
+  /// Bins still mid-transfer (walOffset < device-advertised size) are held back on
+  /// BOTH delete paths: the incomplete-transfer guard inside [processAll]
+  /// (backgroundMode gate) keeps them out of the VAD pass and its consume-prune,
+  /// and the same set is handed to [pruneConsumedBins] below so its
+  /// exact-membership sweep can't reclaim one either. A partially-synced active bin
+  /// is therefore neither decoded nor deleted until fully landed — this is what
+  /// stops an interrupted bin being re-fetched and duplicated into a second
+  /// recording. Safe to call from a background timer; no-op if a marker process is
+  /// running.
   static Future<void> processAllCompletedSessions() async {
     if (_isProcessingAny) return;
+    // Resolve the mid-transfer set BEFORE anything deletes a bin. [processAll]
+    // re-reads it for its own strip (it is called directly elsewhere), but the
+    // prune below runs first and deletes by exact membership only — which is
+    // blind to sync state — so the check has to happen up here or a bin the next
+    // sync must resume into can be gone before the guard is ever consulted.
+    // Fail closed on the same rule as processAll: unknown sync state ⇒ delete
+    // nothing and process nothing this cycle; wals.json is rewritten by every
+    // sync, so the next one self-heals.
+    Set<String> incompleteRelBins;
+    try {
+      incompleteRelBins = await ServiceManager.instance().wal.getSyncs().incompleteBinRelPaths();
+    } catch (e) {
+      Logger.error('RecordingsManager: processAllCompletedSessions skipping run — incomplete-bin set '
+          'unavailable, cannot safely prune (fail-closed): $e');
+      return;
+    }
     // Idempotency guard: drop any bins whose audio is already covered by an
     // existing recording on disk. Catches the kill-mid-cleanup case where a
     // previous run wrote the .wav but didn't get to delete its source bins
     // (the bug that produces near-duplicate recordings 0.5s apart).
-    await pruneConsumedBins();
+    await pruneConsumedBins(protectedRelBins: incompleteRelBins);
     final manager = RecordingsManager();
     final batches = await manager.getBatches();
     // Always-on idempotency guard: skip bins already fully covered by an existing
@@ -2109,7 +2128,19 @@ class RecordingsManager {
   static Future<void> forceProcessAll({bool reprocessCovered = false}) async {
     if (_isProcessingAny) return;
     // Same idempotency guard as processAllCompletedSessions — see that method.
-    await pruneConsumedBins();
+    // Force DOES decode a mid-transfer bin on purpose (that is the point of the
+    // button), but deleting one is never wanted: it is the file the next sync
+    // resumes into. Protect the mid-transfer set here, and when it can't be read
+    // skip only the prune — the user-requested processing still runs.
+    Set<String>? incompleteRelBins;
+    try {
+      incompleteRelBins = await ServiceManager.instance().wal.getSyncs().incompleteBinRelPaths();
+    } catch (e) {
+      Logger.error('RecordingsManager: forceProcessAll skipping prune — incomplete-bin set unavailable: $e');
+    }
+    if (incompleteRelBins != null) {
+      await pruneConsumedBins(protectedRelBins: incompleteRelBins);
+    }
     final manager = RecordingsManager();
     final batches = await manager.getBatches();
 
@@ -2771,19 +2802,30 @@ class RecordingsManager {
   ///
   /// use [coveredBinPaths] to skip bins during VAD without deleting.
   ///
+  /// [protectedRelBins] adds caller-supplied `raw_segments/`-relative paths to the
+  /// protected set — used to pass the still-mid-transfer bins
+  /// ([WalSync.incompleteBinRelPaths]). A partially-transferred bin is the file the
+  /// next sync resumes INTO, so deleting it forces a full re-fetch even though the
+  /// exact-membership rule below thinks its audio is safely consumed (reachable when
+  /// a Force run, or an app version predating the mid-transfer guard, finalized a
+  /// recording over the prefix). Callers resolve the set themselves and skip the
+  /// prune entirely when it can't be read — see [processAllCompletedSessions].
+  ///
   /// Returns the number of bins deleted.
-  static Future<int> pruneConsumedBins() async {
+  static Future<int> pruneConsumedBins({Set<String> protectedRelBins = const {}}) async {
     final directory = await getApplicationDocumentsDirectory();
     final rawDir = Directory('${directory.path}/raw_segments');
     if (!await rawDir.exists()) return 0;
 
     // Bins consumed by a finalized recording (candidates for deletion) vs. bins
     // that must be preserved. `discardedRelBinPaths` seeds the protected set
-    // (ghost-row recovery); draft recordings add to it (in-progress tail).
+    // (ghost-row recovery); draft recordings add to it (in-progress tail);
+    // [protectedRelBins] carries the caller's mid-transfer set.
     // `silence_trimmed` is intentionally NOT protected — it is recording-adjacent
     // trailing silence already folded into the recording, safe to drop.
     final consumed = <String>{};
     final protectedBins = await discardedRelBinPaths();
+    protectedBins.addAll(protectedRelBins);
     final recordingsDir = Directory('${directory.path}/recordings');
     if (await recordingsDir.exists()) {
       await for (final dayFolder in recordingsDir.list()) {
