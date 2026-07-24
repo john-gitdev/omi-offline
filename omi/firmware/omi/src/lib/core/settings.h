@@ -8,6 +8,10 @@
 /* Audio storage backend selector (persisted; see app_settings_get_storage_backend). */
 #define STORAGE_BACKEND_LITTLEFS 0 /* default — file-per-segment over LittleFS */
 #define STORAGE_BACKEND_RING     1 /* raw append-only circular log (sd_ring.c) */
+/* "No format armed" sentinel for storage_format_pending. Any other value is the
+ * STORAGE_BACKEND_* the next mount should format fresh; 0xFF never aliases a real
+ * backend, so an unset/never-armed device (default) never force-formats. */
+#define STORAGE_FORMAT_PENDING_NONE 0xFF
 
 /* Consecutive post-crash boots with the ring backend active before it
  * auto-reverts to LittleFS (anti-brick self-heal). */
@@ -88,9 +92,14 @@ uint16_t app_settings_get_priority_record_max_minutes(void);
  * @return 0 on success, -EINVAL for an unknown backend, or a persist error.
  *
  * NOTE: switching backends requires the SD to be (re)formatted to the target
- * layout; the caller is responsible for triggering that (see sd_card init /
- * the backend-switch command in storage.c). The value itself lives in internal
- * NVS; the audio + ring metadata it selects live on the SD NAND.
+ * layout. The backend-switch command (storage.c) arms app_settings_save_storage_
+ * format_pending(<the selected backend>) alongside this so the next boot wipes to a
+ * fresh layout — a plain mount of the previous backend's card can leave stale
+ * metadata (e.g. a still-valid ring header under freshly-written LittleFS data) that
+ * mounts OK but points at overwritten bytes, so nothing is readable. Pass the TARGET
+ * backend, not a bare flag: the mount only force-formats when the armed value equals
+ * the backend it mounts. The value itself lives in internal NVS; the audio + ring
+ * metadata it selects live on the SD NAND.
  */
 int app_settings_save_storage_backend(uint8_t backend);
 
@@ -99,6 +108,27 @@ int app_settings_save_storage_backend(uint8_t backend);
  *        STORAGE_BACKEND_LITTLEFS when nothing is persisted).
  */
 uint8_t app_settings_get_storage_backend(void);
+
+/**
+ * @brief Persist the "format this target backend fresh on next boot" record.
+ *
+ * @param target the STORAGE_BACKEND_* to format on the next mount, or
+ *        STORAGE_FORMAT_PENDING_NONE to disarm.
+ *
+ * Armed by the backend-switch command with the TARGET backend (not a bare flag), then the
+ * backend itself is persisted. The boot mount force-formats only when this target equals the
+ * backend it actually mounts — so an interruption between the two writes (target armed, backend
+ * not yet saved) leaves target != mounted-backend and never wipes the current storage. The
+ * record stays ARMED across the wipe and is cleared (back to NONE) only AFTER the target both
+ * formats and mounts (sd_card.c consume_format_pending), so a reset mid-format re-formats next
+ * boot instead of mounting stale metadata; a persistent clear failure fails the mount rather
+ * than accepting writes a re-wipe would destroy. Only the boot mount consumes it — runtime
+ * remounts never force-format. NONE is the default and steady state.
+ */
+int app_settings_save_storage_format_pending(uint8_t target);
+
+/** @brief Get the armed format target (a STORAGE_BACKEND_*, or STORAGE_FORMAT_PENDING_NONE). */
+uint8_t app_settings_get_storage_format_pending(void);
 
 /**
  * @brief Persist the consecutive ring-backend post-crash boot counter.

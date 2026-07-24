@@ -1055,20 +1055,32 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                           setState(() => _statusMessage = 'Connect a device first');
                           return;
                         }
+                        // 0 = LittleFS, 1 = Ring, null = not read yet (Show Diagnostics off).
+                        // Only offer the backend(s) that aren't already active: re-selecting the
+                        // current one is a firmware no-op (no wipe, no reboot), so presenting it
+                        // would be a dead end. When unknown, offer both and let the firmware's
+                        // same-backend guard handle a no-op safely.
+                        final current = _storageBackend;
                         final choice = await showDialog<int>(
                           context: context,
                           builder: (ctx) => AlertDialog(
                             backgroundColor: const Color(0xFF1C1C1E),
                             title: const Text('Switch storage backend', style: TextStyle(color: Colors.white)),
-                            content: const Text(
-                              'This REFORMATS the SD card and reboots the Omi. Any recordings not yet '
-                              'synced will be lost.\n\nLittleFS is the safe default. Ring is experimental.',
-                              style: TextStyle(color: Colors.white70),
+                            content: Text(
+                              '${current != null ? 'Currently on ${current == 1 ? 'Ring' : 'LittleFS'}. ' : ''}'
+                              'Switching WIPES the SD card — it reformats fresh to '
+                              '${current != null ? 'the other' : 'the selected'} backend and reboots the Omi. '
+                              'Sync everything first: any recordings still on the device are '
+                              'permanently lost.\n\nLittleFS is the safe default. Ring is experimental.',
+                              style: const TextStyle(color: Colors.white70),
                             ),
                             actions: [
                               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-                              TextButton(onPressed: () => Navigator.pop(ctx, 0), child: const Text('LittleFS')),
-                              TextButton(onPressed: () => Navigator.pop(ctx, 1), child: const Text('Ring')),
+                              if (current != 0)
+                                TextButton(
+                                    onPressed: () => Navigator.pop(ctx, 0), child: const Text('Switch to LittleFS')),
+                              if (current != 1)
+                                TextButton(onPressed: () => Navigator.pop(ctx, 1), child: const Text('Switch to Ring')),
                             ],
                           ),
                         );
@@ -1096,16 +1108,15 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                           // Acquire timed out / failed — another op holds the lock. Do NOT
                           // release here (that would drop THEIR lock); just bail.
                           if (mounted) {
-                            setState(() => _statusMessage =
-                                'Storage is busy — try switching again in a moment.');
+                            setState(() => _statusMessage = 'Storage is busy — try switching again in a moment.');
                           }
                           return;
                         }
                         try {
                           if (ServiceManager.instance().wal.getSyncs().isSyncing) {
                             if (mounted) {
-                              setState(() => _statusMessage =
-                                  'A sync just started — try switching again once it finishes.');
+                              setState(
+                                  () => _statusMessage = 'A sync just started — try switching again once it finishes.');
                             }
                             return;
                           }
@@ -1695,9 +1706,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           // default. "—" when unknown (firmware predates the status_flags byte, or
           // not yet read).
           _dropStatRow(
-              'Storage backend',
-              _storageBackend == 1 ? 'Ring' : (_storageBackend == 0 ? 'LittleFS' : '—'),
-              false),
+              'Storage backend', _storageBackend == 1 ? 'Ring' : (_storageBackend == 0 ? 'LittleFS' : '—'), false),
           _dropStatRow('440 B blocks dropped', blocks.toString(), hasFreshDrops),
           _dropStatRow('Audio frames dropped (SD queue)', frames.toString(), hasFreshDrops),
           _dropStatRow('Audio dropped pre-encode (codec)', codec.toString(), codec > 0),
