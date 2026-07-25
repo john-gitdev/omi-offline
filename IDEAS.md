@@ -4,16 +4,19 @@
 
 ### ACTIVE
 - [1. BLE stability: partial syncs, stuck notifications [medium] [Active]](#1-ble-stability-partial-syncs-stuck-notifications-medium-active)
+- [2. Background reconnect recovery latency after native retry back-off [small] [Shipped — validate on device]](#2-background-reconnect-recovery-latency-after-native-retry-back-off-small-shipped--validate-on-device)
+
 ### PENDING
-- [2. Device-driven BLE wake (firmware + iOS) [large] [Pending]](#2-device-driven-ble-wake-firmware-ios-large-pending)
-- [4. Streaming WAV stitch — fix OOM on long-recording merge [small] [Pending]](#4-streaming-wav-stitch--fix-oom-on-long-recording-merge-small-pending)
-- [5. Background reconnect recovery latency after native retry back-off [small] [Shipped — validate on device]](#5-background-reconnect-recovery-latency-after-native-retry-back-off-small-shipped--validate-on-device)
-- [6. On-device diagnostic event log [medium] [Pending — spec ready]](#6-on-device-diagnostic-event-log-medium-pending--spec-ready)
+- [3. Streaming WAV stitch — fix OOM on long-recording merge [small] [Pending]](#3-streaming-wav-stitch--fix-oom-on-long-recording-merge-small-pending)
+- [4. On-device diagnostic event log [medium] [Pending — spec ready]](#4-on-device-diagnostic-event-log-medium-pending--spec-ready)
+
+### LARGE
+- [5. Device-driven BLE wake (firmware + iOS) [large] [Pending]](#5-device-driven-ble-wake-firmware-ios-large-pending)
+
 ### DEFERRED
-- [3. iOS code signing & non-jailbroken distribution [medium] [Deferred]](#3-ios-code-signing-non-jailbroken-distribution-medium-deferred)
+- [6. iOS code signing & non-jailbroken distribution [medium] [Deferred]](#6-ios-code-signing-non-jailbroken-distribution-medium-deferred)
 
 ---
-
 
 ## ACTIVE
 
@@ -72,9 +75,85 @@ interval) — great throughput, RF-fragile. The open experiment is whether
 
 ---
 
+### 2. Background reconnect recovery latency after native retry back-off [small] [Shipped — validate on device]
+
+Shipped in **0.29.0 (PR #338)**, follow-up to PR #337. Once native pauses its retry loop
+(`AUTONOMOUS_RETRY_STOP_AFTER`) and hands reconnection to the sync schedule, two latencies regressed
+(recovery after a wedge clears: ~30 s → up to one sync interval; wedge re-probe of a returned device:
+~15 min → ~15 h). Both fixed: a dedicated **outage-recovery alarm** (`SyncAlarmReceiver`
+`ACTION_RECOVER`) bridges the gap — backs off 2 → 4 → 8 → 16 min then self-terminates onto the sync
+interval — and the wedge re-probe was re-keyed to wall-clock time (`WEDGE_REPROBE_INTERVAL_MS`). The
+whole recovery lifecycle is gated by one `recoveryWanted()` invariant (auto-sync on + user not
+disconnected + BT on + `wedgeDetected`). Mechanism + rationale live in the code
+(`OmiBleForegroundService.kt` `recoveryProbe*` / `recoveryWanted` / `onRecoveryProbeAlarm`,
+`SyncAlarmReceiver.kt` `ACTION_RECOVER`) and the 0.29 CHANGELOG entry — not duplicated here.
+
+**Remaining — on-device validation only** (the reason this stays open):
+- A wedge that clears mid-outage reconnects within the recovery-alarm cadence, not the sync interval.
+- The recovery alarm self-terminates (no indefinite tight polling) for a genuinely-absent device.
+- Doze throttling behaves as expected (the ~9 min `setExactAndAllowWhileIdle` floor).
+- Battery cost of the ~4 extra attempts vs. the recovery-latency win is acceptable.
+
+---
+
 ## PENDING
 
-### 2. Device-driven BLE wake (firmware + iOS) [large] [Pending]
+### 3. Streaming WAV stitch — fix OOM on long-recording merge [small] [Pending]
+
+Observed 2026-07-08 00:39:06 (device log): `RecordingsManager: Stitch failed: Out of Memory` while stitching a draft onto a 2-hour recording (`recording_1783461803610.wav`, 7,353,745 ms of 16 kHz mono 16-bit PCM ≈ 235 MB).
+
+#### What happens today (no data loss, but conversations split) — code-verified 2026-07-08
+`_stitchWav` (`recordings_manager.dart:1465`) loads **both entire WAVs into RAM plus a combined copy** — `readAsBytes()` on draft + next, then a `BytesBuilder` (`copy:true` default) that copies draft PCM + silence + next PCM into a second buffer — peak ≈ 2× the combined file size (~½ GB in the observed case), worse momentarily if the `BytesBuilder` grow-doubles. It hard-fails on exactly the long recordings the stitch matters most for. The failure path is *mostly* clean: the allocations all precede `draftFile.openWrite()` (:1496), so the draft is untouched on disk and `_performStitch`'s catch (:1458) finalizes the draft as its own recording (`_draft.wav` → `.wav`, meta promoted, EDLs re-pointed). Net effect: one continuous conversation surfaces as **two separate recordings** with no inserted gap — cosmetic, not data loss. The finalized file even uploads fine afterwards.
+
+**Why it's worth fixing despite being cosmetic (the real argument):** `vadMaxConversationMinutes` defaults to `0` (no cap), so drafts grow unbounded, and every incremental stitch re-materializes the *entire* accumulated draft — peak memory is **O(total recording length)**. So multi-hour conversations don't just occasionally split; they **reliably fragment as they grow**, on exactly the long recordings stitching exists to hold together. That scaling behavior, not any single failure, is the reason to do this.
+
+**One caveat to the "clean failure" claim:** `openWrite()` uses `FileMode.write`, which **truncates the draft to zero first**. `takeBytes()` doesn't re-allocate, so a marginal OOM landing *during* the post-truncate write/close is unlikely — but nonzero, and would lose the draft entirely rather than just split it. The proposed rollback (below) closes this window too, so it's mild extra value, not just parity.
+
+#### Proposed fix
+Stream instead of materializing:
+1. Open the draft in **append** mode (never rewrite its existing PCM — today's truncate-and-rewrite of the draft's own bytes is redundant work anyway).
+2. Write the silence gap, then copy the next file's PCM through in chunks (~64 KB).
+3. Patch the WAV header size fields in place afterwards (`RandomAccessFile`, RIFF size at offset 4, data size at offset 40).
+4. **Rollback on failure:** record the draft's original length first; on any mid-stream error, `RandomAccessFile.truncate(originalLen)` restores the draft exactly, then fall back to the existing finalize-separately path. This is the one property the in-memory version got for free (all-or-nothing) that streaming must implement explicitly — without it, a crash mid-append leaves junk trailing bytes and a retry would double-append.
+5. Only run the post-write steps (`_mergeMeta`, `_reanchorMarkerEdls`, delete `nextFile`) after a *verified* complete append.
+
+Trade-offs accepted: a small partial-write crash window (mitigated by the truncate-back rollback; an unpatched header still describes the original length, so players ignore a partial tail), and a bit more code. Performance is a wash or better (no giant allocation / GC pressure); final disk footprint identical.
+
+Same pattern applies to `_stitchBinIfPresent` (`:1528`), which reads the whole next Opus bin into RAM before appending — less urgent (bins are ~30× smaller than PCM) but trivial to convert while in there.
+
+#### Implementation caveats (verified 2026-07-08 — the idea under-specifies these)
+1. **Dart has no O_RDWR-without-truncate-without-append `FileMode`, so the naive "append then seek-patch the header" won't work.** `FileMode.write`/`writeOnly` truncate; `FileMode.append`/`writeOnlyAppend` are `O_APPEND`, which on POSIX forces every write to EOF and **ignores `setPosition`** — so `setPosition(4)` + `writeFrom` to patch the RIFF/data-size fields silently lands at end-of-file instead. The header patch (step 3) needs a deliberate approach: precompute all sizes (they're all known up front — `draftLen-44`, silence, `nextLen-44`) and patch the 8 header bytes with a *non-append* handle, or do the body append and header patch as two distinct operations with the right mode. The naive version can pass a quick smoke test while shipping a broken/understated header.
+2. **The header patch is load-bearing because the default output format is WAV** (`preferences.dart:161`, `audioSaveFormat` defaults to `'wav'`), and `_finalizeDraft` (:1271) only **renames** the draft — it never rewrites the header. So for the default path a stale/understated `data` size truncates player playback. (For `m4a` users it's moot: `_transcodeWavToM4a` (:1409) reads everything past offset 44 and ignores the header — which is why the next point has gone unnoticed.)
+3. **Fix the pre-existing `_stitchSilence` stale-header bug in the same place.** `_stitchSilence` (:1236) **already appends silence to WAV drafts via `FileMode.append` without patching the header**, then only updates the `.meta`. So a WAV-format draft whose last pre-finalize mutation was a silence stitch already finalizes with an understated header today. The streaming rewrite of `_stitchWav` should share a header-patch helper that `_stitchSilence` also calls, closing both at once. (`_stitchWav` currently masks this by regenerating a full correct header via `_generateWavHeader` — but only when a WAV stitch *follows* the silence stitch.)
+4. **`_transcodeWavToM4a` (:1409) has the same whole-file `readAsBytes`** and can OOM independently on the finalize path — though it *views* (not copies) past offset 44, so its peak is 1× not 2×. Worth a glance while in there; not the OOM driver.
+
+#### Relevant files
+- `app/lib/services/recordings_manager.dart` — `_stitchWav` (`:1465`, the in-memory read/combine/write), `_performStitch` (`:1441`, catch → `_finalizeDraft` fallback to keep), `_stitchSilence` (`:1236`, already appends without a header patch — fix in the same helper), `_stitchBinIfPresent` (`:1528`, whole-bin `readAsBytes` append), `_finalizeDraft` (`:1271`, unchanged fallback — renames only, no header rewrite), `_generateWavHeader` (`:1632`, offsets 4/40 for the patch), `_transcodeWavToM4a` (`:1409`, same whole-file read, 1× peak), `_mergeMeta` / `_reanchorMarkerEdls` (post-write steps that must gate on verified append).
+- `app/lib/backend/preferences.dart` — `audioSaveFormat` (`:153`, defaults to `'wav'`; why the header patch is load-bearing).
+
+---
+
+### 4. On-device diagnostic event log [medium] [Pending — spec ready]
+
+Full design spec: **[DIAG_LOG_SPEC.md](DIAG_LOG_SPEC.md)** — hand-off ready, implementable as-is.
+
+A dev-tools-gated, RAM-resident binary event ring that captures **per-event** diagnostics
+(empty-bin rotations, marker/priority drops, pause-gate saves — the *"why + when"*, not just the
+aggregate since-boot counters at `0x0062`) and ships them to the phone over a new BLE
+characteristic on connect, ack-clearing itself afterward. Design constraints, all met: **zero
+filesystem interference** (never touches LittleFS/ring audio storage), **RAM reclaimed from the
+oversized SD-worker stack** (`SD_WORKER_STACK_SIZE`, measured 2.7 / 12 KB used — precedent at
+`codec.c:81`), **compiled out entirely in production** (`CONFIG_OMI_DIAG_LOG`, dev/internal builds
+only), and **off by default** behind a capability-gated dev-tools toggle pushed on connect. See the
+spec for the 16-byte record format, event-code table, GATT `0x0063`/`0x0064` layout, app
+integration points, testing plan, and the post-LittleFS persistent-log upgrade path (ring reserved
+sectors 81–255).
+
+---
+
+## LARGE
+
+### 5. Device-driven BLE wake (firmware + iOS) [large] [Pending]
 
 Shift background-sync triggering from the *phone* (opportunistic iOS `BGTaskScheduler` / Android alarms) to the *device*: the Omi opens a connectable advertising **window** on its own RTC-driven schedule, and the phone — holding a standing pending-connect — is woken by the OS the moment that window opens. This is the model commercial BLE wearables (e.g. CGMs) use for reliable background sync on iOS.
 
@@ -203,81 +282,11 @@ Highest-leverage cheap validation: **Phase 1 window scheduler + Phase 2 standing
 - `app/lib/pages/settings/app_settings_page.dart` — add the **Dark Mode** toggle (writes `enabled`); the existing "Auto Sync Interval" dropdown (15/30/60 / Manual Only, ~`:248`) already supplies the cadence — Manual Only = button-only. The staleness banner lives wherever sync status surfaces (home/recordings).
 - Android (phase 3, optional): `OmiBleForegroundService.kt`, `BackgroundSyncWorker.kt`, `SyncAlarmReceiver.kt`.
 
-### 4. Streaming WAV stitch — fix OOM on long-recording merge [small] [Pending]
-
-Observed 2026-07-08 00:39:06 (device log): `RecordingsManager: Stitch failed: Out of Memory` while stitching a draft onto a 2-hour recording (`recording_1783461803610.wav`, 7,353,745 ms of 16 kHz mono 16-bit PCM ≈ 235 MB).
-
-#### What happens today (no data loss, but conversations split) — code-verified 2026-07-08
-`_stitchWav` (`recordings_manager.dart:1465`) loads **both entire WAVs into RAM plus a combined copy** — `readAsBytes()` on draft + next, then a `BytesBuilder` (`copy:true` default) that copies draft PCM + silence + next PCM into a second buffer — peak ≈ 2× the combined file size (~½ GB in the observed case), worse momentarily if the `BytesBuilder` grow-doubles. It hard-fails on exactly the long recordings the stitch matters most for. The failure path is *mostly* clean: the allocations all precede `draftFile.openWrite()` (:1496), so the draft is untouched on disk and `_performStitch`'s catch (:1458) finalizes the draft as its own recording (`_draft.wav` → `.wav`, meta promoted, EDLs re-pointed). Net effect: one continuous conversation surfaces as **two separate recordings** with no inserted gap — cosmetic, not data loss. The finalized file even uploads fine afterwards.
-
-**Why it's worth fixing despite being cosmetic (the real argument):** `vadMaxConversationMinutes` defaults to `0` (no cap), so drafts grow unbounded, and every incremental stitch re-materializes the *entire* accumulated draft — peak memory is **O(total recording length)**. So multi-hour conversations don't just occasionally split; they **reliably fragment as they grow**, on exactly the long recordings stitching exists to hold together. That scaling behavior, not any single failure, is the reason to do this.
-
-**One caveat to the "clean failure" claim:** `openWrite()` uses `FileMode.write`, which **truncates the draft to zero first**. `takeBytes()` doesn't re-allocate, so a marginal OOM landing *during* the post-truncate write/close is unlikely — but nonzero, and would lose the draft entirely rather than just split it. The proposed rollback (below) closes this window too, so it's mild extra value, not just parity.
-
-#### Proposed fix
-Stream instead of materializing:
-1. Open the draft in **append** mode (never rewrite its existing PCM — today's truncate-and-rewrite of the draft's own bytes is redundant work anyway).
-2. Write the silence gap, then copy the next file's PCM through in chunks (~64 KB).
-3. Patch the WAV header size fields in place afterwards (`RandomAccessFile`, RIFF size at offset 4, data size at offset 40).
-4. **Rollback on failure:** record the draft's original length first; on any mid-stream error, `RandomAccessFile.truncate(originalLen)` restores the draft exactly, then fall back to the existing finalize-separately path. This is the one property the in-memory version got for free (all-or-nothing) that streaming must implement explicitly — without it, a crash mid-append leaves junk trailing bytes and a retry would double-append.
-5. Only run the post-write steps (`_mergeMeta`, `_reanchorMarkerEdls`, delete `nextFile`) after a *verified* complete append.
-
-Trade-offs accepted: a small partial-write crash window (mitigated by the truncate-back rollback; an unpatched header still describes the original length, so players ignore a partial tail), and a bit more code. Performance is a wash or better (no giant allocation / GC pressure); final disk footprint identical.
-
-Same pattern applies to `_stitchBinIfPresent` (`:1528`), which reads the whole next Opus bin into RAM before appending — less urgent (bins are ~30× smaller than PCM) but trivial to convert while in there.
-
-#### Implementation caveats (verified 2026-07-08 — the idea under-specifies these)
-1. **Dart has no O_RDWR-without-truncate-without-append `FileMode`, so the naive "append then seek-patch the header" won't work.** `FileMode.write`/`writeOnly` truncate; `FileMode.append`/`writeOnlyAppend` are `O_APPEND`, which on POSIX forces every write to EOF and **ignores `setPosition`** — so `setPosition(4)` + `writeFrom` to patch the RIFF/data-size fields silently lands at end-of-file instead. The header patch (step 3) needs a deliberate approach: precompute all sizes (they're all known up front — `draftLen-44`, silence, `nextLen-44`) and patch the 8 header bytes with a *non-append* handle, or do the body append and header patch as two distinct operations with the right mode. The naive version can pass a quick smoke test while shipping a broken/understated header.
-2. **The header patch is load-bearing because the default output format is WAV** (`preferences.dart:161`, `audioSaveFormat` defaults to `'wav'`), and `_finalizeDraft` (:1271) only **renames** the draft — it never rewrites the header. So for the default path a stale/understated `data` size truncates player playback. (For `m4a` users it's moot: `_transcodeWavToM4a` (:1409) reads everything past offset 44 and ignores the header — which is why the next point has gone unnoticed.)
-3. **Fix the pre-existing `_stitchSilence` stale-header bug in the same place.** `_stitchSilence` (:1236) **already appends silence to WAV drafts via `FileMode.append` without patching the header**, then only updates the `.meta`. So a WAV-format draft whose last pre-finalize mutation was a silence stitch already finalizes with an understated header today. The streaming rewrite of `_stitchWav` should share a header-patch helper that `_stitchSilence` also calls, closing both at once. (`_stitchWav` currently masks this by regenerating a full correct header via `_generateWavHeader` — but only when a WAV stitch *follows* the silence stitch.)
-4. **`_transcodeWavToM4a` (:1409) has the same whole-file `readAsBytes`** and can OOM independently on the finalize path — though it *views* (not copies) past offset 44, so its peak is 1× not 2×. Worth a glance while in there; not the OOM driver.
-
-#### Relevant files
-- `app/lib/services/recordings_manager.dart` — `_stitchWav` (`:1465`, the in-memory read/combine/write), `_performStitch` (`:1441`, catch → `_finalizeDraft` fallback to keep), `_stitchSilence` (`:1236`, already appends without a header patch — fix in the same helper), `_stitchBinIfPresent` (`:1528`, whole-bin `readAsBytes` append), `_finalizeDraft` (`:1271`, unchanged fallback — renames only, no header rewrite), `_generateWavHeader` (`:1632`, offsets 4/40 for the patch), `_transcodeWavToM4a` (`:1409`, same whole-file read, 1× peak), `_mergeMeta` / `_reanchorMarkerEdls` (post-write steps that must gate on verified append).
-- `app/lib/backend/preferences.dart` — `audioSaveFormat` (`:153`, defaults to `'wav'`; why the header patch is load-bearing).
-
----
-
-### 5. Background reconnect recovery latency after native retry back-off [small] [Shipped — validate on device]
-
-Shipped in **0.29.0 (PR #338)**, follow-up to PR #337. Once native pauses its retry loop
-(`AUTONOMOUS_RETRY_STOP_AFTER`) and hands reconnection to the sync schedule, two latencies regressed
-(recovery after a wedge clears: ~30 s → up to one sync interval; wedge re-probe of a returned device:
-~15 min → ~15 h). Both fixed: a dedicated **outage-recovery alarm** (`SyncAlarmReceiver`
-`ACTION_RECOVER`) bridges the gap — backs off 2 → 4 → 8 → 16 min then self-terminates onto the sync
-interval — and the wedge re-probe was re-keyed to wall-clock time (`WEDGE_REPROBE_INTERVAL_MS`). The
-whole recovery lifecycle is gated by one `recoveryWanted()` invariant (auto-sync on + user not
-disconnected + BT on + `wedgeDetected`). Mechanism + rationale live in the code
-(`OmiBleForegroundService.kt` `recoveryProbe*` / `recoveryWanted` / `onRecoveryProbeAlarm`,
-`SyncAlarmReceiver.kt` `ACTION_RECOVER`) and the 0.29 CHANGELOG entry — not duplicated here.
-
-**Remaining — on-device validation only** (the reason this stays open):
-- A wedge that clears mid-outage reconnects within the recovery-alarm cadence, not the sync interval.
-- The recovery alarm self-terminates (no indefinite tight polling) for a genuinely-absent device.
-- Doze throttling behaves as expected (the ~9 min `setExactAndAllowWhileIdle` floor).
-- Battery cost of the ~4 extra attempts vs. the recovery-latency win is acceptable.
-
-### 6. On-device diagnostic event log [medium] [Pending — spec ready]
-
-Full design spec: **[DIAG_LOG_SPEC.md](DIAG_LOG_SPEC.md)** — hand-off ready, implementable as-is.
-
-A dev-tools-gated, RAM-resident binary event ring that captures **per-event** diagnostics
-(empty-bin rotations, marker/priority drops, pause-gate saves — the *"why + when"*, not just the
-aggregate since-boot counters at `0x0062`) and ships them to the phone over a new BLE
-characteristic on connect, ack-clearing itself afterward. Design constraints, all met: **zero
-filesystem interference** (never touches LittleFS/ring audio storage), **RAM reclaimed from the
-oversized SD-worker stack** (`SD_WORKER_STACK_SIZE`, measured 2.7 / 12 KB used — precedent at
-`codec.c:81`), **compiled out entirely in production** (`CONFIG_OMI_DIAG_LOG`, dev/internal builds
-only), and **off by default** behind a capability-gated dev-tools toggle pushed on connect. See the
-spec for the 16-byte record format, event-code table, GATT `0x0063`/`0x0064` layout, app
-integration points, testing plan, and the post-LittleFS persistent-log upgrade path (ring reserved
-sectors 81–255).
-
 ---
 
 ## DEFERRED
 
-### 3. iOS code signing & non-jailbroken distribution [medium] [Deferred]
+### 6. iOS code signing & non-jailbroken distribution [medium] [Deferred]
 
 The iOS build works end-to-end via CI (`.github/workflows/ios-build.yml`) and produces an **unsigned** dev IPA that installs on a **jailbroken** device (AppSync Unified / TrollStore — current path for the iPhone 6s Plus). To run on a **stock** (non-jailbroken) iPhone, the IPA must be code-signed, which needs an Apple Developer account plus signing material wired into CI.
 
