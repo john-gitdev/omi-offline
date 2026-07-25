@@ -126,9 +126,15 @@ Record the sub-class in the "Recovery trigger" column below.
 
 | # | Date (UTC) | Duration | Probe | Recovery trigger | **BT toggle?** | estab Δ | adv mode | last_real status |
 |---|---|---|---|---|---|---|---|---|
+| 0 | *(undated; pre-snapshot)* | ~4m stall cycles | *(none — pre-instrumentation)* | ghost-purge / self (30 s rate-limit expired) | **No** | *(not recorded)* | — | *none — all `-1`* |
 | 1 | 2026-07-22 15:08→15:36 | 28m 16s | SILENT | screen-wake (`screen_interactive` false→true) | **No** | +1 (in 07:34–18:23 window) | fast | 147, then 8 |
 | 2 | 2026-07-22 21:01→21:07 | 5m 54s | SILENT | device-return / self (Doze stayed on, screen off) | **No** | +0 (55→55) | fast | 147 |
 | 3 | 2026-07-24 04:42→04:45 | 3m 12s | *(none — sub-threshold)* | **BT toggle** (`error=bluetooth_off` → immediate reconnect) | **Yes** | +0 (flat at 3) | fast | *none — all `-1`* |
+
+Wedge 0 is the **origin of the ghost-GATT hypothesis** and the purge fixes now shipped
+(§8 background, §6 "already implemented"); it predates the env-snapshot instrumentation, so
+its ghost was **inferred, not proven** (no `omi_in_gatt_list`). Tellingly, the two later wedges
+that *did* carry the snapshot (1–2) showed **no ghost** — see §5.
 
 Wedges 1–2 were **self-clearing**; Wedge 3 is the **first toggle-required** sighting — the
 population §7 was hunting for. Its signature is distinct from the self-clearing pair: **every
@@ -136,6 +142,32 @@ failure was `gatt_status_-1`** (pure connect-timeout, Android never delivered a 
 vs. the 147/8 the self-clearing wedges carried), **`estab_fail_count` flat**, and it cleared
 **only** when the adapter cycled. That matches the §7 hypothesis: flat-estab + all-timeout(`-1`)
 = central-side initiator wedge = a toggle (which resets the phone's own controller) is what fixes it.
+
+### Detail — Wedge 0 (undated, ~4 min stall cycles) — the ghost-GATT origin
+
+The forensic session that first surfaced the "stale system GATT holds the firmware's single
+slot" theory and drove the two purge fixes now shipped. Predates the `WedgeDiagnostics`
+env-snapshot / `scan_probe` instrumentation, so — like Wedge 3 — everything below is
+reconstructed from connect/transport lines, and the ghost is **inferred, not observed**.
+
+- Log source: device `C3:94:71:EA:A8:D5`, `uptime_ms` = 22 h 40 m at the successful connect.
+- Preceded by: a clean fast connect (18:23:48→18:24:05, ~6 s), then a manual disconnect
+  (`Disconnecting (isManual: true)` @ 18:24:49, `error=unmanaged`).
+- Outage: auto-reconnect looped for ~4.5 min (18:24:49→18:29:13). Each cycle ran the full
+  30 s Dart budget and logged repeating `gatt_status_-1` with `ignoring transient GATT error
+  during connect (native will retry)`. **Every failure was `-1`** (our own timeout backstop —
+  Android never delivered a real status), same all-`-1` signature as Wedge 3.
+- Recovered @ 18:29:13 — connect finally landed. Best explanation: the `purgeGhostGattForAddress`
+  30 s rate-limit expired and the purge flushed the daemon's stale link, freeing the slot.
+  **No BT toggle.** Then the connection was **immediately killed** @ 18:29:14 by the background
+  drop-guard (`_handleDeviceConnected`, app backgrounded + no sync pending) — a hard-won
+  connection thrown away (see §6 candidate #5). A clean fast connect followed @ 18:33:23 (1.6 s),
+  the ghost by then gone.
+- Ghost caveat: no `omi_in_gatt_list` field existed at this app version, so the ghost is a
+  **hypothesis** — the diagnosis rests on the all-`-1` timeouts + recovery-on-purge timing, not
+  on a positive system-GATT-list reading. The later instrumented wedges (1–2) had
+  `omi_in_gatt_list=false` (§5), which is why §7 still wants one instrumented ghost sighting.
+- Bucket: **self-clearing (ghost-purge)** — the only ghost-class wedge on record.
 
 ### Detail — Wedge 1 (2026-07-22, ~28 min)
 
@@ -225,11 +257,18 @@ vs. the 147/8 the self-clearing wedges carried), **`estab_fail_count` flat**, an
 
 - **Self-clearing recovery is already partly built and it works.** The backed-off recovery
   alarm (`scheduleRecoveryProbe`) is what caught Wedge 2 in ~6 min with no user action.
-- **The ghost-slot purge does NOT apply to these wedges.** `purgeGhostGattForAddress`
+- **The ghost-slot purge did NOT apply to the instrumented wedges.** `purgeGhostGattForAddress`
   (`OmiBleManager.kt:212`) is the in-app analog of a BT toggle, but it only fires when a
-  stale *host-side* link exists. Both wedges had `omi_in_gatt_list=false` +
+  stale *host-side* link exists. Both instrumented wedges (1–2) had `omi_in_gatt_list=false` +
   `omi_acl_connected=false` → **no ghost to purge.** These are `0x3e`-class establishment
   wedges with zero host-held links, exactly the case the code notes has "never a ghost."
+- **Only Wedge 0 was ghost-class — and even that is inferred.** Wedge 0 (§4) is where the
+  ghost-GATT theory came from and it motivated the two purge fixes now shipped, but it predates
+  the `omi_in_gatt_list` snapshot, so no wedge on record *proves* a ghost with a positive
+  system-GATT-list reading. The purge fixes are still worth keeping (they demonstrably cleared
+  Wedge 0's stall), but the two later, better-instrumented wedges say the ghost is **not** the
+  dominant cause here — the SILENT-verdict, no-host-link establishment wedge is. §7 tracks the
+  open item: catch one toggle-required wedge above the 6-failure snapshot threshold to settle it.
 - **Why a BT toggle helps (when it does):** it resets the phone's *own* controller/initiator
   and tears down every host-side LE link — it does not repair the Omi. For a SILENT wedge
   where our scanner is starved, that reset un-starves it; for a device-absent SILENT wedge
@@ -241,7 +280,15 @@ vs. the 147/8 the self-clearing wedges carried), **`estab_fail_count` flat**, an
 
 ---
 
-## 6. Candidate interventions (not yet implemented)
+## 6. Candidate interventions
+
+**Already shipped (ghost-era, from the Wedge 0 analysis):** purge the stale system GATT
+*before* the first `connectGatt` (not just inside the retry loop), and cut
+`GHOST_PURGE_MIN_INTERVAL_MS` from 30 s so a re-armed ghost can be flushed sooner
+(`OmiBleForegroundService.kt`). These cleared Wedge 0 but do nothing for the no-ghost
+SILENT wedges (1–2), which is what the candidates below target.
+
+Not yet implemented:
 
 1. **Scan-gated reconnect on ADVERTISING** (phone-side, low-risk). Today the probe's
    ADVERTISING verdict (`OmiBleForegroundService.kt:1148`) only drives the alert; the
@@ -260,6 +307,17 @@ vs. the 147/8 the self-clearing wedges carried), **`estab_fail_count` flat**, an
 4. **Auto BT-toggle** — only possible on Android ≤ 12 (`disable()/enable()` blocked on 13+),
    disrupts the Garmin link, heavy-handed. Not recommended; the alert already covers the
    present-and-reachable case.
+5. **Exempt long-running reconnects from the background drop-guard** (from Wedge 0). When a
+   connect cycle spans minutes, the app has usually been backgrounded by the time it lands, and
+   `_handleDeviceConnected` (`device_provider.dart`) kills the hard-won link because no sync was
+   pending — Wedge 0 lost its 18:29:13 connect exactly this way. Track whether the cycle *started*
+   in the foreground / during a sync (e.g. set `_pendingSyncResume` at the start of
+   `_scanConnectDevice`) and let that connection through.
+6. **Runtime ghost-monitor logging** (diagnostic, from the Wedge 0 analysis). Periodically log any
+   address that is in `bluetoothManager.getConnectedDevices(GATT)` but not in our `connectedGatts`,
+   and always log a `purgeGhostGattForAddress` hit even when rate-limited. This is what would finally
+   confirm-or-kill the ghost hypothesis for a toggle-required wedge (the §7 open item) without
+   touching the connect path.
 
 Deliberately **not** doing: hammering reconnects harder. Rapid `connectGatt`/`closeGatt`
 churn is the #1 cause of daemon wedges, which is why `AUTONOMOUS_RETRY_STOP_AFTER` exists.
@@ -286,7 +344,74 @@ churn is the #1 cause of daemon wedges, which is why `AUTONOMOUS_RETRY_STOP_AFTE
 
 ---
 
-## 8. New-record template
+## 8. Pipeline & terminology reference (background)
+
+Static reference for the layers a wedge passes through, and the synthetic status code they emit.
+Merged in from the original ghost-GATT deep-dive (the Wedge 0 analysis). Line numbers drift —
+treat them as a starting point, not gospel.
+
+### The connection pipeline, top to bottom
+
+| Layer | Component (`file:line`) | Key behavior |
+|---|---|---|
+| 1. Dart orchestrator | `periodicConnect` (`device_provider.dart:568`) | `Timer.periodic` every 15 s; calls `scanAndConnectToDevice()` when `!isConnected && connectedDevice == null && !isConnecting`. |
+| 1. Dart orchestrator | `_scanConnectDevice` (`device_provider.dart:590`) | Core attempt: `ensureConnection(force:true)` raced against a 5 s probe, starts a parallel scan on probe-fail, ~30 s total budget. |
+| 1. Dart orchestrator | `onDeviceDisconnected` (`device_provider.dart:1250`) | Foreground + accidental → backoff reconnect `1→2→4…→60 s`. Background → no auto-reconnect (sync timer drives it). |
+| 2. Mutex gate | `ensureConnection` (`devices.dart:247`) | Single-entry `Mutex`. Already connected → return. `force=false` + transport exists → return null (let native handle). `force=true` → `_connectToDevice`. A stuck attempt blocks all callers up to 30 s. |
+| 3. Dart↔native bridge | `connect()` (`native_ble_transport.dart:59`) | `manageDevice` via Pigeon, `await`s `_deviceReadyCompleter` with a 30 s timeout. |
+| 3. Dart↔native bridge | `_handleConnectionState` (`native_ble_transport.dart:308`) | **Transient-error swallower:** while connecting, a `133`/`-1` error is ignored ("native will retry"); anything else fails the completer. This is the `ignoring transient GATT error` log. |
+| 4. Kotlin conn owner | `connectToDevice` (`OmiBleForegroundService.kt:482`) | Closes stale handle; `autoConnect=false` for first 3 retries then `true`; 15 s (direct) / 30 s (autoConnect) timeout → `handleDisconnection(status=-1)`. |
+| 4. Kotlin conn owner | `handleRetryLogic` (`OmiBleForegroundService.kt:717`) | Backoff `1.5→3→6→12→24→30 s`; each retry calls `purgeGhostGattForAddress()`, rate-limited by `GHOST_PURGE_MIN_INTERVAL_MS`. |
+| 5. Kotlin GATT wrapper | `onConnectionStateChange` (`OmiBleManager.kt:552`) | `STATE_CONNECTED` → 15 s service-discovery timeout + `discoverServices()`; `STATE_DISCONNECTED` → cleanup + `onGattDisconnected(status)`. |
+| 5. Kotlin GATT wrapper | `purgeGhostGattForAddress` (`OmiBleManager.kt:168`) | The ghost fix: if the address is in the system GATT-connected list but not our `connectedGatts`, open a dummy GATT and immediately disconnect+close it to flush daemon state. |
+
+### `gatt_status_-1` is synthetic
+
+Not a real Android status. It's our own value from two timeout backstops, both meaning "GATT
+associated but service discovery never completed in time" — the exact footprint of a slot the
+firmware can't accept:
+
+- native connect timeout — `handleDisconnection(addr, hash, -1)` (`OmiBleForegroundService.kt:531`)
+- service-discovery timeout — `onGattDisconnected(address, hash, -1)` (`OmiBleManager.kt:562`)
+
+A run of all-`-1` failures with **no** real status (no `147`/`8`) is the central-side / timeout
+signature (Wedges 0 and 3); a real `147` (stack rejecting) or `8` (0x08 supervision timeout)
+means Android actually delivered a verdict (Wedges 1–2).
+
+### The stall, as a sequence
+
+```mermaid
+sequenceDiagram
+    participant App as Dart App
+    participant Svc as ForegroundService
+    participant BLE as BleManager
+    participant OS as Android BT Daemon
+    participant Omi as Omi Firmware
+
+    Note over OS,Omi: Stale/ghost link holds Omi's only slot (CONFIG_BT_MAX_CONN=1)
+    App->>Svc: manageDevice(addr)
+    Svc->>BLE: connectGatt(autoConnect=false)
+    BLE->>OS: connectGatt()
+    OS->>Omi: LE Connect Request
+    Omi--xOS: Rejected (slot full)
+    Note over OS: 15 s native timeout
+    OS->>BLE: DISCONNECTED, status=-1
+    BLE->>Svc: onGattDisconnected(-1)
+    Svc->>App: onPeripheralDisconnected("gatt_status_-1")
+    App->>App: "ignoring transient GATT error" (swallowed)
+    Note over App: 30 s Dart budget expires → TimeoutException
+    Note over Svc: purge rate-limit expires → purgeGhostGattForAddress
+    Svc->>BLE: dummy connectGatt → disconnect → close
+    Note over OS: Slot freed
+    Svc->>BLE: connectGatt()
+    OS->>Omi: LE Connect Request
+    Omi->>OS: Connected ✓
+    OS->>Svc: onServicesDiscovered → onDeviceReady ✓
+```
+
+---
+
+## 9. New-record template
 
 Copy this block per new wedge, add a summary-table row, and set the bucket.
 
