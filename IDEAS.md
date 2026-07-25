@@ -8,6 +8,7 @@
 - [2. Device-driven BLE wake (firmware + iOS) [large] [Pending]](#2-device-driven-ble-wake-firmware-ios-large-pending)
 - [4. Streaming WAV stitch — fix OOM on long-recording merge [small] [Pending]](#4-streaming-wav-stitch--fix-oom-on-long-recording-merge-small-pending)
 - [5. Background reconnect recovery latency after native retry back-off [small] [Shipped — validate on device]](#5-background-reconnect-recovery-latency-after-native-retry-back-off-small-shipped--validate-on-device)
+- [6. On-device diagnostic event log [medium] [Pending — spec ready]](#6-on-device-diagnostic-event-log-medium-pending--spec-ready)
 ### DEFERRED
 - [3. iOS code signing & non-jailbroken distribution [medium] [Deferred]](#3-ios-code-signing-non-jailbroken-distribution-medium-deferred)
 
@@ -255,6 +256,22 @@ disconnected + BT on + `wedgeDetected`). Mechanism + rationale live in the code
 - The recovery alarm self-terminates (no indefinite tight polling) for a genuinely-absent device.
 - Doze throttling behaves as expected (the ~9 min `setExactAndAllowWhileIdle` floor).
 - Battery cost of the ~4 extra attempts vs. the recovery-latency win is acceptable.
+
+### 6. On-device diagnostic event log [medium] [Pending — spec ready]
+
+Full design spec: **[DIAG_LOG_SPEC.md](DIAG_LOG_SPEC.md)** — hand-off ready, implementable as-is.
+
+A dev-tools-gated, RAM-resident binary event ring that captures **per-event** diagnostics
+(empty-bin rotations, marker/priority drops, pause-gate saves — the *"why + when"*, not just the
+aggregate since-boot counters at `0x0062`) and ships them to the phone over a new BLE
+characteristic on connect, ack-clearing itself afterward. Design constraints, all met: **zero
+filesystem interference** (never touches LittleFS/ring audio storage), **RAM reclaimed from the
+oversized SD-worker stack** (`SD_WORKER_STACK_SIZE`, measured 2.7 / 12 KB used — precedent at
+`codec.c:81`), **compiled out entirely in production** (`CONFIG_OMI_DIAG_LOG`, dev/internal builds
+only), and **off by default** behind a capability-gated dev-tools toggle pushed on connect. See the
+spec for the 16-byte record format, event-code table, GATT `0x0063`/`0x0064` layout, app
+integration points, testing plan, and the post-LittleFS persistent-log upgrade path (ring reserved
+sectors 81–255).
 
 ---
 
