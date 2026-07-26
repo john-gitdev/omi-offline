@@ -10,6 +10,7 @@ import 'package:omi/gen/pigeon_communicator.g.dart';
 import 'package:omi/services/bridges/ble_bridge.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_crash_log.dart';
+import 'package:omi/services/devices/diag_log_record.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/pages/recordings/recordings_controller.dart';
 import 'package:omi/services/recordings_manager.dart';
@@ -161,6 +162,15 @@ class DeviceProvider extends ChangeNotifier
   // Crash logs collected each time the device connects (newest first, capped at 50)
   final List<DeviceCrashLog> crashLogs = [];
   static const _crashLogsKey = 'deviceCrashLogs';
+
+  // On-device diagnostic event log (dev tool, OMI_FEATURE_DIAG_LOG / bit 12).
+  // Whether the connected firmware advertises the capability, and the most recent
+  // drained batch for the Debug Tools viewer. See diag_log_record.dart.
+  static const int _diagLogFeatureBit = 1 << 12;
+  bool diagLogSupported = false;
+  List<DiagLogRecord> diagLogRecords = [];
+  int diagLogDroppedCount = 0;
+  DateTime? diagLogLastPulledAt;
 
   void _loadCrashLogs() {
     try {
@@ -549,6 +559,60 @@ class DeviceProvider extends ChangeNotifier
       Logger.error('DeviceProvider: pushActiveButtonConfig failed: $e');
       return false;
     }
+  }
+
+  /// Push the on-device diagnostic event log's runtime enable bit (0x0064) to match
+  /// the local [SharedPreferencesUtil.diagLogEnabled] pref. Called on connect and
+  /// whenever the Debug Tools toggle flips. No-op on firmware without the feature
+  /// (the write is swallowed by the connection layer). Default OFF means a rebooted
+  /// device stays silent until the app re-pushes here.
+  Future<void> pushDiagLogEnabled() async {
+    final dev = connectedDevice;
+    if (dev == null) return;
+    final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
+    if (connection == null) return;
+    try {
+      await connection.setDiagLogEnabled(SharedPreferencesUtil().diagLogEnabled);
+    } catch (e) {
+      Logger.debug('DeviceProvider: pushDiagLogEnabled failed: $e');
+    }
+  }
+
+  /// Drain the on-device diagnostic event ring (0x0063), acking each batch so the
+  /// device clears what it sent, log every record to the debug log, and cache the
+  /// batch for the Debug Tools viewer. Returns the record count, or -1 when not
+  /// connected / the feature is unavailable / a sync holds the storage lock.
+  Future<int> pullDiagLog() async {
+    final dev = connectedDevice;
+    if (dev == null) return -1;
+    final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
+    if (connection == null) return -1;
+    final result = await connection.drainDiagLog();
+    if (result == null) return -1;
+    diagLogRecords = result.records;
+    diagLogDroppedCount = result.droppedCount;
+    diagLogLastPulledAt = DateTime.now();
+    for (final r in result.records) {
+      await DebugLogManager.logEvent('device_diag_log', r.toJson());
+    }
+    if (result.droppedCount > 0) {
+      Logger.warning('Diag-log: ${result.records.length} records pulled, '
+          '${result.droppedCount} lost to ring overflow while the app was away');
+    } else if (result.records.isNotEmpty) {
+      Logger.debug('Diag-log: ${result.records.length} records pulled');
+    }
+    notifyListeners();
+    return result.records.length;
+  }
+
+  /// Drain (acking everything on the device) and empty the on-screen viewer. Since
+  /// [pullDiagLog] already acks each batch, this just does a final drain and clears
+  /// the cached records.
+  Future<void> clearDiagLog() async {
+    await pullDiagLog();
+    diagLogRecords = [];
+    diagLogDroppedCount = 0;
+    notifyListeners();
   }
 
   Future<void> setManualMode(bool enabled) async {
@@ -1635,6 +1699,23 @@ class DeviceProvider extends ChangeNotifier
             'marker_pause_gate_saves': dropStats.markerPauseGateSaves,
           });
         }
+      }
+
+      // On-device diagnostic event log (dev tool): learn whether the firmware
+      // advertises the capability (bit 12), push the runtime gate to match the local
+      // pref, and — when enabled — drain the ring into the debug log + Debug Tools
+      // viewer (acking as it goes). getFeatures is a plain read like getDiagnostics
+      // above; the drain self-skips (returns null) if a sync holds the storage lock.
+      final int deviceFeatures = await conn.getFeatures();
+      diagLogSupported = (deviceFeatures & _diagLogFeatureBit) != 0;
+      if (diagLogSupported) {
+        await pushDiagLogEnabled();
+        if (SharedPreferencesUtil().diagLogEnabled) {
+          await pullDiagLog();
+        }
+      } else {
+        diagLogRecords = [];
+        diagLogDroppedCount = 0;
       }
     }
 
