@@ -79,6 +79,13 @@ class SharedPreferencesUtil {
   bool get combineRecordButton => getBool('combineRecordButton', defaultValue: false);
   set combineRecordButton(bool v) => saveBool('combineRecordButton', v);
 
+  // On-device diagnostic event log (dev tool). Default off; the app pushes this to
+  // the firmware's runtime gate (0x0064) on connect and drains the ring (0x0063)
+  // when on. Not persisted on-device, so a rebooted device stays silent until the
+  // app re-enables. See diag_log_record.dart.
+  bool get diagLogEnabled => getBool('diagLogEnabled', defaultValue: false);
+  set diagLogEnabled(bool v) => saveBool('diagLogEnabled', v);
+
   // Android-only: wipe the BLE bond on BOTH the omi (via CMD_ARM_POST_DFU_UNPAIR
   // 0x18, armed while still connected before the flash and executed by the omi on
   // its first boot after a successful flash) and the phone (removeBond, after a
