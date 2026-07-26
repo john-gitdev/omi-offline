@@ -6,6 +6,7 @@ import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/device_crash_log.dart';
 import 'package:omi/services/devices/device_drop_stats.dart';
+import 'package:omi/services/devices/diag_log_record.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/utils/byte_utils.dart';
 import 'package:omi/utils/logger.dart';
@@ -61,6 +62,11 @@ class OmiDeviceConnection extends DeviceConnection {
   // 20-byte drop counters: [blockDrops u32][lastDropUptimeMs u32]
   //                        [sdStreamDrops u32][sdBootDrops u32][nowUptimeMs u32]
   static const String diagnosticsDropsCharacteristicUuid = '19b10062-e8f2-537e-4f6c-d104768a1214';
+  // On-device diagnostic event log (dev builds, OMI_FEATURE_DIAG_LOG). 0x0063 =
+  // drain read (snapshot header + 16-byte records); 0x0064 = control write
+  // [enable u8][ack_seq u32 LE]. See diag_log_record.dart / firmware diag_log.h.
+  static const String diagLogReadCharacteristicUuid = '19b10063-e8f2-537e-4f6c-d104768a1214';
+  static const String diagLogControlCharacteristicUuid = '19b10064-e8f2-537e-4f6c-d104768a1214';
 
   // 9-byte mute state (Read / Write / Notify):
   //   [muted:1][since_utc_s:4 LE][since_uptime_ms:4 LE]
@@ -307,6 +313,75 @@ class OmiDeviceConnection extends DeviceConnection {
     try {
       await transport.unsubscribeCharacteristic(diagnosticsServiceUuid, diagnosticsDropsCharacteristicUuid);
     } catch (_) {}
+  }
+
+  // Write the 5-byte diag-log control payload: [enable u8][ack_seq u32 LE].
+  Future<void> _writeDiagLogControl({required bool enable, required int ackSeq}) async {
+    final payload = <int>[
+      enable ? 1 : 0,
+      ackSeq & 0xFF,
+      (ackSeq >> 8) & 0xFF,
+      (ackSeq >> 16) & 0xFF,
+      (ackSeq >> 24) & 0xFF,
+    ];
+    await transport.writeCharacteristic(diagnosticsServiceUuid, diagLogControlCharacteristicUuid, payload);
+  }
+
+  @override
+  Future<void> performSetDiagLogEnabled(bool enable) async {
+    // Serialize against storage commands (same as the drop-stats read): a GATT
+    // op racing the storage notify stream drops the link on Android. Non-blocking
+    // acquire — skip silently if a transfer holds the lock (the provider re-pushes
+    // on the next connect).
+    final acquired = await _storageMutex.tryAcquire(timeout: Duration.zero);
+    if (!acquired) return;
+    try {
+      await _writeDiagLogControl(enable: enable, ackSeq: 0);
+    } catch (e) {
+      Logger.debug('Diag-log enable write failed (older firmware?): $e');
+    } finally {
+      _storageMutex.release();
+    }
+  }
+
+  @override
+  Future<DiagLogDrainResult?> performDrainDiagLog() async {
+    final acquired = await _storageMutex.tryAcquire(timeout: Duration.zero);
+    if (!acquired) return null;
+    try {
+      final all = <DiagLogRecord>[];
+      int dropped = 0;
+      // Bench pulls are small; this bounds a pathological loop (events arriving
+      // faster than we drain, or a transport that never empties).
+      const maxBatches = 64;
+      for (int i = 0; i < maxBatches; i++) {
+        final data = await transport.readCharacteristic(diagnosticsServiceUuid, diagLogReadCharacteristicUuid);
+        final snap = DiagLogSnapshot.parse(data);
+        if (snap == null) {
+          // A too-short read on the FIRST batch means the char/feature is absent →
+          // report unavailable (null). After records were read it's a transient end.
+          if (i == 0) return null;
+          break;
+        }
+        if (snap.recordSize != DiagLogRecord.sizeBytes) {
+          Logger.warning('Diag-log record size ${snap.recordSize} != ${DiagLogRecord.sizeBytes}; stopping drain');
+          break;
+        }
+        if (snap.droppedCount > dropped) dropped = snap.droppedCount;
+        if (snap.records.isEmpty) break; // fully drained
+        all.addAll(snap.records);
+        // Ack the highest seq actually received so the device drops this batch.
+        // On a long-read transport (iOS) the whole snapshot arrives in batch 0 and
+        // the next read returns zero records; on Android each read is MTU-bounded.
+        await _writeDiagLogControl(enable: true, ackSeq: snap.lastReceivedSeq);
+      }
+      return DiagLogDrainResult(records: all, droppedCount: dropped);
+    } catch (e) {
+      Logger.debug('Diag-log drain failed (older firmware?): $e');
+      return null;
+    } finally {
+      _storageMutex.release();
+    }
   }
 
   Future<void> stop() async {
