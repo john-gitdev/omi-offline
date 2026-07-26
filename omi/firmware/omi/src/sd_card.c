@@ -18,6 +18,7 @@
 #ifdef CONFIG_OMI_AUDIO_RING
 #include "lib/core/sd_ring.h"
 #endif
+#include "lib/core/diag_log.h"
 
 #include <ctype.h>
 #include <lfs.h>
@@ -443,7 +444,16 @@ static atomic_t sd_dev_pm_supported = ATOMIC_INIT(1);
  * fit comfortably too. The 4 KB reclaimed vs the old 16 KB is handed to the codec
  * thread, which ran at ~17.5/18.6 KB (94%). Net RAM change: zero. Verify after a
  * backend switch that the LittleFS-path high-water stays well under this. */
+#if defined(CONFIG_OMI_DIAG_LOG)
+/* The diagnostic event ring's RAM (DIAG_LOG_RING_BYTES = 2 KB) is carved out of this
+ * stack when the feature is compiled in, keeping total RAM identical to production
+ * (10240 stack + 2048 ring == the 12288 stack prod uses). The sd_worker high-water is
+ * ~6 KB on the ring path, so 10 KB leaves comfortable headroom — but re-verify the
+ * LittleFS-path high-water (0x0062 offset 68) after a backend switch before trusting it. */
+#define SD_WORKER_STACK_SIZE (12288 - DIAG_LOG_RING_BYTES)
+#else
 #define SD_WORKER_STACK_SIZE 12288
+#endif
 #define SD_WORKER_PRIORITY 7
 K_THREAD_STACK_DEFINE(sd_worker_stack, SD_WORKER_STACK_SIZE);
 static struct k_thread sd_worker_thread_data;
@@ -844,6 +854,7 @@ static void process_write_data_req(const sd_req_t *req)
          * tallies these RESCUES (markers kept through a pause), not losses. */
         if (block_has_marker(req->u.write.buf, req->u.write.len)) {
             atomic_inc(&marker_pause_gate_saves);
+            diag_log_event(DIAG_MARKER_PAUSE_GATE_SAVE, STORAGE_BACKEND_LITTLEFS, 0, req->u.write.len);
             /* fall through to persist the marker despite the pause */
         } else {
             if (spi_woken) {
@@ -1702,6 +1713,7 @@ static int create_audio_file_with_timestamp(void)
          * (0x19B10062) so it's visible without an RTT capture. */
         if (current_file_size <= sizeof(RecordingHeader_v1_t)) {
             atomic_inc(&empty_bin_rotations);
+            diag_log_event(DIAG_EMPTY_BIN_ROTATION, STORAGE_BACKEND_LITTLEFS, 0, current_file_size);
         }
         lfs_file_close(&lfs_fs, &lfs_fil_data);
         k_mutex_lock(&current_filename_lock, K_FOREVER);
@@ -3135,6 +3147,7 @@ static int ring_create_segment(void)
     /* Empty-bin diagnostic: previous segment closed holding only its header. */
     if (current_filename[0] != '\0' && current_file_size <= sizeof(RecordingHeader_v1_t)) {
         atomic_inc(&empty_bin_rotations);
+        diag_log_event(DIAG_EMPTY_BIN_ROTATION, STORAGE_BACKEND_RING, 0, current_file_size);
     }
 
     /* Pre-time-sync segments key on uptime seconds (sorts < 946684800 → shown
@@ -3231,6 +3244,7 @@ static void process_write_data_req_ring(const sd_req_t *req)
     if (!sd_draining && atomic_get(&sd_write_paused)) {
         if (block_has_marker(req->u.write.buf, req->u.write.len)) {
             atomic_inc(&marker_pause_gate_saves);
+            diag_log_event(DIAG_MARKER_PAUSE_GATE_SAVE, STORAGE_BACKEND_RING, 0, req->u.write.len);
         } else {
             return; /* no I/O performed */
         }
