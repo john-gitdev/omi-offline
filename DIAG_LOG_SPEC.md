@@ -1,7 +1,15 @@
 # On-Device Diagnostic Event Log — Design Spec
 
-**Status:** Design complete, not yet implemented. Hand-off doc — a fresh Claude instance
-should be able to implement from this without re-deriving the design.
+**Status:** IMPLEMENTED (2026-07-25, firmware `oo-2.8.0` / app 0.31.x). Firmware:
+`omi/firmware/omi/src/lib/core/diag_log.{c,h}`, Kconfig `OMI_DIAG_LOG`, BLE
+`0x0063`/`0x0064` + feature bit `1<<12` in `transport.c`, instrumentation in
+`sd_card.c` / `transport.c` / `codec.c`, stack reclaim in `sd_card.c`. App:
+`diag_log_record.dart`, drain/ack/enable in `omi_connection.dart`, push+drain in
+`device_provider.dart`, Debug Tools UI in `sync_page.dart`, pref `diagLogEnabled`.
+Deviation from §5.5: this fork ships a single build config, so `CONFIG_OMI_DIAG_LOG=y`
+lives in `omi.conf` (still runtime-gated OFF by default). §5.4 scoped: codes 9–11
+(write-blocked / ring-io-error / backend-mount) are defined but not yet instrumented
+(no single counter site). Original hand-off doc preserved below.
 **Author context:** Written 2026-07-25 after a design conversation. Repo: `omi-offline`.
 
 ---
