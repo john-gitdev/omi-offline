@@ -5,6 +5,7 @@
 #include <zephyr/kernel.h>
 
 #include "config.h"
+#include "diag_log.h"
 #include "utils.h"
 #ifdef CODEC_OPUS
 #include "lib/opus-1.2.1/opus.h"
@@ -56,6 +57,8 @@ int codec_receive_pcm(int16_t *data, size_t len) // this gets called after mic d
     if (ring_buf_space_get(&codec_ring_buf) < bytes_to_write) {
         k_mutex_unlock(&codec_ring_mutex);
         atomic_inc(&codec_dropped_count);
+        /* backend 0: codec drops happen before the storage stage (backend n/a). */
+        diag_log_event(DIAG_CODEC_DROP, 0, 0, (uint32_t) atomic_get(&codec_dropped_count));
         LOG_WRN("Codec ring buffer full, dropping %u bytes", (unsigned)bytes_to_write);
         return -1;
     }
@@ -64,6 +67,7 @@ int codec_receive_pcm(int16_t *data, size_t len) // this gets called after mic d
     k_mutex_unlock(&codec_ring_mutex);
     if (written != bytes_to_write) {
         atomic_inc(&codec_dropped_count);
+        diag_log_event(DIAG_CODEC_DROP, 0, 0, (uint32_t) atomic_get(&codec_dropped_count));
         LOG_ERR("Failed to write %u bytes to codec ring buffer (written %d)", (unsigned)bytes_to_write, written);
         return -1;
     }
