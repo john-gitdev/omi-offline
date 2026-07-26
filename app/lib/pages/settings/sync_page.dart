@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/device_drop_stats.dart';
+import 'package:omi/services/devices/diag_log_record.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/services/wals.dart';
@@ -1244,6 +1245,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 const SizedBox(height: 16),
                 _buildDropStatsSection(),
               ],
+              // On-device diagnostic event log (dev tool). Self-hides unless the
+              // connected firmware advertises the capability (bit 12).
+              _buildDiagLogSection(),
               const SizedBox(height: 16),
               _buildAdjustmentModeSection(),
               const SizedBox(height: 24),
@@ -1800,6 +1804,163 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       ),
     );
   }
+
+  bool _diagLogBusy = false;
+
+  Future<void> _runDiagLogAction(Future<void> Function() action) async {
+    if (_diagLogBusy) return;
+    setState(() => _diagLogBusy = true);
+    try {
+      await action();
+    } finally {
+      if (mounted) setState(() => _diagLogBusy = false);
+    }
+  }
+
+  // On-device diagnostic event log viewer (dev tool). Self-hides unless the
+  // connected firmware advertises the capability (OMI_FEATURE_DIAG_LOG, bit 12).
+  // The log is drained + acked on connect (when enabled); this surfaces the latest
+  // batch and lets a developer toggle capture, pull on demand, and clear.
+  Widget _buildDiagLogSection() {
+    final devProvider = Provider.of<DeviceProvider>(context);
+    if (!devProvider.isConnected || devProvider.connectedDevice == null || !devProvider.diagLogSupported) {
+      return const SizedBox.shrink();
+    }
+
+    final enabled = SharedPreferencesUtil().diagLogEnabled;
+    final records = devProvider.diagLogRecords;
+    final dropped = devProvider.diagLogDroppedCount;
+    // Newest first for display.
+    final display = records.reversed.take(200).toList();
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1A1A1C),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: const Color(0xFF2C2C2E)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                FaIcon(FontAwesomeIcons.listUl, size: 13, color: Colors.white70),
+                SizedBox(width: 8),
+                Text('Event log (dev)',
+                    style: TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.w600)),
+              ],
+            ),
+            SwitchListTile(
+              title: const Text('On-device event log',
+                  style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600)),
+              subtitle: Text(
+                  'Records per-event timing/context for the health events the counters only total. '
+                  'Off by default; not persisted on the device.',
+                  style: TextStyle(color: Colors.grey.shade400, fontSize: 12)),
+              value: enabled,
+              onChanged: _diagLogBusy
+                  ? null
+                  : (val) {
+                      SharedPreferencesUtil().diagLogEnabled = val;
+                      setState(() {});
+                      _runDiagLogAction(() async {
+                        await devProvider.pushDiagLogEnabled();
+                        // Pull immediately on enable so a bench session starts clean.
+                        if (val) await devProvider.pullDiagLog();
+                      });
+                    },
+              activeThumbColor: Colors.deepPurpleAccent,
+              contentPadding: EdgeInsets.zero,
+            ),
+            _dropStatRow('Records held', records.length.toString(), false),
+            _dropStatRow('Dropped (ring overflow)', dropped.toString(), dropped > 0),
+            if (devProvider.diagLogLastPulledAt != null)
+              _dropStatRow('Last pulled', _shortClock(devProvider.diagLogLastPulledAt!), false),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _diagLogBusy ? null : () => _runDiagLogAction(() => devProvider.pullDiagLog()),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.deepPurpleAccent, width: 1),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: Text(_diagLogBusy ? 'Working…' : 'Pull now',
+                        style: const TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _diagLogBusy ? null : () => _runDiagLogAction(() => devProvider.clearDiagLog()),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.white24, width: 1),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text('Clear', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ],
+            ),
+            if (display.isNotEmpty) ...[
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Divider(color: Color(0xFF2C2C2E), height: 1),
+              ),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 260),
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  padding: EdgeInsets.zero,
+                  itemCount: display.length,
+                  itemBuilder: (context, i) => _diagLogRow(display[i]),
+                ),
+              ),
+            ] else
+              const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: Text('No events captured yet.', style: TextStyle(color: Colors.white38, fontSize: 12)),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _diagLogRow(DiagLogRecord r) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text('#${r.seq}  ${r.label}',
+                    style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+              ),
+              Text('@${_formatDuration(r.uptimeMs)}',
+                  style: const TextStyle(
+                    color: Colors.white54,
+                    fontSize: 11,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  )),
+            ],
+          ),
+          Text(r.description, style: const TextStyle(color: Colors.white54, fontSize: 11, height: 1.3)),
+        ],
+      ),
+    );
+  }
+
+  static String _shortClock(DateTime t) =>
+      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}:${t.second.toString().padLeft(2, '0')}';
 
   Widget _dropStatRow(String label, String value, bool emphasize) {
     return Padding(
