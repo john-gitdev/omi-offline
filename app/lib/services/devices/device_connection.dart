@@ -5,6 +5,7 @@ import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/omi_connection.dart';
 import 'package:omi/services/devices/device_crash_log.dart';
 import 'package:omi/services/devices/device_drop_stats.dart';
+import 'package:omi/services/devices/diag_log_record.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/devices/transports/device_transport.dart';
 import 'package:omi/services/devices/transports/native_ble_transport.dart';
@@ -136,6 +137,24 @@ abstract class DeviceConnection {
   /// Tear down the drop-counter subscription at the BLE layer (CCCD=0) so the
   /// firmware stops pushing notifications while the connection stays up.
   Future<void> unsubscribeDropStats() async {}
+
+  /// Set the on-device diagnostic event log's runtime gate (0x0064 enable bit).
+  /// No-op / unsupported on firmware without the diag-log feature.
+  Future<void> setDiagLogEnabled(bool enable) async {
+    if (await isConnected()) return performSetDiagLogEnabled(enable);
+  }
+
+  Future<void> performSetDiagLogEnabled(bool enable) async {}
+
+  /// Drain the on-device diagnostic event ring (0x0063), acking each batch so the
+  /// device clears the records it sent. Returns null when not connected or the
+  /// feature is unavailable; a non-null (possibly empty) result means the drain ran.
+  Future<DiagLogDrainResult?> drainDiagLog() async {
+    if (await isConnected()) return performDrainDiagLog();
+    return null;
+  }
+
+  Future<DiagLogDrainResult?> performDrainDiagLog() async => null;
 
   Future<List<StorageFile>> listFiles() async {
     if (await isConnected()) return performListFiles();
