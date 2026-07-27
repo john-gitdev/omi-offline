@@ -1817,6 +1817,15 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
   }
 
+  /// Snackbar feedback for a diag-log action (e.g. a toggle that couldn't reach the
+  /// device while a sync held the storage lock), so the result is never silent.
+  void _reportDiagLogResult(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 4)),
+    );
+  }
+
   // On-device diagnostic event log viewer (dev tool). Self-hides unless the
   // connected firmware advertises the capability (OMI_FEATURE_DIAG_LOG, bit 12).
   // The log is drained + acked on connect (when enabled); this surfaces the latest
@@ -1867,7 +1876,15 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                       SharedPreferencesUtil().diagLogEnabled = val;
                       setState(() {});
                       _runDiagLogAction(() async {
-                        await devProvider.pushDiagLogEnabled();
+                        final reached = await devProvider.pushDiagLogEnabled();
+                        if (!reached) {
+                          // The device write was skipped (a sync holds the storage
+                          // lock) or failed. The pref is kept and re-pushed on the
+                          // next connect, but say so instead of implying it applied.
+                          _reportDiagLogResult(
+                              'Saved, but the device is busy syncing — it will apply on the next connect.');
+                          return;
+                        }
                         // Pull immediately on enable so a bench session starts clean.
                         if (val) await devProvider.pullDiagLog();
                       });
