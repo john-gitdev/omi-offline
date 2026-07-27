@@ -328,24 +328,26 @@ class OmiDeviceConnection extends DeviceConnection {
   }
 
   @override
-  Future<void> performSetDiagLogEnabled(bool enable) async {
+  Future<bool> performSetDiagLogEnabled(bool enable) async {
     // Serialize against storage commands (same as the drop-stats read): a GATT
     // op racing the storage notify stream drops the link on Android. Non-blocking
-    // acquire — skip silently if a transfer holds the lock (the provider re-pushes
-    // on the next connect).
+    // acquire — if a transfer holds the lock, report false so the caller can surface
+    // that the gate didn't reach the device (the provider also re-pushes on connect).
     final acquired = await _storageMutex.tryAcquire(timeout: Duration.zero);
-    if (!acquired) return;
+    if (!acquired) return false;
     try {
       await _writeDiagLogControl(enable: enable, ackSeq: 0);
+      return true;
     } catch (e) {
       Logger.debug('Diag-log enable write failed (older firmware?): $e');
+      return false;
     } finally {
       _storageMutex.release();
     }
   }
 
   @override
-  Future<DiagLogDrainResult?> performDrainDiagLog() async {
+  Future<DiagLogDrainResult?> performDrainDiagLog({bool keepEnabled = true}) async {
     final acquired = await _storageMutex.tryAcquire(timeout: Duration.zero);
     if (!acquired) return null;
     try {
@@ -368,12 +370,26 @@ class OmiDeviceConnection extends DeviceConnection {
           break;
         }
         if (snap.droppedCount > dropped) dropped = snap.droppedCount;
-        if (snap.records.isEmpty) break; // fully drained
+        if (snap.records.isEmpty) {
+          // No FULL records fit in this read. recordCount == 0 means the ring is
+          // genuinely drained (done). recordCount > 0 means the ATT read was too
+          // small to carry even one record past the 12-byte header — re-reading at
+          // offset 0 would return the same header, so stop instead of spinning
+          // (bounded by maxBatches regardless) rather than silently report success.
+          // Draining that (rare) case needs a larger negotiated MTU.
+          if (snap.recordCount > 0) {
+            Logger.warning('Diag-log drain stalled: ${snap.recordCount} record(s) held but the ATT read '
+                '(${data.length} B) is too small to return one — need a larger MTU. Stopping.');
+          }
+          break;
+        }
         all.addAll(snap.records);
-        // Ack the highest seq actually received so the device drops this batch.
+        // Ack the highest seq actually received so the device drops this batch, and
+        // re-assert the CURRENT gate (keepEnabled) rather than hard-coding enable —
+        // a Clear while the log is OFF must not turn on-device capture back on.
         // On a long-read transport (iOS) the whole snapshot arrives in batch 0 and
         // the next read returns zero records; on Android each read is MTU-bounded.
-        await _writeDiagLogControl(enable: true, ackSeq: snap.lastReceivedSeq);
+        await _writeDiagLogControl(enable: keepEnabled, ackSeq: snap.lastReceivedSeq);
       }
       return DiagLogDrainResult(records: all, droppedCount: dropped);
     } catch (e) {
@@ -629,6 +645,25 @@ class OmiDeviceConnection extends DeviceConnection {
       if (data.length >= 4) return data.getUint32LittleEndian(0);
     } catch (_) {}
     return 0;
+  }
+
+  @override
+  Future<int?> performGetFeaturesIfIdle() async {
+    // Same guard as getDropStats: a plain GATT read racing the storage notify stream
+    // drops the link on Android (Error 133). Non-blocking acquire — return null (not
+    // 0, which would read as "no features") when a transfer holds the lock, so the
+    // caller can leave capability state unchanged and retry on the next idle connect.
+    final acquired = await _storageMutex.tryAcquire(timeout: Duration.zero);
+    if (!acquired) return null;
+    try {
+      final data = await transport.readCharacteristic(featuresServiceUuid, featuresCharacteristicUuid);
+      if (data.length >= 4) return data.getUint32LittleEndian(0);
+      return null;
+    } catch (_) {
+      return null;
+    } finally {
+      _storageMutex.release();
+    }
   }
 
   @override
@@ -973,8 +1008,8 @@ class OmiDeviceConnection extends DeviceConnection {
     // reboots to apply (reformatting the SD to the selected backend on first use),
     // so the connection drops right after — a thrown write is expected and fine.
     try {
-      await transport
-          .writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x1A, backend & 0xFF]);
+      await transport.writeCharacteristic(
+          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x1A, backend & 0xFF]);
       return true;
     } catch (_) {
       return false;
