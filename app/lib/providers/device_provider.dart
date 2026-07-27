@@ -5,7 +5,10 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import 'package:omi/backend/preferences.dart';
-import 'package:omi/backend/schema/bt_device/bt_device.dart';
+// OmiFeatures is defined in both bt_device.dart and services/devices.dart; hide it
+// here so `OmiFeatures.diagLog` below resolves unambiguously to the services/ copy
+// (the one documented as mirroring the firmware features.h).
+import 'package:omi/backend/schema/bt_device/bt_device.dart' hide OmiFeatures;
 import 'package:omi/gen/pigeon_communicator.g.dart';
 import 'package:omi/services/bridges/ble_bridge.dart';
 import 'package:omi/services/devices.dart';
@@ -163,10 +166,10 @@ class DeviceProvider extends ChangeNotifier
   final List<DeviceCrashLog> crashLogs = [];
   static const _crashLogsKey = 'deviceCrashLogs';
 
-  // On-device diagnostic event log (dev tool, OMI_FEATURE_DIAG_LOG / bit 12).
-  // Whether the connected firmware advertises the capability, and the most recent
-  // drained batch for the Debug Tools viewer. See diag_log_record.dart.
-  static const int _diagLogFeatureBit = 1 << 12;
+  // On-device diagnostic event log (dev tool, OMI_FEATURE_DIAG_LOG / bit 12; see
+  // OmiFeatures.diagLog). Whether the connected firmware advertises the capability,
+  // and the most recent drained batch for the Debug Tools viewer. See
+  // diag_log_record.dart.
   bool diagLogSupported = false;
   List<DiagLogRecord> diagLogRecords = [];
   int diagLogDroppedCount = 0;
@@ -566,15 +569,19 @@ class DeviceProvider extends ChangeNotifier
   /// whenever the Debug Tools toggle flips. No-op on firmware without the feature
   /// (the write is swallowed by the connection layer). Default OFF means a rebooted
   /// device stays silent until the app re-pushes here.
-  Future<void> pushDiagLogEnabled() async {
+  /// Returns true when the gate write reached the device; false when it was skipped
+  /// (a sync holds the storage lock), failed, or there's no connection — the caller
+  /// can surface that the toggle hasn't applied yet (it re-pushes on next connect).
+  Future<bool> pushDiagLogEnabled() async {
     final dev = connectedDevice;
-    if (dev == null) return;
+    if (dev == null) return false;
     final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
-    if (connection == null) return;
+    if (connection == null) return false;
     try {
-      await connection.setDiagLogEnabled(SharedPreferencesUtil().diagLogEnabled);
+      return await connection.setDiagLogEnabled(SharedPreferencesUtil().diagLogEnabled);
     } catch (e) {
       Logger.debug('DeviceProvider: pushDiagLogEnabled failed: $e');
+      return false;
     }
   }
 
@@ -587,7 +594,9 @@ class DeviceProvider extends ChangeNotifier
     if (dev == null) return -1;
     final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
     if (connection == null) return -1;
-    final result = await connection.drainDiagLog();
+    // Pass the current gate so acking each batch preserves capture state — a Clear
+    // while the toggle is OFF must not re-enable on-device logging via the ack write.
+    final result = await connection.drainDiagLog(keepEnabled: SharedPreferencesUtil().diagLogEnabled);
     if (result == null) return -1;
     diagLogRecords = result.records;
     diagLogDroppedCount = result.droppedCount;
@@ -1704,18 +1713,24 @@ class DeviceProvider extends ChangeNotifier
       // On-device diagnostic event log (dev tool): learn whether the firmware
       // advertises the capability (bit 12), push the runtime gate to match the local
       // pref, and — when enabled — drain the ring into the debug log + Debug Tools
-      // viewer (acking as it goes). getFeatures is a plain read like getDiagnostics
-      // above; the drain self-skips (returns null) if a sync holds the storage lock.
-      final int deviceFeatures = await conn.getFeatures();
-      diagLogSupported = (deviceFeatures & _diagLogFeatureBit) != 0;
-      if (diagLogSupported) {
-        await pushDiagLogEnabled();
-        if (SharedPreferencesUtil().diagLogEnabled) {
-          await pullDiagLog();
+      // viewer (acking as it goes). This connect handler fires _doBackgroundSync
+      // unawaited above, so the capability read must serialize against the storage
+      // stream (getFeaturesIfIdle self-skips → null) rather than race it into an
+      // Android Error 133 like a plain getFeatures would. Null = a sync owns the lock;
+      // leave the prior capability state and retry on the next idle connect. The drain
+      // itself also self-skips on the same lock.
+      final int? deviceFeatures = await conn.getFeaturesIfIdle();
+      if (deviceFeatures != null) {
+        diagLogSupported = (deviceFeatures & OmiFeatures.diagLog) != 0;
+        if (diagLogSupported) {
+          await pushDiagLogEnabled();
+          if (SharedPreferencesUtil().diagLogEnabled) {
+            await pullDiagLog();
+          }
+        } else {
+          diagLogRecords = [];
+          diagLogDroppedCount = 0;
         }
-      } else {
-        diagLogRecords = [];
-        diagLogDroppedCount = 0;
       }
     }
 
