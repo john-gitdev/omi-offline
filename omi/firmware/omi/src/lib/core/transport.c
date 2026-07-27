@@ -1855,6 +1855,11 @@ static K_MUTEX_DEFINE(storage_temp_mutex);
  * via write_to_file_blocking() so the marker survives transient SD saturation.
  * Guarded by storage_temp_mutex (set/read/cleared only while it is held). */
 static bool storage_block_has_marker = false;
+/* Low 16 bits of the last marker header appended to the current block (e.g. 0xFFFC
+ * session-end, 0xFFFE button-tap, 0xFFF8 priority-start). Captured so a diag-log
+ * marker-drop event can name WHICH marker was lost instead of reporting 0. Same
+ * lifetime/guard as storage_block_has_marker. */
+static uint16_t storage_block_marker_low16 = 0;
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
 static uint8_t storage_temp_data[MAX_WRITE_SIZE];
@@ -1885,9 +1890,11 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
         /* If the block being flushed carries a marker, use the blocking enqueue
          * so it isn't dropped on transient saturation. */
         bool had_marker = storage_block_has_marker;
+        uint16_t marker_low16 = storage_block_marker_low16;
         uint32_t wrote = had_marker ? write_to_file_blocking(storage_temp_data, MAX_WRITE_SIZE)
                                     : write_to_file(storage_temp_data, MAX_WRITE_SIZE);
         storage_block_has_marker = false;
+        storage_block_marker_low16 = 0;
         if (wrote != MAX_WRITE_SIZE) {
             /* SD queue rejected the block — the buffered bytes (up to one
              * full block of audio frames or markers) are lost. We still
@@ -1899,10 +1906,11 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
             atomic_inc(&storage_block_drops);
             /* Diagnostics (0x19B10062): the dropped block carried an inline marker,
              * so this is a genuine lost marker (e.g. a 0xFFFFFFF8/FFFFFFFC that would
-             * make a priority recording revert to plain auto VAD). */
+             * make a priority recording revert to plain auto VAD). arg0 = the lost
+             * marker's low16 so the app can tell priority/session-end/tap apart. */
             if (had_marker) {
                 atomic_inc(&marker_write_drops);
-                diag_log_event(DIAG_MARKER_WRITE_DROP, sd_get_active_backend(), 0,
+                diag_log_event(DIAG_MARKER_WRITE_DROP, sd_get_active_backend(), marker_low16,
                                (uint32_t) atomic_get(&storage_block_drops));
             } else {
                 diag_log_event(DIAG_SD_BLOCK_DROP, sd_get_active_backend(), 0,
@@ -1925,9 +1933,12 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
     buffer_offset += entry_size;
 
     /* This block now carries a marker; mark it so every flush path (here, the
-     * rollover above, and the marker force-drain) uses the durable enqueue. */
+     * rollover above, and the marker force-drain) uses the durable enqueue, and
+     * record its low16 so a drop can name the marker type. `marker` here is the
+     * 4-byte header of the frame just written (0xFFFFFFFx for a real marker). */
     if (important) {
         storage_block_has_marker = true;
+        storage_block_marker_low16 = (uint16_t) (marker & 0xFFFF);
     }
 
     /* Align buffer_offset to 4-byte boundary for the next entry */
@@ -1939,18 +1950,21 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
 
     if (buffer_offset == MAX_WRITE_SIZE) {
         bool had_marker = storage_block_has_marker;
+        uint16_t marker_low16 = storage_block_marker_low16;
         uint32_t wrote = had_marker ? write_to_file_blocking(storage_temp_data, MAX_WRITE_SIZE)
                                     : write_to_file(storage_temp_data, MAX_WRITE_SIZE);
         storage_block_has_marker = false;
+        storage_block_marker_low16 = 0;
         if (wrote != MAX_WRITE_SIZE) {
             /* Full-buffer flush rejected. Same trade-off as above: reset
              * so subsequent writes can proceed, but report the loss. */
             LOG_WRN("Storage full-block flush dropped (wrote=%u/%u)", wrote, (uint32_t) MAX_WRITE_SIZE);
             atomic_inc(&storage_block_drops);
-            /* Diagnostics (0x19B10062): a dropped marker-bearing block = lost marker. */
+            /* Diagnostics (0x19B10062): a dropped marker-bearing block = lost marker.
+             * arg0 = the lost marker's low16 (which marker type was in the block). */
             if (had_marker) {
                 atomic_inc(&marker_write_drops);
-                diag_log_event(DIAG_MARKER_WRITE_DROP, sd_get_active_backend(), 0,
+                diag_log_event(DIAG_MARKER_WRITE_DROP, sd_get_active_backend(), marker_low16,
                                (uint32_t) atomic_get(&storage_block_drops));
             } else {
                 diag_log_event(DIAG_SD_BLOCK_DROP, sd_get_active_backend(), 0,
@@ -2032,6 +2046,7 @@ static bool write_marker_header_to_storage(uint32_t header, const char *label)
         if (wrote == MAX_WRITE_SIZE) {
             buffer_offset = 0;
             storage_block_has_marker = false;
+            storage_block_marker_low16 = 0;
         } else {
             /* Queue rejected; keep the original payload bytes in place
              * (the memset only touched the padding region). */
