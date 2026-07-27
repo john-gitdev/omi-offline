@@ -102,7 +102,18 @@ void diag_log_event(uint8_t code, uint8_t backend, uint16_t arg0, uint32_t arg1)
     /* Deliberately do NOT invalidate the drain snapshot here: a multi-ATT GATT Long
      * Read (iOS) serves offset>0 slices from the snapshot captured at offset 0, and
      * re-snapshotting mid-blob would shift record indices and corrupt the transfer.
-     * New events past snap_count are picked up on the app's next offset-0 read. */
+     * New events past snap_count are picked up on the app's next offset-0 read.
+     *
+     * The snapshot freezes the ring BOUNDARY (tail/count/max_seq), not record CONTENT,
+     * so in theory an overwrite of an already-snapshotted slot during a sub-ms long
+     * read could serve newer bytes at an older slot. In practice this cannot lose data:
+     * the ack is seq-based (drops seq <= snap_max_seq), and an overwrite always carries
+     * a seq strictly greater than snap_max_seq, so the overwriting record survives the
+     * ack and is re-served whole on the next drain. Worst case is a transient
+     * mis-ordering inside one blob, which the app tolerates (records key on seq). A
+     * content snapshot would double the ring's RAM — the whole point of the design is
+     * to reclaim it from the SD-worker stack — so it is not worth it for events this
+     * rare (empty-bin rotations, marker drops) against a sub-ms transfer window. */
 
     k_spin_unlock(&diag_lock, key);
 }
@@ -124,11 +135,15 @@ void diag_log_ack(uint32_t through_seq)
             break;
         }
     }
-    /* dropped_count is "overwrites since the last ack" (see the 0x0063 header): the
-     * app has now seen this batch's dropped total, so clear it. A drop racing in
-     * during the drain window is near-impossible on a bench pull, and would simply
-     * be reported on the next drain. */
-    dropped = 0;
+    /* dropped_count is "overwrites since the last ack" (see the 0x0063 header). The
+     * app saw exactly snap_dropped of them in the header it just drained, so clear
+     * only THAT many — overwrites that raced in after the offset-0 snapshot were never
+     * reported and must survive to the next drain rather than be silently erased.
+     * (Without a valid snapshot the ack has no reference point, so leave the count
+     * intact rather than zero out unreported drops.) */
+    if (snap_valid) {
+        dropped = (dropped >= snap_dropped) ? (dropped - snap_dropped) : 0;
+    }
     snap_valid = false;
     k_spin_unlock(&diag_lock, key);
 }
@@ -226,8 +241,12 @@ uint16_t diag_log_record_count(void)
 
 uint32_t diag_log_dropped_count(void)
 {
-    /* Aligned 32-bit read is atomic on Cortex-M; no lock needed for a scalar. */
-    return dropped;
+    /* Take the lock (like the other getters) so the value is consistent with a
+     * concurrent enqueue/ack rather than a torn read-vs-update on another core/ISR. */
+    k_spinlock_key_t key = k_spin_lock(&diag_lock);
+    uint32_t v = dropped;
+    k_spin_unlock(&diag_lock, key);
+    return v;
 }
 
 #endif /* CONFIG_OMI_DIAG_LOG */
