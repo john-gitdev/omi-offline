@@ -139,22 +139,28 @@ abstract class DeviceConnection {
   Future<void> unsubscribeDropStats() async {}
 
   /// Set the on-device diagnostic event log's runtime gate (0x0064 enable bit).
-  /// No-op / unsupported on firmware without the diag-log feature.
-  Future<void> setDiagLogEnabled(bool enable) async {
+  /// Returns true when the write reached the device; false when it was skipped
+  /// (a sync holds the storage lock), failed, or the firmware lacks the feature.
+  Future<bool> setDiagLogEnabled(bool enable) async {
     if (await isConnected()) return performSetDiagLogEnabled(enable);
+    return false;
   }
 
-  Future<void> performSetDiagLogEnabled(bool enable) async {}
+  Future<bool> performSetDiagLogEnabled(bool enable) async => false;
 
   /// Drain the on-device diagnostic event ring (0x0063), acking each batch so the
   /// device clears the records it sent. Returns null when not connected or the
   /// feature is unavailable; a non-null (possibly empty) result means the drain ran.
-  Future<DiagLogDrainResult?> drainDiagLog() async {
-    if (await isConnected()) return performDrainDiagLog();
+  ///
+  /// [keepEnabled] is written as the runtime gate on every ack so draining never
+  /// changes capture state as a side effect — pass the current pref so a Clear while
+  /// the log is OFF doesn't silently re-enable on-device logging.
+  Future<DiagLogDrainResult?> drainDiagLog({bool keepEnabled = true}) async {
+    if (await isConnected()) return performDrainDiagLog(keepEnabled: keepEnabled);
     return null;
   }
 
-  Future<DiagLogDrainResult?> performDrainDiagLog() async => null;
+  Future<DiagLogDrainResult?> performDrainDiagLog({bool keepEnabled = true}) async => null;
 
   Future<List<StorageFile>> listFiles() async {
     if (await isConnected()) return performListFiles();
@@ -256,6 +262,17 @@ abstract class DeviceConnection {
     if (await isConnected()) return performGetFeatures();
     return 0;
   }
+
+  /// Read the capability bitfield (0x0021) serialized against storage commands, for
+  /// callers that run concurrently with a sync. Returns null when a transfer holds
+  /// the storage lock (retry when idle) or the read is unavailable — distinct from
+  /// [getFeatures], which reads unconditionally and returns 0 on failure.
+  Future<int?> getFeaturesIfIdle() async {
+    if (await isConnected()) return performGetFeaturesIfIdle();
+    return null;
+  }
+
+  Future<int?> performGetFeaturesIfIdle() async => null;
 
   /// Re-anchors the firmware clock by writing the current UTC epoch.
   /// Safe to call repeatedly — needed on every (re)connect because a native
