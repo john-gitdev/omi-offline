@@ -107,6 +107,9 @@ class OmiFeatures {
   static const int vadThreshold = 1 << 9;
   static const int priorityRecordCap = 1 << 10;
   static const int recordToggle = 1 << 11;
+  // On-device diagnostic event log (BLE 0x0063 drain / 0x0064 control) is
+  // compiled into the firmware. Gates the Debug Tools event-log toggle.
+  static const int diagLog = 1 << 12;
 
   static bool hasFeature(int features, int feature) {
     return (features & feature) != 0;

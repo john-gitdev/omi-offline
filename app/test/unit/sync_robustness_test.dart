@@ -7,6 +7,7 @@ import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_connection.dart';
+import 'package:omi/services/devices/diag_log_record.dart';
 import 'package:omi/services/devices/device_crash_log.dart';
 import 'package:omi/services/devices/device_drop_stats.dart';
 import 'package:omi/services/devices/storage_file.dart';
@@ -336,6 +337,18 @@ class MockDeviceConnection implements DeviceConnection {
   Future<Stream<List<int>>> performReadFile(StorageFile file, {int offset = 0}) => throw UnimplementedError();
   @override
   Future<bool> performDeleteFile(StorageFile file, {int? timestamp}) => throw UnimplementedError();
+  @override
+  Future<bool> setDiagLogEnabled(bool enable) => throw UnimplementedError();
+  @override
+  Future<bool> performSetDiagLogEnabled(bool enable) => throw UnimplementedError();
+  @override
+  Future<DiagLogDrainResult?> drainDiagLog({bool keepEnabled = true}) => throw UnimplementedError();
+  @override
+  Future<DiagLogDrainResult?> performDrainDiagLog({bool keepEnabled = true}) => throw UnimplementedError();
+  @override
+  Future<int?> getFeaturesIfIdle() => throw UnimplementedError();
+  @override
+  Future<int?> performGetFeaturesIfIdle() => throw UnimplementedError();
 }
 
 class MockBtDevice extends Fake implements BtDevice {

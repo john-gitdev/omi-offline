@@ -31,6 +31,7 @@
 #include "monitor.h"
 #endif
 #include "codec.h"
+#include "diag_log.h"
 #include "rtc.h"
 #include "sd_card.h"
 #include "settings.h"
@@ -468,6 +469,17 @@ static struct bt_uuid_128 diagnostics_characteristic_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10061, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 diagnostics_drops_characteristic_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10062, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+#ifdef CONFIG_OMI_DIAG_LOG
+// Characteristic C:  19B10063 — diag-log drain (Long-Read). Snapshot header + packed
+//   16-byte records (see diag_log.h DIAG_LOG_HEADER_SIZE layout). Present only when
+//   CONFIG_OMI_DIAG_LOG is built (advertised via OMI_FEATURE_DIAG_LOG).
+// Characteristic D:  19B10064 — diag-log control (Write). 5 bytes [u8 enable][u32 ack_seq]:
+//   enable sets the runtime gate; ack_seq (non-zero) drops records with seq <= ack_seq.
+static struct bt_uuid_128 diag_log_read_characteristic_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10063, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+static struct bt_uuid_128 diag_log_control_characteristic_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10064, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+#endif
 
 static ssize_t diagnostics_read_handler(struct bt_conn *conn,
                                         const struct bt_gatt_attr *attr,
@@ -577,6 +589,55 @@ static atomic_t diag_notify_subscribed = ATOMIC_INIT(0);
 #define DIAG_NOTIFY_SYNC_MS 2000
 #define DIAG_NOTIFY_IDLE_MS 15000
 
+#ifdef CONFIG_OMI_DIAG_LOG
+/* 0x0063 drain read: serve the [offset, offset+len) slice of the snapshot blob
+ * directly into the ATT buffer. diag_log_drain snapshots the ring on the offset-0
+ * read so a GATT Long Read returns a stable blob; we don't route through
+ * bt_gatt_attr_read because the drain already handles offset addressing. */
+static ssize_t diag_log_read_handler(struct bt_conn *conn,
+                                     const struct bt_gatt_attr *attr,
+                                     void *buf,
+                                     uint16_t len,
+                                     uint16_t offset)
+{
+    ARG_UNUSED(conn);
+    ARG_UNUSED(attr);
+    return (ssize_t) diag_log_drain((uint8_t *) buf, len, offset);
+}
+
+/* 0x0064 control write: [u8 enable][u32 ack_seq LE] (5 bytes). enable sets the
+ * runtime gate; a non-zero ack_seq drops all records with seq <= ack_seq. A
+ * short/malformed write is rejected (fail-closed — this both gates capture and
+ * discards records). */
+static ssize_t diag_log_control_write_handler(struct bt_conn *conn,
+                                              const struct bt_gatt_attr *attr,
+                                              const void *buf,
+                                              uint16_t len,
+                                              uint16_t offset,
+                                              uint8_t flags)
+{
+    ARG_UNUSED(conn);
+    ARG_UNUSED(attr);
+    ARG_UNUSED(flags);
+    if (offset != 0) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+    }
+    if (len != 5) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+    const uint8_t *b = (const uint8_t *) buf;
+    bool enable = (b[0] != 0);
+    uint32_t ack_seq = (uint32_t) b[1] | ((uint32_t) b[2] << 8) | ((uint32_t) b[3] << 16) | ((uint32_t) b[4] << 24);
+
+    diag_log_set_enabled(enable);
+    if (ack_seq != 0) {
+        diag_log_ack(ack_seq);
+    }
+    LOG_INF("diag-log control: enable=%d ack_seq=%u (dropped=%u)", (int) enable, ack_seq, diag_log_dropped_count());
+    return len;
+}
+#endif // CONFIG_OMI_DIAG_LOG
+
 static struct bt_gatt_attr diagnostics_service_attr[] = {
     BT_GATT_PRIMARY_SERVICE(&diagnostics_service_uuid),
     BT_GATT_CHARACTERISTIC(&diagnostics_characteristic_uuid.uuid,
@@ -595,6 +656,23 @@ static struct bt_gatt_attr diagnostics_service_attr[] = {
                            NULL,
                            NULL),
     BT_GATT_CCC(diagnostics_drops_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+#ifdef CONFIG_OMI_DIAG_LOG
+    /* Diag-log drain + control — appended AFTER the 0x0062 CCC so the notify value
+     * attribute stays at index 4 (diagnostics_drops_notify) regardless of this build
+     * option. */
+    BT_GATT_CHARACTERISTIC(&diag_log_read_characteristic_uuid.uuid,
+                           BT_GATT_CHRC_READ,
+                           BT_GATT_PERM_READ,
+                           diag_log_read_handler,
+                           NULL,
+                           NULL),
+    BT_GATT_CHARACTERISTIC(&diag_log_control_characteristic_uuid.uuid,
+                           BT_GATT_CHRC_WRITE,
+                           BT_GATT_PERM_WRITE,
+                           NULL,
+                           diag_log_control_write_handler,
+                           NULL),
+#endif
 };
 
 static struct bt_gatt_service diagnostics_service = BT_GATT_SERVICE(diagnostics_service_attr);
@@ -1080,6 +1158,10 @@ features_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, voi
     // The RECORD_TOGGLE action toggles a manual recording / auto priority
     // recording — both require AAD, so advertise it only on AAD builds.
     features |= OMI_FEATURE_RECORD_TOGGLE;
+#endif
+#ifdef CONFIG_OMI_DIAG_LOG
+    // On-device diagnostic event log compiled in — 0x0063/0x0064 chars present.
+    features |= OMI_FEATURE_DIAG_LOG;
 #endif
 
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &features, sizeof(features));
@@ -1773,6 +1855,11 @@ static K_MUTEX_DEFINE(storage_temp_mutex);
  * via write_to_file_blocking() so the marker survives transient SD saturation.
  * Guarded by storage_temp_mutex (set/read/cleared only while it is held). */
 static bool storage_block_has_marker = false;
+/* Low 16 bits of the last marker header appended to the current block (e.g. 0xFFFC
+ * session-end, 0xFFFE button-tap, 0xFFF8 priority-start). Captured so a diag-log
+ * marker-drop event can name WHICH marker was lost instead of reporting 0. Same
+ * lifetime/guard as storage_block_has_marker. */
+static uint16_t storage_block_marker_low16 = 0;
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
 static uint8_t storage_temp_data[MAX_WRITE_SIZE];
@@ -1803,9 +1890,11 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
         /* If the block being flushed carries a marker, use the blocking enqueue
          * so it isn't dropped on transient saturation. */
         bool had_marker = storage_block_has_marker;
+        uint16_t marker_low16 = storage_block_marker_low16;
         uint32_t wrote = had_marker ? write_to_file_blocking(storage_temp_data, MAX_WRITE_SIZE)
                                     : write_to_file(storage_temp_data, MAX_WRITE_SIZE);
         storage_block_has_marker = false;
+        storage_block_marker_low16 = 0;
         if (wrote != MAX_WRITE_SIZE) {
             /* SD queue rejected the block — the buffered bytes (up to one
              * full block of audio frames or markers) are lost. We still
@@ -1817,9 +1906,15 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
             atomic_inc(&storage_block_drops);
             /* Diagnostics (0x19B10062): the dropped block carried an inline marker,
              * so this is a genuine lost marker (e.g. a 0xFFFFFFF8/FFFFFFFC that would
-             * make a priority recording revert to plain auto VAD). */
+             * make a priority recording revert to plain auto VAD). arg0 = the lost
+             * marker's low16 so the app can tell priority/session-end/tap apart. */
             if (had_marker) {
                 atomic_inc(&marker_write_drops);
+                diag_log_event(DIAG_MARKER_WRITE_DROP, sd_get_active_backend(), marker_low16,
+                               (uint32_t) atomic_get(&storage_block_drops));
+            } else {
+                diag_log_event(DIAG_SD_BLOCK_DROP, sd_get_active_backend(), 0,
+                               (uint32_t) atomic_get(&storage_block_drops));
             }
             atomic_set(&last_storage_drop_uptime_ms, (atomic_val_t) k_uptime_get());
             ok = false;
@@ -1838,9 +1933,12 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
     buffer_offset += entry_size;
 
     /* This block now carries a marker; mark it so every flush path (here, the
-     * rollover above, and the marker force-drain) uses the durable enqueue. */
+     * rollover above, and the marker force-drain) uses the durable enqueue, and
+     * record its low16 so a drop can name the marker type. `marker` here is the
+     * 4-byte header of the frame just written (0xFFFFFFFx for a real marker). */
     if (important) {
         storage_block_has_marker = true;
+        storage_block_marker_low16 = (uint16_t) (marker & 0xFFFF);
     }
 
     /* Align buffer_offset to 4-byte boundary for the next entry */
@@ -1852,17 +1950,25 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
 
     if (buffer_offset == MAX_WRITE_SIZE) {
         bool had_marker = storage_block_has_marker;
+        uint16_t marker_low16 = storage_block_marker_low16;
         uint32_t wrote = had_marker ? write_to_file_blocking(storage_temp_data, MAX_WRITE_SIZE)
                                     : write_to_file(storage_temp_data, MAX_WRITE_SIZE);
         storage_block_has_marker = false;
+        storage_block_marker_low16 = 0;
         if (wrote != MAX_WRITE_SIZE) {
             /* Full-buffer flush rejected. Same trade-off as above: reset
              * so subsequent writes can proceed, but report the loss. */
             LOG_WRN("Storage full-block flush dropped (wrote=%u/%u)", wrote, (uint32_t) MAX_WRITE_SIZE);
             atomic_inc(&storage_block_drops);
-            /* Diagnostics (0x19B10062): a dropped marker-bearing block = lost marker. */
+            /* Diagnostics (0x19B10062): a dropped marker-bearing block = lost marker.
+             * arg0 = the lost marker's low16 (which marker type was in the block). */
             if (had_marker) {
                 atomic_inc(&marker_write_drops);
+                diag_log_event(DIAG_MARKER_WRITE_DROP, sd_get_active_backend(), marker_low16,
+                               (uint32_t) atomic_get(&storage_block_drops));
+            } else {
+                diag_log_event(DIAG_SD_BLOCK_DROP, sd_get_active_backend(), 0,
+                               (uint32_t) atomic_get(&storage_block_drops));
             }
             atomic_set(&last_storage_drop_uptime_ms, (atomic_val_t) k_uptime_get());
             ok = false;
@@ -1940,6 +2046,7 @@ static bool write_marker_header_to_storage(uint32_t header, const char *label)
         if (wrote == MAX_WRITE_SIZE) {
             buffer_offset = 0;
             storage_block_has_marker = false;
+            storage_block_marker_low16 = 0;
         } else {
             /* Queue rejected; keep the original payload bytes in place
              * (the memset only touched the padding region). */
@@ -1969,7 +2076,11 @@ bool write_session_end_marker_to_storage(void)
      * finalize path fired and a 0xFFFFFFFC was handed to storage. Counted even if
      * the write below is dropped downstream — that pairing is the diagnosis. */
     atomic_inc(&session_end_marker_emits);
-    return write_marker_header_to_storage(0xFFFFFFFC, "session-end");
+    bool ok = write_marker_header_to_storage(0xFFFFFFFC, "session-end");
+    /* Logged after the inner write so device_session_id is guaranteed populated. */
+    diag_log_event(DIAG_SESSION_END_MARKER_EMIT, sd_get_active_backend(), 0,
+                   (uint32_t) atomic_get(&device_session_id));
+    return ok;
 }
 
 bool write_mute_on_marker_to_storage(void)
@@ -1989,7 +2100,11 @@ bool write_priority_recording_marker_to_storage(void)
      * already-recording guard. Counted even if the write is dropped below, so a
      * (starts=1, marker_write_drops=1) reading pins a lost priority marker. */
     atomic_inc(&priority_record_starts);
-    return write_marker_header_to_storage(0xFFFFFFF8, "priority-record");
+    bool ok = write_marker_header_to_storage(0xFFFFFFF8, "priority-record");
+    /* Logged after the inner write so device_session_id is guaranteed populated. */
+    diag_log_event(DIAG_PRIORITY_RECORD_START, sd_get_active_backend(), 0,
+                   (uint32_t) atomic_get(&device_session_id));
+    return ok;
 }
 
 /* Called from button.c priority_record_stop() once a force-capture actually ends
@@ -1997,6 +2112,8 @@ bool write_priority_recording_marker_to_storage(void)
 void transport_note_priority_record_stop(void)
 {
     atomic_inc(&priority_record_stops);
+    diag_log_event(DIAG_PRIORITY_RECORD_STOP, sd_get_active_backend(), 0,
+                   (uint32_t) atomic_get(&device_session_id));
 }
 #endif
 

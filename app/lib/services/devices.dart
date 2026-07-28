@@ -64,6 +64,7 @@ class OmiFeatures {
   static const int vadThreshold = 1 << 9;
   static const int priorityRecordCap = 1 << 10;
   static const int recordToggle = 1 << 11;
+  static const int diagLog = 1 << 12;
 }
 
 abstract class IDeviceServiceSubscription {

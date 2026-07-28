@@ -38,6 +38,10 @@ if(CONFIG_OMI_AUDIO_RING)
     list(APPEND core_sources src/lib/core/sd_ring.c)
 endif()
 
+if(CONFIG_OMI_DIAG_LOG)
+    list(APPEND core_sources src/lib/core/diag_log.c)
+endif()
+
 
 target_sources(app PRIVATE ${core_sources} ${app_sources})
 target_include_directories(app PRIVATE

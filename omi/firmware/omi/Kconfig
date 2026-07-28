@@ -125,6 +125,20 @@ config OMI_ENABLE_T5838_AAD
          point the driver resumes PDM and the software VAD takes over.
          Requires THSEL (P1.5) and WAKE (P1.2) to be wired to the T5838."
 
+config OMI_DIAG_LOG
+    bool "On-device diagnostic event log (dev/internal builds only)"
+    default n
+    help
+        "Compile in a small volatile RAM event ring, drained over BLE
+         0x19B10063 / 0x19B10064 with an ack-gated clear. It records per-event
+         context (uptime + cause) for the health events that the aggregate drop
+         counters (0x19B10062) only total — so field diagnosis of a lost Priority
+         Recording (empty-bin rotation, marker drop, pause-gate save, ...) needs
+         no RTT probe. The ring's RAM is reclaimed from SD_WORKER_STACK_SIZE, so
+         a dev build costs the same RAM as production. It is additionally gated at
+         RUNTIME by a dev-tools toggle (default OFF, not persisted). Leave OFF for
+         a true production build — it then compiles to zero .bss and zero code."
+
 config OMI_WATCHDOG_TIMEOUT_MS
     int "Watchdog timeout (ms)"
     range 5000 300000

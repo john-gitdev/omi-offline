@@ -18,6 +18,7 @@
 #ifdef CONFIG_OMI_AUDIO_RING
 #include "lib/core/sd_ring.h"
 #endif
+#include "lib/core/diag_log.h"
 
 #include <ctype.h>
 #include <lfs.h>
@@ -359,14 +360,16 @@ static atomic_t empty_bin_rotations;
  * recordings finalizing = the rescue firing. Read via 0x19B10062. */
 static atomic_t marker_pause_gate_saves;
 
-/* Scan a 440-byte storage block for inline marker headers. Markers are always
- * 4-byte aligned by the transport, so scanning 4-byte-aligned words is exact. The
- * sentinel list lives here ONCE; `include_resume` selects the marker SET so the two
- * wrappers below can't drift out of sync as marker types / alignment change:
- *   - block_has_marker (include_resume = true): EVERY marker type, incl. 0xFFFFFFFD
- *     VAD-resume. Used at the sd_write_paused rescue so NO marker is dropped through
- *     a pause. Before oo-2.5.9 that block was silently discarded.
- *   - block_has_critical_marker (include_resume = false): boundary + user markers
+/* Scan a 440-byte storage block for inline marker headers and return the FIRST
+ * matching marker word (0 if none — every real marker header is 0xFFFFFFFx, so 0 is
+ * an unambiguous "no marker"). Markers are always 4-byte aligned by the transport, so
+ * scanning 4-byte-aligned words is exact. The sentinel list lives here ONCE;
+ * `include_resume` selects the marker SET so the call sites can't drift out of sync
+ * as marker types / alignment change:
+ *   - include_resume = true: EVERY marker type, incl. 0xFFFFFFFD VAD-resume. The
+ *     sd_write_paused rescue passes true so NO marker is dropped through a pause
+ *     (before oo-2.5.9 that block was silently discarded).
+ *   - include_resume = false (block_has_critical_marker): boundary + user markers
  *     only (priority-start / mute-off / mute-on / session-end / button-tap). Used to
  *     decide the immediate force-sync (an out-of-band CTRL_SYNC + cursor write).
  *     0xFFFFFFFD is excluded there because it fires on EVERY speech-after-silence
@@ -374,9 +377,11 @@ static atomic_t marker_pause_gate_saves;
  *     ungraceful cut loses at most one re-anchor, not a boundary — it rides the
  *     RING_SYNC_BYTES periodic sync instead, and was the main reason ring's flush
  *     cadence ran ~10x LittleFS's.
- * Only called on the rare pause-gate / marker paths, never per audio frame, so the
- * scan cost is irrelevant. */
-static bool block_scan_markers(const uint8_t *buf, size_t len, bool include_resume)
+ * Returning the word (not a bool) lets the pause-gate rescue tag its diag-log event
+ * with which marker (low16) it kept, without a second scan or a duplicate sentinel
+ * list. Only called on the rare pause-gate / marker paths, never per audio frame, so
+ * the scan cost is irrelevant. */
+static uint32_t block_scan_markers(const uint8_t *buf, size_t len, bool include_resume)
 {
     for (size_t i = 0; i + 4 <= len; i += 4) {
         uint32_t w = (uint32_t) buf[i] | ((uint32_t) buf[i + 1] << 8) | ((uint32_t) buf[i + 2] << 16) |
@@ -385,22 +390,16 @@ static bool block_scan_markers(const uint8_t *buf, size_t len, bool include_resu
             w == 0xFFFFFFFAu /* mute-on */ || w == 0xFFFFFFFCu /* session-end */ ||
             w == 0xFFFFFFFEu /* button-tap */ ||
             (include_resume && w == 0xFFFFFFFDu) /* VAD-resume — critical set excludes */) {
-            return true;
+            return w;
         }
     }
-    return false;
-}
-
-/* Any marker (incl. VAD-resume) — pause-gate rescue predicate. */
-static inline bool block_has_marker(const uint8_t *buf, size_t len)
-{
-    return block_scan_markers(buf, len, true);
+    return 0;
 }
 
 /* Boundary/user markers only (VAD-resume excluded) — force-sync predicate. */
 static inline bool block_has_critical_marker(const uint8_t *buf, size_t len)
 {
-    return block_scan_markers(buf, len, false);
+    return block_scan_markers(buf, len, false) != 0;
 }
 
 /* Protects current_filename / current_file_path across threads.
@@ -443,7 +442,16 @@ static atomic_t sd_dev_pm_supported = ATOMIC_INIT(1);
  * fit comfortably too. The 4 KB reclaimed vs the old 16 KB is handed to the codec
  * thread, which ran at ~17.5/18.6 KB (94%). Net RAM change: zero. Verify after a
  * backend switch that the LittleFS-path high-water stays well under this. */
+#if defined(CONFIG_OMI_DIAG_LOG)
+/* The diagnostic event ring's RAM (DIAG_LOG_RING_BYTES = 2 KB) is carved out of this
+ * stack when the feature is compiled in, keeping total RAM identical to production
+ * (10240 stack + 2048 ring == the 12288 stack prod uses). The sd_worker high-water is
+ * ~6 KB on the ring path, so 10 KB leaves comfortable headroom — but re-verify the
+ * LittleFS-path high-water (0x0062 offset 68) after a backend switch before trusting it. */
+#define SD_WORKER_STACK_SIZE (12288 - DIAG_LOG_RING_BYTES)
+#else
 #define SD_WORKER_STACK_SIZE 12288
+#endif
 #define SD_WORKER_PRIORITY 7
 K_THREAD_STACK_DEFINE(sd_worker_stack, SD_WORKER_STACK_SIZE);
 static struct k_thread sd_worker_thread_data;
@@ -842,8 +850,12 @@ static void process_write_data_req(const sd_req_t *req)
          * stop, and marker_pause_gate_saves logged the drop). Write a marker block
          * through despite the pause; drop only non-marker (audio) blocks. The counter
          * tallies these RESCUES (markers kept through a pause), not losses. */
-        if (block_has_marker(req->u.write.buf, req->u.write.len)) {
+        uint32_t pause_marker = block_scan_markers(req->u.write.buf, req->u.write.len, true);
+        if (pause_marker != 0) {
             atomic_inc(&marker_pause_gate_saves);
+            /* arg0 = which marker was rescued (low16); arg1 = block length. */
+            diag_log_event(DIAG_MARKER_PAUSE_GATE_SAVE, STORAGE_BACKEND_LITTLEFS, (uint16_t) (pause_marker & 0xFFFF),
+                           req->u.write.len);
             /* fall through to persist the marker despite the pause */
         } else {
             if (spi_woken) {
@@ -1702,6 +1714,7 @@ static int create_audio_file_with_timestamp(void)
          * (0x19B10062) so it's visible without an RTT capture. */
         if (current_file_size <= sizeof(RecordingHeader_v1_t)) {
             atomic_inc(&empty_bin_rotations);
+            diag_log_event(DIAG_EMPTY_BIN_ROTATION, STORAGE_BACKEND_LITTLEFS, 0, current_file_size);
         }
         lfs_file_close(&lfs_fs, &lfs_fil_data);
         k_mutex_lock(&current_filename_lock, K_FOREVER);
@@ -3135,6 +3148,7 @@ static int ring_create_segment(void)
     /* Empty-bin diagnostic: previous segment closed holding only its header. */
     if (current_filename[0] != '\0' && current_file_size <= sizeof(RecordingHeader_v1_t)) {
         atomic_inc(&empty_bin_rotations);
+        diag_log_event(DIAG_EMPTY_BIN_ROTATION, STORAGE_BACKEND_RING, 0, current_file_size);
     }
 
     /* Pre-time-sync segments key on uptime seconds (sorts < 946684800 → shown
@@ -3229,8 +3243,12 @@ static void process_write_data_req_ring(const sd_req_t *req)
      * marker-bearing blocks (session-end / priority-start / tap / mute / resume)
      * through a pause; drop only plain audio. */
     if (!sd_draining && atomic_get(&sd_write_paused)) {
-        if (block_has_marker(req->u.write.buf, req->u.write.len)) {
+        uint32_t pause_marker = block_scan_markers(req->u.write.buf, req->u.write.len, true);
+        if (pause_marker != 0) {
             atomic_inc(&marker_pause_gate_saves);
+            /* arg0 = which marker was rescued (low16); arg1 = block length. */
+            diag_log_event(DIAG_MARKER_PAUSE_GATE_SAVE, STORAGE_BACKEND_RING, (uint16_t) (pause_marker & 0xFFFF),
+                           req->u.write.len);
         } else {
             return; /* no I/O performed */
         }

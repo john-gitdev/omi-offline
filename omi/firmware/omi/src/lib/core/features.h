@@ -22,6 +22,10 @@ typedef enum {
      * hide the "Single recording button" switch / Toggle option on older
      * firmware that would reject byte 6. */
     OMI_FEATURE_RECORD_TOGGLE = (1 << 11),
+    /* On-device diagnostic event log is compiled in (CONFIG_OMI_DIAG_LOG): the
+     * BLE 0x0063 drain / 0x0064 control chars exist. The app hides the Debug Tools
+     * event-log toggle when this bit is absent. */
+    OMI_FEATURE_DIAG_LOG = (1 << 12),
 } omi_feature_t;
 
 #endif // FEATURES_H

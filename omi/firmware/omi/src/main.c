@@ -19,6 +19,7 @@
 #include "lib/core/settings.h"
 #include "lib/core/codec.h"
 #include "lib/core/config.h"
+#include "lib/core/diag_log.h"
 #include "rtc.h"
 #include "imu.h"
 
@@ -298,6 +299,10 @@ int main(void)
     play_haptic_milli(100);
 
     app_settings_init();
+
+    /* Zero the diagnostic event ring before any thread could enqueue (no-op when
+     * CONFIG_OMI_DIAG_LOG is off). Starts disabled — the app enables it at runtime. */
+    diag_log_init();
 
 #ifdef CONFIG_HWINFO
     {
