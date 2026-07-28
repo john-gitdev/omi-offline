@@ -243,8 +243,21 @@ static bool record_start(void)
         marker_flash_count = 2;
         /* Same reasoning as the auto-mode priority path below: open capture on a
          * freshly powered mic. Manual mode is just as exposed to a wedged part —
-         * more so, since it has no AAD watchdog to fall back on. */
-        mic_reset();
+         * more so, since it has no other recovery path at all.
+         *
+         * Only when capture is not already running. in_manual is true for BOTH
+         * manual sub-states — 32769 standby and 65535 recording — so a second
+         * RECORD_START press while a manual recording is live lands here too, and
+         * an unguarded reset would punch ~40 ms out of that live recording. The
+         * repeat is entirely reachable: nothing upstream de-duplicates the action,
+         * and pressing again is the natural thing to do when you missed the LED
+         * flash and aren't sure the recording started. Re-pressing was a harmless
+         * no-op before this change and must stay one. (already_recording is
+         * otherwise dead in this branch — the else-if below only ever sees it in
+         * auto mode.) */
+        if (!already_recording) {
+            mic_reset();
+        }
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
         aad_set_threshold(65535);
         app_settings_save_vad_threshold(65535);
