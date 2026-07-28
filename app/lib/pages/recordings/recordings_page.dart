@@ -539,12 +539,6 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
     }
   }
 
-  String _filterLabel(RecordingFilterMode mode) => switch (mode) {
-        RecordingFilterMode.visible => 'Main',
-        RecordingFilterMode.hidden => 'Hidden',
-        RecordingFilterMode.all => 'All',
-      };
-
   PopupMenuItem<RecordingFilterMode> _buildFilterMenuItem(String label, RecordingFilterMode mode) {
     final selected = _filterMode == mode;
     return PopupMenuItem<RecordingFilterMode>(
@@ -569,13 +563,23 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
 
   /// Right-aligned list-view controls for the Conversations header: the
   /// markers-only toggle, the ghost-visibility toggle, and the duration filter.
-  /// They live here (as list controls) rather than in the action-dense app bar,
-  /// uniformly sized, vertically centered and evenly spaced, with the tap ink
-  /// flash suppressed so they read as compact edge glyphs. The markers-only
-  /// toggle is shown whenever any markers exist — in both the normal and
-  /// markers-only views — so it is always the way back out of markers-only; the
-  /// ghost + filter controls hide in markers-only view.
+  /// All three share one glyph size (so their tops and bottoms line up) and sit
+  /// in a tight cluster with only a hair of spacing between them, tap ink flash
+  /// suppressed. The markers-only toggle is always first (leftmost) so its
+  /// position is fixed; when markers-only is on the ghost + filter controls dim
+  /// to dark grey **in place** (rather than being removed) so the bookmark never
+  /// shifts. The filter funnel carries a tiny corner letter badge (M/H/A) naming
+  /// the active tab instead of a side label, so it too never moves as the tab
+  /// changes.
   List<Widget> _buildListControls(RecordingsController controller) {
+    // One glyph size for all three so their top/bottom pixels align; a tight
+    // symmetric tap pad keeps them clustered with only a small gap.
+    const double iconSize = 18;
+    const EdgeInsets tapPad = EdgeInsets.symmetric(horizontal: 5, vertical: 10);
+    // Dark grey the ghost + filter dim to while markers-only is active.
+    final Color dimmed = Colors.grey.shade700;
+    final markerMode = _showMarkersOnly;
+
     Widget noSplash(Widget child) => Theme(
           data: Theme.of(context).copyWith(
             splashColor: Colors.transparent,
@@ -585,26 +589,29 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
           child: child,
         );
 
+    Widget tapGlyph({required Widget glyph, VoidCallback? onTap, required String tooltip}) => Tooltip(
+          message: tooltip,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onTap,
+            child: Padding(padding: tapPad, child: glyph),
+          ),
+        );
+
     final controls = <Widget>[];
 
-    // Markers-only toggle.
+    // Markers-only toggle. Always first/leftmost so it stays put: the ghost +
+    // filter controls to its right dim in place rather than disappearing.
     if (controller.markerConversations.isNotEmpty) {
-      controls.add(noSplash(IconButton(
-        padding: EdgeInsets.zero,
-        // Full 48dp Material hit area; centerRight pins the glyph to the box's
-        // right edge so all three controls share one even, right-aligned rhythm
-        // (matching the flush-right filter funnel) instead of the funnel floating
-        // past a wide gap in the default filter state.
-        constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
-        alignment: Alignment.centerRight,
+      controls.add(tapGlyph(
         tooltip: 'Toggle markers only',
-        onPressed: () => setState(() => _showMarkersOnly = !_showMarkersOnly),
-        icon: FaIcon(
-          _showMarkersOnly ? FontAwesomeIcons.solidBookmark : FontAwesomeIcons.bookmark,
-          size: 18,
-          color: _showMarkersOnly ? Colors.amber : Colors.white,
+        onTap: () => setState(() => _showMarkersOnly = !_showMarkersOnly),
+        glyph: FaIcon(
+          markerMode ? FontAwesomeIcons.solidBookmark : FontAwesomeIcons.bookmark,
+          size: iconSize,
+          color: markerMode ? Colors.amber : Colors.white,
         ),
-      )));
+      ));
     }
 
     // Ghost-visibility toggle — hides/shows every discard ("ghost") row across
@@ -612,79 +619,81 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
     // suppresses rows only (the discards stay on disk, recoverable). Hidden
     // during a ghost multi-select: hiding would filter out the very rows being
     // selected, stranding the picked IDs behind Recover/Delete actions that then
-    // no-op. (A recording selection is unaffected, so the toggle stays.)
-    if (!_showMarkersOnly &&
-        !(_inSelectionMode && _selType == RecordingRowType.ghost) &&
+    // no-op. (A recording selection is unaffected, so the toggle stays.) In
+    // markers-only mode it dims to dark grey and goes inert instead of vanishing.
+    if (!(_inSelectionMode && _selType == RecordingRowType.ghost) &&
         controller.batches.any((b) => b.discards.isNotEmpty)) {
-      controls.add(noSplash(IconButton(
-        padding: EdgeInsets.zero,
-        // Full 48dp Material hit area; centerRight pins the glyph to the box's
-        // right edge so all three controls share one even, right-aligned rhythm
-        // (matching the flush-right filter funnel) instead of the funnel floating
-        // past a wide gap in the default filter state.
-        constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
-        alignment: Alignment.centerRight,
+      controls.add(tapGlyph(
         tooltip: _hideGhosts ? 'Show ghosts' : 'Hide ghosts',
-        onPressed: () => setState(() {
-          _hideGhosts = !_hideGhosts;
-          _prefs.hideGhosts = _hideGhosts;
-        }),
-        icon: FaIcon(
+        onTap: markerMode
+            ? null
+            : () => setState(() {
+                  _hideGhosts = !_hideGhosts;
+                  _prefs.hideGhosts = _hideGhosts;
+                }),
+        glyph: FaIcon(
           FontAwesomeIcons.ghost,
-          size: 16,
-          color: _hideGhosts ? Colors.grey.shade600 : Colors.orange.shade300,
+          size: iconSize,
+          color: markerMode ? dimmed : (_hideGhosts ? Colors.grey.shade600 : Colors.orange.shade300),
         ),
-      )));
+      ));
     }
 
     // Duration filter — only meaningful when short conversations are hidden
-    // (filterMinDurationSeconds > 0). The active non-default filter labels
-    // itself, tinted purple so a stray "Hidden"/"All" stands out.
-    if (!_showMarkersOnly && _prefs.filterMinDurationSeconds > 0) {
+    // (filterMinDurationSeconds > 0). A tiny letter badge in the funnel's
+    // bottom-right corner names the active tab (M=Main, H=Hidden, A=All) so the
+    // funnel never shifts as the tab changes: grey for Main (no filtering),
+    // purple for Hidden/All. Dims to dark grey and goes inert in markers-only.
+    if (_prefs.filterMinDurationSeconds > 0) {
+      final (String badge, Color tint) = switch (_filterMode) {
+        RecordingFilterMode.visible => ('M', Colors.grey.shade500),
+        RecordingFilterMode.hidden => ('H', Colors.deepPurpleAccent),
+        RecordingFilterMode.all => ('A', Colors.deepPurpleAccent),
+      };
+      final effectiveTint = markerMode ? dimmed : tint;
+      final funnel = Padding(
+        padding: tapPad,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            FaIcon(FontAwesomeIcons.filter, size: iconSize, color: effectiveTint),
+            Positioned(
+              right: -3,
+              bottom: -3,
+              child: Text(
+                badge,
+                style: TextStyle(
+                  color: effectiveTint,
+                  fontSize: 9,
+                  height: 1,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
       controls.add(noSplash(PopupMenuButton<RecordingFilterMode>(
+        enabled: !markerMode,
         tooltip: 'Filter recordings',
         color: const Color(0xFF2C2C2E),
         position: PopupMenuPosition.under,
         initialValue: _filterMode,
+        padding: EdgeInsets.zero,
         onSelected: (mode) => setState(() => _filterMode = mode),
         itemBuilder: (context) => [
           _buildFilterMenuItem('Main', RecordingFilterMode.visible),
           _buildFilterMenuItem('Hidden', RecordingFilterMode.hidden),
           _buildFilterMenuItem('All', RecordingFilterMode.all),
         ],
-        child: Builder(builder: (context) {
-          final filtering = _filterMode != RecordingFilterMode.visible;
-          final tint = filtering ? Colors.deepPurpleAccent : Colors.grey.shade400;
-          // Full 48dp Material hit area to match the sibling toggles; centerRight
-          // keeps the funnel flush to the card's right edge (left padding 12
-          // widens the target without shifting the glyph off the edge).
-          return Container(
-            constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
-            alignment: Alignment.centerRight,
-            padding: const EdgeInsets.only(left: 12),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (filtering) ...[
-                  Text(
-                    _filterLabel(_filterMode),
-                    style: TextStyle(color: tint, fontSize: 13, fontWeight: FontWeight.w500),
-                  ),
-                  const SizedBox(width: 8),
-                ],
-                FaIcon(FontAwesomeIcons.filter, size: 16, color: tint),
-              ],
-            ),
-          );
-        }),
+        child: funnel,
       )));
     }
 
-    // Even spacing between the controls; the group as a whole is right-aligned
-    // (it follows a Spacer in the header row).
+    // Tight, even spacing so the group reads as one cluster of controls.
     return [
       for (int i = 0; i < controls.length; i++) ...[
-        if (i > 0) const SizedBox(width: 6),
+        if (i > 0) const SizedBox(width: 2),
         controls[i],
       ],
     ];
