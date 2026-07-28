@@ -1058,6 +1058,11 @@ static ssize_t settings_vad_threshold_write_handler(struct bt_conn *conn,
     memcpy(&new_threshold, buf, 2);
 
     LOG_INF("Received new VAD threshold: %u", new_threshold);
+
+    /* Capture the outgoing mode before the save overwrites it. Manual is 32769
+     * (standby) or 65535 (recording); anything lower is an auto sensitivity. */
+    const uint16_t prev_threshold = app_settings_get_vad_threshold();
+
     int err = app_settings_save_vad_threshold(new_threshold);
     if (err) {
         LOG_ERR("Failed to save VAD threshold setting: %d", err);
@@ -1065,6 +1070,17 @@ static ssize_t settings_vad_threshold_write_handler(struct bt_conn *conn,
 
     // Apply the threshold immediately
     aad_set_threshold(new_threshold);
+
+    /* Switching manual -> automatic hands capture back to the hardware wake line,
+     * which is exactly where a wedged mic goes unnoticed (nothing auto-records and
+     * no button press is coming to mask it). Start that mode on a freshly powered
+     * part. Only this direction needs it: the manual paths reset the mic on every
+     * record start/stop themselves, and an auto -> auto sensitivity tweak never
+     * changes who is driving capture. */
+    if (prev_threshold >= 32769 && new_threshold < 32769) {
+        LOG_INF("VAD threshold: manual -> automatic, resetting mic");
+        mic_reset();
+    }
 
     return len;
 }
