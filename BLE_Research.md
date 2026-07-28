@@ -130,6 +130,7 @@ Record the sub-class in the "Recovery trigger" column below.
 | 1 | 2026-07-22 15:08→15:36 | 28m 16s | SILENT | screen-wake (`screen_interactive` false→true) | **No** | +1 (in 07:34–18:23 window) | fast | 147, then 8 |
 | 2 | 2026-07-22 21:01→21:07 | 5m 54s | SILENT | device-return / self (Doze stayed on, screen off) | **No** | +0 (55→55) | fast | 147 |
 | 3 | 2026-07-24 04:42→04:45 | 3m 12s | *(none — sub-threshold)* | **BT toggle** (`error=bluetooth_off` → immediate reconnect) | **Yes** | +0 (flat at 3) | fast | *none — all `-1`* |
+| 4 | 2026-07-28 19:47→22:27 | ~2h 40m (3 cycles) | **ADVERTISING** (first ever) | Forget Device + power-cycle | **No** | +0 (flat at 61) | fast | *none — all `-1`* |
 
 Wedge 0 is the **origin of the ghost-GATT hypothesis** and the purge fixes now shipped
 (§8 background, §6 "already implemented"); it predates the env-snapshot instrumentation, so
@@ -250,6 +251,59 @@ reconstructed from connect/transport lines, and the ghost is **inferred, not obs
   central (phone) side.** Consistent with the all-`-1` timeout signature.
 - **Bucket: toggle-required.** The self-clearing recovery mechanisms (screen-wake, device-return
   alarm) did **not** land in the ~3 min before the user toggled; the adapter cycle is what cleared it.
+
+---
+
+### Detail — Wedge 4 (2026-07-28) — bond loss caught in the act
+
+The first wedge where the snapshot instrumentation captured the bond flipping, and the first
+**ADVERTISING** probe verdict on record. Settles several open questions at once.
+
+- Log source: app 0.31.x, device `C3:94:71:EA:A8:D5`, firmware `oo-2.8.0`.
+- **The device never reset and the SD is clean.** `live_uptime_ms` climbs monotonically all day —
+  `4797968` (04:07) → `53129979` (17:32) → `70820793` (22:27) = **19 h 40 m continuous**. Every
+  drop counter zero throughout (`block_drops=0`, `ring_io_errors=0`, `codec_frame_drops=0`),
+  `estab_fail_count` flat at **61**. The only reboot is the operator's own power-cycle at 22:28:50
+  (`live_uptime_ms=2982`, `last reset = low power wake; prior boot ran 19h 40m`).
+  ⟹ **The §9 crash-loop / dirty-mount hypothesis is dead for this episode.**
+- **`bond_state` flipped spontaneously, phone-side, with no DFU and no unpair:**
+  - `ble_wedge` @ 19:47:11 — `bond_state=bonded`
+  - `ble_wedge` @ 20:06:54 — `bond_state=bonded`
+  - `ble_wedge` @ 21:47:08 — **`bond_state=not_bonded`**
+  - `ble_wedge` @ 22:17:08 — `not_bonded`
+- `scan_probe` @ 21:47:16 — **2 adv packets, RSSI −73 → ADVERTISING**; @ 22:17:16 — 3 packets,
+  RSSI −100 → ADVERTISING. The peripheral was demonstrably healthy and on the air the whole time.
+- Post-flip symptom is the §9 signature exactly: connect → `device ready (14 services)` →
+  `Failed to write characteristic: Disconnected` → drop, on a ~4–6 s cycle, repeating from
+  22:25:29 to 22:26:16 without ever completing setup.
+- Cleared by **Forget Device** @ 22:26:13 (which resets the app's own device state and re-pairs
+  clean), then a power-cycle @ 22:28. The connect at 22:27:22 read the diagnostics characteristics
+  successfully, and the encrypted storage characteristic worked again by 22:30:34.
+- **Bucket: bond-mismatch (§9), not a wedge.** Establishment was never the problem.
+
+**What this settles.** The bond-mismatch class is real and now directly instrumented — no longer
+inferred from a confounded button press. It is also the **first ADVERTISING verdict**, answering
+§7's lead question: ADVERTISING wedges do happen on this phone/device, and they are the
+bond-mismatch population, not the establishment population. The `oo-2.8.1`
+`CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE=y` fix targets exactly this failure.
+
+**Still open:** *why* the phone dropped its bond unprompted. One plausible chain that fits the
+ordering — the device's own key went first, the phone's stale-LTK connect drew a
+`PIN_OR_KEY_MISSING`, and Android cleared its bond in response (which would also mean the
+"Android reliably auto-clears" premise §9 doubted is correct on this handset). Unverified; a
+btsnoop capture across the flip would settle it.
+
+### Detail — Wedge 4 companion finding: the mic was wedged, and the reboot fixed it
+
+Same log, separate fault, worth recording because the two were easy to conflate. Every recording
+in the 19 h 40 m session decoded to **digital silence** — e.g. 18:38:26,
+`1785263851_2496461859.bin — 2070 frames, 2025 speech frames, maxAmp=0.0000`. The high "speech"
+count is force-capture from a Priority Recording, not detection; **`maxAmp` is the real signal and
+it was flat zero.** The first bin of the post-power-cycle session reads
+`1785277726_4189929963.bin — 1537 frames, 987 speech frames, **maxAmp=0.4998**`.
+
+⟹ The T5838 was returning silence, the power-cycle recovered it, and `oo-2.8.0` predates the
+`mic_reset()` work (PR #361) that recovers this without a reboot.
 
 ---
 
