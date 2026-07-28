@@ -535,9 +535,35 @@ build actually includes (`boards/omi/omi_nrf5340_cpuapp.dts:261` →
 **`0xf8000`–`0x100000`** (32 KB). `boards/omi/pm_static.yml` pins `mcuboot_primary` to
 **`0x10000`–`0x100000`** and `mcuboot_primary_app` to `0x10200`–`0x100000`. The NVS holding the
 BLE bonds *and* every `omi/*` setting therefore sits **inside the slot MCUboot rewrites on every
-update** — and `sysbuild.conf` sets `SB_CONFIG_MCUBOOT_MODE_OVERWRITE_ONLY=y`, so each update
-erases the primary slot to copy the new image in and writes its image trailer at the slot's end,
-i.e. straight through that NVS.
+update**.
+
+**How much of it gets erased — the part that makes this fit the evidence.** A whole-slot erase
+would destroy the NVS on *every* update, which the history falsifies: bonds usually survive (that
+is why the reset-pairing toggle was hidden). The actual behaviour is narrower.
+`sysbuild/mcuboot.conf` sets `CONFIG_BOOT_UPGRADE_ONLY=y`, which the Zephyr port
+(`bootloader/mcuboot/boot/zephyr/include/mcuboot_config/mcuboot_config.h:72-75`) expands to
+**both** `MCUBOOT_OVERWRITE_ONLY` **and** `MCUBOOT_OVERWRITE_ONLY_FAST`. Under FAST,
+`boot_copy_image` (`boot/bootutil/src/loader.c:1872-1899`) erases sectors from the slot start only
+up to the *image size* and then breaks, and separately erases only the **trailer sectors at the top
+of the slot**. The image stops far below `0xf8000`, and the overwrite-only trailer (magic +
+image-ok + swap-info) rounds to a single 4 KB sector.
+
+Net: **one of the eight NVS sectors — `0xff000`–`0x100000` — is erased per OTA.** NVS is a
+circular log; it re-inits that sector as free and recovers structurally, but any key whose only
+live copy was sitting there is lost. Bonds are rewritten rarely, so they drift around the ring and
+land in the doomed sector roughly 1 flash in 8. That is precisely the observed "usually survives,
+occasionally doesn't", and it gives `oo-2.7.3` a real mechanism: dropping the redundant pre-flash
+NVS write lowered the odds of the freshest bond copy sitting in the top sector at flash time,
+without moving the NVS.
+
+**Free test, since the mechanism is indiscriminate:** it should intermittently eat *other* `omi/*`
+keys too — storage backend, Priority Recording cap, button config. A history of settings silently
+reverting after an OTA is strong confirmation; never seeing that across many flashes while bonds
+have been lost more than once weakens the theory badly.
+
+Not a candidate: the **Ring** audio backend. `sd_ring.c:96-104` writes via `disk_access_*` on
+`CONFIG_SDMMC_VOLUME_NAME` — the SD NAND on `sdhc0` (spi3 CS0), a different physical chip from
+both the internal flash and the P25Q16H NOR. It cannot reach the bond storage.
 
 `pm_static.yml` defines **no `settings_storage`**, and `flash_primary` has zero free space
 (`mcuboot` `0x0`–`0x10000` + `mcuboot_primary` `0x10000`–`0x100000` spans it entirely), so
