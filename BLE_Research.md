@@ -470,7 +470,50 @@ So once the two sides' bond state diverges, **the device refuses to re-pair, per
 
 **Fix shipped in `oo-2.8.1`:** `CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE=y`.
 
-### Where the divergence came from — the settings NVS is inside the MCUboot app slot
+### Competing hypotheses — this diagnosis is NOT settled
+
+Everything below this line survived an adversarial pass only partly. Read these before acting
+on it.
+
+**1. The recovery evidence is confounded.** The whole "it was a bond mismatch" reading leans on
+the 5-tap + 10 s hold (`bt_unpair`, `button.c:430`) being what cleared it. But **4**-tap + hold
+is `turnoff_all()` — power off (`button.c:425`). The two gestures are adjacent, and the reporter
+described *both* rebooting the device and doing a button combo. A power-cycle alone would clear a
+crash-loop or a wedged stack, with no bond involved. `bt_unpair` does **not** reboot (no
+`sys_reboot` on that path), so the two are separable in principle — but not from the report we
+have.
+
+**2. `gatt_status_8` argues against SMP rejection.** Status 8 is `GATT_CONN_TIMEOUT` — the peer
+stopped answering on air with no LL_TERMINATE. An SMP pairing failure normally produces an
+explicit peer-initiated disconnect (Android `GATT_AUTH_FAIL` 137, or status 5), not a supervision
+timeout. A device that **crashed, watchdog-reset, or browned out** ~1–3 s into each connection
+produces exactly the observed trace — connect, discover services, silence, timeout, repeat — and
+fits status 8 *better* than the bond theory does.
+
+**3. The direction inference rests on a shaky premise.** "Phone stale / device unbonded
+self-heals" assumes Android reliably clears its own bond on `PIN_OR_KEY_MISSING`. Android stacks
+are inconsistent here; several retry with the stale key indefinitely. If this phone is one of
+those, that direction *also* never self-heals, and the argument that the **device** held the
+stale bond collapses — along with the claim that `CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE` would
+have prevented this particular outage.
+
+**4. The NVS-overlap theory is probably wrong.** Partition Manager performs overlap validation;
+a `settings_storage` genuinely overlapping `mcuboot_primary` would most likely fail the build,
+and this firmware builds. NCS also redirects `FIXED_PARTITION(storage_partition)` to the PM
+partition when PM is active, so the "falls back to the DT partition at `0xf8000`" step is
+doubtful. Treat the section below as an unverified lead, not a finding.
+
+**What settles it:** the `reset_cause` + `uptime_seconds` from the Diagnostics characteristic
+(`0x19B10061`) on the **first successful connect after recovery**. A small uptime and/or a
+watchdog/brownout cause ⟹ the device was resetting, and hypotheses 1–3 win outright. A large
+uptime (hours) ⟹ the device was up throughout, and the bond reading survives. That reading is
+already logged as `device_conn_fail` / `device_drop_stats` (§2) — it just wasn't in the excerpt.
+
+`CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE=y` (`oo-2.8.1`) stands regardless: the unrecoverable
+refuse-to-re-pair state is provable from the source alone (encrypted characteristics + `smp.c`
+`update_keys_check` + the config being unset), independent of whether it caused *this* outage.
+
+### Unverified lead — settings NVS possibly inside the MCUboot app slot
 
 Which side held the stale bond: **the device did, the phone did not.** The two directions have
 different observable fates, and only one matches:
