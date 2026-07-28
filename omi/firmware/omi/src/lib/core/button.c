@@ -73,6 +73,13 @@ bool mute_apply(bool on)
         mic_pause();
     } else {
         is_led_enabled = led_state_before_mute;
+        /* Unmute is the safest recovery point the user hands us: no capture is in
+         * flight, so a full T5838 power-cycle costs nothing but ~40 ms. mic_resume()
+         * alone only re-triggers the nRF PDM peripheral — it never touches PDM_EN —
+         * so a wedged mic (digital-zero PDM output, hw AAD never asserting WAKE)
+         * survives a mute/unmute cycle completely untouched. Reset the part first,
+         * then let mic_resume() start capture on a freshly powered mic. */
+        mic_reset();
         mic_resume();
     }
     LOG_INF("Mute toggled: %s", on ? "ON" : "OFF");
@@ -196,6 +203,12 @@ static void priority_record_stop(void)
     transport_note_priority_record_stop(); /* diagnostics: pairs with the start count (0x19B10062) */
     uint16_t resting = app_settings_get_vad_threshold(); /* persisted auto value */
     aad_set_threshold(resting);
+    /* aad_set_threshold's finalize path just parked AAD asleep, where only the
+     * hardware wake line can start another recording. Reset on the way in so we
+     * enter sleep on a known-good mic: without this a wedge that began during the
+     * recording costs up to AAD_WEDGE_RESET_MS of dead auto-capture before the
+     * watchdog notices. Free here — the recording has already ended. */
+    mic_reset();
     create_new_audio_file();
     priority_record_cancel_cap();
 }
@@ -228,6 +241,10 @@ static bool record_start(void)
         /* Explicit manual-mode start, persisted so it survives a reboot. */
         marker_flash_color = MARKER_FLASH_GREEN;
         marker_flash_count = 2;
+        /* Same reasoning as the auto-mode priority path below: open capture on a
+         * freshly powered mic. Manual mode is just as exposed to a wedged part —
+         * more so, since it has no AAD watchdog to fall back on. */
+        mic_reset();
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
         aad_set_threshold(65535);
         app_settings_save_vad_threshold(65535);
@@ -249,6 +266,13 @@ static bool record_start(void)
      * and write 0xFFFFFFF8 as the first inline frame of the fresh bin. */
     marker_flash_color = MARKER_FLASH_RED;
     marker_flash_count = 2;
+    /* Start every Priority Recording on a freshly powered mic. This is the one
+     * moment the user has unambiguously asked for audio, so it is worth ~40 ms to
+     * guarantee the part is not wedged — silently returning digital zeros, or
+     * holding WAKE so nothing auto-records once this recording ends. Do it before
+     * entering force-capture and before the rotate + 0xFFFFFFF8 marker below, so
+     * the reset's dead samples land outside the recording rather than at its head. */
+    mic_reset();
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
     /* Runtime force-capture only — NOT persisted, so a reboot mid-recording
      * returns to the auto threshold. */
@@ -288,6 +312,9 @@ static bool record_stop(void)
         aad_set_threshold(32769);
         app_settings_save_vad_threshold(32769);
 #endif
+        /* Manual standby is the same "entering a state only a wake can leave"
+         * boundary as priority_record_stop() — reset now that capture has ended. */
+        mic_reset();
         return true;
     } else if (force_recording) {
         /* Auto-mode Priority Recording stop. */
@@ -332,6 +359,17 @@ static void execute_button_action(uint8_t taps, bool is_hold)
             LOG_INF("Marker detected");
             marker_flash_color = MARKER_FLASH_WHITE;
             marker_flash_count = 2;
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+            /* Recover a wedged mic here too, but ONLY while idle. Mid-recording a
+             * reset would punch a ~40 ms hole at exactly the instant the marker is
+             * meant to bookmark — the worst possible place. Idle it is free, and it
+             * is the case that matters: a marker tapped because "it isn't recording
+             * anything" is the user reporting the wedge. In the 2026-07-28 incident
+             * this tap was the first write to the card in 14.5 h. */
+            if (!aad_is_recording()) {
+                mic_reset();
+            }
+#endif
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
             // AAD may have paused SD writes during a silence gap. A marker
             // written while paused is enqueued, reported as written, then
