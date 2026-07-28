@@ -411,7 +411,85 @@ sequenceDiagram
 
 ---
 
-## 9. New-record template
+## 9. Not a wedge: the bond-mismatch outage (2026-07-28)
+
+A distinct failure class that **looks** like a wedge in the connect logs but is not one, and
+must not be filed as Wedge N. Recorded here so the next occurrence is recognised in seconds.
+
+### How to tell it apart
+
+A wedge (§1) is a failure to *establish*: connects time out or die before service discovery,
+and the probe argues about whether the peripheral is on the air at all. This one establishes
+**perfectly, every time**, and then dies:
+
+```
+connected → device ready after ~620 ms (services discovered) → dropped 1–4 s later
+```
+
+repeating indefinitely, interleaved with `gatt_status_8`. The tell is the pair of
+`device ready after <n>ms` **followed by a drop a second or two later** — a wedge never gets
+that far. `gatt_status_8` here is a consequence, not a cause: the peer stops answering
+without an LL_TERMINATE, so the central reports the supervision timeout.
+
+Observed 2026-07-28 02:44–02:48 UTC on `C3:94:71:EA:A8:D5` immediately after an `oo-2.8.0`
+flash — four cycles: ready@02:47:59.806→drop@02:48:01.2 (1.4 s), ready@02:48:31.7→drop@02:48:35.4
+(3.7 s), ready@02:48:52.5→drop@02:48:56.4 (3.9 s).
+
+### Mechanism
+
+Nearly every functional Omi characteristic is encryption-gated, so an unencryptable link
+passes service discovery and then fails on first use:
+
+| Characteristic | Source | Permission |
+|---|---|---|
+| Time sync write `0031` — **written on every connect** | `transport.c:299` | `PERM_WRITE_ENCRYPT` |
+| Settings `0011`–`0016` | `transport.c:172–203` | `PERM_READ_ENCRYPT \| PERM_WRITE_ENCRYPT` |
+| Storage stream + CCC | `storage.c:138/142/145/149` | `PERM_*_ENCRYPT` |
+| Mute `0071` | `transport.c:919/923` | `PERM_READ_ENCRYPT \| PERM_WRITE_ENCRYPT` |
+
+The connect-time time-sync write is the first encrypted access, which is why the drop lands
+~1 s after discovery rather than at connect.
+
+### Why it never self-heals (the root cause)
+
+Omi has no IO capabilities ⟹ every pairing is Just Works ⟹ every bond is **unauthenticated**.
+In NCS v2.9.0, `zephyr/subsys/bluetooth/host/smp.c` `update_keys_check()` (:645–652) returns
+false when an unauthenticated LTK for that peer already exists and a Just Works pairing is
+attempted, unless `CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE` (or `CONFIG_BT_ID_ALLOW_UNAUTH_OVERWRITE`)
+is set. Callers answer `BT_SMP_ERR_AUTH_REQUIREMENTS` (:3001, :3229). Neither symbol was set in
+the firmware tree before `oo-2.8.1`.
+
+So once the two sides' bond state diverges, **the device refuses to re-pair, permanently**:
+
+- A phone Bluetooth toggle cannot fix it — bonds are persistent flash/NVS on both sides. This
+  is the discriminator against §3's toggle-required bucket: there a toggle *is* the cure; here
+  it provably is not.
+- `CONFIG_BT_MAX_PAIRED=1` (`omi.conf:120`) leaves no second slot.
+- The only exit is wiping the **device's** bond: `bt_unpair` at `button.c:430`, reached by the
+  5-tap + 10 s hold (`UNPAIR_HOLD_TIME`, `button.c:132`). Doing that is the confirming test.
+
+**Fix shipped in `oo-2.8.1`:** `CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE=y`.
+
+### Where the divergence came from — still open
+
+Not the app's post-DFU bond wipe: that path is currently inert
+(`firmware_update.dart:43` `_showResetPairingToggle = false`, so `wipeBonds` at :575 is always
+false and `_wipePhoneBondOnSuccess` returns early, `firmware_mixin.dart:238`). The DFU actually
+sent a *disarm*. So the phone kept its bond and the **device** lost or failed to match its own
+across the flash — which contradicts the premise for hiding that toggle
+(`firmware_update.dart:37–42`: "bonds are expected to survive a DFU … `oo-2.7.3` removes the …
+suspected cause"). That mitigation did not hold here.
+
+Leading suspect, unverified: `omi/firmware/omi/` has **no `pm_static.yml`**, so NCS Partition
+Manager lays out flash dynamically per build. With MCUboot dual-slot that is the classic way
+`settings_storage` — which holds the BLE bonds *and* every `omi/*` app setting — shifts between
+builds and orphans NVS. **Confirming check on the next occurrence:** if button config / storage
+backend / VAD settings also came back at defaults, the partition moved. If they survived intact
+while only the bond was lost, it's a bond-specific problem and the partition theory is dead.
+
+---
+
+## 10. New-record template
 
 Copy this block per new wedge, add a summary-table row, and set the bucket.
 
