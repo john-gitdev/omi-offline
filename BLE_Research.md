@@ -305,21 +305,27 @@ it was flat zero.** The first bin of the post-power-cycle session reads
 ⟹ The T5838 was returning silence, the power-cycle recovered it, and `oo-2.8.0` predates the
 `mic_reset()` work (PR #361) that recovers this without a reboot.
 
-**It re-wedged within ~90 seconds.** The good window was only `22:28:56`–`22:29:27` (the one
-`maxAmp=0.4998` recording). By `22:30:33` the bins were empty again, and the device reported
-`Expecting 2 files (36 bytes total)` — **36 B is exactly the `0xFFFFFFFB` metadata header**
-(4-byte tag + 4-byte length + 28-byte payload), i.e. a bin containing zero audio frames. The
-firmware says the same thing independently: `empty_bin_rotations` climbs 1 → 3 → 4 across the
-day, and the diag ring carries `empty_bin_rotation … arg1=36` at seq 4 and seq 9.
+**RETRACTED: an earlier revision of this section claimed the mic "re-wedged within ~90 seconds"
+after the power-cycle. That was wrong** — the operator confirmed recording was working; the short
+recordings were short speech, not a fault.
 
-Everything downstream of the mic is provably healthy while this happens: `priority_starts=4`,
-`priority_stops=4`, `session_end_marker_emits=4`, `marker_write_drops=0`, WAL sync fetches and
-deletes the files normally, and the single bin that *did* contain audio decoded and finalized to
-`recordings/2026-07-28/recording_1785277736980.wav`. **The pipeline is fine; the files are empty.**
+The mistake was reading **empty bins as a fault signal. They are not.** In auto mode the VAD gate
+means silence writes no audio at all, so a bin that closes containing only its 36-byte
+`0xFFFFFFFB` metadata header (4-byte tag + 4-byte length + 28-byte payload) is the *expected*
+outcome of a quiet window. `empty_bin_rotations` counts exactly that normal case, and
+`Expecting N files (36 bytes total)` from `CMD_LIST_FILES` means "nothing was said", not "the mic
+is dead". **Do not treat `empty_bin_rotations` or 36-byte bins as evidence of a wedge on their
+own.**
 
-A re-wedge 90 s after a cold power-cycle is the signature PR #361's own note calls out — if
-`mic_reset()` fires and the bins are *still* 36 B, that points at the T5838 part failing rather
-than at a recoverable driver state.
+What the same log does show working: `priority_starts=4`, `priority_stops=4`,
+`session_end_marker_emits=4`, `marker_write_drops=0`, WAL sync fetching and deleting normally,
+and the audio-bearing bin decoding and finalizing to
+`recordings/2026-07-28/recording_1785277736980.wav`.
+
+This also weakens the pre-reboot reading above: `maxAmp=0.0000` across that session is still
+anomalous for a force-captured Priority Recording, but with the empty-bin signal withdrawn it is
+no longer corroborated, and `maxAmp` is printed to 4 dp so a genuinely quiet room is not excluded.
+Treat the 19 h 40 m wedge as **plausible, not established.**
 
 ---
 
