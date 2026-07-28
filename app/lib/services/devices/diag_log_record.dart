@@ -81,6 +81,8 @@ class DiagLogRecord {
         return 'ring_io_error';
       case 11:
         return 'backend_mount';
+      case 12:
+        return 'bond_state';
       default:
         return 'code_$code';
     }
@@ -123,6 +125,21 @@ class DiagLogRecord {
         return 'Ring IO error — arg0=$arg0 arg1=$arg1';
       case 11:
         return 'Backend mount ($backendLabel) — arg1=$arg1';
+      case 12:
+        // arg0 = cause (0 boot load / 1 post-DFU wipe / 2 button wipe), arg1 = bonds held after.
+        // "0 key(s)" on a boot load with no preceding wipe is the device having silently lost
+        // its pairing — the origin of the reconnect-forever outage.
+        switch (arg0) {
+          case 0:
+            return 'Bonds at boot — $arg1 key(s) loaded'
+                '${arg1 == 0 ? ' (device is UNPAIRED)' : ''}';
+          case 1:
+            return 'Bonds wiped by post-update unpair — $arg1 key(s) remain';
+          case 2:
+            return 'Bonds wiped by 5-tap gesture — $arg1 key(s) remain';
+          default:
+            return 'Bond state — cause=$arg0, $arg1 key(s)';
+        }
       default:
         return 'Event code=$code backend=$backend arg0=$arg0 arg1=$arg1';
     }
