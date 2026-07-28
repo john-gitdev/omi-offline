@@ -223,6 +223,53 @@ void mic_resume()
     }
 }
 
+void mic_reset()
+{
+    const bool was_running = mic_running;
+
+    if (mic_running) {
+        int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_STOP);
+        if (ret < 0) {
+            /* Bail rather than press on, matching mic_pause(). Treating a failed
+             * STOP as stopped would cut PDM_EN out from under a still-active
+             * peripheral and then START an un-stopped driver, whose error return
+             * leaves mic_running false while capture is really running — a state
+             * desync worse than the wedge this is trying to clear. The caller
+             * simply doesn't get a reset this time. */
+            LOG_ERR("mic_reset: STOP trigger failed: %d — leaving mic untouched", ret);
+            return;
+        }
+        mic_running = false;
+    }
+
+    /* Drop the T5838 + TXS0104 rail long enough for the part to fully de-power,
+     * then bring it back and let it settle before capture resumes. This is the
+     * whole point of the call — a wedged T5838 (digital-zero PDM output, WAKE
+     * never asserting) is only cleared by removing its supply, which neither
+     * mic_pause()/mic_resume() nor a dmic re-trigger does. INACTIVE = physical
+     * low = disabled (pdm_en_pin is GPIO_ACTIVE_HIGH). */
+    if (gpio_is_ready_dt(&pdm_en)) {
+        gpio_pin_configure_dt(&pdm_en, GPIO_OUTPUT_INACTIVE);
+        k_msleep(20);
+        gpio_pin_configure_dt(&pdm_en, GPIO_OUTPUT_ACTIVE);
+        k_msleep(20);
+        LOG_INF("mic_reset: PDM_EN power-cycled");
+    } else {
+        LOG_WRN("mic_reset: PDM_EN gpio not ready — rail NOT cycled");
+    }
+
+    if (was_running) {
+        int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
+        if (ret < 0) {
+            LOG_ERR("mic_reset: START trigger failed: %d", ret);
+            return;
+        }
+        mic_running = true;
+    }
+
+    LOG_INF("Microphone reset (running=%d)", mic_running);
+}
+
 bool mic_is_running()
 {
     return mic_running;
