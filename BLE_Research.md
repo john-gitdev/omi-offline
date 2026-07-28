@@ -470,22 +470,61 @@ So once the two sides' bond state diverges, **the device refuses to re-pair, per
 
 **Fix shipped in `oo-2.8.1`:** `CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE=y`.
 
-### Where the divergence came from — still open
+### Where the divergence came from — the settings NVS is inside the MCUboot app slot
 
-Not the app's post-DFU bond wipe: that path is currently inert
-(`firmware_update.dart:43` `_showResetPairingToggle = false`, so `wipeBonds` at :575 is always
-false and `_wipePhoneBondOnSuccess` returns early, `firmware_mixin.dart:238`). The DFU actually
-sent a *disarm*. So the phone kept its bond and the **device** lost or failed to match its own
-across the flash — which contradicts the premise for hiding that toggle
-(`firmware_update.dart:37–42`: "bonds are expected to survive a DFU … `oo-2.7.3` removes the …
-suspected cause"). That mitigation did not hold here.
+Which side held the stale bond: **the device did, the phone did not.** The two directions have
+different observable fates, and only one matches:
 
-Leading suspect, unverified: `omi/firmware/omi/` has **no `pm_static.yml`**, so NCS Partition
-Manager lays out flash dynamically per build. With MCUboot dual-slot that is the classic way
-`settings_storage` — which holds the BLE bonds *and* every `omi/*` app setting — shifts between
-builds and orphans NVS. **Confirming check on the next occurrence:** if button config / storage
-backend / VAD settings also came back at defaults, the partition moved. If they survived intact
-while only the bond was lost, it's a bond-specific problem and the partition theory is dead.
+- *Phone stale / device unbonded* — phone asks to encrypt, device answers `PIN_OR_KEY_MISSING`,
+  Android drops its bond, next connect is a clean Just Works pair ⟹ **self-heals in a couple of
+  attempts.** This outage did not, across ~5 min and many attempts.
+- *Device bonded / phone unbonded* — status 5, Android auto-elevates, `update_keys_check`
+  refuses ⟹ **never self-heals**, and the only exit is wiping the device bond. Matches, and
+  matches the 5-tap combo being what cleared it.
+
+Not caused by the app's post-DFU bond wipe: that path is inert (`firmware_update.dart:43`
+`_showResetPairingToggle = false`, so `wipeBonds` at :575 is always false and
+`_wipePhoneBondOnSuccess` returns early, `firmware_mixin.dart:238`). The DFU sent a *disarm*.
+
+**Root cause: the settings partition overlaps the MCUboot primary slot.** The board DTS the
+build actually includes (`boards/omi/omi_nrf5340_cpuapp.dts:261` →
+`zephyr/dts/common/nordic/nrf5340_cpuapp_partition.dtsi`) places `storage_partition` at
+**`0xf8000`–`0x100000`** (32 KB). `boards/omi/pm_static.yml` pins `mcuboot_primary` to
+**`0x10000`–`0x100000`** and `mcuboot_primary_app` to `0x10200`–`0x100000`. The NVS holding the
+BLE bonds *and* every `omi/*` setting therefore sits **inside the slot MCUboot rewrites on every
+update** — and `sysbuild.conf` sets `SB_CONFIG_MCUBOOT_MODE_OVERWRITE_ONLY=y`, so each update
+erases the primary slot to copy the new image in and writes its image trailer at the slot's end,
+i.e. straight through that NVS.
+
+`pm_static.yml` defines **no `settings_storage`**, and `flash_primary` has zero free space
+(`mcuboot` `0x0`–`0x10000` + `mcuboot_primary` `0x10000`–`0x100000` spans it entirely), so
+Partition Manager has nowhere to place one — the DT partition at `0xf8000` is the only candidate,
+and it is inside the slot.
+
+This is intermittent rather than total because NVS is a wear-levelled ring over 8 sectors: how
+much survives depends on which sectors hold the live copy of each key and how far the incoming
+image extends. It also explains why `oo-2.7.3`'s mitigation (dropping a redundant pre-flash NVS
+write) helped without fixing anything — it only changed the odds of a live copy sitting in a
+doomed sector.
+
+Settles a contradiction in the codebase: `OmiBleForegroundService.kt:980` ("the firmware's NVS
+bond store sits inside the mcuboot app slot and gets wiped on swap") is **right**;
+`firmware_update.dart:37–42` ("bonds are expected to survive a DFU — the flash never reaches the
+memory that stores them") is **wrong**, and it is the stated premise for hiding the reset-pairing
+toggle.
+
+**Not yet verified by a build** — no Zephyr toolchain on the analysis machine, so the generated
+`build/partitions.yml` has not been read. Confirm either by building and checking whether a
+`settings_storage` partition is emitted, or by reading flash at `0xf8000` before and after an OTA.
+
+**Fix** (not applied — needs an image-size check from a real build): carve the settings partition
+out of the slot. End `mcuboot_primary` / `mcuboot_primary_app` at `0xf8000`, add an explicit
+`settings_storage: 0xf8000`–`0x100000` outside the mcuboot span, and let `share_size` shrink
+`mcuboot_secondary` to match. Two consequences: the app slot loses 32 KB (`0xefe00` → `0xe7e00`,
+~950 KB — check headroom first), and because MCUboot is **not** OTA-updatable here
+(`SB_CONFIG_MCUBOOT_UPDATEABLE_IMAGES=2` covers the app and net cores only), the currently
+installed MCUboot still believes the slot runs to `0x100000` and will still write its trailer
+there. **The fix only lands via a wired flash**; an OTA alone will not apply it.
 
 ---
 
