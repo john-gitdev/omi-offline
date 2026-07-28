@@ -16,6 +16,7 @@
 #include "rtc.h"
 #include "speaker.h"
 #include "transport.h"
+#include "diag_log.h"
 #include "wdog_facade.h"
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
 #include "sd_card.h"
@@ -479,6 +480,10 @@ void check_button_level(struct k_work *work_item)
             } else if (tap_count == 5 && duration_ms >= UNPAIR_HOLD_TIME) {
                 LOG_WRN("5-tap + hold: clearing all BLE bonds!");
                 bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
+                /* Tag the deliberate wipe so a later "device came up unbonded" can be
+                 * attributed to this gesture rather than to an unexplained key loss. */
+                diag_log_event(DIAG_BOND_STATE, 0, DIAG_BOND_CAUSE_BUTTON,
+                               transport_bond_count());
 
                 led_off();
                 for (int i = 0; i < 3; i++) {
