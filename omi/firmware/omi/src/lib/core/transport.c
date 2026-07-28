@@ -2269,6 +2269,23 @@ int transport_set_adv_fast(void)
     return err;
 }
 
+static void count_bond_cb(const struct bt_bond_info *info, void *user_data)
+{
+    (void) info;
+    (*(uint32_t *) user_data)++;
+}
+
+/* Number of bonds currently held for the default identity. CONFIG_BT_MAX_PAIRED=1,
+ * so in practice this is 0 or 1 — and which of the two it is at boot is the whole
+ * question when a phone reports itself unpaired. Exported so the button unpair path
+ * can report the real post-wipe count rather than assuming it succeeded. */
+uint32_t transport_bond_count(void)
+{
+    uint32_t n = 0;
+    bt_foreach_bond(BT_ID_DEFAULT, count_bond_cb, &n);
+    return n;
+}
+
 // periodic advertising
 int transport_start()
 {
@@ -2317,6 +2334,16 @@ int transport_start()
     }
 #endif
 
+    /* Record how many bonds actually came back. A device that boots with ZERO keys
+     * when the phone still thinks it is paired is the origin of the "silently
+     * unpaired, reconnects forever" outage (BLE_Research.md §9), and nothing else
+     * surfaces it: the LOG_INF above goes nowhere without an RTT probe
+     * (CONFIG_CONSOLE=n / CONFIG_UART_CONSOLE=n), and the phone can only observe the
+     * downstream symptom. Logged unconditionally — the ring is runtime-gated and this
+     * is one event per boot. */
+    diag_log_event(DIAG_BOND_STATE, 0, DIAG_BOND_CAUSE_BOOT_LOAD,
+                   transport_bond_count());
+
     /* One-shot post-update bond wipe: if the app armed it before a flash (via
      * CMD_ARM_POST_DFU_UNPAIR, which records the version at arm time), a boot on
      * a DIFFERENT version means a real update landed — wipe every bond (now that
@@ -2335,6 +2362,10 @@ int transport_start()
         } else {
             LOG_INF("post-DFU unpair: firmware changed — wiped BLE bonds");
         }
+        /* Distinguishes an intentional post-update wipe from an unexplained loss:
+         * without this, both look identical from the phone's side. */
+        diag_log_event(DIAG_BOND_STATE, 0, DIAG_BOND_CAUSE_POST_DFU,
+                       transport_bond_count());
     }
 
     LOG_INF("Transport bluetooth initialized");
