@@ -470,6 +470,51 @@ So once the two sides' bond state diverges, **the device refuses to re-pair, per
 
 **Fix shipped in `oo-2.8.1`:** `CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE=y`.
 
+### Leading hypothesis (2026-07-28): the DFU reset never unmounts the SD card
+
+Every reset path in this firmware flushes and unmounts the SD **except the one the DFU uses**:
+
+| Path | Unmounts first? |
+|---|---|
+| Power-off gesture (`button.c:625-626`) | `app_sd_off()` ✓ |
+| `CMD_REBOOT` `0x16` (`storage.c:1013-1014`) | `app_sd_off()` ✓ |
+| `CMD_POWER_OFF` `0x17` (`storage.c:1086-1087`) | `app_sd_off()` ✓ |
+| **mcumgr DFU reset** (SMP OS group, cmd 5) | **nothing** ✗ |
+
+The only `mgmt_callback_register` in the firmware is `ota_mgmt_cb` for
+`IMG_MGMT_DFU_STARTED`/`STOPPED` (`main.c:397`). Nothing hooks
+`MGMT_EVT_OP_OS_MGMT_RESET`. So the DFU's reset is a bare `sys_reboot` onto a live,
+mounted, possibly mid-write volume — and `storage.c:1001-1004` states exactly why that is
+unsafe: *"Gracefully close the SD card first … so a reboot landing mid-write doesn't tear an
+in-progress block."* **Only OTAs skip it.**
+
+Predicts both reported symptoms from one cause:
+
+- **Boot blocks on a dirty mount** → SD worker stalls → watchdog resets → **crash loop**. Each
+  boot advertises, accepts a connection, dies ~1–3 s in. That is the observed trace, and it
+  explains `gatt_status_8` (peer silently gone, no LL_TERMINATE) — which the bond theory never
+  explained. A power cycle clears it; a phone BT toggle cannot.
+- **Mounts onto a corrupt volume** → records nothing → "had to wipe the storage", with the
+  backend setting still intact because NVS was never involved.
+
+**This now outranks the bond-mismatch reading.** It is more economical, it fits status 8, and it
+requires no NVS loss — which the operator reports never seeing.
+
+**Fix** (not applied — a hang here breaks the update path, and it is unbuildable/untestable on the
+analysis machine): register `MGMT_EVT_OP_OS_MGMT_RESET` (present in NCS 2.9,
+`zephyr/mgmt/mcumgr/grp/os_mgmt/os_mgmt_callbacks.h`) alongside the existing `ota_mgmt_cb` and do
+what the other three paths do — `if (is_sd_on()) app_sd_off();` before letting the reset proceed.
+Use a **bounded** wait: if the SD is already wedged, an unbounded `app_sd_off()` in the callback
+would hang the reset and fail the DFU outright.
+
+### Evidence note — button config is not a witness
+
+`buttonConfigManual` / `buttonConfigAuto` are **re-pushed by the app on every connect**
+(`DeviceProvider.pushActiveButtonConfig`), so their survival across an update says nothing about
+whether NVS survived. Only device-owned keys count: **storage backend** and **Priority Recording
+cap**. Operator reports the storage backend surviving intact, and has never observed a setting
+revert after an update — which is evidence *against* the NVS-sector-loss lead below.
+
 ### Competing hypotheses — this diagnosis is NOT settled
 
 Everything below this line survived an adversarial pass only partly. Read these before acting
