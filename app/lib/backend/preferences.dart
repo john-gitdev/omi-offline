@@ -467,6 +467,14 @@ class SharedPreferencesUtil {
   String gattFingerprint(String deviceId) => getString('gattFingerprint_$deviceId');
   void setGattFingerprint(String deviceId, String value) => saveString('gattFingerprint_$deviceId', value);
 
+  /// One-shot: whether the first-sighting GATT-cache refresh has run. Devices
+  /// bonded before fingerprinting existed may already hold a stale cache from an
+  /// earlier flash, so the first one seen gets refreshed rather than merely
+  /// recorded. Once set, a newly paired device is trusted — its cache was just
+  /// built from a real discovery.
+  bool get gattFingerprintMigrationDone => getBool('gattFingerprintMigrationDone', defaultValue: false);
+  set gattFingerprintMigrationDone(bool v) => saveBool('gattFingerprintMigrationDone', v);
+
   // Firebase user UID and email — stored in plain SharedPreferences (non-sensitive identifiers).
   String get omiAuthUid => getString('omiAuthUid');
   set omiAuthUid(String v) => saveString('omiAuthUid', v);
