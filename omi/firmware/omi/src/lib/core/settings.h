@@ -86,6 +86,20 @@ int app_settings_save_priority_record_max_minutes(uint16_t minutes);
 uint16_t app_settings_get_priority_record_max_minutes(void);
 
 /**
+ * @brief Persist whether the solid-blue "connected to phone" LED is shown.
+ *
+ * @param enabled true (default) = solid blue while a phone is connected, which
+ *        overrides the recording-state colour; false = the connection no longer
+ *        drives the LED at all, so the underlying mute / low-battery / recording
+ *        state shows through and an idle connected device stays dark.
+ * @return 0 on success, negative error code otherwise.
+ */
+int app_settings_save_connected_led(bool enabled);
+
+/** @brief Whether the connected (solid blue) LED indicator is enabled. */
+bool app_settings_get_connected_led(void);
+
+/**
  * @brief Persist the active audio storage backend.
  *
  * @param backend STORAGE_BACKEND_LITTLEFS (0, default) or STORAGE_BACKEND_RING (1).
