@@ -55,6 +55,8 @@ class OmiDeviceConnection extends DeviceConnection {
   // Auto-mode Priority Recording safety cap, u16 LE minutes (0 = no cap).
   static const String settingsPriorityRecordCapCharacteristicUuid = '19b10014-e8f2-537e-4f6c-d104768a1214';
   // 19b10015 = button config, 19b10016 = haptic config (declared near the button section above).
+  // Connected (solid blue) LED indicator, 1 byte: 0 = off, 1 = on.
+  static const String settingsConnectedLedCharacteristicUuid = '19b10017-e8f2-537e-4f6c-d104768a1214';
 
   // 8-byte diagnostics: [uint32 reset_cause LE] [uint32 uptime_seconds LE]
   static const String diagnosticsServiceUuid = '19b10060-e8f2-537e-4f6c-d104768a1214';
@@ -678,6 +680,23 @@ class OmiDeviceConnection extends DeviceConnection {
     try {
       final data = await transport.readCharacteristic(settingsServiceUuid, settingsDimRatioCharacteristicUuid);
       if (data.isNotEmpty) return data[0];
+    } catch (_) {}
+    return null;
+  }
+
+  @override
+  Future<void> performSetConnectedLed(bool enabled) async {
+    try {
+      await transport
+          .writeCharacteristic(settingsServiceUuid, settingsConnectedLedCharacteristicUuid, [enabled ? 1 : 0]);
+    } catch (_) {}
+  }
+
+  @override
+  Future<bool?> performGetConnectedLed() async {
+    try {
+      final data = await transport.readCharacteristic(settingsServiceUuid, settingsConnectedLedCharacteristicUuid);
+      if (data.isNotEmpty) return data[0] != 0;
     } catch (_) {}
     return null;
   }
