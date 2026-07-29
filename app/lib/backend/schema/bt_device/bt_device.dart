@@ -110,9 +110,10 @@ class OmiFeatures {
   // On-device diagnostic event log (BLE 0x0063 drain / 0x0064 control) is
   // compiled into the firmware. Gates the Debug Tools event-log toggle.
   static const int diagLog = 1 << 12;
-  // Connected (solid blue) LED indicator can be turned off (BLE 0x0017).
-  // Gates the Customization switch — older firmware always shows it.
-  static const int connectedLed = 1 << 13;
+  // The LED service (0x0080) exists: the connected (solid blue) indicator can
+  // be turned off, and the LED master gate has a persisted boot value. Gates
+  // both Customization switches — older firmware has neither.
+  static const int ledService = 1 << 13;
 
   static bool hasFeature(int features, int feature) {
     return (features & feature) != 0;
