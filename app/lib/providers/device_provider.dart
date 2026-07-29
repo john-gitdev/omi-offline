@@ -1538,7 +1538,8 @@ class DeviceProvider extends ChangeNotifier
         final prefs = SharedPreferencesUtil();
         prefs.setGattFingerprint(device.id, fingerprint);
         if (wasMigration) prefs.gattFingerprintMigrationDone = true;
-        Logger.warning('DeviceProvider: ${wasMigration ? 'first fingerprint for this device' : 'firmware identity changed'}'
+        Logger.warning(
+            'DeviceProvider: ${wasMigration ? 'first fingerprint for this device' : 'firmware identity changed'}'
             ' — recycling the link to drop the stale GATT cache');
         unawaited(ServiceManager.instance().device.recycleConnection());
       }
