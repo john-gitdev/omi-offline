@@ -979,7 +979,11 @@ static ssize_t led_connected_write_handler(struct bt_conn *conn,
     LOG_INF("Received connected-LED setting: %u", (unsigned int) enabled);
     int err = app_settings_save_connected_led(enabled);
     if (err) {
+        /* The save is the whole operation here — it leaves the in-memory value
+         * untouched on failure, so nothing changed. ACKing success would report
+         * a setting the device neither applied nor stored. */
         LOG_ERR("Failed to save connected-LED setting: %d", err);
+        return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
     }
 
     /* No explicit refresh needed — the main loop re-evaluates set_led_state()
@@ -1019,14 +1023,19 @@ static ssize_t led_boot_write_handler(struct bt_conn *conn,
     bool enabled = ((const uint8_t *) buf)[0] != 0;
     LOG_INF("Received LED-boot setting: %u", (unsigned int) enabled);
     int err = app_settings_save_led_boot_enabled(enabled);
-    if (err) {
-        LOG_ERR("Failed to save LED-boot setting: %d", err);
-        /* Fall through and still apply it live — the user asked for this state
-         * now; only its survival across the next reboot is lost. */
-    }
 
-    /* Apply to the live gate too, so the change is visible without a restart. */
+    /* Apply to the live gate regardless, so the change is visible without a
+     * restart — the user asked for this state now, and that much still works
+     * even if the flash write failed. */
     is_led_enabled = enabled;
+
+    if (err) {
+        /* But do NOT ACK success: this characteristic's contract is the *boot
+         * default*, and that is exactly the half that didn't survive. A silent
+         * ACK would show a default that reverts on the next reboot. */
+        LOG_ERR("Failed to save LED-boot setting: %d", err);
+        return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+    }
     return len;
 }
 
