@@ -49,11 +49,10 @@ enum DeviceServiceStatus { init, ready, scanning, stop }
 
 enum DeviceConnectionState { connected, connecting, disconnected }
 
-/// Feature flags for Omi device capabilities
-/// Must match the firmware definitions in features.h
-// OmiFeatures (the firmware capability bitfield) lives in
-// backend/schema/bt_device/bt_device.dart. A second copy used to sit here, which
-// only forced importers to `hide` one of them and let the two drift apart.
+// OmiFeatures (the firmware capability bitfield, which must match features.h)
+// lives in backend/schema/bt_device/bt_device.dart. A second copy used to sit
+// here, which only forced importers to `hide` one of them and let the two drift
+// apart.
 
 abstract class IDeviceServiceSubscription {
   void onDevices(List<BtDevice> devices);
