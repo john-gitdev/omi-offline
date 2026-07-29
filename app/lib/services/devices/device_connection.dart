@@ -304,6 +304,19 @@ abstract class DeviceConnection {
     return null;
   }
 
+  /// Sets whether the Omi's LEDs come up enabled after a reboot. The write also
+  /// applies to the current session, so the change is visible immediately.
+  Future<void> setLedBootEnabled(bool enabled) async {
+    if (await isConnected()) await performSetLedBootEnabled(enabled);
+  }
+
+  /// The stored boot default — not the live gate, which a button gesture can
+  /// toggle for the session without changing what the device reboots into.
+  Future<bool?> getLedBootEnabled() async {
+    if (await isConnected()) return performGetLedBootEnabled();
+    return null;
+  }
+
   Future<void> setMicGain(int gain) async {
     if (await isConnected()) await performSetMicGain(gain);
   }
@@ -409,6 +422,8 @@ abstract class DeviceConnection {
   Future<int?> performGetLedDimRatio();
   Future<void> performSetConnectedLed(bool enabled);
   Future<bool?> performGetConnectedLed();
+  Future<void> performSetLedBootEnabled(bool enabled);
+  Future<bool?> performGetLedBootEnabled();
   Future<void> performSetMicGain(int gain);
   Future<int?> performGetMicGain();
   Future<void> performSetButtonConfig(List<int> config);
