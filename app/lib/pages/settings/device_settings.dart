@@ -33,6 +33,12 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   bool _isDimRatioLoaded = false;
   bool? _hasDimmingFeature;
 
+  // Solid-blue "connected to phone" LED indicator. Firmware-owned (there is no
+  // local pref) — read on open, written straight through on toggle.
+  bool _connectedLed = true;
+  bool _isConnectedLedLoaded = false;
+  bool? _hasConnectedLedFeature;
+
   double _micGain = 5.0;
   bool _isMicGainLoaded = false;
   bool? _hasMicGainFeature;
@@ -93,6 +99,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
         final hasMicGain = OmiFeatures.hasFeature(features, OmiFeatures.micGain);
         final hasVadThreshold = OmiFeatures.hasFeature(features, OmiFeatures.vadThreshold);
         final hasPriorityCap = OmiFeatures.hasFeature(features, OmiFeatures.priorityRecordCap);
+        final hasConnectedLed = OmiFeatures.hasFeature(features, OmiFeatures.connectedLed);
 
         if (!mounted) return;
         setState(() {
@@ -100,6 +107,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           _hasMicGainFeature = hasMicGain;
           _hasVadThresholdFeature = hasVadThreshold;
           _hasPriorityCapFeature = hasPriorityCap;
+          _hasConnectedLedFeature = hasConnectedLed;
         });
 
         if (!hasDimming) {
@@ -116,6 +124,21 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           } else if (mounted) {
             setState(() {
               _isDimRatioLoaded = true; // Loaded, but no value, use default
+            });
+          }
+        }
+
+        if (!hasConnectedLed) {
+          setState(() {
+            _isConnectedLedLoaded = true;
+          });
+        } else {
+          var enabled = await connection.getConnectedLed();
+          if (mounted) {
+            setState(() {
+              // A failed read leaves the default (on) — matches the firmware default.
+              if (enabled != null) _connectedLed = enabled;
+              _isConnectedLedLoaded = true;
             });
           }
         }
@@ -184,6 +207,31 @@ class _DeviceSettingsState extends State<DeviceSettings> {
       var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
       await connection?.setLedDimRatio(value.toInt());
     }
+  }
+
+  /// Writes the connected-LED setting straight to the device (it owns the value)
+  /// and confirms it landed by reading back, since the transport swallows write
+  /// errors. Reverts the switch if the device didn't take it.
+  Future<void> _updateConnectedLed(bool enabled) async {
+    final previous = _connectedLed;
+    setState(() => _connectedLed = enabled);
+
+    final pairedDevice = context.read<DeviceProvider>().pairedDevice;
+    bool ok = false;
+    if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
+      final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
+      if (connection != null) {
+        await connection.setConnectedLed(enabled);
+        final readBack = await connection.getConnectedLed();
+        ok = readBack == enabled;
+      }
+    }
+    if (!mounted || ok) return;
+
+    setState(() => _connectedLed = previous);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Could not reach your Omi — try again.')),
+    );
   }
 
   void _updateMicGain(double value) async {
@@ -302,6 +350,44 @@ class _DeviceSettingsState extends State<DeviceSettings> {
       );
     }
     return content;
+  }
+
+  /// Same row layout as [_buildProfileStyleItem], with a switch in place of the
+  /// chip + chevron.
+  Widget _buildSwitchItem({
+    required IconData icon,
+    required String title,
+    String? subtitle,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: Row(
+        children: [
+          SizedBox(width: 24, height: 24, child: FaIcon(icon, color: const Color(0xFF8E8E93), size: 20)),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w400),
+                ),
+                if (subtitle != null) ...[
+                  const SizedBox(height: 2),
+                  Text(subtitle, style: const TextStyle(color: Color(0xFF8E8E93), fontSize: 13)),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Switch(value: value, onChanged: onChanged),
+        ],
+      ),
+    );
   }
 
   Widget _buildDeviceInfoSection(BtDevice? device, DeviceProvider provider) {
@@ -973,6 +1059,17 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               title: 'LED Brightness',
               chipValue: '${_dimRatio.round()}%',
               onTap: _showBrightnessSheet,
+            ),
+          ],
+          // Connected LED — the solid-blue "phone is connected" indicator.
+          if (_isConnectedLedLoaded && _hasConnectedLedFeature == true) ...[
+            const Divider(height: 1, color: Color(0xFF3C3C43)),
+            _buildSwitchItem(
+              icon: FontAwesomeIcons.bluetooth,
+              title: 'Connected LED',
+              subtitle: 'Solid blue while your phone is connected',
+              value: _connectedLed,
+              onChanged: (v) => _updateConnectedLed(v),
             ),
           ],
           // Mic Gain
