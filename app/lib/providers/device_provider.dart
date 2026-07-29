@@ -5,10 +5,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import 'package:omi/backend/preferences.dart';
-// OmiFeatures is defined in both bt_device.dart and services/devices.dart; hide it
-// here so `OmiFeatures.diagLog` below resolves unambiguously to the services/ copy
-// (the one documented as mirroring the firmware features.h).
-import 'package:omi/backend/schema/bt_device/bt_device.dart' hide OmiFeatures;
+import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/gen/pigeon_communicator.g.dart';
 import 'package:omi/services/bridges/ble_bridge.dart';
 import 'package:omi/services/devices.dart';
