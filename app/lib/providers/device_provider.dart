@@ -1532,16 +1532,25 @@ class DeviceProvider extends ChangeNotifier
         // re-evaluates and retries. Deferred, not dropped.
         Logger.debug('DeviceProvider: GATT-cache refresh deferred — sync in flight');
       } else {
-        // Persist together with the recycle, so a refresh that doesn't help
-        // still happens only once instead of on every connect from here on —
-        // while a refresh that never ran leaves nothing behind to suppress it.
-        final prefs = SharedPreferencesUtil();
-        prefs.setGattFingerprint(device.id, fingerprint);
-        if (wasMigration) prefs.gattFingerprintMigrationDone = true;
         Logger.warning(
             'DeviceProvider: ${wasMigration ? 'first fingerprint for this device' : 'firmware identity changed'}'
             ' — recycling the link to drop the stale GATT cache');
-        unawaited(ServiceManager.instance().device.recycleConnection());
+        // NOTE: no `await` between the isSyncing check above and this call — Dart
+        // is single-threaded, so with no suspension point in between nothing can
+        // start a sync after the check and before the recycle commits. Do not add
+        // one (including an awaited persist) without re-checking afterwards.
+        final recycled = await ServiceManager.instance().device.recycleConnection();
+        if (recycled) {
+          // Record only now that a recycle really ran, so a refresh that doesn't
+          // help still happens just once — while one that never started (another
+          // recycle already in flight, or the link dropped first) leaves nothing
+          // behind to suppress the retry on the next connect.
+          final prefs = SharedPreferencesUtil();
+          await prefs.setGattFingerprint(device.id, fingerprint);
+          if (wasMigration) prefs.gattFingerprintMigrationDone = true;
+        } else {
+          Logger.debug('DeviceProvider: GATT-cache refresh not started — retrying on the next connect');
+        }
       }
     }
   }
@@ -1602,7 +1611,7 @@ class DeviceProvider extends ChangeNotifier
         // a device paired AFTER that migration was just discovered for the first
         // time, so its cache is fresh by definition and needs nothing.
         if (prefs.gattFingerprintMigrationDone) {
-          prefs.setGattFingerprint(deviceId, fingerprint);
+          await prefs.setGattFingerprint(deviceId, fingerprint);
           return null;
         }
         _pendingGattMigration = true;
