@@ -12,6 +12,10 @@ LOG_MODULE_REGISTER(app_settings, CONFIG_LOG_DEFAULT_LEVEL);
 #define DEFAULT_MIC_GAIN 6
 #define DEFAULT_VAD_THRESHOLD 32769
 #define DEFAULT_PRIORITY_RECORD_MAX_MINUTES 120 // 2 h; 0 = no cap
+/* Solid-blue "connected to phone" LED. 1 = show it (previous, unconditional
+ * behaviour), 0 = stay dark while connected and let the underlying recording
+ * state drive the LED instead. */
+#define DEFAULT_CONNECTED_LED 1
 
 /* Active audio storage backend. Persisted in NVS (on internal flash) — the
  * backend CHOICE is a tiny value; the audio + ring metadata it selects live on
@@ -26,6 +30,7 @@ static uint8_t dim_light_ratio = DEFAULT_DIM_LIGHT_RATIO;
 static uint8_t mic_gain = DEFAULT_MIC_GAIN;
 static uint16_t vad_threshold = DEFAULT_VAD_THRESHOLD;
 static uint16_t priority_record_max_minutes = DEFAULT_PRIORITY_RECORD_MAX_MINUTES;
+static uint8_t connected_led_enabled = DEFAULT_CONNECTED_LED;
 static uint8_t storage_backend = DEFAULT_STORAGE_BACKEND;
 /* Consecutive post-crash (watchdog/lockup) boots observed while the ring backend
  * is active. Anti-brick: at RING_BOOT_FAIL_LIMIT the device auto-reverts to the
@@ -144,6 +149,19 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         rc = read_cb(cb_arg, &priority_record_max_minutes, sizeof(priority_record_max_minutes));
         if (rc >= 0) {
             LOG_INF("Loaded prio_rec_max: %u", priority_record_max_minutes);
+            return 0;
+        }
+        return rc;
+    }
+
+    if (settings_name_steq(name, "led_conn", &next) && !next) {
+        if (len != sizeof(connected_led_enabled)) {
+            return -EINVAL;
+        }
+        rc = read_cb(cb_arg, &connected_led_enabled, sizeof(connected_led_enabled));
+        if (rc >= 0) {
+            connected_led_enabled = connected_led_enabled ? 1 : 0;
+            LOG_INF("Loaded led_conn: %u", connected_led_enabled);
             return 0;
         }
         return rc;
@@ -484,6 +502,24 @@ int app_settings_save_vad_threshold(uint16_t new_threshold)
 uint16_t app_settings_get_vad_threshold(void)
 {
     return vad_threshold;
+}
+
+int app_settings_save_connected_led(bool enabled)
+{
+    uint8_t value = enabled ? 1 : 0;
+    int err = settings_save_one("omi/led_conn", &value, sizeof(value));
+    if (err) {
+        LOG_ERR("Failed to save led_conn (err %d)", err);
+        return err;
+    }
+    connected_led_enabled = value;
+    LOG_INF("Saved led_conn: %u", connected_led_enabled);
+    return 0;
+}
+
+bool app_settings_get_connected_led(void)
+{
+    return connected_led_enabled != 0;
 }
 
 int app_settings_save_storage_backend(uint8_t backend)
