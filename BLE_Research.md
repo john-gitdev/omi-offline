@@ -284,8 +284,9 @@ The first wedge where the snapshot instrumentation captured the bond flipping, a
 **What this settles.** The bond-mismatch class is real and now directly instrumented — no longer
 inferred from a confounded button press. It is also the **first ADVERTISING verdict**, answering
 §7's lead question: ADVERTISING wedges do happen on this phone/device, and they are the
-bond-mismatch population, not the establishment population. The `oo-2.8.1`
-`CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE=y` fix targets exactly this failure.
+bond-mismatch population, not the establishment population. `CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE=y`
+would make this failure recoverable, but was reverted as unsafe — see §9 for why, and for the
+user-presence-gated design that replaces it.
 
 **Still open:** *why* the phone dropped its bond unprompted. One plausible chain that fits the
 ordering — the device's own key went first, the phone's stale-LTK connect drew a
@@ -533,7 +534,7 @@ In NCS v2.9.0, `zephyr/subsys/bluetooth/host/smp.c` `update_keys_check()` (:645�
 false when an unauthenticated LTK for that peer already exists and a Just Works pairing is
 attempted, unless `CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE` (or `CONFIG_BT_ID_ALLOW_UNAUTH_OVERWRITE`)
 is set. Callers answer `BT_SMP_ERR_AUTH_REQUIREMENTS` (:3001, :3229). Neither symbol was set in
-the firmware tree before `oo-2.8.1`.
+the firmware tree, and deliberately still are not — see the reverted-fix note below.
 
 So once the two sides' bond state diverges, **the device refuses to re-pair, permanently**:
 
@@ -541,10 +542,41 @@ So once the two sides' bond state diverges, **the device refuses to re-pair, per
   is the discriminator against §3's toggle-required bucket: there a toggle *is* the cure; here
   it provably is not.
 - `CONFIG_BT_MAX_PAIRED=1` (`omi.conf:120`) leaves no second slot.
-- The only exit is wiping the **device's** bond: `bt_unpair` at `button.c:430`, reached by the
-  5-tap + 10 s hold (`UNPAIR_HOLD_TIME`, `button.c:132`). Doing that is the confirming test.
+- The only exit is wiping the **device's** bond: `bt_unpair` at `button.c:482`, reached by the
+  5-tap + 10 s hold (`UNPAIR_HOLD_TIME`, `button.c:140`). Doing that is the confirming test.
 
-**Fix shipped in `oo-2.8.1`:** `CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE=y`.
+**Attempted fix, REVERTED — `CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE=y`.** Setting it does make
+the state recoverable, but it is not safe here, and the review that caught it was right.
+
+With `CONFIG_BT_MAX_PAIRED=1` and `CONFIG_BT_KEYS_OVERWRITE_OLDEST` unset (default `n`), a peer
+presenting a *different* address already cannot pair at all — key storage is full, `bt_keys_get_addr()`
+returns NULL, pairing fails. So the **only** thing that flag changes is whether a peer presenting the
+**bonded phone's identity address** may overwrite its Just Works LTK. Omi has no IO capabilities, so
+that pairing is unauthenticated and unprompted: an attacker in range while the phone is away would
+take over the encrypted GATT — which includes the storage service, i.e. every recording on the card —
+and lock the real phone out. The justification originally written into `omi.conf` ("an attacker can
+already pair when the device is unbonded") is true but does not cover the bonded case, which is
+exactly the case the flag opens.
+
+**Proper fix, not yet implemented** (needs a build + on-device test): keep the overwrite closed by
+default and gate it on user presence with a `bt_conn_auth_cb.pairing_accept` callback —
+
+```c
+static enum bt_security_err pairing_accept(struct bt_conn *conn,
+                                           const struct bt_conn_pairing_feat *const feat)
+{
+    /* Nothing to steal when unbonded; otherwise require a recent button press. */
+    if (transport_bond_count() == 0) return BT_SECURITY_ERR_SUCCESS;
+    return pairing_window_open() ? BT_SECURITY_ERR_SUCCESS : BT_SECURITY_ERR_PAIR_NOT_ALLOWED;
+}
+```
+
+with the window opened for ~60 s by any button press. That is strictly better than both states: a
+fresh device still pairs freely, an attacker is refused exactly as today, and a de-synced phone
+recovers with one tap instead of the 10-second 5-tap ritual.
+
+**Until then the recovery path is the 5-tap unpair**, which is clumsy but is itself a user-presence
+gate.
 
 ### Leading hypothesis (2026-07-28): the DFU reset never unmounts the SD card
 
@@ -597,7 +629,7 @@ Everything below this line survived an adversarial pass only partly. Read these 
 on it.
 
 **1. The recovery evidence is confounded.** The whole "it was a bond mismatch" reading leans on
-the 5-tap + 10 s hold (`bt_unpair`, `button.c:430`) being what cleared it. But **4**-tap + hold
+the 5-tap + 10 s hold (`bt_unpair`, `button.c:482`) being what cleared it. But **4**-tap + hold
 is `turnoff_all()` — power off (`button.c:425`). The two gestures are adjacent, and the reporter
 described *both* rebooting the device and doing a button combo. A power-cycle alone would clear a
 crash-loop or a wedged stack, with no bond involved. `bt_unpair` does **not** reboot (no
@@ -630,7 +662,7 @@ watchdog/brownout cause ⟹ the device was resetting, and hypotheses 1–3 win o
 uptime (hours) ⟹ the device was up throughout, and the bond reading survives. That reading is
 already logged as `device_conn_fail` / `device_drop_stats` (§2) — it just wasn't in the excerpt.
 
-`CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE=y` (`oo-2.8.1`) stands regardless: the unrecoverable
+The *analysis* stands regardless of the retracted fix: the unrecoverable
 refuse-to-re-pair state is provable from the source alone (encrypted characteristics + `smp.c`
 `update_keys_check` + the config being unset), independent of whether it caused *this* outage.
 
