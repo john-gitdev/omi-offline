@@ -465,7 +465,11 @@ class SharedPreferencesUtil {
   /// (see DeviceProvider._shouldRefreshGattCache). Per-device, since a phone can
   /// be bonded to more than one Omi. Empty = never seen.
   String gattFingerprint(String deviceId) => getString('gattFingerprint_$deviceId');
-  void setGattFingerprint(String deviceId, String value) => saveString('gattFingerprint_$deviceId', value);
+
+  /// Awaitable so the caller can be sure the record landed before the link it
+  /// describes is torn down.
+  Future<void> setGattFingerprint(String deviceId, String value) async =>
+      await saveString('gattFingerprint_$deviceId', value);
 
   /// One-shot: whether the first-sighting GATT-cache refresh has run. Devices
   /// bonded before fingerprinting existed may already hold a stale cache from an
