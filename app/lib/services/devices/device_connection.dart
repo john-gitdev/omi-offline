@@ -292,6 +292,18 @@ abstract class DeviceConnection {
     return null;
   }
 
+  /// Turns the solid-blue "connected to phone" LED indicator on/off. With it
+  /// off the connection no longer drives the LED, so the recording / mute state
+  /// shows through and an idle connected device stays dark.
+  Future<void> setConnectedLed(bool enabled) async {
+    if (await isConnected()) await performSetConnectedLed(enabled);
+  }
+
+  Future<bool?> getConnectedLed() async {
+    if (await isConnected()) return performGetConnectedLed();
+    return null;
+  }
+
   Future<void> setMicGain(int gain) async {
     if (await isConnected()) await performSetMicGain(gain);
   }
@@ -395,6 +407,8 @@ abstract class DeviceConnection {
   Future<int> performGetFeatures();
   Future<void> performSetLedDimRatio(int ratio);
   Future<int?> performGetLedDimRatio();
+  Future<void> performSetConnectedLed(bool enabled);
+  Future<bool?> performGetConnectedLed();
   Future<void> performSetMicGain(int gain);
   Future<int?> performGetMicGain();
   Future<void> performSetButtonConfig(List<int> config);
