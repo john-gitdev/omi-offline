@@ -201,8 +201,8 @@ void set_led_state()
         r = true; // Solid Red
     } else if (battery_ready && battery_percentage < 10) {
         r = true; b = true; // Purple
-    } else if (is_connected) {
-        b = true; // Solid Blue — connected always wins over mode state
+    } else if (is_connected && app_settings_get_connected_led()) {
+        b = true; // Solid Blue — connected wins over mode state (unless the user turned it off)
     } else if (in_manual) {
         if (thr == 65535) {
             r = true; g = true; // Yellow — manual recording active (disconnected)
