@@ -226,6 +226,10 @@ class MockDeviceConnection implements DeviceConnection {
   @override
   Future<int?> getLedDimRatio() async => null;
   @override
+  Future<void> setConnectedLed(bool enabled) async {}
+  @override
+  Future<bool?> getConnectedLed() async => null;
+  @override
   Future<void> setMicGain(int gain) async {}
   @override
   Future<int?> getMicGain() async => null;
@@ -277,6 +281,10 @@ class MockDeviceConnection implements DeviceConnection {
   Future<void> performSetLedDimRatio(int ratio) => throw UnimplementedError();
   @override
   Future<int?> performGetLedDimRatio() => throw UnimplementedError();
+  @override
+  Future<void> performSetConnectedLed(bool enabled) => throw UnimplementedError();
+  @override
+  Future<bool?> performGetConnectedLed() => throw UnimplementedError();
   @override
   Future<void> performSetMicGain(int gain) => throw UnimplementedError();
   @override
