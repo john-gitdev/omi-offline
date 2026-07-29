@@ -505,8 +505,11 @@ connected → device ready after ~620 ms (services discovered) → dropped 1–4
 
 repeating indefinitely, interleaved with `gatt_status_8`. The tell is the pair of
 `device ready after <n>ms` **followed by a drop a second or two later** — a wedge never gets
-that far. `gatt_status_8` here is a consequence, not a cause: the peer stops answering
-without an LL_TERMINATE, so the central reports the supervision timeout.
+that far. `gatt_status_8` means the peer went **silent** — no LL_TERMINATE, so the central falls
+back to the supervision timeout. Note this is *not* the signature an SMP rejection produces (that
+gives an explicit peer-initiated disconnect — status 5, or 137 `GATT_AUTH_FAIL`), which is the
+single strongest argument against this whole reading. Tracked as attack #2 in the
+competing-hypotheses block below; do not read status 8 as corroborating the bond theory.
 
 Observed 2026-07-28 02:44–02:48 UTC on `C3:94:71:EA:A8:D5` immediately after an `oo-2.8.0`
 flash — four cycles: ready@02:47:59.806→drop@02:48:01.2 (1.4 s), ready@02:48:31.7→drop@02:48:35.4
@@ -578,7 +581,13 @@ recovers with one tap instead of the 10-second 5-tap ritual.
 **Until then the recovery path is the 5-tap unpair**, which is clumsy but is itself a user-presence
 gate.
 
-### Leading hypothesis (2026-07-28): the DFU reset never unmounts the SD card
+### SUPERSEDED hypothesis (2026-07-28): the DFU reset never unmounts the SD card
+
+**Killed by Wedge 4** (§4): that log shows `live_uptime_ms` climbing monotonically to 19 h 40 m
+with every drop counter at zero and the only reset being the operator's own power-cycle. The
+device never crash-looped, so this cannot be what happened. Retained because the underlying
+defect below is real and worth fixing on its own merits — just not as an explanation for these
+outages.
 
 Every reset path in this firmware flushes and unmounts the SD **except the one the DFU uses**:
 
@@ -599,14 +608,17 @@ in-progress block."* **Only OTAs skip it.**
 Predicts both reported symptoms from one cause:
 
 - **Boot blocks on a dirty mount** → SD worker stalls → watchdog resets → **crash loop**. Each
-  boot advertises, accepts a connection, dies ~1–3 s in. That is the observed trace, and it
-  explains `gatt_status_8` (peer silently gone, no LL_TERMINATE) — which the bond theory never
-  explained. A power cycle clears it; a phone BT toggle cannot.
+  boot advertises, accepts a connection, dies ~1–3 s in. That matched the observed trace, and it
+  accounted for `gatt_status_8` (peer silently gone, no LL_TERMINATE) — the one thing the
+  bond-mismatch reading does not naturally produce, since an SMP rejection disconnects
+  explicitly rather than going quiet. A power cycle clears it; a phone BT toggle cannot.
 - **Mounts onto a corrupt volume** → records nothing → "had to wipe the storage", with the
   backend setting still intact because NVS was never involved.
 
-**This now outranks the bond-mismatch reading.** It is more economical, it fits status 8, and it
-requires no NVS loss — which the operator reports never seeing.
+**At the time this outranked the bond-mismatch reading** — more economical, a better fit for
+status 8, and requiring no NVS loss (which the operator reports never seeing). Wedge 4 then ruled
+it out on uptime evidence. The status-8 objection it raised, however, survives its parent
+hypothesis and still stands against the bond reading; see attack #2 below.
 
 **Fix** (not applied — a hang here breaks the update path, and it is unbuildable/untestable on the
 analysis machine): register `MGMT_EVT_OP_OS_MGMT_RESET` (present in NCS 2.9,
