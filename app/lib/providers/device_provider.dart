@@ -1487,6 +1487,10 @@ class DeviceProvider extends ChangeNotifier
 
   String? _currentlySettingUpId;
 
+  /// Set by [_shouldRefreshGattCache] during setup, acted on once setup releases
+  /// [_currentlySettingUpId].
+  bool _needsGattCacheRefresh = false;
+
   void _onDeviceConnected(BtDevice device) async {
     if (_currentlySettingUpId == device.id) return;
     _currentlySettingUpId = device.id;
@@ -1505,6 +1509,84 @@ class DeviceProvider extends ChangeNotifier
       await _finishDeviceSetup(device);
     } finally {
       _currentlySettingUpId = null;
+    }
+
+    // Deferred until after the setup guard is released: recycling reconnects,
+    // which re-enters _onDeviceConnected — and that early-returns while
+    // _currentlySettingUpId still holds this id, so the fresh link would never
+    // be set up. _shouldRefreshGattCache has already persisted the new
+    // fingerprint, so this runs at most once per firmware change.
+    if (_needsGattCacheRefresh) {
+      _needsGattCacheRefresh = false;
+      Logger.warning('DeviceProvider: firmware identity changed — recycling the link '
+          'to drop the stale GATT cache');
+      unawaited(ServiceManager.instance().device.recycleConnection());
+    }
+  }
+
+  /// Whether Android's cached GATT database for [deviceId] has to be dropped
+  /// because the device's firmware identity changed since the last connect.
+  ///
+  /// Android persists a bonded device's attribute database and answers service
+  /// discovery out of it, so a firmware update that adds or moves attributes can
+  /// leave the app working from a stale map: new services invisible, and any
+  /// service whose handles shifted addressed at the wrong offsets. Recycling the
+  /// connection is what fixes it — the native reconnect path closes the gatt, and
+  /// closeGatt() calls the BluetoothGatt.refresh() reflection hook, so the new
+  /// link rediscovers on air. Nothing extra is needed natively.
+  ///
+  /// Gated on identity rather than done on every connect, because a rediscovery
+  /// costs a full reconnect and the layout can only move across a firmware flash.
+  /// The fingerprint is the DIS firmware revision **and** the capability
+  /// bitfield: the version alone misses a dev/production swap at the same
+  /// version, and those differ in attribute count via CONFIG_OMI_DIAG_LOG.
+  Future<bool> _shouldRefreshGattCache(String deviceId) async {
+    // iOS exposes no equivalent of refresh(); it relies on the peripheral's
+    // Service Changed indication, which it honours far better than Android does.
+    if (!Platform.isAndroid) return false;
+    try {
+      // Read by getDeviceInfo() moments earlier in _finishDeviceSetup. DIS sits
+      // at statically-registered handles the firmware can never shift, so it is
+      // trustworthy even when everything after it in the cache is stale.
+      final fw = pairedDevice?.firmwareRevision;
+      if (fw == null || fw.isEmpty) return false;
+
+      final conn = await ServiceManager.instance().device.ensureConnection(deviceId);
+      if (conn == null) return false;
+      final features = await conn.getFeatures();
+      // A transient GATT error on a degraded link reads 0 rather than the real
+      // flags — that is a failed read, not a device that lost every capability.
+      if (features == 0) return false;
+
+      final fingerprint = '$fw|$features';
+      final prefs = SharedPreferencesUtil();
+      final stored = prefs.gattFingerprint(deviceId);
+      if (stored == fingerprint) return false;
+
+      if (stored.isEmpty) {
+        // First sighting of this device. Record it without recycling — the cache
+        // is only suspect once we have actually watched the identity change, and
+        // recycling every device once on upgrade would cost every user a
+        // reconnect to fix a problem most of them do not have.
+        prefs.setGattFingerprint(deviceId, fingerprint);
+        return false;
+      }
+
+      if (ServiceManager.instance().wal.getSyncs().isSyncing) {
+        // Don't abort a transfer for this. Leaving the fingerprint unstored means
+        // the next connect retries, so it is deferred rather than skipped.
+        Logger.debug('DeviceProvider: GATT-cache refresh deferred — sync in flight');
+        return false;
+      }
+
+      // Persist BEFORE recycling so a refresh that doesn't help still happens
+      // only once, rather than recycling on every connect from here on.
+      prefs.setGattFingerprint(deviceId, fingerprint);
+      Logger.debug('DeviceProvider: GATT fingerprint changed "$stored" -> "$fingerprint"');
+      return true;
+    } catch (e) {
+      Logger.debug('DeviceProvider: GATT-cache fingerprint check failed: $e');
+      return false;
     }
   }
 
@@ -1571,6 +1653,10 @@ class DeviceProvider extends ChangeNotifier
 
     await getDeviceInfo();
     SharedPreferencesUtil().deviceName = device.name;
+
+    // Decide now (getDeviceInfo just refreshed the firmware revision) but act
+    // later — see the deferred block at the end of _onDeviceConnected.
+    _needsGattCacheRefresh = await _shouldRefreshGattCache(device.id);
 
     // Read crash diagnostics and store for Debug Tools display
     final conn = await ServiceManager.instance().device.ensureConnection(device.id);
