@@ -36,7 +36,13 @@ abstract class IDeviceService {
   /// toggling Bluetooth. Keeps the device managed (unlike [disconnectDevice], which
   /// unmanages, signalling user-intent-off and cancelling native recovery). No-op if
   /// nothing is connected.
-  Future<void> recycleConnection();
+  /// Drop the current GATT and reconnect fresh (wedge recovery; also what drops
+  /// Android's cached attribute database, via the native closeGatt → refresh).
+  ///
+  /// Returns whether a recycle was actually started — false when one is already
+  /// in progress or there is no active connection. Callers that record having
+  /// refreshed something must key off this, not off having asked.
+  Future<bool> recycleConnection();
 
   /// Fully tear down connection + transport for a device being forgotten/unpaired.
   Future<void> forgetDevice(String deviceId);
@@ -323,15 +329,15 @@ class DeviceService implements IDeviceService {
   }
 
   @override
-  Future<void> recycleConnection() async {
+  Future<bool> recycleConnection() async {
     if (_recycling) {
       Logger.debug('[DeviceService] recycleConnection: already in progress, skipping');
-      return;
+      return false;
     }
     final conn = _connection;
     if (conn == null) {
       Logger.debug('[DeviceService] recycleConnection: no active connection, skipping');
-      return;
+      return false;
     }
     _recycling = true;
     final deviceId = conn.device.id;
@@ -357,6 +363,7 @@ class DeviceService implements IDeviceService {
       // (both now take the same lock). Without that, a manual teardown could complete
       // between the guard and the reconnect and be undone.
       await _recycleReconnectLocked(conn, deviceId);
+      return true;
     } finally {
       _recycling = false;
     }
