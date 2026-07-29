@@ -1545,9 +1545,7 @@ class DeviceProvider extends ChangeNotifier
           // help still happens just once — while one that never started (another
           // recycle already in flight, or the link dropped first) leaves nothing
           // behind to suppress the retry on the next connect.
-          final prefs = SharedPreferencesUtil();
-          await prefs.setGattFingerprint(device.id, fingerprint);
-          if (wasMigration) prefs.gattFingerprintMigrationDone = true;
+          await SharedPreferencesUtil().setGattFingerprint(device.id, fingerprint);
         } else {
           Logger.debug('DeviceProvider: GATT-cache refresh not started — retrying on the next connect');
         }
@@ -1603,17 +1601,19 @@ class DeviceProvider extends ChangeNotifier
       if (stored == fingerprint) return null;
 
       if (stored.isEmpty) {
-        // No fingerprint recorded yet. On a device that predates fingerprinting
-        // the cache may ALREADY be stale from a flash that happened before this
-        // code existed, so recording the identity and skipping the refresh would
-        // strand it — invisible new services until some unrelated teardown
-        // clears the cache. Refresh once instead, guarded by a global one-shot:
-        // a device paired AFTER that migration was just discovered for the first
-        // time, so its cache is fresh by definition and needs nothing.
-        if (prefs.gattFingerprintMigrationDone) {
-          await prefs.setGattFingerprint(deviceId, fingerprint);
-          return null;
-        }
+        // No fingerprint recorded for THIS device yet. It may predate
+        // fingerprinting and already hold a stale cache from a flash that
+        // happened before this code existed, so recording the identity without
+        // refreshing would strand it — invisible new services until some
+        // unrelated teardown clears the cache. Refresh once per device.
+        //
+        // This is deliberately per-device and NOT gated on a global one-shot: a
+        // phone can be bonded to several Omis, and one global flag cannot
+        // express a per-device fact — the first device seen would consume the
+        // flag and every other bonded device would skip the refresh it needs.
+        // The cost of being unable to tell "predates fingerprinting" from
+        // "freshly paired, cache already clean" is one wasted reconnect per
+        // device, once, which is far cheaper than stranding a device for good.
         _pendingGattMigration = true;
         return fingerprint;
       }
