@@ -26,8 +26,9 @@ typedef enum {
      * BLE 0x0063 drain / 0x0064 control chars exist. The app hides the Debug Tools
      * event-log toggle when this bit is absent. */
     OMI_FEATURE_DIAG_LOG = (1 << 12),
-    /* The connected-LED toggle characteristic (0x19B10017) exists. Lets the app
-     * hide the switch on firmware that always shows the solid-blue indicator. */
+    /* The LED service (0x19B10080/0x19B10081) exists, so the connected (solid
+     * blue) indicator can be turned off. Lets the app hide the switch on older
+     * firmware, which always shows it. */
     OMI_FEATURE_CONNECTED_LED = (1 << 13),
 } omi_feature_t;
 
