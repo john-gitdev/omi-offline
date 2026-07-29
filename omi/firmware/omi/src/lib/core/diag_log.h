@@ -43,7 +43,15 @@ typedef enum {
     DIAG_WRITE_BLOCKED = 9,          /* reserved (not yet instrumented) */
     DIAG_RING_IO_ERROR = 10,         /* reserved (not yet instrumented) */
     DIAG_BACKEND_MOUNT = 11,         /* reserved (not yet instrumented) */
+    DIAG_BOND_STATE = 12,            /* arg0 = diag_bond_cause_t; arg1 = bond count AFTER the event */
 } diag_event_code_t;
+
+/* arg0 values for DIAG_BOND_STATE. Appended-only, same discipline as the codes. */
+typedef enum {
+    DIAG_BOND_CAUSE_BOOT_LOAD = 0,   /* bonds loaded from settings at transport_start */
+    DIAG_BOND_CAUSE_POST_DFU = 1,    /* wiped by the armed post-update unpair */
+    DIAG_BOND_CAUSE_BUTTON = 2,      /* wiped by the 5-tap + hold gesture */
+} diag_bond_cause_t;
 
 /* 16-byte packed record. nRF5340 is little-endian, so the in-RAM layout IS the wire
  * layout — the drain memcpy's raw slot bytes with no per-field repacking. */

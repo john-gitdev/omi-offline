@@ -130,6 +130,7 @@ Record the sub-class in the "Recovery trigger" column below.
 | 1 | 2026-07-22 15:08→15:36 | 28m 16s | SILENT | screen-wake (`screen_interactive` false→true) | **No** | +1 (in 07:34–18:23 window) | fast | 147, then 8 |
 | 2 | 2026-07-22 21:01→21:07 | 5m 54s | SILENT | device-return / self (Doze stayed on, screen off) | **No** | +0 (55→55) | fast | 147 |
 | 3 | 2026-07-24 04:42→04:45 | 3m 12s | *(none — sub-threshold)* | **BT toggle** (`error=bluetooth_off` → immediate reconnect) | **Yes** | +0 (flat at 3) | fast | *none — all `-1`* |
+| 4 | 2026-07-28 19:47→22:27 | ~2h 40m (3 cycles) | **ADVERTISING** (first ever) | Forget Device + power-cycle | **No** | +0 (flat at 61) | fast | *none — all `-1`* |
 
 Wedge 0 is the **origin of the ghost-GATT hypothesis** and the purge fixes now shipped
 (§8 background, §6 "already implemented"); it predates the env-snapshot instrumentation, so
@@ -250,6 +251,82 @@ reconstructed from connect/transport lines, and the ghost is **inferred, not obs
   central (phone) side.** Consistent with the all-`-1` timeout signature.
 - **Bucket: toggle-required.** The self-clearing recovery mechanisms (screen-wake, device-return
   alarm) did **not** land in the ~3 min before the user toggled; the adapter cycle is what cleared it.
+
+---
+
+### Detail — Wedge 4 (2026-07-28) — bond loss caught in the act
+
+The first wedge where the snapshot instrumentation captured the bond flipping, and the first
+**ADVERTISING** probe verdict on record. Settles several open questions at once.
+
+- Log source: app 0.31.x, device `C3:94:71:EA:A8:D5`, firmware `oo-2.8.0`.
+- **The device never reset and the SD is clean.** `live_uptime_ms` climbs monotonically all day —
+  `4797968` (04:07) → `53129979` (17:32) → `70820793` (22:27) = **19 h 40 m continuous**. Every
+  drop counter zero throughout (`block_drops=0`, `ring_io_errors=0`, `codec_frame_drops=0`),
+  `estab_fail_count` flat at **61**. The only reboot is the operator's own power-cycle at 22:28:50
+  (`live_uptime_ms=2982`, `last reset = low power wake; prior boot ran 19h 40m`).
+  ⟹ **The §9 crash-loop / dirty-mount hypothesis is dead for this episode.**
+- **`bond_state` flipped spontaneously, phone-side, with no DFU and no unpair:**
+  - `ble_wedge` @ 19:47:11 — `bond_state=bonded`
+  - `ble_wedge` @ 20:06:54 — `bond_state=bonded`
+  - `ble_wedge` @ 21:47:08 — **`bond_state=not_bonded`**
+  - `ble_wedge` @ 22:17:08 — `not_bonded`
+- `scan_probe` @ 21:47:16 — **2 adv packets, RSSI −73 → ADVERTISING**; @ 22:17:16 — 3 packets,
+  RSSI −100 → ADVERTISING. The peripheral was demonstrably healthy and on the air the whole time.
+- Post-flip symptom is the §9 signature exactly: connect → `device ready (14 services)` →
+  `Failed to write characteristic: Disconnected` → drop, on a ~4–6 s cycle, repeating from
+  22:25:29 to 22:26:16 without ever completing setup.
+- Cleared by **Forget Device** @ 22:26:13 (which resets the app's own device state and re-pairs
+  clean), then a power-cycle @ 22:28. The connect at 22:27:22 read the diagnostics characteristics
+  successfully, and the encrypted storage characteristic worked again by 22:30:34.
+- **Bucket: bond-mismatch (§9), not a wedge.** Establishment was never the problem.
+
+**What this settles.** The bond-mismatch class is real and now directly instrumented — no longer
+inferred from a confounded button press. It is also the **first ADVERTISING verdict**, answering
+§7's lead question: ADVERTISING wedges do happen on this phone/device, and they are the
+bond-mismatch population, not the establishment population. `CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE=y`
+would make this failure recoverable, but was reverted as unsafe — see §9 for why, and for the
+user-presence-gated design that replaces it.
+
+**Still open:** *why* the phone dropped its bond unprompted. One plausible chain that fits the
+ordering — the device's own key went first, the phone's stale-LTK connect drew a
+`PIN_OR_KEY_MISSING`, and Android cleared its bond in response (which would also mean the
+"Android reliably auto-clears" premise §9 doubted is correct on this handset). Unverified; a
+btsnoop capture across the flip would settle it.
+
+### Detail — Wedge 4 companion finding: the mic was wedged, and the reboot fixed it
+
+Same log, separate fault, worth recording because the two were easy to conflate. Every recording
+in the 19 h 40 m session decoded to **digital silence** — e.g. 18:38:26,
+`1785263851_2496461859.bin — 2070 frames, 2025 speech frames, maxAmp=0.0000`. The high "speech"
+count is force-capture from a Priority Recording, not detection; **`maxAmp` is the real signal and
+it was flat zero.** The first bin of the post-power-cycle session reads
+`1785277726_4189929963.bin — 1537 frames, 987 speech frames, **maxAmp=0.4998**`.
+
+⟹ The T5838 was returning silence, the power-cycle recovered it, and `oo-2.8.0` predates the
+`mic_reset()` work (PR #361) that recovers this without a reboot.
+
+**RETRACTED: an earlier revision of this section claimed the mic "re-wedged within ~90 seconds"
+after the power-cycle. That was wrong** — the operator confirmed recording was working; the short
+recordings were short speech, not a fault.
+
+The mistake was reading **empty bins as a fault signal. They are not.** In auto mode the VAD gate
+means silence writes no audio at all, so a bin that closes containing only its 36-byte
+`0xFFFFFFFB` metadata header (4-byte tag + 4-byte length + 28-byte payload) is the *expected*
+outcome of a quiet window. `empty_bin_rotations` counts exactly that normal case, and
+`Expecting N files (36 bytes total)` from `CMD_LIST_FILES` means "nothing was said", not "the mic
+is dead". **Do not treat `empty_bin_rotations` or 36-byte bins as evidence of a wedge on their
+own.**
+
+What the same log does show working: `priority_starts=4`, `priority_stops=4`,
+`session_end_marker_emits=4`, `marker_write_drops=0`, WAL sync fetching and deleting normally,
+and the audio-bearing bin decoding and finalizing to
+`recordings/2026-07-28/recording_1785277736980.wav`.
+
+This also weakens the pre-reboot reading above: `maxAmp=0.0000` across that session is still
+anomalous for a force-captured Priority Recording, but with the empty-bin signal withdrawn it is
+no longer corroborated, and `maxAmp` is printed to 4 dp so a genuinely quiet room is not excluded.
+Treat the 19 h 40 m wedge as **plausible, not established.**
 
 ---
 
@@ -411,7 +488,281 @@ sequenceDiagram
 
 ---
 
-## 9. New-record template
+## 9. Not a wedge: the bond-mismatch outage (2026-07-28)
+
+A distinct failure class that **looks** like a wedge in the connect logs but is not one, and
+must not be filed as Wedge N. Recorded here so the next occurrence is recognised in seconds.
+
+### How to tell it apart
+
+A wedge (§1) is a failure to *establish*: connects time out or die before service discovery,
+and the probe argues about whether the peripheral is on the air at all. This one establishes
+**perfectly, every time**, and then dies:
+
+```
+connected → device ready after ~620 ms (services discovered) → dropped 1–4 s later
+```
+
+repeating indefinitely, interleaved with `gatt_status_8`. The tell is the pair of
+`device ready after <n>ms` **followed by a drop a second or two later** — a wedge never gets
+that far. `gatt_status_8` means the peer went **silent** — no LL_TERMINATE, so the central falls
+back to the supervision timeout. Note this is *not* the signature an SMP rejection produces (that
+gives an explicit peer-initiated disconnect — status 5, or 137 `GATT_AUTH_FAIL`), which is the
+single strongest argument against this whole reading. Tracked as attack #2 in the
+competing-hypotheses block below; do not read status 8 as corroborating the bond theory.
+
+Observed 2026-07-28 02:44–02:48 UTC on `C3:94:71:EA:A8:D5` immediately after an `oo-2.8.0`
+flash — four cycles: ready@02:47:59.806→drop@02:48:01.2 (1.4 s), ready@02:48:31.7→drop@02:48:35.4
+(3.7 s), ready@02:48:52.5→drop@02:48:56.4 (3.9 s).
+
+### Mechanism
+
+Nearly every functional Omi characteristic is encryption-gated, so an unencryptable link
+passes service discovery and then fails on first use:
+
+| Characteristic | Source | Permission |
+|---|---|---|
+| Time sync write `0031` — **written on every connect** | `transport.c:299` | `PERM_WRITE_ENCRYPT` |
+| Settings `0011`–`0016` | `transport.c:172–203` | `PERM_READ_ENCRYPT \| PERM_WRITE_ENCRYPT` |
+| Storage stream + CCC | `storage.c:138/142/145/149` | `PERM_*_ENCRYPT` |
+| Mute `0071` | `transport.c:919/923` | `PERM_READ_ENCRYPT \| PERM_WRITE_ENCRYPT` |
+
+The connect-time time-sync write is the first encrypted access, which is why the drop lands
+~1 s after discovery rather than at connect.
+
+### Why it never self-heals (the root cause)
+
+Omi has no IO capabilities ⟹ every pairing is Just Works ⟹ every bond is **unauthenticated**.
+In NCS v2.9.0, `zephyr/subsys/bluetooth/host/smp.c` `update_keys_check()` (:645–652) returns
+false when an unauthenticated LTK for that peer already exists and a Just Works pairing is
+attempted, unless `CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE` (or `CONFIG_BT_ID_ALLOW_UNAUTH_OVERWRITE`)
+is set. Callers answer `BT_SMP_ERR_AUTH_REQUIREMENTS` (:3001, :3229). Neither symbol was set in
+the firmware tree, and deliberately still are not — see the reverted-fix note below.
+
+So once the two sides' bond state diverges, **the device refuses to re-pair, permanently**:
+
+- A phone Bluetooth toggle cannot fix it — bonds are persistent flash/NVS on both sides. This
+  is the discriminator against §3's toggle-required bucket: there a toggle *is* the cure; here
+  it provably is not.
+- `CONFIG_BT_MAX_PAIRED=1` (`omi.conf:120`) leaves no second slot.
+- The only exit is wiping the **device's** bond: `bt_unpair` at `button.c:482`, reached by the
+  5-tap + 10 s hold (`UNPAIR_HOLD_TIME`, `button.c:140`). Doing that is the confirming test.
+
+**Attempted fix, REVERTED — `CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE=y`.** Setting it does make
+the state recoverable, but it is not safe here, and the review that caught it was right.
+
+With `CONFIG_BT_MAX_PAIRED=1` and `CONFIG_BT_KEYS_OVERWRITE_OLDEST` unset (default `n`), a peer
+presenting a *different* address already cannot pair at all — key storage is full, `bt_keys_get_addr()`
+returns NULL, pairing fails. So the **only** thing that flag changes is whether a peer presenting the
+**bonded phone's identity address** may overwrite its Just Works LTK. Omi has no IO capabilities, so
+that pairing is unauthenticated and unprompted: an attacker in range while the phone is away would
+take over the encrypted GATT — which includes the storage service, i.e. every recording on the card —
+and lock the real phone out. The justification originally written into `omi.conf` ("an attacker can
+already pair when the device is unbonded") is true but does not cover the bonded case, which is
+exactly the case the flag opens.
+
+**Proper fix, not yet implemented** (needs a build + on-device test): keep the overwrite closed by
+default and gate it on user presence with a `bt_conn_auth_cb.pairing_accept` callback —
+
+```c
+static enum bt_security_err pairing_accept(struct bt_conn *conn,
+                                           const struct bt_conn_pairing_feat *const feat)
+{
+    /* Nothing to steal when unbonded; otherwise require a recent button press. */
+    if (transport_bond_count() == 0) return BT_SECURITY_ERR_SUCCESS;
+    return pairing_window_open() ? BT_SECURITY_ERR_SUCCESS : BT_SECURITY_ERR_PAIR_NOT_ALLOWED;
+}
+```
+
+with the window opened for ~60 s by any button press. That is strictly better than both states: a
+fresh device still pairs freely, an attacker is refused exactly as today, and a de-synced phone
+recovers with one tap instead of the 10-second 5-tap ritual.
+
+**Until then the recovery path is the 5-tap unpair**, which is clumsy but is itself a user-presence
+gate.
+
+### SUPERSEDED hypothesis (2026-07-28): the DFU reset never unmounts the SD card
+
+**Killed by Wedge 4** (§4): that log shows `live_uptime_ms` climbing monotonically to 19 h 40 m
+with every drop counter at zero and the only reset being the operator's own power-cycle. The
+device never crash-looped, so this cannot be what happened. Retained because the underlying
+defect below is real and worth fixing on its own merits — just not as an explanation for these
+outages.
+
+Every reset path in this firmware flushes and unmounts the SD **except the one the DFU uses**:
+
+| Path | Unmounts first? |
+|---|---|
+| Power-off gesture (`button.c:625-626`) | `app_sd_off()` ✓ |
+| `CMD_REBOOT` `0x16` (`storage.c:1013-1014`) | `app_sd_off()` ✓ |
+| `CMD_POWER_OFF` `0x17` (`storage.c:1086-1087`) | `app_sd_off()` ✓ |
+| **mcumgr DFU reset** (SMP OS group, cmd 5) | **nothing** ✗ |
+
+The only `mgmt_callback_register` in the firmware is `ota_mgmt_cb` for
+`IMG_MGMT_DFU_STARTED`/`STOPPED` (`main.c:397`). Nothing hooks
+`MGMT_EVT_OP_OS_MGMT_RESET`. So the DFU's reset is a bare `sys_reboot` onto a live,
+mounted, possibly mid-write volume — and `storage.c:1001-1004` states exactly why that is
+unsafe: *"Gracefully close the SD card first … so a reboot landing mid-write doesn't tear an
+in-progress block."* **Only OTAs skip it.**
+
+Predicts both reported symptoms from one cause:
+
+- **Boot blocks on a dirty mount** → SD worker stalls → watchdog resets → **crash loop**. Each
+  boot advertises, accepts a connection, dies ~1–3 s in. That matched the observed trace, and it
+  accounted for `gatt_status_8` (peer silently gone, no LL_TERMINATE) — the one thing the
+  bond-mismatch reading does not naturally produce, since an SMP rejection disconnects
+  explicitly rather than going quiet. A power cycle clears it; a phone BT toggle cannot.
+- **Mounts onto a corrupt volume** → records nothing → "had to wipe the storage", with the
+  backend setting still intact because NVS was never involved.
+
+**At the time this outranked the bond-mismatch reading** — more economical, a better fit for
+status 8, and requiring no NVS loss (which the operator reports never seeing). Wedge 4 then ruled
+it out on uptime evidence. The status-8 objection it raised, however, survives its parent
+hypothesis and still stands against the bond reading; see attack #2 below.
+
+**Fix** (not applied — a hang here breaks the update path, and it is unbuildable/untestable on the
+analysis machine): register `MGMT_EVT_OP_OS_MGMT_RESET` (present in NCS 2.9,
+`zephyr/mgmt/mcumgr/grp/os_mgmt/os_mgmt_callbacks.h`) alongside the existing `ota_mgmt_cb` and do
+what the other three paths do — `if (is_sd_on()) app_sd_off();` before letting the reset proceed.
+Use a **bounded** wait: if the SD is already wedged, an unbounded `app_sd_off()` in the callback
+would hang the reset and fail the DFU outright.
+
+### Evidence note — button config is not a witness
+
+`buttonConfigManual` / `buttonConfigAuto` are **re-pushed by the app on every connect**
+(`DeviceProvider.pushActiveButtonConfig`), so their survival across an update says nothing about
+whether NVS survived. Only device-owned keys count: **storage backend** and **Priority Recording
+cap**. Operator reports the storage backend surviving intact, and has never observed a setting
+revert after an update — which is evidence *against* the NVS-sector-loss lead below.
+
+### Competing hypotheses — this diagnosis is NOT settled
+
+Everything below this line survived an adversarial pass only partly. Read these before acting
+on it.
+
+**1. The recovery evidence is confounded.** The whole "it was a bond mismatch" reading leans on
+the 5-tap + 10 s hold (`bt_unpair`, `button.c:482`) being what cleared it. But **4**-tap + hold
+is `turnoff_all()` — power off (`button.c:425`). The two gestures are adjacent, and the reporter
+described *both* rebooting the device and doing a button combo. A power-cycle alone would clear a
+crash-loop or a wedged stack, with no bond involved. `bt_unpair` does **not** reboot (no
+`sys_reboot` on that path), so the two are separable in principle — but not from the report we
+have.
+
+**2. `gatt_status_8` argues against SMP rejection.** Status 8 is `GATT_CONN_TIMEOUT` — the peer
+stopped answering on air with no LL_TERMINATE. An SMP pairing failure normally produces an
+explicit peer-initiated disconnect (Android `GATT_AUTH_FAIL` 137, or status 5), not a supervision
+timeout. A device that **crashed, watchdog-reset, or browned out** ~1–3 s into each connection
+produces exactly the observed trace — connect, discover services, silence, timeout, repeat — and
+fits status 8 *better* than the bond theory does.
+
+**3. The direction inference rests on a shaky premise.** "Phone stale / device unbonded
+self-heals" assumes Android reliably clears its own bond on `PIN_OR_KEY_MISSING`. Android stacks
+are inconsistent here; several retry with the stale key indefinitely. If this phone is one of
+those, that direction *also* never self-heals, and the argument that the **device** held the
+stale bond collapses — along with the claim that `CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE` would
+have prevented this particular outage.
+
+**4. The NVS-overlap theory is probably wrong.** Partition Manager performs overlap validation;
+a `settings_storage` genuinely overlapping `mcuboot_primary` would most likely fail the build,
+and this firmware builds. NCS also redirects `FIXED_PARTITION(storage_partition)` to the PM
+partition when PM is active, so the "falls back to the DT partition at `0xf8000`" step is
+doubtful. Treat the section below as an unverified lead, not a finding.
+
+**What settles it:** the `reset_cause` + `uptime_seconds` from the Diagnostics characteristic
+(`0x19B10061`) on the **first successful connect after recovery**. A small uptime and/or a
+watchdog/brownout cause ⟹ the device was resetting, and hypotheses 1–3 win outright. A large
+uptime (hours) ⟹ the device was up throughout, and the bond reading survives. That reading is
+already logged as `device_conn_fail` / `device_drop_stats` (§2) — it just wasn't in the excerpt.
+
+The *analysis* stands regardless of the retracted fix: the unrecoverable
+refuse-to-re-pair state is provable from the source alone (encrypted characteristics + `smp.c`
+`update_keys_check` + the config being unset), independent of whether it caused *this* outage.
+
+### Unverified lead — settings NVS possibly inside the MCUboot app slot
+
+Which side held the stale bond: **the device did, the phone did not.** The two directions have
+different observable fates, and only one matches:
+
+- *Phone stale / device unbonded* — phone asks to encrypt, device answers `PIN_OR_KEY_MISSING`,
+  Android drops its bond, next connect is a clean Just Works pair ⟹ **self-heals in a couple of
+  attempts.** This outage did not, across ~5 min and many attempts.
+- *Device bonded / phone unbonded* — status 5, Android auto-elevates, `update_keys_check`
+  refuses ⟹ **never self-heals**, and the only exit is wiping the device bond. Matches, and
+  matches the 5-tap combo being what cleared it.
+
+Not caused by the app's post-DFU bond wipe: that path is inert (`firmware_update.dart:43`
+`_showResetPairingToggle = false`, so `wipeBonds` at :575 is always false and
+`_wipePhoneBondOnSuccess` returns early, `firmware_mixin.dart:238`). The DFU sent a *disarm*.
+
+**Root cause: the settings partition overlaps the MCUboot primary slot.** The board DTS the
+build actually includes (`boards/omi/omi_nrf5340_cpuapp.dts:261` →
+`zephyr/dts/common/nordic/nrf5340_cpuapp_partition.dtsi`) places `storage_partition` at
+**`0xf8000`–`0x100000`** (32 KB). `boards/omi/pm_static.yml` pins `mcuboot_primary` to
+**`0x10000`–`0x100000`** and `mcuboot_primary_app` to `0x10200`–`0x100000`. The NVS holding the
+BLE bonds *and* every `omi/*` setting therefore sits **inside the slot MCUboot rewrites on every
+update**.
+
+**How much of it gets erased — the part that makes this fit the evidence.** A whole-slot erase
+would destroy the NVS on *every* update, which the history falsifies: bonds usually survive (that
+is why the reset-pairing toggle was hidden). The actual behaviour is narrower.
+`sysbuild/mcuboot.conf` sets `CONFIG_BOOT_UPGRADE_ONLY=y`, which the Zephyr port
+(`bootloader/mcuboot/boot/zephyr/include/mcuboot_config/mcuboot_config.h:72-75`) expands to
+**both** `MCUBOOT_OVERWRITE_ONLY` **and** `MCUBOOT_OVERWRITE_ONLY_FAST`. Under FAST,
+`boot_copy_image` (`boot/bootutil/src/loader.c:1872-1899`) erases sectors from the slot start only
+up to the *image size* and then breaks, and separately erases only the **trailer sectors at the top
+of the slot**. The image stops far below `0xf8000`, and the overwrite-only trailer (magic +
+image-ok + swap-info) rounds to a single 4 KB sector.
+
+Net: **one of the eight NVS sectors — `0xff000`–`0x100000` — is erased per OTA.** NVS is a
+circular log; it re-inits that sector as free and recovers structurally, but any key whose only
+live copy was sitting there is lost. Bonds are rewritten rarely, so they drift around the ring and
+land in the doomed sector roughly 1 flash in 8. That is precisely the observed "usually survives,
+occasionally doesn't", and it gives `oo-2.7.3` a real mechanism: dropping the redundant pre-flash
+NVS write lowered the odds of the freshest bond copy sitting in the top sector at flash time,
+without moving the NVS.
+
+**Free test, since the mechanism is indiscriminate:** it should intermittently eat *other* `omi/*`
+keys too — storage backend, Priority Recording cap, button config. A history of settings silently
+reverting after an OTA is strong confirmation; never seeing that across many flashes while bonds
+have been lost more than once weakens the theory badly.
+
+Not a candidate: the **Ring** audio backend. `sd_ring.c:96-104` writes via `disk_access_*` on
+`CONFIG_SDMMC_VOLUME_NAME` — the SD NAND on `sdhc0` (spi3 CS0), a different physical chip from
+both the internal flash and the P25Q16H NOR. It cannot reach the bond storage.
+
+`pm_static.yml` defines **no `settings_storage`**, and `flash_primary` has zero free space
+(`mcuboot` `0x0`–`0x10000` + `mcuboot_primary` `0x10000`–`0x100000` spans it entirely), so
+Partition Manager has nowhere to place one — the DT partition at `0xf8000` is the only candidate,
+and it is inside the slot.
+
+This is intermittent rather than total because NVS is a wear-levelled ring over 8 sectors: how
+much survives depends on which sectors hold the live copy of each key and how far the incoming
+image extends. It also explains why `oo-2.7.3`'s mitigation (dropping a redundant pre-flash NVS
+write) helped without fixing anything — it only changed the odds of a live copy sitting in a
+doomed sector.
+
+Settles a contradiction in the codebase: `OmiBleForegroundService.kt:980` ("the firmware's NVS
+bond store sits inside the mcuboot app slot and gets wiped on swap") is **right**;
+`firmware_update.dart:37–42` ("bonds are expected to survive a DFU — the flash never reaches the
+memory that stores them") is **wrong**, and it is the stated premise for hiding the reset-pairing
+toggle.
+
+**Not yet verified by a build** — no Zephyr toolchain on the analysis machine, so the generated
+`build/partitions.yml` has not been read. Confirm either by building and checking whether a
+`settings_storage` partition is emitted, or by reading flash at `0xf8000` before and after an OTA.
+
+**Fix** (not applied — needs an image-size check from a real build): carve the settings partition
+out of the slot. End `mcuboot_primary` / `mcuboot_primary_app` at `0xf8000`, add an explicit
+`settings_storage: 0xf8000`–`0x100000` outside the mcuboot span, and let `share_size` shrink
+`mcuboot_secondary` to match. Two consequences: the app slot loses 32 KB (`0xefe00` → `0xe7e00`,
+~950 KB — check headroom first), and because MCUboot is **not** OTA-updatable here
+(`SB_CONFIG_MCUBOOT_UPDATEABLE_IMAGES=2` covers the app and net cores only), the currently
+installed MCUboot still believes the slot runs to `0x100000` and will still write its trailer
+there. **The fix only lands via a wired flash**; an OTA alone will not apply it.
+
+---
+
+## 10. New-record template
 
 Copy this block per new wedge, add a summary-table row, and set the bucket.
 

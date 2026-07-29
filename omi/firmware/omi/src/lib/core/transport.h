@@ -23,6 +23,11 @@ extern uint16_t current_mtu;
  */
 int transport_start();
 
+/* Bonds currently held for BT_ID_DEFAULT (0 or 1 — CONFIG_BT_MAX_PAIRED=1). Used to
+ * tag DIAG_BOND_STATE events so a boot with zero keys is distinguishable from an
+ * intentional wipe. */
+uint32_t transport_bond_count(void);
+
 /**
  * @brief Turn off the BLE transport
  *
