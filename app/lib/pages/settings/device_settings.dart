@@ -33,15 +33,18 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   bool _isDimRatioLoaded = false;
   bool? _hasDimmingFeature;
 
-  // Solid-blue "connected to phone" LED indicator. Firmware-owned (there is no
-  // local pref) — read on open, written straight through on toggle.
+  // LED service (0x0080) settings. Both are firmware-owned — there is no local
+  // pref — so they're read on open and written straight through on toggle. One
+  // capability gate covers both, since they ship in the same firmware.
+  bool _isLedServiceLoaded = false;
+  bool? _hasLedServiceFeature;
+
+  // Solid-blue "connected to phone" indicator.
   bool _connectedLed = true;
-  bool _isConnectedLedLoaded = false;
-  bool? _hasConnectedLedFeature;
   bool _connectedLedBusy = false;
 
-  // Boot value of the device's LED master gate. Device-owned like the above;
-  // false is the historical behaviour (LEDs off after every reboot).
+  // Boot value of the device's LED master gate; false is the historical
+  // behaviour (LEDs off after every reboot).
   bool _ledBootEnabled = false;
   bool _ledBootBusy = false;
 
@@ -105,7 +108,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
         final hasMicGain = OmiFeatures.hasFeature(features, OmiFeatures.micGain);
         final hasVadThreshold = OmiFeatures.hasFeature(features, OmiFeatures.vadThreshold);
         final hasPriorityCap = OmiFeatures.hasFeature(features, OmiFeatures.priorityRecordCap);
-        final hasConnectedLed = OmiFeatures.hasFeature(features, OmiFeatures.ledService);
+        final hasLedService = OmiFeatures.hasFeature(features, OmiFeatures.ledService);
 
         if (!mounted) return;
         setState(() {
@@ -113,7 +116,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           _hasMicGainFeature = hasMicGain;
           _hasVadThresholdFeature = hasVadThreshold;
           _hasPriorityCapFeature = hasPriorityCap;
-          _hasConnectedLedFeature = hasConnectedLed;
+          _hasLedServiceFeature = hasLedService;
         });
 
         if (!hasDimming) {
@@ -134,9 +137,9 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           }
         }
 
-        if (!hasConnectedLed) {
+        if (!hasLedService) {
           setState(() {
-            _isConnectedLedLoaded = true;
+            _isLedServiceLoaded = true;
           });
         } else {
           var enabled = await connection.getConnectedLed();
@@ -147,7 +150,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               // (connected indicator on, LEDs off at boot).
               if (enabled != null) _connectedLed = enabled;
               if (ledBoot != null) _ledBootEnabled = ledBoot;
-              _isConnectedLedLoaded = true;
+              _isLedServiceLoaded = true;
             });
           }
         }
@@ -1123,7 +1126,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             ),
           ],
           // LED master gate + the solid-blue "phone is connected" indicator.
-          if (_isConnectedLedLoaded && _hasConnectedLedFeature == true) ...[
+          if (_isLedServiceLoaded && _hasLedServiceFeature == true) ...[
             const Divider(height: 1, color: Color(0xFF3C3C43)),
             _buildSwitchItem(
               icon: FontAwesomeIcons.powerOff,
