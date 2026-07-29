@@ -1550,10 +1550,15 @@ class DeviceProvider extends ChangeNotifier
 
       final conn = await ServiceManager.instance().device.ensureConnection(deviceId);
       if (conn == null) return false;
-      final features = await conn.getFeatures();
+      // Storage-lock-safe read: this can run while a sync holds the storage
+      // characteristic, and an unserialized read there races the transfer stream
+      // and drops the link on Android. Returns null when a transfer holds the
+      // lock, which defers the whole check to the next connect — the same
+      // outcome as the isSyncing branch below, reached before we touch the link.
+      final features = await conn.getFeaturesIfIdle();
       // A transient GATT error on a degraded link reads 0 rather than the real
       // flags — that is a failed read, not a device that lost every capability.
-      if (features == 0) return false;
+      if (features == null || features == 0) return false;
 
       final fingerprint = '$fw|$features';
       final prefs = SharedPreferencesUtil();
