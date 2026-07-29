@@ -16,6 +16,11 @@ LOG_MODULE_REGISTER(app_settings, CONFIG_LOG_DEFAULT_LEVEL);
  * behaviour), 0 = stay dark while connected and let the underlying recording
  * state drive the LED instead. */
 #define DEFAULT_CONNECTED_LED 1
+/* Boot value for is_led_enabled, the LED master gate. 0 = LEDs start off and
+ * only the button gesture lights them for the session (the historical
+ * behaviour, since is_led_enabled is volatile and reset every boot); 1 = LEDs
+ * come up enabled on every boot. */
+#define DEFAULT_LED_BOOT_ENABLED 0
 
 /* Active audio storage backend. Persisted in NVS (on internal flash) — the
  * backend CHOICE is a tiny value; the audio + ring metadata it selects live on
@@ -31,6 +36,7 @@ static uint8_t mic_gain = DEFAULT_MIC_GAIN;
 static uint16_t vad_threshold = DEFAULT_VAD_THRESHOLD;
 static uint16_t priority_record_max_minutes = DEFAULT_PRIORITY_RECORD_MAX_MINUTES;
 static uint8_t connected_led_enabled = DEFAULT_CONNECTED_LED;
+static uint8_t led_boot_enabled = DEFAULT_LED_BOOT_ENABLED;
 static uint8_t storage_backend = DEFAULT_STORAGE_BACKEND;
 /* Consecutive post-crash (watchdog/lockup) boots observed while the ring backend
  * is active. Anti-brick: at RING_BOOT_FAIL_LIMIT the device auto-reverts to the
@@ -162,6 +168,19 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         if (rc >= 0) {
             connected_led_enabled = connected_led_enabled ? 1 : 0;
             LOG_INF("Loaded led_conn: %u", connected_led_enabled);
+            return 0;
+        }
+        return rc;
+    }
+
+    if (settings_name_steq(name, "led_boot", &next) && !next) {
+        if (len != sizeof(led_boot_enabled)) {
+            return -EINVAL;
+        }
+        rc = read_cb(cb_arg, &led_boot_enabled, sizeof(led_boot_enabled));
+        if (rc >= 0) {
+            led_boot_enabled = led_boot_enabled ? 1 : 0;
+            LOG_INF("Loaded led_boot: %u", led_boot_enabled);
             return 0;
         }
         return rc;
@@ -520,6 +539,24 @@ int app_settings_save_connected_led(bool enabled)
 bool app_settings_get_connected_led(void)
 {
     return connected_led_enabled != 0;
+}
+
+int app_settings_save_led_boot_enabled(bool enabled)
+{
+    uint8_t value = enabled ? 1 : 0;
+    int err = settings_save_one("omi/led_boot", &value, sizeof(value));
+    if (err) {
+        LOG_ERR("Failed to save led_boot (err %d)", err);
+        return err;
+    }
+    led_boot_enabled = value;
+    LOG_INF("Saved led_boot: %u", led_boot_enabled);
+    return 0;
+}
+
+bool app_settings_get_led_boot_enabled(void)
+{
+    return led_boot_enabled != 0;
 }
 
 int app_settings_save_storage_backend(uint8_t backend)
