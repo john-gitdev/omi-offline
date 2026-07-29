@@ -112,17 +112,6 @@ static ssize_t settings_priority_cap_read_handler(struct bt_conn *conn,
                                                   void *buf,
                                                   uint16_t len,
                                                   uint16_t offset);
-static ssize_t settings_connected_led_write_handler(struct bt_conn *conn,
-                                                    const struct bt_gatt_attr *attr,
-                                                    const void *buf,
-                                                    uint16_t len,
-                                                    uint16_t offset,
-                                                    uint8_t flags);
-static ssize_t settings_connected_led_read_handler(struct bt_conn *conn,
-                                                   const struct bt_gatt_attr *attr,
-                                                   void *buf,
-                                                   uint16_t len,
-                                                   uint16_t offset);
 // Defined further down (originally under the retired 23BA7926 button-config service).
 static ssize_t button_config_write_handler(struct bt_conn *conn,
                                            const struct bt_gatt_attr *attr,
@@ -175,9 +164,12 @@ static struct bt_uuid_128 settings_button_config_characteristic_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10015, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 settings_haptic_config_characteristic_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10016, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
-// Connected (solid blue) LED indicator on/off; 1 byte, 0 = off, non-zero = on.
-static struct bt_uuid_128 settings_connected_led_characteristic_uuid =
-    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10017, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+/* NOTE: do NOT append further characteristics to this service. It is registered
+ * FIRST (see transport_start), so every attribute added here shifts the handles
+ * of every service registered after it — storage, diagnostics, mute — and a peer
+ * holding a cached GATT DB would then address the wrong attributes until it
+ * re-pairs. New settings go in a service registered last, as the LED service
+ * (0x19B10080) below does. Adding 0015/0016 here already cost one re-pair. */
 
 static struct bt_gatt_attr settings_service_attr[] = {
     BT_GATT_PRIMARY_SERVICE(&settings_service_uuid),
@@ -217,12 +209,6 @@ static struct bt_gatt_attr settings_service_attr[] = {
                            BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                            haptic_config_read_handler,
                            haptic_config_write_handler,
-                           NULL),
-    BT_GATT_CHARACTERISTIC(&settings_connected_led_characteristic_uuid.uuid,
-                           BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
-                           BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
-                           settings_connected_led_read_handler,
-                           settings_connected_led_write_handler,
                            NULL),
 };
 
@@ -945,6 +931,73 @@ static struct bt_gatt_attr mute_service_attr[] = {
 
 static struct bt_gatt_service mute_service = BT_GATT_SERVICE(mute_service_attr);
 
+// --- LED Service ---
+// Service UUID:    19B10080-E8F2-537E-4F6C-D104768A1214
+// Characteristic:  19B10081-E8F2-537E-4F6C-D104768A1214 (Read / Write)
+//   1 byte: 0 = the connected (solid blue) indicator is off, non-zero = on.
+//   Default on, so an updated device behaves exactly as it did before.
+// Deliberately its OWN service rather than a seventh Settings characteristic:
+// Settings is registered first, so growing it renumbers every service after it
+// and forces bonded peers to re-pair. Registered last (after mute), this leaves
+// every existing handle untouched — no re-pair, and old apps simply don't find it.
+static struct bt_uuid_128 led_service_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10080, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+static struct bt_uuid_128 led_connected_characteristic_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10081, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+
+static ssize_t led_connected_write_handler(struct bt_conn *conn,
+                                           const struct bt_gatt_attr *attr,
+                                           const void *buf,
+                                           uint16_t len,
+                                           uint16_t offset,
+                                           uint8_t flags)
+{
+    ARG_UNUSED(conn);
+    ARG_UNUSED(attr);
+    ARG_UNUSED(flags);
+    if (offset != 0) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+    }
+    if (len != 1) {
+        LOG_WRN("Invalid length for connected-LED write: %u", len);
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+
+    bool enabled = ((const uint8_t *) buf)[0] != 0;
+    LOG_INF("Received connected-LED setting: %u", enabled);
+    int err = app_settings_save_connected_led(enabled);
+    if (err) {
+        LOG_ERR("Failed to save connected-LED setting: %d", err);
+    }
+
+    /* No explicit refresh needed — the main loop re-evaluates set_led_state()
+     * every ~500 ms, so the change lands within one pass. */
+    return len;
+}
+
+static ssize_t led_connected_read_handler(struct bt_conn *conn,
+                                          const struct bt_gatt_attr *attr,
+                                          void *buf,
+                                          uint16_t len,
+                                          uint16_t offset)
+{
+    uint8_t enabled = app_settings_get_connected_led() ? 1 : 0;
+    LOG_INF("Reading connected-LED setting: %u", enabled);
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, &enabled, sizeof(enabled));
+}
+
+static struct bt_gatt_attr led_service_attr[] = {
+    BT_GATT_PRIMARY_SERVICE(&led_service_uuid),
+    BT_GATT_CHARACTERISTIC(&led_connected_characteristic_uuid.uuid,
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
+                           BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
+                           led_connected_read_handler,
+                           led_connected_write_handler,
+                           NULL),
+};
+
+static struct bt_gatt_service led_service = BT_GATT_SERVICE(led_service_attr);
+
 void mute_state_notify(void)
 {
     uint8_t payload[9];
@@ -1156,41 +1209,6 @@ static ssize_t settings_priority_cap_read_handler(struct bt_conn *conn,
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &minutes, sizeof(minutes));
 }
 
-static ssize_t settings_connected_led_write_handler(struct bt_conn *conn,
-                                                    const struct bt_gatt_attr *attr,
-                                                    const void *buf,
-                                                    uint16_t len,
-                                                    uint16_t offset,
-                                                    uint8_t flags)
-{
-    if (len != 1) {
-        LOG_WRN("Invalid length for connected-LED write: %u", len);
-        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
-    }
-
-    bool enabled = ((const uint8_t *) buf)[0] != 0;
-    LOG_INF("Received connected-LED setting: %u", enabled);
-    int err = app_settings_save_connected_led(enabled);
-    if (err) {
-        LOG_ERR("Failed to save connected-LED setting: %d", err);
-    }
-
-    /* No explicit refresh needed — the main loop re-evaluates set_led_state()
-     * every ~500 ms, so the change lands within one pass. */
-    return len;
-}
-
-static ssize_t settings_connected_led_read_handler(struct bt_conn *conn,
-                                                   const struct bt_gatt_attr *attr,
-                                                   void *buf,
-                                                   uint16_t len,
-                                                   uint16_t offset)
-{
-    uint8_t enabled = app_settings_get_connected_led() ? 1 : 0;
-    LOG_INF("Reading connected-LED setting: %u", enabled);
-    return bt_gatt_attr_read(conn, attr, buf, len, offset, &enabled, sizeof(enabled));
-}
-
 static ssize_t
 features_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf, uint16_t len, uint16_t offset)
 {
@@ -1223,7 +1241,7 @@ features_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, voi
     features |= OMI_FEATURE_MIC_GAIN;
     // VAD threshold control is always enabled.
     features |= OMI_FEATURE_VAD_THRESHOLD;
-    // The connected-LED toggle characteristic (0x19B10017) is always present.
+    // The LED service (0x19B10080 / 0x19B10081) is always registered.
     features |= OMI_FEATURE_CONNECTED_LED;
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
     // Priority Recording (and thus its configurable safety cap) exists only on AAD builds.
@@ -2478,6 +2496,8 @@ int transport_start()
     bt_gatt_service_register(&diagnostics_service);
     // Mute service appended after diagnostics so all prior handles stay stable.
     bt_gatt_service_register(&mute_service);
+    // LED service appended last, same reason — see the note on settings_service_attr.
+    bt_gatt_service_register(&led_service);
     // Button + haptic config now live under the Settings service — no separate service to register.
     err = bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
     if (err) {
