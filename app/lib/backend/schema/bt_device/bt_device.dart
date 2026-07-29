@@ -95,7 +95,10 @@ enum BleAudioCodec {
   }
 }
 
+/// Mirrors the firmware capability bitfield in `omi/firmware/omi/src/lib/core/
+/// features.h`, read from the Features service (`0021`). Keep the two in step.
 class OmiFeatures {
+  static const int speaker = 1 << 0;
   static const int accelerometer = 1 << 1;
   static const int button = 1 << 2;
   static const int battery = 1 << 3;
