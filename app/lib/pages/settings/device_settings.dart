@@ -1136,15 +1136,19 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               onChanged: (v) => _updateLedBoot(v),
             ),
             const Divider(height: 1, color: Color(0xFF3C3C43)),
-            // Disabled while the LEDs are off — with the master gate closed this
-            // setting has no visible effect, and a switch that does nothing is
-            // worse than one that explains why.
+            // Deliberately NOT gated on _ledBootEnabled. That field is the boot
+            // default, not the live gate — the button gesture can have LEDs on
+            // right now on a device whose default is off, in which case changing
+            // this has an immediate visible effect. The app cannot read the live
+            // gate (0x0082 returns the stored default by design), so disabling
+            // the row would claim knowledge we don't have and block a setting
+            // that does work.
             _buildSwitchItem(
               icon: FontAwesomeIcons.bluetooth,
               title: 'Connected LED',
-              subtitle: _ledBootEnabled ? 'Solid blue while your phone is connected' : 'Turn LEDs on to use this',
+              subtitle: 'Solid blue while your phone is connected',
               value: _connectedLed,
-              onChanged: _ledBootEnabled ? (v) => _updateConnectedLed(v) : null,
+              onChanged: (v) => _updateConnectedLed(v),
             ),
           ],
           // Mic Gain
