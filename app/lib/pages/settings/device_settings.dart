@@ -38,6 +38,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   bool _connectedLed = true;
   bool _isConnectedLedLoaded = false;
   bool? _hasConnectedLedFeature;
+  bool _connectedLedBusy = false;
 
   double _micGain = 5.0;
   bool _isMicGainLoaded = false;
@@ -213,18 +214,28 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   /// and confirms it landed by reading back, since the transport swallows write
   /// errors. Reverts the switch if the device didn't take it.
   Future<void> _updateConnectedLed(bool enabled) async {
+    // Guard against a second tap landing while the first write/read-back is in
+    // flight: the two would interleave and the loser's revert would restore the
+    // other's optimistic value, leaving the switch disagreeing with the device.
+    if (_connectedLedBusy) return;
+    _connectedLedBusy = true;
+
     final previous = _connectedLed;
     setState(() => _connectedLed = enabled);
 
-    final pairedDevice = context.read<DeviceProvider>().pairedDevice;
     bool ok = false;
-    if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
-      final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
-      if (connection != null) {
-        await connection.setConnectedLed(enabled);
-        final readBack = await connection.getConnectedLed();
-        ok = readBack == enabled;
+    try {
+      final pairedDevice = context.read<DeviceProvider>().pairedDevice;
+      if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
+        final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
+        if (connection != null) {
+          await connection.setConnectedLed(enabled);
+          final readBack = await connection.getConnectedLed();
+          ok = readBack == enabled;
+        }
       }
+    } finally {
+      _connectedLedBusy = false;
     }
     if (!mounted || ok) return;
 
