@@ -964,7 +964,7 @@ static ssize_t led_connected_write_handler(struct bt_conn *conn,
     }
 
     bool enabled = ((const uint8_t *) buf)[0] != 0;
-    LOG_INF("Received connected-LED setting: %u", enabled);
+    LOG_INF("Received connected-LED setting: %u", (unsigned int) enabled);
     int err = app_settings_save_connected_led(enabled);
     if (err) {
         LOG_ERR("Failed to save connected-LED setting: %d", err);
@@ -982,7 +982,7 @@ static ssize_t led_connected_read_handler(struct bt_conn *conn,
                                           uint16_t offset)
 {
     uint8_t enabled = app_settings_get_connected_led() ? 1 : 0;
-    LOG_INF("Reading connected-LED setting: %u", enabled);
+    LOG_INF("Reading connected-LED setting: %u", (unsigned int) enabled);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &enabled, sizeof(enabled));
 }
 
