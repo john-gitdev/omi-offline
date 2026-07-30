@@ -292,6 +292,31 @@ abstract class DeviceConnection {
     return null;
   }
 
+  /// Turns the solid-blue "connected to phone" LED indicator on/off. With it
+  /// off the connection no longer drives the LED, so the recording / mute state
+  /// shows through and an idle connected device stays dark.
+  Future<void> setConnectedLed(bool enabled) async {
+    if (await isConnected()) await performSetConnectedLed(enabled);
+  }
+
+  Future<bool?> getConnectedLed() async {
+    if (await isConnected()) return performGetConnectedLed();
+    return null;
+  }
+
+  /// Sets whether the Omi's LEDs come up enabled after a reboot. The write also
+  /// applies to the current session, so the change is visible immediately.
+  Future<void> setLedBootEnabled(bool enabled) async {
+    if (await isConnected()) await performSetLedBootEnabled(enabled);
+  }
+
+  /// The stored boot default — not the live gate, which a button gesture can
+  /// toggle for the session without changing what the device reboots into.
+  Future<bool?> getLedBootEnabled() async {
+    if (await isConnected()) return performGetLedBootEnabled();
+    return null;
+  }
+
   Future<void> setMicGain(int gain) async {
     if (await isConnected()) await performSetMicGain(gain);
   }
@@ -395,6 +420,10 @@ abstract class DeviceConnection {
   Future<int> performGetFeatures();
   Future<void> performSetLedDimRatio(int ratio);
   Future<int?> performGetLedDimRatio();
+  Future<void> performSetConnectedLed(bool enabled);
+  Future<bool?> performGetConnectedLed();
+  Future<void> performSetLedBootEnabled(bool enabled);
+  Future<bool?> performGetLedBootEnabled();
   Future<void> performSetMicGain(int gain);
   Future<int?> performGetMicGain();
   Future<void> performSetButtonConfig(List<int> config);

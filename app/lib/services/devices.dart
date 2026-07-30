@@ -36,7 +36,13 @@ abstract class IDeviceService {
   /// toggling Bluetooth. Keeps the device managed (unlike [disconnectDevice], which
   /// unmanages, signalling user-intent-off and cancelling native recovery). No-op if
   /// nothing is connected.
-  Future<void> recycleConnection();
+  /// Drop the current GATT and reconnect fresh (wedge recovery; also what drops
+  /// Android's cached attribute database, via the native closeGatt → refresh).
+  ///
+  /// Returns whether a recycle was actually started — false when one is already
+  /// in progress or there is no active connection. Callers that record having
+  /// refreshed something must key off this, not off having asked.
+  Future<bool> recycleConnection();
 
   /// Fully tear down connection + transport for a device being forgotten/unpaired.
   Future<void> forgetDevice(String deviceId);
@@ -49,23 +55,10 @@ enum DeviceServiceStatus { init, ready, scanning, stop }
 
 enum DeviceConnectionState { connected, connecting, disconnected }
 
-/// Feature flags for Omi device capabilities
-/// Must match the firmware definitions in features.h
-class OmiFeatures {
-  static const int speaker = 1 << 0;
-  static const int accelerometer = 1 << 1;
-  static const int button = 1 << 2;
-  static const int battery = 1 << 3;
-  static const int usb = 1 << 4;
-  static const int haptic = 1 << 5;
-  static const int offlineStorage = 1 << 6;
-  static const int ledDimming = 1 << 7;
-  static const int micGain = 1 << 8;
-  static const int vadThreshold = 1 << 9;
-  static const int priorityRecordCap = 1 << 10;
-  static const int recordToggle = 1 << 11;
-  static const int diagLog = 1 << 12;
-}
+// OmiFeatures (the firmware capability bitfield, which must match features.h)
+// lives in backend/schema/bt_device/bt_device.dart. A second copy used to sit
+// here, which only forced importers to `hide` one of them and let the two drift
+// apart.
 
 abstract class IDeviceServiceSubscription {
   void onDevices(List<BtDevice> devices);
@@ -336,15 +329,15 @@ class DeviceService implements IDeviceService {
   }
 
   @override
-  Future<void> recycleConnection() async {
+  Future<bool> recycleConnection() async {
     if (_recycling) {
       Logger.debug('[DeviceService] recycleConnection: already in progress, skipping');
-      return;
+      return false;
     }
     final conn = _connection;
     if (conn == null) {
       Logger.debug('[DeviceService] recycleConnection: no active connection, skipping');
-      return;
+      return false;
     }
     _recycling = true;
     final deviceId = conn.device.id;
@@ -370,6 +363,7 @@ class DeviceService implements IDeviceService {
       // (both now take the same lock). Without that, a manual teardown could complete
       // between the guard and the reconnect and be undone.
       await _recycleReconnectLocked(conn, deviceId);
+      return true;
     } finally {
       _recycling = false;
     }

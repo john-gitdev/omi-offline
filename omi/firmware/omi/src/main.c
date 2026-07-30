@@ -201,8 +201,8 @@ void set_led_state()
         r = true; // Solid Red
     } else if (battery_ready && battery_percentage < 10) {
         r = true; b = true; // Purple
-    } else if (is_connected) {
-        b = true; // Solid Blue — connected always wins over mode state
+    } else if (is_connected && app_settings_get_connected_led()) {
+        b = true; // Solid Blue — connected wins over mode state (unless the user turned it off)
     } else if (in_manual) {
         if (thr == 65535) {
             r = true; g = true; // Yellow — manual recording active (disconnected)
@@ -299,6 +299,13 @@ int main(void)
     play_haptic_milli(100);
 
     app_settings_init();
+
+    /* Seed the LED master gate from its persisted default. is_led_enabled is
+     * volatile RAM (a button gesture toggles it for the session only), so
+     * without this it is off after every reboot. Safe to write here: the button
+     * thread — the only other writer — is not started until button_init() far
+     * below. */
+    is_led_enabled = app_settings_get_led_boot_enabled();
 
     /* Zero the diagnostic event ring before any thread could enqueue (no-op when
      * CONFIG_OMI_DIAG_LOG is off). Starts disabled — the app enables it at runtime. */

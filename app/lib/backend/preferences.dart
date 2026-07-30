@@ -459,6 +459,18 @@ class SharedPreferencesUtil {
     await remove('omiBusyStreak_$binPath');
   }
 
+  /// Last-seen "firmware identity" for a device — its DIS firmware revision plus
+  /// capability bitfield. Changing it is the signal that the device's GATT layout
+  /// may have moved, so Android's cached attribute database has to be dropped
+  /// (see DeviceProvider._shouldRefreshGattCache). Per-device, since a phone can
+  /// be bonded to more than one Omi. Empty = never seen.
+  String gattFingerprint(String deviceId) => getString('gattFingerprint_$deviceId');
+
+  /// Awaitable so the caller can be sure the record landed before the link it
+  /// describes is torn down.
+  Future<void> setGattFingerprint(String deviceId, String value) async =>
+      await saveString('gattFingerprint_$deviceId', value);
+
   // Firebase user UID and email — stored in plain SharedPreferences (non-sensitive identifiers).
   String get omiAuthUid => getString('omiAuthUid');
   set omiAuthUid(String v) => saveString('omiAuthUid', v);

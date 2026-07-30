@@ -183,6 +183,18 @@ class MockDeviceConnection extends DeviceConnection {
   Future<void> performSetLedDimRatio(int ratio) async {}
 
   @override
+  Future<void> performSetConnectedLed(bool enabled) async {}
+
+  @override
+  Future<bool?> performGetConnectedLed() async => null;
+
+  @override
+  Future<void> performSetLedBootEnabled(bool enabled) async {}
+
+  @override
+  Future<bool?> performGetLedBootEnabled() async => null;
+
+  @override
   Future<void> performSetMicGain(int gain) async {}
 
   @override

@@ -33,6 +33,21 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   bool _isDimRatioLoaded = false;
   bool? _hasDimmingFeature;
 
+  // LED service (0x0080) settings. Both are firmware-owned — there is no local
+  // pref — so they're read on open and written straight through on toggle. One
+  // capability gate covers both, since they ship in the same firmware.
+  bool _isLedServiceLoaded = false;
+  bool? _hasLedServiceFeature;
+
+  // Solid-blue "connected to phone" indicator.
+  bool _connectedLed = true;
+  bool _connectedLedBusy = false;
+
+  // Boot value of the device's LED master gate; false is the historical
+  // behaviour (LEDs off after every reboot).
+  bool _ledBootEnabled = false;
+  bool _ledBootBusy = false;
+
   double _micGain = 5.0;
   bool _isMicGainLoaded = false;
   bool? _hasMicGainFeature;
@@ -93,6 +108,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
         final hasMicGain = OmiFeatures.hasFeature(features, OmiFeatures.micGain);
         final hasVadThreshold = OmiFeatures.hasFeature(features, OmiFeatures.vadThreshold);
         final hasPriorityCap = OmiFeatures.hasFeature(features, OmiFeatures.priorityRecordCap);
+        final hasLedService = OmiFeatures.hasFeature(features, OmiFeatures.ledService);
 
         if (!mounted) return;
         setState(() {
@@ -100,6 +116,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           _hasMicGainFeature = hasMicGain;
           _hasVadThresholdFeature = hasVadThreshold;
           _hasPriorityCapFeature = hasPriorityCap;
+          _hasLedServiceFeature = hasLedService;
         });
 
         if (!hasDimming) {
@@ -116,6 +133,24 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           } else if (mounted) {
             setState(() {
               _isDimRatioLoaded = true; // Loaded, but no value, use default
+            });
+          }
+        }
+
+        if (!hasLedService) {
+          setState(() {
+            _isLedServiceLoaded = true;
+          });
+        } else {
+          var enabled = await connection.getConnectedLed();
+          var ledBoot = await connection.getLedBootEnabled();
+          if (mounted) {
+            setState(() {
+              // A failed read leaves the default — matches the firmware defaults
+              // (connected indicator on, LEDs off at boot).
+              if (enabled != null) _connectedLed = enabled;
+              if (ledBoot != null) _ledBootEnabled = ledBoot;
+              _isLedServiceLoaded = true;
             });
           }
         }
@@ -184,6 +219,72 @@ class _DeviceSettingsState extends State<DeviceSettings> {
       var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
       await connection?.setLedDimRatio(value.toInt());
     }
+  }
+
+  /// Writes the connected-LED setting straight to the device (it owns the value)
+  /// and confirms it landed by reading back, since the transport swallows write
+  /// errors. Reverts the switch if the device didn't take it.
+  Future<void> _updateConnectedLed(bool enabled) async {
+    // Guard against a second tap landing while the first write/read-back is in
+    // flight: the two would interleave and the loser's revert would restore the
+    // other's optimistic value, leaving the switch disagreeing with the device.
+    if (_connectedLedBusy) return;
+    _connectedLedBusy = true;
+
+    final previous = _connectedLed;
+    setState(() => _connectedLed = enabled);
+
+    bool ok = false;
+    try {
+      final pairedDevice = context.read<DeviceProvider>().pairedDevice;
+      if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
+        final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
+        if (connection != null) {
+          await connection.setConnectedLed(enabled);
+          final readBack = await connection.getConnectedLed();
+          ok = readBack == enabled;
+        }
+      }
+    } finally {
+      _connectedLedBusy = false;
+    }
+    if (!mounted || ok) return;
+
+    setState(() => _connectedLed = previous);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Could not reach your Omi — try again.')),
+    );
+  }
+
+  /// Sets whether the Omi's LEDs come up on after a reboot. The device applies
+  /// the write to the current session too, so the effect is immediate.
+  Future<void> _updateLedBoot(bool enabled) async {
+    if (_ledBootBusy) return;
+    _ledBootBusy = true;
+
+    final previous = _ledBootEnabled;
+    setState(() => _ledBootEnabled = enabled);
+
+    bool ok = false;
+    try {
+      final pairedDevice = context.read<DeviceProvider>().pairedDevice;
+      if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
+        final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
+        if (connection != null) {
+          await connection.setLedBootEnabled(enabled);
+          final readBack = await connection.getLedBootEnabled();
+          ok = readBack == enabled;
+        }
+      }
+    } finally {
+      _ledBootBusy = false;
+    }
+    if (!mounted || ok) return;
+
+    setState(() => _ledBootEnabled = previous);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Could not reach your Omi — try again.')),
+    );
   }
 
   void _updateMicGain(double value) async {
@@ -302,6 +403,55 @@ class _DeviceSettingsState extends State<DeviceSettings> {
       );
     }
     return content;
+  }
+
+  /// Same row layout as [_buildProfileStyleItem], with a switch in place of the
+  /// chip + chevron.
+  Widget _buildSwitchItem({
+    required IconData icon,
+    required String title,
+    String? subtitle,
+    required bool value,
+    // Null disables the switch — used when the setting has no observable effect
+    // in the device's current state.
+    required ValueChanged<bool>? onChanged,
+  }) {
+    final enabled = onChanged != null;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 24,
+            height: 24,
+            child: FaIcon(icon, color: enabled ? const Color(0xFF8E8E93) : const Color(0xFF48484A), size: 20),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    color: enabled ? Colors.white : const Color(0xFF8E8E93),
+                    fontSize: 17,
+                    fontWeight: FontWeight.w400,
+                  ),
+                ),
+                if (subtitle != null) ...[
+                  const SizedBox(height: 2),
+                  Text(subtitle, style: const TextStyle(color: Color(0xFF8E8E93), fontSize: 13)),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Switch(value: value, onChanged: onChanged),
+        ],
+      ),
+    );
   }
 
   Widget _buildDeviceInfoSection(BtDevice? device, DeviceProvider provider) {
@@ -973,6 +1123,32 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               title: 'LED Brightness',
               chipValue: '${_dimRatio.round()}%',
               onTap: _showBrightnessSheet,
+            ),
+          ],
+          // LED master gate + the solid-blue "phone is connected" indicator.
+          if (_isLedServiceLoaded && _hasLedServiceFeature == true) ...[
+            const Divider(height: 1, color: Color(0xFF3C3C43)),
+            _buildSwitchItem(
+              icon: FontAwesomeIcons.powerOff,
+              title: 'LEDs On',
+              subtitle: 'Applies now and after every restart',
+              value: _ledBootEnabled,
+              onChanged: (v) => _updateLedBoot(v),
+            ),
+            const Divider(height: 1, color: Color(0xFF3C3C43)),
+            // Deliberately NOT gated on _ledBootEnabled. That field is the boot
+            // default, not the live gate — the button gesture can have LEDs on
+            // right now on a device whose default is off, in which case changing
+            // this has an immediate visible effect. The app cannot read the live
+            // gate (0x0082 returns the stored default by design), so disabling
+            // the row would claim knowledge we don't have and block a setting
+            // that does work.
+            _buildSwitchItem(
+              icon: FontAwesomeIcons.bluetooth,
+              title: 'Connected LED',
+              subtitle: 'Solid blue while your phone is connected',
+              value: _connectedLed,
+              onChanged: (v) => _updateConnectedLed(v),
             ),
           ],
           // Mic Gain

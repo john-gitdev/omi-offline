@@ -95,7 +95,10 @@ enum BleAudioCodec {
   }
 }
 
+/// Mirrors the firmware capability bitfield in `omi/firmware/omi/src/lib/core/
+/// features.h`, read from the Features service (`0021`). Keep the two in step.
 class OmiFeatures {
+  static const int speaker = 1 << 0;
   static const int accelerometer = 1 << 1;
   static const int button = 1 << 2;
   static const int battery = 1 << 3;
@@ -110,6 +113,10 @@ class OmiFeatures {
   // On-device diagnostic event log (BLE 0x0063 drain / 0x0064 control) is
   // compiled into the firmware. Gates the Debug Tools event-log toggle.
   static const int diagLog = 1 << 12;
+  // The LED service (0x0080) exists: the connected (solid blue) indicator can
+  // be turned off, and the LED master gate has a persisted boot value. Gates
+  // both Customization switches — older firmware has neither.
+  static const int ledService = 1 << 13;
 
   static bool hasFeature(int features, int feature) {
     return (features & feature) != 0;

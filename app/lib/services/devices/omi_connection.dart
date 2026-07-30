@@ -56,6 +56,17 @@ class OmiDeviceConnection extends DeviceConnection {
   static const String settingsPriorityRecordCapCharacteristicUuid = '19b10014-e8f2-537e-4f6c-d104768a1214';
   // 19b10015 = button config, 19b10016 = haptic config (declared near the button section above).
 
+  // LED service. Its own service rather than a Settings characteristic: Settings
+  // is registered first on the device, so growing it renumbers every service
+  // after it and forces bonded phones to re-pair.
+  static const String ledServiceUuid = '19b10080-e8f2-537e-4f6c-d104768a1214';
+  // Connected (solid blue) LED indicator, 1 byte: 0 = off, 1 = on.
+  static const String ledConnectedCharacteristicUuid = '19b10081-e8f2-537e-4f6c-d104768a1214';
+  // Boot value of the LED master gate, 1 byte: 0 = LEDs start off each boot, 1 = on.
+  // A write also applies live; a read returns the stored default, not the live gate
+  // (a button gesture toggles the session without changing the default).
+  static const String ledBootCharacteristicUuid = '19b10082-e8f2-537e-4f6c-d104768a1214';
+
   // 8-byte diagnostics: [uint32 reset_cause LE] [uint32 uptime_seconds LE]
   static const String diagnosticsServiceUuid = '19b10060-e8f2-537e-4f6c-d104768a1214';
   static const String diagnosticsCharacteristicUuid = '19b10061-e8f2-537e-4f6c-d104768a1214';
@@ -678,6 +689,38 @@ class OmiDeviceConnection extends DeviceConnection {
     try {
       final data = await transport.readCharacteristic(settingsServiceUuid, settingsDimRatioCharacteristicUuid);
       if (data.isNotEmpty) return data[0];
+    } catch (_) {}
+    return null;
+  }
+
+  @override
+  Future<void> performSetConnectedLed(bool enabled) async {
+    try {
+      await transport.writeCharacteristic(ledServiceUuid, ledConnectedCharacteristicUuid, [enabled ? 1 : 0]);
+    } catch (_) {}
+  }
+
+  @override
+  Future<bool?> performGetConnectedLed() async {
+    try {
+      final data = await transport.readCharacteristic(ledServiceUuid, ledConnectedCharacteristicUuid);
+      if (data.isNotEmpty) return data[0] != 0;
+    } catch (_) {}
+    return null;
+  }
+
+  @override
+  Future<void> performSetLedBootEnabled(bool enabled) async {
+    try {
+      await transport.writeCharacteristic(ledServiceUuid, ledBootCharacteristicUuid, [enabled ? 1 : 0]);
+    } catch (_) {}
+  }
+
+  @override
+  Future<bool?> performGetLedBootEnabled() async {
+    try {
+      final data = await transport.readCharacteristic(ledServiceUuid, ledBootCharacteristicUuid);
+      if (data.isNotEmpty) return data[0] != 0;
     } catch (_) {}
     return null;
   }
