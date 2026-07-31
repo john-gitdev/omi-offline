@@ -1,5 +1,5 @@
 /*
- * diag_log.c — volatile RAM diagnostic event ring (see diag_log.h / DIAG_LOG_SPEC.md).
+ * diag_log.c — volatile RAM diagnostic event ring (see diag_log.h).
  *
  * Everything here is compiled only when CONFIG_OMI_DIAG_LOG is set; the disabled
  * build uses the static-inline no-op stubs in the header and this TU is left out of
