@@ -707,8 +707,15 @@ static struct bt_gatt_service diagnostics_service = BT_GATT_SERVICE(diagnostics_
  * attribute is index 4: [0]=service, [1]/[2]=0x0061 decl/value,
  * [3]/[4]=0x0062 decl/value, [5]=CCC.
  *
- * An 84-byte notification needs ATT_MTU >= 87; on a link that never negotiated up
+ * A 92-byte notification needs ATT_MTU >= 95; on a link that never negotiated up
  * from the 23-byte default bt_gatt_notify returns -EMSGSIZE and the update is lost.
+ *
+ * Growth headroom, since this payload is append-only and keeps growing: a notify is
+ * a single ATT PDU (no read-blob continuation), so the ceiling is ATT_MTU - 3 = 495
+ * with CONFIG_BT_L2CAP_TX_MTU=498 — about 100 more u32 counters. The READ path is
+ * bounded instead by the 512-byte ATT attribute-value maximum. Past ~495 the notify
+ * path would start failing on healthy links, not just tiny-MTU ones, and the app
+ * would silently fall back to polling READs.
  * This is a *live* convenience path — the same payload is always available via a
  * plain READ (ATT read-blob is not MTU-bounded), which is the app's fallback — so we
  * don't defer or fragment here, but we no longer drop the error on the floor: log it
