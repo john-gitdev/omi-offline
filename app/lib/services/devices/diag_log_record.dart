@@ -3,7 +3,7 @@ import 'dart:typed_data';
 /// One 16-byte diagnostic event drained from the firmware's on-device event ring
 /// (BLE 0x19B10063). The firmware records these for the health events that the
 /// aggregate drop counters (0x19B10062) only total — giving per-event timing and
-/// cause context (see DIAG_LOG_SPEC.md / firmware `diag_log.h`).
+/// cause context (see firmware `diag_log.h` for the event-code table).
 ///
 /// Wire layout (little-endian, matching `diag_event_t`):
 ///   [u32 seq][u32 uptime_ms][u8 code][u8 backend][u16 arg0][u32 arg1]
