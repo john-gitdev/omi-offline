@@ -1,16 +1,12 @@
 #!/bin/bash
 #
-# Set up the Omi Offline Mobile Project(iOS/Android).
+# Set up the Omi Offline Mobile Project (Android).
 #
 # Prerequisites (stable versions, use these or higher):
 #
 # Common for all developers:
 # - Flutter SDK (v3.35.3)
 # - Opus Codec: https://opus-codec.org
-#
-# For iOS Developers:
-# - Xcode (v16.4)
-# - CocoaPods (v1.16.2)
 #
 # For Android Developers:
 # - Android Studio (Iguana | 2024.3)
@@ -20,8 +16,10 @@
 # - NDK (28.2.13676358)
 #
 # Usages:
-# - $bash setup.sh ios
 # - $bash setup.sh android
+#
+# iOS is not supported for now - see the "iOS support removed" section in NOTES.md
+# for how the iOS build worked and how to restore it.
 
 set -euo pipefail
 
@@ -32,10 +30,6 @@ echo "Common for all developers:"
 echo "- Flutter SDK (v3.35.3)"
 echo "- Opus Codec: https://opus-codec.org"
 echo ""
-echo "For iOS Developers:"
-echo "- Xcode (v16.4)"
-echo "- CocoaPods (v1.16.2)"
-echo ""
 echo "For Android Developers:"
 echo "- Android Studio (Iguana | 2024.3)"
 echo "- Android SDK Platform (API 36)"
@@ -44,7 +38,6 @@ echo "- Gradle (v8.10)"
 echo "- NDK (28.2.13676358)"
 echo ""
 echo "Usages:"
-echo "- bash setup.sh ios"
 echo "- bash setup.sh android"
 echo ""
 
@@ -79,30 +72,14 @@ function run_build_android() {
     && flutter run --flavor dev
 }
 
-# #########
-# Build iOS
-# #########
-function run_build_ios() {
-  echo "🚀 Building and running iOS (dev flavor)..."
-  flutter pub get \
-    && pushd ios && pod install --repo-update && popd \
-    && dart run build_runner build --delete-conflicting-outputs \
-    && flutter run --flavor dev
-}
-
-
 case "${1}" in
-  ios)
-      setup_app_env \
-      && run_build_ios
-    ;;
   android)
     setup_keystore_android \
       && setup_app_env \
       && run_build_android
     ;;
   *)
-    echo "Error: unexpected platform '${1}'. Use 'ios' or 'android'." >&2
+    echo "Error: unexpected platform '${1}'. Only 'android' is supported (iOS was removed - see NOTES.md)." >&2
     exit 1
     ;;
 esac
