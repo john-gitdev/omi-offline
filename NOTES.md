@@ -24,6 +24,8 @@ commit (they are *not* under `app/ios/`, so the checkout above won't bring them 
   and `swiftOptions: SwiftOptions(),` to `@ConfigurePigeon`, then `dart run pigeon`.
 - `app/flavorizr.yaml` — re-add the `ios:` blocks: prod `bundleId: com.omi.offline`,
   dev `bundleId: com.omi.offline.development`, both `icon: assets/images/app_launcher_icon.png`.
+- `app/pubspec.yaml` — flip `flutter_launcher_icons.ios` and `flutter_native_splash.ios`
+  back to `true`, and restore `remove_alpha_ios: true` under `flutter_launcher_icons`.
 - `app/setup.sh` — the `run_build_ios()` function and its `ios)` case arm
   (`flutter pub get && pushd ios && pod install --repo-update && popd && dart run build_runner build --delete-conflicting-outputs && flutter run --flavor dev`).
 
@@ -36,10 +38,12 @@ state restoration), `AppDelegate.swift` (BGTaskScheduler registration), `BleHost
 
 ### Why the generator config had to change (the actual footgun)
 
-Pigeon and flavorizr **write** into `app/ios/`. Had their iOS config been left in place,
-the next `dart run pigeon` or flavorizr run would have silently recreated
-`app/ios/Runner/PigeonCommunicator.g.swift` and flavor files — a half-resurrected tree
-that looks restored but isn't. That, not the file deletion, was the risky part.
+Four generators **write** into `app/ios/`: pigeon (`swiftOut`), flavorizr (`ios:` blocks),
+`flutter_launcher_icons` (`ios: true`) and `flutter_native_splash` (`ios: true`). Had any
+been left pointing at iOS, the next `dart run pigeon` / flavorizr / icon / splash regen
+would have silently recreated part of the deleted tree — `PigeonCommunicator.g.swift`,
+flavor files, `Assets.xcassets` icons — a half-resurrected project that looks restored but
+isn't. That, not the file deletion, was the risky part.
 
 ### What was deliberately kept
 
