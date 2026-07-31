@@ -91,10 +91,12 @@ dev_dependencies:
 
   path_provider_platform_interface: any
   plugin_platform_interface: any
+# ios: false here (and in flutter_native_splash below) because these generators
+# WRITE into ios/ — with iOS removed, a regen would recreate part of the deleted
+# Xcode project. Re-enable (plus remove_alpha_ios: true) if iOS returns; see NOTES.md.
 flutter_launcher_icons:
   android: true
-  ios: true
-  remove_alpha_ios: true
+  ios: false
   image_path: "assets/images/app_launcher_icon.png"
 
 flutter:
@@ -113,4 +115,4 @@ flutter_native_splash:
     color: "#000000"
 
   android: true
-  ios: true
+  ios: false
