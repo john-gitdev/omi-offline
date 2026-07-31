@@ -1778,6 +1778,19 @@ static const struct bt_le_adv_param adv_param_slow =
 
 static uint32_t adv_retry_delay_ms = ADV_RESTART_RETRY_MS;
 
+/* Gate for the whole guard. 0 until transport_start() succeeds, and cleared again
+ * at the very top of transport_off() — *before* it disconnects, which is the point:
+ * bt_conn_disconnect() fires _transport_disconnected asynchronously on the BT RX
+ * thread, so cancelling the work items alone would race that callback re-arming
+ * them. Without this, every power-off queues a restart 50 ms out, turnoff_all()
+ * then sleeps ~1 s before sys_poweroff(), and the handler runs bt_le_adv_start()
+ * against a stack bt_disable() has already torn down. That is not merely noisy: it
+ * returns -EAGAIN, drives the unbounded retry loop, and inflates
+ * adv_restart_failures — poisoning the exact counter this guard exists to make
+ * trustworthy. It also matters on the turnoff_all() TURNOFF_BAILED path, where the
+ * device keeps running with BLE down instead of powering off. */
+static atomic_t adv_guard_active = ATOMIC_INIT(0);
+
 /* Start advertising in whatever mode current_adv_mode selects. Returns the raw
  * bt_le_adv_start() result: 0 = we were NOT advertising and now are, -EALREADY =
  * already on the air (a healthy no-op), anything else = failure. Callers must keep
@@ -1796,6 +1809,9 @@ static int adv_start_raw(void)
  * is strictly better than any finite budget. */
 static void adv_schedule_retry(int err, const char *who)
 {
+    if (!atomic_get(&adv_guard_active)) {
+        return; /* shutting down — not a real failure, and must not be counted */
+    }
     atomic_inc(&adv_restart_failures);
     LOG_ERR("adv: %s start failed (%d) mode=%s — retry in %u ms", who, err, current_adv_mode, adv_retry_delay_ms);
     k_work_schedule(&adv_restart_work, K_MSEC(adv_retry_delay_ms));
@@ -1805,8 +1821,8 @@ static void adv_schedule_retry(int err, const char *who)
 static void adv_restart_work_handler(struct k_work *work)
 {
     ARG_UNUSED(work);
-    if (is_connected) {
-        return; /* a link came up meanwhile; the disconnect path re-arms us */
+    if (!atomic_get(&adv_guard_active) || is_connected) {
+        return; /* shutting down, or a link came up; the disconnect path re-arms us */
     }
     int err = adv_start_raw();
     if (err == 0 || err == -EALREADY) {
@@ -1820,8 +1836,10 @@ static void adv_restart_work_handler(struct k_work *work)
 static void adv_watchdog_work_handler(struct k_work *work)
 {
     ARG_UNUSED(work);
-    if (is_connected) {
-        return; /* re-armed by the next disconnect */
+    if (!atomic_get(&adv_guard_active) || is_connected) {
+        /* Deliberately does NOT reschedule: shutdown must not leave a 60 s timer
+         * spinning forever, and a live link is re-armed by the next disconnect. */
+        return;
     }
     /* We cannot portably ask "am I advertising?", so re-asserting IS the test:
      * -EALREADY means healthy, 0 means we had gone silent and just rescued it. */
@@ -1900,9 +1918,14 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
      * attempt through adv_restart_work means a failure retries instead of
      * silently stranding the device off the air (see the guard block above). */
     current_adv_mode = "fast";
-    adv_retry_delay_ms = ADV_RESTART_RETRY_MS;
-    k_work_schedule(&adv_restart_work, K_MSEC(ADV_RESTART_DEFER_MS));
-    k_work_schedule(&adv_watchdog_work, K_MSEC(ADV_WATCHDOG_INTERVAL_MS));
+    /* Skip entirely when transport_off() has already cleared the gate: this
+     * callback is what its bt_conn_disconnect() triggers, and re-arming here would
+     * schedule advertising work that runs after bt_disable(). */
+    if (atomic_get(&adv_guard_active)) {
+        adv_retry_delay_ms = ADV_RESTART_RETRY_MS;
+        k_work_schedule(&adv_restart_work, K_MSEC(ADV_RESTART_DEFER_MS));
+        k_work_schedule(&adv_watchdog_work, K_MSEC(ADV_WATCHDOG_INTERVAL_MS));
+    }
 }
 
 static bool _le_param_req(struct bt_conn *conn, struct bt_le_conn_param *param)
@@ -2460,6 +2483,15 @@ void pusher(void)
 
 int transport_off()
 {
+    /* Close the advertising guard FIRST — before the bt_conn_disconnect() below,
+     * whose _transport_disconnected callback would otherwise re-arm the work items
+     * we are about to cancel, and they would then run bt_le_adv_start() after
+     * bt_disable(). Clearing the gate ahead of the disconnect is what makes the
+     * cancel stick; cancelling alone races the callback. */
+    atomic_set(&adv_guard_active, 0);
+    k_work_cancel_delayable(&adv_restart_work);
+    k_work_cancel_delayable(&adv_watchdog_work);
+
     // Stop pusher thread when transport is turned off
     atomic_set(&pusher_stop_flag, 1);
     k_sem_give(&tx_queue_sem); // unblock pusher if waiting
@@ -2724,10 +2756,14 @@ int transport_start()
          * self-heals within seconds rather than bricking the link until reboot. */
         LOG_ERR("Transport advertising failed to start (err %d) — handing to adv retry", err);
         adv_retry_delay_ms = ADV_RESTART_RETRY_MS;
+        atomic_set(&adv_guard_active, 1);
         adv_schedule_retry(err, "boot");
     } else {
         LOG_INF("Advertising successfully started");
     }
+    /* Open the gate only once bring-up has got this far, so nothing can queue
+     * advertising work against a stack that never came up. */
+    atomic_set(&adv_guard_active, 1);
     /* Arm the watchdog for the pre-first-connection window too: without this, a
      * device that goes silent before it is ever connected has nothing watching it. */
     k_work_schedule(&adv_watchdog_work, K_MSEC(ADV_WATCHDOG_INTERVAL_MS));

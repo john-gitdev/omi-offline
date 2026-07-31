@@ -188,10 +188,21 @@ class DeviceDropStats {
     return currentUptimeMs - lastBlockDropUptimeMs;
   }
 
-  /// Serializes the boot-relative counters (every counter that resets to 0 when
-  /// the device reboots — i.e. all of them except the flash-persisted connect-fail
-  /// counters, which the app baselines separately) plus [currentUptimeMs] as the
-  /// device-uptime at capture. Used to persist a "reset diagnostics" baseline across
+  /// Serializes the boot-relative *event* counters plus [currentUptimeMs] as the
+  /// device-uptime at capture.
+  ///
+  /// Two families are deliberately excluded, and the distinction is "can you
+  /// subtract it", not "does it reset on boot":
+  /// - The flash-persisted connect-fail counters ([failedConnCount],
+  ///   [estabFailCount]) survive a reboot, so a boot-relative baseline is
+  ///   meaningless for them; the app baselines those separately.
+  /// - The high-water marks ([sdWorkerStackUsed], [codecStackUsed], [ringMaxIoRaw])
+  ///   do reset on boot, but a peak minus a peak is not a "since reset" peak, so
+  ///   baselining them would produce a wrong number rather than a missing one.
+  ///
+  /// Everything else that resets to 0 on boot and counts events belongs here —
+  /// including [advRestartFailures] / [advWatchdogRecoveries], which are ordinary
+  /// monotonic event counters exactly like [markerWriteDrops]. Used to persist a "reset diagnostics" baseline across
   /// an app restart. Reboot detection on restore is counter-based, not uptime-based
   /// (see [looksRebootedFrom]); [currentUptimeMs] is retained only as provenance of
   /// when the reset was taken.
@@ -208,6 +219,8 @@ class DeviceDropStats {
         'emptyBinRotations': emptyBinRotations,
         'sessionEndMarkerEmits': sessionEndMarkerEmits,
         'markerPauseGateSaves': markerPauseGateSaves,
+        'advRestartFailures': advRestartFailures,
+        'advWatchdogRecoveries': advWatchdogRecoveries,
         'currentUptimeMs': currentUptimeMs,
       });
 
@@ -234,6 +247,8 @@ class DeviceDropStats {
         emptyBinRotations: g('emptyBinRotations'),
         sessionEndMarkerEmits: g('sessionEndMarkerEmits'),
         markerPauseGateSaves: g('markerPauseGateSaves'),
+        advRestartFailures: g('advRestartFailures'),
+        advWatchdogRecoveries: g('advWatchdogRecoveries'),
         readAt: DateTime.now(),
       );
     } catch (_) {
@@ -269,5 +284,7 @@ class DeviceDropStats {
       markerWriteDrops < baseline.markerWriteDrops ||
       emptyBinRotations < baseline.emptyBinRotations ||
       sessionEndMarkerEmits < baseline.sessionEndMarkerEmits ||
-      markerPauseGateSaves < baseline.markerPauseGateSaves;
+      markerPauseGateSaves < baseline.markerPauseGateSaves ||
+      advRestartFailures < baseline.advRestartFailures ||
+      advWatchdogRecoveries < baseline.advWatchdogRecoveries;
 }
