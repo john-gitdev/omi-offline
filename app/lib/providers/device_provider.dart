@@ -780,9 +780,50 @@ class DeviceProvider extends ChangeNotifier
           setIsConnected(true);
         }
       }
+      // Throttle the foreground reconnect loop during a real outage.
+      //
+      // Native stops its own fast retry loop after AUTONOMOUS_RETRY_STOP_AFTER (6)
+      // failures and hands over to a backing-off recovery alarm (2→4→8→16 min) —
+      // precisely because rapid connectGatt/closeGatt churn is the most common cause
+      // of the Android Bluetooth daemon wedging. Dart never honoured that handoff:
+      // periodicConnect's fixed 15 s timer plus the 30 s connect budget kept firing
+      // an attempt every ~45 s, i.e. ~80/hour, for as long as the app stayed open.
+      // BLE_Research.md Wedge 5 logged 12 attempts in 16 min into an already-dead
+      // stack that way.
+      //
+      // _reconnectAt has always gated periodicConnect's scan() but was never
+      // assigned, so the gate was dead code. Arm it here: the first few failures
+      // retry promptly (a transient blip must still clear fast), then back off
+      // 45 s → 90 s → 3 min → 6 min → 12 min, capped. Reset on any success.
+      if (device == null && connectedDevice == null) {
+        _consecutiveConnectFailures++;
+        if (_consecutiveConnectFailures >= _reconnectThrottleAfter) {
+          final steps = _consecutiveConnectFailures - _reconnectThrottleAfter;
+          final delay = Duration(seconds: (45 << steps.clamp(0, 4)).clamp(45, 720));
+          _reconnectAt = DateTime.now().add(delay);
+          Logger.debug('[BLE] reconnect throttled: failure #$_consecutiveConnectFailures, '
+              'next attempt in ${delay.inSeconds}s');
+        }
+      } else {
+        _resetReconnectThrottle();
+      }
     } finally {
       updateConnectingStatus(false);
     }
+  }
+
+  /// Failures tolerated at the full 15 s cadence before the backoff engages.
+  /// Matches native's AUTONOMOUS_RETRY_STOP_AFTER so Dart steps back at the same
+  /// point native does, rather than hammering on past it.
+  static const int _reconnectThrottleAfter = 6;
+  int _consecutiveConnectFailures = 0;
+
+  /// Clear the throttle so the next disconnect reconnects promptly. Called on any
+  /// successful connect — including ones that arrive via native's own retry or the
+  /// recovery alarm, not just through scanAndConnectToDevice.
+  void _resetReconnectThrottle() {
+    _consecutiveConnectFailures = 0;
+    _reconnectAt = null;
   }
 
   void updateConnectingStatus(bool value) {
@@ -802,7 +843,13 @@ class DeviceProvider extends ChangeNotifier
 
   void setIsConnected(bool value) {
     isConnected = value;
-    if (isConnected) _reconnectionTimer?.cancel();
+    // Any route to "connected" clears the throttle, not just scanAndConnectToDevice's
+    // own success path — a link that native's retry or the recovery alarm brought up
+    // must not leave a stale _reconnectAt suppressing the next reconnect.
+    if (isConnected) {
+      _reconnectionTimer?.cancel();
+      _resetReconnectThrottle();
+    }
     notifyListeners();
   }
 
@@ -1770,6 +1817,7 @@ class DeviceProvider extends ChangeNotifier
             'writeFair=${dropStats.writeFairActivations} '
             // Ring stall pinpoint: slowest SD op + which op, and NAND write/sync errors.
             'ringMaxIo=${dropStats.ringMaxIoMs}ms(${dropStats.ringMaxIoOp}) ringIoErr=${dropStats.ringIoErrors} '
+            'advFails=${dropStats.advRestartFailures} advRescues=${dropStats.advWatchdogRecoveries} '
             'liveUptime=$liveUptimeStr';
         if (dropStats.hasAnyDrops) {
           Logger.warning('$dropMsg — on-device audio drops since boot');
@@ -1786,6 +1834,11 @@ class DeviceProvider extends ChangeNotifier
           'ring_max_io_ms': dropStats.ringMaxIoMs,
           'ring_max_io_op': dropStats.ringMaxIoOp,
           'ring_io_errors': dropStats.ringIoErrors,
+          // Advertising-restart guard (oo-2.8.3+). adv_watchdog_recoveries > 0 means
+          // the radio had stopped and the watchdog rescued it — pre-oo-2.8.3 that was
+          // a wedge lasting until the next power-cycle (BLE_Research.md, Wedge 5).
+          'adv_restart_failures': dropStats.advRestartFailures,
+          'adv_watchdog_recoveries': dropStats.advWatchdogRecoveries,
           // Thread-stack telemetry is logged here unconditionally — it applies to every
           // device, not just ones with Priority-Recording activity (the priority block
           // below is gated and would otherwise drop it on quiet devices). 0 on firmware

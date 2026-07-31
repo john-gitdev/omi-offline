@@ -112,6 +112,20 @@ class DeviceDropStats {
   /// small [ringMaxIoMs] means the NAND was *rejecting* writes, not merely slow.
   final int ringIoErrors;
 
+  /// `bt_le_adv_start()` errors on any restart path since boot (offset 84; 0 on
+  /// firmware older than oo-2.8.3). Before oo-2.8.3 these were discarded entirely,
+  /// and a single one left the device permanently off the air — firmware running,
+  /// SD still recording, radio silent until a power-cycle.
+  final int advRestartFailures;
+
+  /// Times the 60 s advertising watchdog found the radio stopped while disconnected
+  /// and restarted it (offset 88; 0 on firmware older than oo-2.8.3).
+  ///
+  /// **Any nonzero value is an outage that would previously have lasted until the
+  /// next power-cycle.** This is the counter that proves the Wedge 5 fix is earning
+  /// its keep — see BLE_Research.md.
+  final int advWatchdogRecoveries;
+
   /// Duration (ms) of the slowest SD primitive, decoded from [ringMaxIoRaw].
   int get ringMaxIoMs => ringMaxIoRaw & 0x00FFFFFF;
 
@@ -160,6 +174,8 @@ class DeviceDropStats {
     this.codecStackUsed = 0,
     this.ringMaxIoRaw = 0,
     this.ringIoErrors = 0,
+    this.advRestartFailures = 0,
+    this.advWatchdogRecoveries = 0,
     this.sdQueueMax = 120,
     required this.readAt,
   });

@@ -274,6 +274,12 @@ class OmiDeviceConnection extends DeviceConnection {
       // older builds / LittleFS. ringMaxIoRaw packs (tag<<24)|ms.
       ringMaxIoRaw: data.length >= 80 ? data.getUint32LittleEndian(76) : 0,
       ringIoErrors: data.length >= 84 ? data.getUint32LittleEndian(80) : 0,
+      // Advertising-restart guard (offsets 84/88), 92-byte firmware (oo-2.8.3+); 0 on
+      // older builds. advWatchdogRecoveries > 0 means the device HAD gone off the air
+      // and the 60 s watchdog rescued it — before oo-2.8.3 that was an outage lasting
+      // until the next power-cycle. See BLE_Research.md "Wedge 5".
+      advRestartFailures: data.length >= 88 ? data.getUint32LittleEndian(84) : 0,
+      advWatchdogRecoveries: data.length >= 92 ? data.getUint32LittleEndian(88) : 0,
       // Derived, not a wire field: the 76-byte payload is only produced by oo-2.6.2,
       // which is the build that raised SD_REQ_QUEUE_MSGS 100→120. A shorter payload is
       // older firmware still at 100. Keeps the peak-depth denominator honest.
