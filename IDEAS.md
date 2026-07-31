@@ -8,7 +8,7 @@
 
 ### PENDING
 - [3. Streaming WAV stitch — fix OOM on long-recording merge [small] [Pending]](#3-streaming-wav-stitch--fix-oom-on-long-recording-merge-small-pending)
-- [4. On-device diagnostic event log [medium] [Pending — spec ready]](#4-on-device-diagnostic-event-log-medium-pending--spec-ready)
+- [4. Diagnostic event log — persistent (reboot-surviving) upgrade [small] [Pending — post-LittleFS]](#4-diagnostic-event-log--persistent-reboot-surviving-upgrade-small-pending--post-littlefs)
 
 ### LARGE
 - [5. Device-driven BLE wake (firmware + iOS) [large] [Pending]](#5-device-driven-ble-wake-firmware-ios-large-pending)
@@ -133,21 +133,24 @@ Same pattern applies to `_stitchBinIfPresent` (`:1528`), which reads the whole n
 
 ---
 
-### 4. On-device diagnostic event log [medium] [Pending — spec ready]
+### 4. Diagnostic event log — persistent (reboot-surviving) upgrade [small] [Pending — post-LittleFS]
 
-Full design spec: **[DIAG_LOG_SPEC.md](DIAG_LOG_SPEC.md)** — hand-off ready, implementable as-is.
+The event log itself **shipped** in firmware `oo-2.8.0` / app 0.31.x (volatile RAM ring, GATT
+`0x0063`/`0x0064`, capability bit `1<<12`, dev-tools toggle). Record format and event codes live in
+`omi/firmware/omi/src/lib/core/diag_log.h`; the wire protocol is in CLAUDE.md's Diagnostics-service
+row. What remains is its one known limitation: **a reboot loses the log** (mostly covered by the
+reset-cause char `0x0061`).
 
-A dev-tools-gated, RAM-resident binary event ring that captures **per-event** diagnostics
-(empty-bin rotations, marker/priority drops, pause-gate saves — the *"why + when"*, not just the
-aggregate since-boot counters at `0x0062`) and ships them to the phone over a new BLE
-characteristic on connect, ack-clearing itself afterward. Design constraints, all met: **zero
-filesystem interference** (never touches LittleFS/ring audio storage), **RAM reclaimed from the
-oversized SD-worker stack** (`SD_WORKER_STACK_SIZE`, measured 2.7 / 12 KB used — precedent at
-`codec.c:81`), **compiled out entirely in production** (`CONFIG_OMI_DIAG_LOG`, dev/internal builds
-only), and **off by default** behind a capability-gated dev-tools toggle pushed on connect. See the
-spec for the 16-byte record format, event-code table, GATT `0x0063`/`0x0064` layout, app
-integration points, testing plan, and the post-LittleFS persistent-log upgrade path (ring reserved
-sectors 81–255).
+If reboot-survival is later needed, promote the ring to a persistent CRC'd log in the ring backend's
+**already-reserved metadata sectors 81–255** (`sd_ring.h:30-33,69` — 128 KB, never touched by audio,
+DFU-proof because DFU never addresses the SD NAND), reusing the ring cursor's torn-write pattern
+(per-sector CRC, highest valid seq wins, discard torn tail on boot; `sd_ring.h:35-42`).
+
+**Why it waits for LittleFS removal:** the reserved sectors exist only on the ring backend, so doing
+it now means backend asymmetry (a persistent log on ring, volatile on LittleFS) plus torn-write
+handling for both. Once LittleFS is gone it's a clean single path. Removing LittleFS also lets
+`SD_WORKER_STACK_SIZE` shrink further with confidence — the ring path's shallow ~2.7 KB peak becomes
+the true ceiling instead of LFS's deep allocator-scan/GC/format paths — freeing RAM for a deeper ring.
 
 ---
 
