@@ -103,6 +103,12 @@ the one **after** it (both logged as `device_conn_fail` / `device_drop_stats`).
 
 **Rule.** Look at the window between the last `ble_wedge` and the `ble_wedge_recovered`:
 
+**A toggle in the window no longer implies toggle-*required*.** Wedge 5b took a toggle at 17:50
+and stayed wedged. So the test below identifies "a toggle happened", and you must then check
+whether it actually *cured* anything — if failures continue afterwards, the bucket is
+**toggle-resistant**, which is a different and more alarming animal. Also note the duration: a
+≤ 5 s Quick-Settings double-tap may never reach `STATE_OFF` and is not a controller reset.
+
 - **Toggle-required** if a Bluetooth adapter cycle appears in that window — the
   `bluetoothReceiver` logs `Bluetooth turning off, cleaning up GATT` → … →
   `Bluetooth on, reconnecting in 2s`, and/or `onBluetoothStateChanged("off")` then
@@ -115,6 +121,14 @@ the one **after** it (both logged as `device_conn_fail` / `device_drop_stats`).
   - `le_link_count` 1→2 with Doze still on / screen still off ⟹ **device-return / background
     recovery alarm** landed on its own.
   - `contending_le_links` dropped ⟹ **contention cleared**.
+- **Unresolved** if there is no `ble_wedge_recovered` at all — the log ends with the outage still
+  open. Added for Wedge 5b (76 min and still failing at the tail). Do not force these into either
+  bucket: an outage that never cleared tells you nothing about what would have cleared it, and
+  filing it as "self-clearing" because no toggle appears would be exactly backwards.
+
+Caveat on `ble_wedge_recovered`: it fires at service discovery, which has twice (Wedges 2, 5a)
+preceded a link that failed under load seconds later. Before classifying, check that a **sync
+actually completed** — otherwise you are recording a relapse as a recovery.
 
 Record the sub-class in the "Recovery trigger" column below.
 
@@ -131,6 +145,14 @@ Record the sub-class in the "Recovery trigger" column below.
 | 2 | 2026-07-22 21:01→21:07 | 5m 54s | SILENT | device-return / self (Doze stayed on, screen off) | **No** | +0 (55→55) | fast | 147 |
 | 3 | 2026-07-24 04:42→04:45 | 3m 12s | *(none — sub-threshold)* | **BT toggle** (`error=bluetooth_off` → immediate reconnect) | **Yes** | +0 (flat at 3) | fast | *none — all `-1`* |
 | 4 | 2026-07-28 19:47→22:27 | ~2h 40m (3 cycles) | **ADVERTISING** (first ever) | Forget Device + power-cycle | **No** | +0 (flat at 61) | fast | *none — all `-1`* |
+| 5a | 2026-07-31 15:52→16:07 | 14m 41s | SILENT | device-return / self (screen already on) | **No** | *(not captured)* | — | 147 |
+| 5b | 2026-07-31 16:10→18:19 | 2h 06m | SILENT ×5 | **device power-cycle** (toggle tried twice, both failed) | **Yes — ineffective** | *(not captured)* | — | 147 |
+
+**Wedge 5 is SOLVED** — see the resolution block below. Root cause: the post-disconnect
+`bt_le_adv_start()` in `transport.c` was fire-and-forget, so a single failure left the device
+permanently off the air with the firmware still running and still recording. Fixed with a
+retry + 60 s watchdog. This is very likely the same fault behind Wedges 0–2 (all SILENT, all
+no-ghost, all cleared by "device-return" — which is what a lucky later restart would look like).
 
 Wedge 0 is the **origin of the ghost-GATT hypothesis** and the purge fixes now shipped
 (§8 background, §6 "already implemented"); it predates the env-snapshot instrumentation, so
@@ -143,6 +165,10 @@ failure was `gatt_status_-1`** (pure connect-timeout, Android never delivered a 
 vs. the 147/8 the self-clearing wedges carried), **`estab_fail_count` flat**, and it cleared
 **only** when the adapter cycled. That matches the §7 hypothesis: flat-estab + all-timeout(`-1`)
 = central-side initiator wedge = a toggle (which resets the phone's own controller) is what fixes it.
+
+Wedge 5 is the first **unresolved** episode on record — it is still failing when the log ends —
+and the first where `screen_interactive=true` for the entire outage, which removes screen-wake
+and Doze deprioritization from the causal picture for this class.
 
 ### Detail — Wedge 0 (undated, ~4 min stall cycles) — the ghost-GATT origin
 
@@ -330,6 +356,216 @@ Treat the 19 h 40 m wedge as **plausible, not established.**
 
 ---
 
+### Detail — Wedge 5 (2026-07-31, 14 min then 76 min unresolved) — screen-on, and the first relapse
+
+Two outages back to back, split by a 2½-minute window in which the link came up, failed
+mid-transfer twice, and went straight back down. Six `ble_wedge` snapshots, six probes, **every
+one SILENT**, `adapter_state=on` and `screen_interactive=true` throughout, and no recovery by the
+end of the log.
+
+- Log source: device `C3:94:71:EA:A8:D5`, phone `uptime_ms` 1775931877 → 1781296408
+  (**20.5 days** since phone boot — `SystemClock.elapsedRealtime()`, `WedgeDiagnostics.kt:269`;
+  this field is the *phone's* uptime, not the Omi's). App version and firmware version are not in
+  the excerpt.
+- Preceded by: **eight flawless hours.** Sixteen 30-minute background sync cycles from 07:53 to
+  15:22, every one connecting in 0.76–1.71 s device-ready, syncing and disconnecting cleanly. The
+  15:22 cycle was unremarkable (`getMissingWals returned 0`). No gradual degradation — the outage
+  starts cold at the next scheduled sync slot.
+
+**Outage A — 15:52:41 → 16:07:22 (14m 41s), self-clearing.**
+
+- Opens at the 15:52 sync alarm (`ensureConnection … force: true`) with a full 30 s
+  `_scanConnectDevice` timeout. Six failures follow at 15:53:11 / 15:53:42 / 15:54:16 / 15:54:52 /
+  15:55:34 / 15:56:28 — **four real `gatt_status_147`, then two `-1`**.
+- `ble_wedge` @ 15:56:28 — `consecutive_failures=6`, `retry_count=6`, `last_gatt_status=-1`,
+  `last_real_gatt_status=147`, `bond_state=bonded`, `omi_in_gatt_list=false`,
+  `omi_acl_connected=false`, `contending_le_links=1` (Garmin), `le_link_count=1`,
+  **`screen_interactive=true`**, `doze_mode=false`, `adapter_state=on`.
+- `scan_probe` @ 15:56:36 — **0 adv packets → SILENT**.
+- `ble_wedge_recovered` @ 16:07:22 — `wedge_duration_ms=654375`, `failures_before_recovery=7`,
+  `omi_in_gatt_list=true`, `omi_acl_connected=true`, `le_link_count` 1→2. **Every other env field
+  identical to the wedge snapshot**: screen still on, Doze still off, `contending_le_links` still 1,
+  adapter still on. Nothing in the environment changed except the Omi link returning.
+- Bucket: **self-clearing (device-return).** No BT toggle anywhere in the log.
+
+**The 2½-minute window between them — a recovery that wasn't.**
+
+`ble_wedge_recovered` fires on service discovery (`OmiBleForegroundService.kt:410`), and here that
+was demonstrably premature — for the second time (Wedge 2 noted the same, more mildly). Two
+independent signals say the link was still sick:
+
+- **Setup-phase latency, ~10–30× normal.** On a healthy cycle (13:24) `_handleDeviceConnected` →
+  `setConnectedDevice` took **124 ms** and the WAL load a further **494 ms**. On the 16:07:22
+  recovery the same two steps took **4059 ms** and **3745 ms**; the 16:09:36 retry took 1127 ms.
+  Every GATT operation was dragging before any bulk transfer started.
+- **Both transfers died.** @ 16:07:54, 18 s into a **44,916-byte** WAL — a trivially small file —
+  `Stream closed without EOT` (`OmiBleManager.kt:604`), `Connection lost after failure, aborting
+  syncAll`. The 16:09:36 retry managed **4400/44916 B** before dying (`strike 1/5`), then a storage
+  read-control read failed `Disconnected` @ 16:10:02.
+
+**Outage B — 16:10:02 → 17:26:06+ (76 min, never recovered in this log).**
+
+- Failures resume immediately: `147` @ 16:10:33 / 16:11:06 / 16:11:42, `-1` @ 16:12:24 / 16:13:18.
+- `ble_wedge` @ 16:13:18 — identical signature to the first (`cf=6`, `retry=6`, `-1`/`147`,
+  no host-side link, screen on, Doze off). `scan_probe` @ 16:13:27 — **SILENT**.
+- Four further `ble_wedge` snapshots @ 16:34:21 (`cf=9`, `retry_count=1`), ~16:50:17, ~17:10:32,
+  17:25:52 (`cf=25`, `retry_count=1`), each with a probe 8 s later @ 16:34:29 / 16:50:25 / 17:10:40 /
+  17:26:00 — **all SILENT, 0 adv packets, `rssi_*` all null**. The 15–21 min spacing matches
+  `WEDGE_REPROBE_INTERVAL_MS` (15 min) riding the next attempt; `wedgeAlertPosted` never latches
+  because SILENT returns before posting (`:1163`), so re-probing correctly continued all outage.
+- `retry_count` 6→1 across the outage confirms `AUTONOMOUS_RETRY_STOP_AFTER` fired as designed:
+  native's fast loop stopped and every later attempt is a fresh externally-driven one.
+- Bucket: **unresolved.** §3's rule cannot classify it — the rule assumes an outage ends inside the
+  log. Add a third bucket: *unresolved-at-log-end*.
+
+**The Bluetooth toggle — tried at 17:50, and it did not work.**
+
+The first time the toggle has been applied to an instrumented establishment wedge and **failed**.
+Wedge 3 was toggle-required *and* toggle-cured; this is the counter-example.
+
+- 17:49:57 — a connect is in flight (`manageDevice sent`).
+- 17:50:13.374 — `disconnected (error=bluetooth_off isConnecting=true state=connecting)`. With a
+  connect in flight this is the `bluetoothReceiver` `STATE_TURNING_OFF` branch
+  (`OmiBleForegroundService.kt:1344`), not the `manageDevice` already-off guard (`:555`) — so the
+  adapter genuinely started turning off here.
+- 17:50:17.595 — `connecting` again. Dart's `scan()` returns early on `!isBluetoothEnabled`
+  (`device_provider.dart:701`), so the adapter was **already back on**. **Off for ≤ 4.2 s.**
+- Three attempts follow on the fresh controller — 17:50:47 (30 s timeout), 17:51:19
+  (`connect failed after 29670ms`), 17:51:33 (`starting fresh connect`) — **all `gatt_status_147`,
+  and notably not a single `-1`.** Android delivers a real verdict every time within ~30 s.
+
+**Caveat, and it is a real one: ~4 seconds is a very short toggle.** The excerpt never shows the
+adapter reaching `STATE_OFF` (`:1348`) — only `TURNING_OFF` — and a Quick-Settings double-tap that
+fast can short-circuit the teardown without power-cycling the controller. So this is *evidence*
+that the toggle doesn't cure this wedge, not proof. **The clean experiment is a 60 s off period**,
+long enough that a `ble_wedge` snapshot taken during it would read `adapter_state=off`. Until
+someone runs that, treat 5b as "toggle-resistant (short toggle)".
+
+**Retry cadence — the backoff holds in background and collapses in foreground.**
+
+After the handoff the recovery alarm behaved exactly as specified: attempts at 16:13 → 16:17 →
+16:24 → 16:34, i.e. **4 / 7 / 10 min** steps. Then it collapses:
+
+| Window | Attempts | Cadence |
+|---|---|---|
+| 16:13→16:34 | 3 | 4 / 7 / 10 min (recovery alarm, as designed) |
+| 16:40→16:41 | 3 | 42 s |
+| 17:10→17:11 | 3 | 42 s |
+| 17:21→17:26 | 9 | ~45 s, continuous |
+
+The ~45 s beat is `periodicConnect`'s 15 s `Timer.periodic` (`device_provider.dart:716`, gated by
+`isConnecting`) wrapped around the 30 s `_scanConnectDevice` budget. `Device discovering…` @
+17:23:17 and `Using stored device: Omi` @ 17:23:52 place the user in the app for the final stretch.
+That is **12 connect attempts in 16 minutes ≈ 80/hour** — essentially the ~120/hour churn
+`AUTONOMOUS_RETRY_STOP_AFTER` was introduced to remove (`:74`), reintroduced by the foreground path.
+The code comment at `:1211` names this explicitly ("foreground: Dart's connection-check timer"), so
+it is a **design gap, not a bug** — but §6 is on record that rapid `connectGatt`/`closeGatt` churn
+is the #1 daemon-wedge trigger, and this log is the first to show us doing it for 16 straight
+minutes into an already-wedged stack. Whether the churn *sustained* the wedge is unproven; it is
+the only lever the log shows moving.
+
+- estab context: **unavailable** — no `device_conn_fail` / `device_drop_stats` lines in the
+  excerpt, so no estab delta, no `last_failure_adv_mode`, no firmware version. The two connects
+  that did discover services were too degraded to complete setup reads (the 16:10:02 read failed
+  outright), so the counters may genuinely never have been read. **Next log: grab these** — they
+  are the one field that would place fault on the peripheral vs. the phone for this episode.
+- **Bucket: 5a self-clearing (device-return); 5b unresolved.** No BT toggle in either.
+
+### Wedge 5 — RESOLVED. Root cause found and fixed.
+
+The three-step protocol run at 18:00–18:19 settled it outright.
+
+| Step | Result | What it eliminates |
+|---|---|---|
+| **Independent scanner** (2nd phone, nRF Connect) | **Could not see the Omi** | Our scanner was *not* starved. The 10 SILENT probes were true negatives. |
+| **Proper 2.5 min BT toggle** (`bluetooth_off` @ 18:14:43 → attempts resume 18:17:17) | **Still `gatt_status_147`** | The phone's controller/initiator. A full reset changed nothing. |
+| **Device power-cycle** (4-tap-hold) | **Connected immediately**, 8 WALs pending | The device was alive and recording — only the radio was gone. |
+
+The clinching line, read on the first connect after the power-cycle:
+
+```
+Device diagnostics: last reset = low power wake; prior boot ran 33h 40m before it
+```
+
+**The firmware never crashed.** It ran 33 h 40 m straight through a 2-hour outage, kept
+recording to SD the whole time (8 unsynced WALs waiting), and simply stopped advertising. No
+reset, no watchdog, no brownout — the radio just went quiet and nothing ever restarted it.
+
+**Root cause — `transport.c:1760`, the post-disconnect advertising restart:**
+
+```c
+current_adv_mode = "fast";
+bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
+```
+
+The return value was **discarded**. Not logged, not counted, not retried. One failure here and
+the device is invisible until someone power-cycles it. Two aggravating details:
+
+- **Called inline from the disconnected callback.** With `CONFIG_BT_MAX_CONN=1` the stack still
+  holds the disconnecting conn object while that callback runs, so a *connectable*
+  `bt_le_adv_start()` there can return `-ENOMEM`. This is the most likely trigger, and it
+  explains the intermittency — it depends on whether anything else still holds a conn ref.
+- **`transport_set_adv_slow()` / `..._fast()` were worse.** They `bt_le_adv_stop()` first (which
+  succeeds) and *then* start (which can fail) — so a failure leaves the device provably off the
+  air. Both call sites in `aad.c:277-280` discard the return value **and** clear their request
+  flag with `atomic_cas` *before* calling, so nothing upstream could ever retry.
+
+This also explains the timing precisely: the outage began at the **15:22:53 disconnect** — the
+last healthy sync's own teardown — and the device was never heard from again.
+
+**Fix (applied, `transport.c`):** two layers.
+1. Every restart path now routes through `adv_start_raw()` + `adv_schedule_retry()`, which
+   retries with 500 ms → 8 s backoff, **indefinitely**. Being unreachable is a total loss of
+   function, so an unbounded retry beats any finite budget.
+2. The post-disconnect start is **deferred to a work item** rather than called inline, so the conn
+   object is released first — removing the `-ENOMEM` race at source.
+3. An `adv_watchdog_work` re-asserts advertising every 60 s while disconnected. It cannot query
+   "am I advertising", so re-asserting *is* the test: `-EALREADY` = healthy no-op, `0` = we had
+   gone silent and just rescued it. **This bounds any future occurrence — from whatever cause —
+   to ≤ 60 s instead of until reboot.**
+4. Two new counters on `0x0062` (payload 84 → 92 B, append-only):
+   `adv_restart_failures` (offset 84) and `adv_watchdog_recoveries` (offset 88). Movement on the
+   first = the pathology fired; movement on the second = the watchdog caught it.
+
+**Not yet built or flashed** — no Zephyr toolchain on this machine. Verification is: flash, then
+watch `adv_watchdog_recoveries` over a few days. Any non-zero value is an outage that *would*
+have been a multi-hour wedge.
+
+**What this settles and unsettles.**
+
+1. **Screen-on does not prevent, and screen-wake does not cure, this wedge class.** All six
+   snapshots and the 5a recovery carry `screen_interactive=true`/`doze_mode=false`. Wedge 1
+   recovered *on* a screen wake; here the screen was on for 90 minutes and 5b never recovered.
+   Foreground radio priority is neither necessary nor sufficient — drop it as a lead.
+2. **SILENT is now 7 of 7 for the establishment class** (Wedges 1×2, 2×1, 5×6 — counting probes:
+   9 SILENT probes). Both ADVERTISING verdicts on record belong to the bond-mismatch class (§9).
+   §7's lead question is answered as firmly as this corpus can: **intervention #1 (scan-gated
+   reconnect on ADVERTISING) would not have helped a single establishment wedge yet observed.**
+   #2 (firmware re-advertise latency) is the lever.
+3. **`ble_wedge_recovered` over-reports, 2-for-2.** Service discovery is too weak a success
+   criterion; both times it fired, the link failed under load within seconds. See §6 candidate #7.
+4. **Mid-transfer `Stream closed without EOT` → immediate re-wedge is now 2-for-2** (Wedge 2's
+   lead-in, and 5a→5b here). The ordering here is cleaner than Wedge 2's: wedge cleared → sync
+   started → died 18 s in on a 45 KB file → re-wedged for 76 min. Worth treating as one degraded-RF
+   episode punctuated by a brief window, rather than two independent wedges.
+5. **The balance of evidence has moved to the peripheral.** Four independent facts now point the
+   same way, and the toggle result is what tips it:
+   - **9/9 SILENT probes**, zero adv packets, `rssi_*` all null.
+   - `omi_in_gatt_list=false` + `omi_acl_connected=false` at every single snapshot — nothing
+     host-side is holding the firmware's one slot, so there is no ghost and never was one here.
+   - `bond_state=bonded` throughout — not the §9 bond-mismatch class.
+   - **A controller reset changed nothing.** A toggle tears down every host-side LE link and
+     restarts the phone's initiator and scanner. If the phone's radio were the wedged party, that
+     is the intervention that fixes it. It didn't.
+
+   The most economical explanation left is that **the Omi is not on the air** — not merely slow to
+   re-advertise, but in a state where it isn't advertising at all. That promotes §6 #2 from "reduce
+   re-advertise latency" to a sharper question: *can `transport.c` reach a state where advertising
+   stops and nothing restarts it?* Held loosely, because of the short-toggle caveat above and
+   because we still have no independent receiver confirming the silence.
+
+---
+
 ## 5. What we understand about how they clear
 
 - **Self-clearing recovery is already partly built and it works.** The backed-off recovery
@@ -350,10 +586,28 @@ Treat the 19 h 40 m wedge as **plausible, not established.**
   and tears down every host-side LE link — it does not repair the Omi. For a SILENT wedge
   where our scanner is starved, that reset un-starves it; for a device-absent SILENT wedge
   it does nothing.
+- **And Wedge 5b shows it often *doesn't*.** A toggle at 17:50 was followed by three more
+  `gatt_status_147` failures on a fresh controller. Read against the sentence above, that is
+  the "device-absent SILENT wedge" branch: the toggle did nothing because there was nothing
+  phone-side to fix. This is the strongest single piece of evidence yet that the establishment
+  class is a **peripheral** problem, and it means the user-facing "toggle Bluetooth" alert is
+  advice that will not work for this class — which is precisely why the alert is (correctly)
+  suppressed on a SILENT verdict (`OmiBleForegroundService.kt:1163`).
 - **The two recovery mechanisms observed** map to different fixes:
   - screen-wake (Wedge 1) → emulated by a *fresh scan + connect* on the phone side.
-  - device-return (Wedge 2) → governed by how fast the *firmware* re-advertises after a
+  - device-return (Wedges 2, 5a) → governed by how fast the *firmware* re-advertises after a
     link dies; nothing the phone does can beat the device being silent.
+- **Screen-wake is no longer a credible mechanism** (Wedge 5). It was inferred from a single
+  false→true transition in Wedge 1. Wedge 5 ran six snapshots and a recovery with
+  `screen_interactive=true` throughout, and its second outage stayed wedged for 76 min with the
+  screen on and the app in the foreground. Wedge 1's screen wake was most likely coincident with a
+  device-return, not causal. Device-return is the only observed self-clearing mechanism that
+  survives the corpus.
+- **"Recovered" is not recovered.** `ble_wedge_recovered` fires on service discovery
+  (`OmiBleForegroundService.kt:410`). Both times it has fired (Wedges 2 and 5a) the link then
+  failed under real load within seconds — in Wedge 5a with setup-phase GATT latency 10–30× normal
+  *before* any bulk transfer, and a 45 KB WAL that died 18 s in. Treat a lone
+  `ble_wedge_recovered` as "the link layer came up", not "the outage ended".
 
 ---
 
@@ -373,7 +627,8 @@ Not yet implemented:
    connect directly to the `ScanResult.device` the probe just heard (fresh timing anchor —
    the `_scanConnectDevice` pattern that cleared Wedge 1). Reuses the probe's scan, fires
    only when a device is audible, adds no churn against an absent device.
-   **Caveat: does nothing for a SILENT wedge — which is what both logged wedges were.**
+   **Caveat, now stronger: every establishment-class probe on record is SILENT (9/9 across
+   Wedges 1, 2, 5). This would not have helped a single one of them. Deprioritized.**
 2. **Firmware re-advertise latency** (firmware-side, likely highest leverage for the SILENT
    case). Wedge 2 cleared only when the Omi re-advertised. If the peripheral sits in a
    half-open / non-advertising state until a supervision timeout expires, forcing a faster
@@ -395,16 +650,61 @@ Not yet implemented:
    and always log a `purgeGhostGattForAddress` hit even when rate-limited. This is what would finally
    confirm-or-kill the ghost hypothesis for a toggle-required wedge (the §7 open item) without
    touching the connect path.
+7. **Back off the foreground retry loop after the native handoff** (phone-side, from Wedge 5). Once
+   `consecutiveConnectFailures` passes `AUTONOMOUS_RETRY_STOP_AFTER`, native pauses its retries and
+   the recovery alarm relaxes 2→4→8→16 min — but `periodicConnect`'s fixed 15 s timer
+   (`device_provider.dart:716`) keeps firing, so a foregrounded app attempts every ~45 s
+   indefinitely. Wedge 5 logged 12 attempts in 16 min against an already-wedged stack, exactly the
+   churn the handoff exists to eliminate. Expose the native outage state to Dart (or mirror the
+   failure streak) and stretch `_connectionCheckSeconds` to match the recovery backoff while an
+   outage is open, snapping back to 15 s on the first success. Untested as a *cure* — churn is
+   only a suspected aggravator here — but it costs nothing and removes a confound from every
+   future log.
+8. **Don't call a wedge recovered on service discovery alone** (diagnostic, from Wedges 2 and 5a).
+   `captureRecovery` fires at `onGattServicesDiscovered` (`OmiBleForegroundService.kt:410`); both
+   times, the link died under load seconds later. Either move the event behind the first successful
+   *data* operation, or keep it where it is and add a `ble_wedge_relapse` when a fresh failure
+   streak opens within N minutes of a recovery — Wedge 5 would otherwise be filed as one clean
+   14-minute self-clear plus an unrelated 76-minute outage, which misreads it badly.
+9. **Log setup-phase GATT latency** (diagnostic, from Wedge 5a, near-free). The
+   `_handleDeviceConnected` → `setConnectedDevice` → WAL-load spans ran 124 ms / 494 ms on healthy
+   cycles and 4059 ms / 3745 ms on the degraded post-wedge link — a 10–30× separation visible
+   *before* any transfer is attempted. Emitting it as a field on the connect event gives a cheap
+   link-health proxy and a ready-made trigger for #8.
 
 Deliberately **not** doing: hammering reconnects harder. Rapid `connectGatt`/`closeGatt`
-churn is the #1 cause of daemon wedges, which is why `AUTONOMOUS_RETRY_STOP_AFTER` exists.
+churn is the #1 cause of daemon wedges, which is why `AUTONOMOUS_RETRY_STOP_AFTER` exists —
+and why #7 exists, since the foreground path currently walks that back.
 
 ---
 
 ## 7. Open questions — what more logs should settle
 
-- **Do ADVERTISING wedges ever happen for this phone/device?** Both samples are SILENT. If
-  SILENT dominates, intervention #1 won't help and #2 (firmware) is the real lever.
+- ~~**Do ADVERTISING wedges ever happen for this phone/device?**~~ **Answered.** Only in the
+  bond-mismatch class (§9, Wedge 4). The establishment class is **9 SILENT probes out of 9**
+  (Wedges 1, 2, 5). Intervention #1 is deprioritized; #2 (firmware re-advertise latency) is the
+  real lever.
+- **Does the peripheral actually stop advertising, or is our scanner starved?** This is the
+  ambiguity §2 flags on SILENT, and it is now the single highest-value unknown — every
+  establishment wedge hinges on it, and #2 is only worth building if the answer is "the peripheral
+  went quiet". Settle it with an *independent* receiver: a second phone / nRF Sniffer listening for
+  `Omi` advertisements during a wedge on the primary. Wedge 5's 76-minute window would have been an
+  ideal capture.
+- **Is the ~45 s foreground retry loop an aggravator?** Wedge 5 sustained it for 16 min into a
+  wedged stack with no recovery. Candidate #7 would make future logs falsifiable on this.
+- **What is `gatt_status_147`, actually?** §2's gloss ("stack actively rejecting") is **unsourced**,
+  and 147/`0x93` is now the dominant status in the corpus — every Wedge 5 failure that carried a
+  real code carried this one, including all three post-toggle attempts. It is not in the public
+  `BluetoothGatt` constants and a web search did not settle it. Pin it from the platform source
+  (`gatt_api.h` / `BluetoothGatt.java` in the AOSP tree for this handset's API level) before
+  leaning on the current interpretation any further — if 147 turns out to mean a *timeout* rather
+  than a *rejection*, the §2 table and the "central vs peripheral" reading of several wedges change.
+- **Does a proper (60 s) toggle cure 5b-class wedges?** The 17:50 attempt was ≤ 4.2 s and may never
+  have reached `STATE_OFF`. One long toggle during an open wedge settles whether this class is
+  genuinely toggle-resistant.
+- **Does a device power-cycle cure it?** Untested for the establishment class, and it is the
+  cheapest discriminator available: if the Omi comes straight back after a power-cycle while a
+  toggle does nothing, the peripheral-side reading (§4 Wedge 5, point 5) is confirmed.
 - **Does the toggle-required population have a different signature** — ADVERTISING probe?
   `omi_in_gatt_list=true` (a real ghost, so the purge *should* have fired but didn't)?
   a rising estab delta? *Partially answered by Wedge 3:* its signature was all-`gatt_status_-1`

@@ -419,6 +419,19 @@ static atomic_t marker_write_drops = ATOMIC_INIT(0);
  * bumps stat_dropped_frames / stream drops, so it isn't silent, just not marker-aware). */
 static atomic_t session_end_marker_emits = ATOMIC_INIT(0);
 
+/* Diagnostics: the advertising-restart guard (0x19B10062, appended).
+ *   adv_restart_failures   — a bt_le_adv_start() returned an error on any path
+ *     (post-disconnect restart, AAD slow/fast switch, retry). Before oo-2.8.x every
+ *     one of these was discarded, and a single failure left the device permanently
+ *     invisible: firmware alive and still recording to SD, radio silent, no way back
+ *     except a power cycle. Any movement here is the pathology firing.
+ *   adv_watchdog_recoveries — times the periodic watchdog found advertising stopped
+ *     while disconnected and restarted it. Non-zero means the device WOULD have gone
+ *     dark and the watchdog caught it; this is the counter that proves the fix works.
+ * Both monotonic since boot — only movement between two reads is meaningful. */
+static atomic_t adv_restart_failures = ATOMIC_INIT(0);
+static atomic_t adv_watchdog_recoveries = ATOMIC_INIT(0);
+
 /* Throttled flash persist of both counters (NOTES.md: "BLE: advertising but
  * won't connect"). The failures accrue while disconnected, and the user must
  * power-cycle or toggle phone Bluetooth to reconnect and read them, so the counts
@@ -469,6 +482,9 @@ static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_ha
 //   [uint32 ring_max_io_ms]        ring: slowest SD primitive since boot, packed
 //                                  (tag<<24)|ms, tag 1=write 2=read 3=CTRL_SYNC (offset 76)
 //   [uint32 ring_io_errors]        ring: write/CTRL_SYNC failures (EIO) since boot (offset 80)
+//   [uint32 adv_restart_failures]  bt_le_adv_start() errors on any restart path (offset 84)
+//   [uint32 adv_watchdog_recoveries] times the watchdog found advertising stopped
+//                                  while disconnected and restarted it (offset 88)
 static struct bt_uuid_128 diagnostics_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10060, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 diagnostics_characteristic_uuid =
@@ -516,10 +532,10 @@ static inline void pack_u32_le(uint8_t *dst, uint32_t v)
     dst[3] = (uint8_t) (v >> 24);
 }
 
-/* Pack the 84-byte drop-counter payload. Shared by the read handler (0x0062)
+/* Pack the 92-byte drop-counter payload. Shared by the read handler (0x0062)
  * and the notify path (diagnostics_drops_notify) so the wire layout has exactly
  * one definition. */
-static void diagnostics_drops_pack(uint8_t payload[84])
+static void diagnostics_drops_pack(uint8_t payload[92])
 {
     uint32_t block_drops = (uint32_t) atomic_get(&storage_block_drops);
     uint32_t last_drop_ms = (uint32_t) atomic_get(&last_storage_drop_uptime_ms);
@@ -541,14 +557,16 @@ static void diagnostics_drops_pack(uint8_t payload[84])
     uint32_t codec_stack_used = codec_get_stack_used();
     uint32_t ring_max_io = sd_get_ring_max_io_ms();
     uint32_t ring_io_errs = sd_get_ring_io_errors();
+    uint32_t adv_fails = (uint32_t) atomic_get(&adv_restart_failures);
+    uint32_t adv_rescues = (uint32_t) atomic_get(&adv_watchdog_recoveries);
 
-    /* 84 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
+    /* 92 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
      * codec_drops + sd_msgq peak depth + write-fairness activations + establishment
      * failures + Priority Recording lifecycle (starts / stops / marker drops /
      * empty-bin rotations) + session-end emit attempts + pause-gate marker saves +
      * sd_worker & codec peak stack used + ring_max_io_ms + ring_io_errors. Each field
      * is appended at the end so older app builds (which read only the first
-     * 20 / 28 / 32 / 40 / 44 / 60 / 68 / 76 bytes) keep working unchanged. */
+     * 20 / 28 / 32 / 40 / 44 / 60 / 68 / 76 / 84 bytes) keep working unchanged. */
     pack_u32_le(payload + 0, block_drops);
     pack_u32_le(payload + 4, last_drop_ms);
     pack_u32_le(payload + 8, sd_stream_drops);
@@ -570,6 +588,8 @@ static void diagnostics_drops_pack(uint8_t payload[84])
     pack_u32_le(payload + 72, codec_stack_used);
     pack_u32_le(payload + 76, ring_max_io);
     pack_u32_le(payload + 80, ring_io_errs);
+    pack_u32_le(payload + 84, adv_fails);
+    pack_u32_le(payload + 88, adv_rescues);
 }
 
 static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
@@ -578,7 +598,7 @@ static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
                                               uint16_t len,
                                               uint16_t offset)
 {
-    uint8_t payload[84];
+    uint8_t payload[92];
     diagnostics_drops_pack(payload);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
 }
@@ -697,7 +717,7 @@ static struct bt_gatt_service diagnostics_service = BT_GATT_SERVICE(diagnostics_
  * AUTO_UPDATE_MTU makes this the rare exception, not the rule. */
 static void diagnostics_drops_notify(void)
 {
-    uint8_t payload[84];
+    uint8_t payload[92];
     diagnostics_drops_pack(payload);
     int err = bt_gatt_notify(NULL, &diagnostics_service_attr[4], payload, sizeof(payload));
     if (err && err != -ENOTCONN) {
@@ -1629,6 +1649,14 @@ static void update_conn_params(struct bt_conn *conn);
 static void conn_param_recheck_work_handler(struct k_work *work);
 K_WORK_DELAYABLE_DEFINE(conn_param_recheck_work, conn_param_recheck_work_handler);
 
+/* Advertising restart guard — the work items are declared up here so
+ * _transport_connected can cancel them; the handlers, parameters and helpers all
+ * live just below _transport_disconnected, next to the restart path they serve. */
+static void adv_restart_work_handler(struct k_work *work);
+static void adv_watchdog_work_handler(struct k_work *work);
+K_WORK_DELAYABLE_DEFINE(adv_restart_work, adv_restart_work_handler);
+K_WORK_DELAYABLE_DEFINE(adv_watchdog_work, adv_watchdog_work_handler);
+
 static void _transport_connected(struct bt_conn *conn, uint8_t err)
 {
     /* HCI connection failure: conn is borrowed and being torn down by the stack.
@@ -1695,8 +1723,109 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
 #endif
 
     is_connected = true;
+    /* A link is up, so advertising has served its purpose and both guards must go
+     * quiet — otherwise the watchdog would keep re-asserting a connectable
+     * advertiser against a full conn slot and manufacture -ENOMEM failures of its
+     * own. Both handlers also re-check is_connected, so this is belt-and-braces
+     * against a tick already in flight. The disconnect path re-arms them. */
+    k_work_cancel_delayable(&adv_restart_work);
+    k_work_cancel_delayable(&adv_watchdog_work);
     transport_mark_activity();
     k_work_schedule(&idle_disconnect_work, K_MSEC(IDLE_DISCONNECT_POLL_MS));
+}
+
+/* ── Advertising restart guard ──────────────────────────────────────────────
+ *
+ * Every path that (re)starts advertising can fail, and until oo-2.8.x every one of
+ * them discarded the result. One failed bt_le_adv_start() left the device
+ * permanently invisible — firmware running, SD still recording, radio silent —
+ * with no route back except a power cycle.
+ *
+ * Confirmed on 2026-07-31 (BLE_Research.md, Wedge 5): a 2 h outage in which an
+ * independent scanner heard nothing, ten in-app 8 s probes heard nothing, a 2.5 min
+ * phone Bluetooth toggle changed nothing, and the device — uptime 33 h 40 m, no
+ * reset, still holding 8 unsynced WALs — reconnected instantly on a power cycle.
+ *
+ * Two layers, because the failure is intermittent and silent:
+ *   1. adv_restart_work  — retries a failed start with backoff, indefinitely.
+ *   2. adv_watchdog_work — while disconnected, re-asserts advertising every
+ *      ADV_WATCHDOG_INTERVAL_MS whatever the reason it stopped. This is the layer
+ *      that bounds the damage: worst case the device is unreachable for one
+ *      watchdog period instead of until someone notices and reboots it.
+ *
+ * The post-disconnect start is also *deferred* rather than made inline. With
+ * CONFIG_BT_MAX_CONN=1 the stack still holds the disconnecting conn object while
+ * the disconnected callback runs, so a connectable bt_le_adv_start() there can
+ * fail -ENOMEM — the most likely trigger for the observed outage.
+ */
+#define ADV_RESTART_DEFER_MS 50
+#define ADV_RESTART_RETRY_MS 500
+#define ADV_RESTART_RETRY_MAX_MS 8000
+#define ADV_WATCHDOG_INTERVAL_MS 60000
+
+/* Slow advertising parameters for low-power mode (~1 s interval).
+ * BT_LE_ADV_CONN uses 100-150ms by default; 1000-1200ms saves ~300-500 µA.
+ * Advertising interval unit = 0.625 ms → 1000 ms = 1600, 1200 ms = 1920. */
+static const struct bt_le_adv_param adv_param_slow =
+    BT_LE_ADV_PARAM_INIT(BT_LE_ADV_OPT_CONNECTABLE | BT_LE_ADV_OPT_ONE_TIME, 1600, 1920, NULL);
+
+static uint32_t adv_retry_delay_ms = ADV_RESTART_RETRY_MS;
+
+/* Start advertising in whatever mode current_adv_mode selects. Returns the raw
+ * bt_le_adv_start() result: 0 = we were NOT advertising and now are, -EALREADY =
+ * already on the air (a healthy no-op), anything else = failure. Callers must keep
+ * 0 and -EALREADY distinct — the watchdog uses exactly that difference to tell a
+ * rescue from a no-op. */
+static int adv_start_raw(void)
+{
+    if (current_adv_mode[0] == 's') {
+        return bt_le_adv_start(&adv_param_slow, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
+    }
+    return bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
+}
+
+/* Record a failed start and queue another attempt. Never gives up: being
+ * unreachable is a total loss of function, so an unbounded retry at an 8 s ceiling
+ * is strictly better than any finite budget. */
+static void adv_schedule_retry(int err, const char *who)
+{
+    atomic_inc(&adv_restart_failures);
+    LOG_ERR("adv: %s start failed (%d) mode=%s — retry in %u ms", who, err, current_adv_mode, adv_retry_delay_ms);
+    k_work_schedule(&adv_restart_work, K_MSEC(adv_retry_delay_ms));
+    adv_retry_delay_ms = MIN(adv_retry_delay_ms * 2, ADV_RESTART_RETRY_MAX_MS);
+}
+
+static void adv_restart_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    if (is_connected) {
+        return; /* a link came up meanwhile; the disconnect path re-arms us */
+    }
+    int err = adv_start_raw();
+    if (err == 0 || err == -EALREADY) {
+        adv_retry_delay_ms = ADV_RESTART_RETRY_MS;
+        LOG_INF("adv: advertising active (mode=%s)", current_adv_mode);
+        return;
+    }
+    adv_schedule_retry(err, "retry");
+}
+
+static void adv_watchdog_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    if (is_connected) {
+        return; /* re-armed by the next disconnect */
+    }
+    /* We cannot portably ask "am I advertising?", so re-asserting IS the test:
+     * -EALREADY means healthy, 0 means we had gone silent and just rescued it. */
+    int err = adv_start_raw();
+    if (err == 0) {
+        uint32_t n = (uint32_t) atomic_inc(&adv_watchdog_recoveries) + 1;
+        LOG_WRN("adv: watchdog found advertising stopped — restarted (mode=%s, recoveries=%u)", current_adv_mode, n);
+    } else if (err != -EALREADY) {
+        adv_schedule_retry(err, "watchdog");
+    }
+    k_work_schedule(&adv_watchdog_work, K_MSEC(ADV_WATCHDOG_INTERVAL_MS));
 }
 
 static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
@@ -1755,9 +1884,18 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
      * Without this, slow-adv mode (BT_LE_ADV_OPT_ONE_TIME) leaves the device
      * invisible after a connect/disconnect cycle — Zephyr does not auto-restart
      * advertising when ONE_TIME is set. Start with fast params; AAD will switch
-     * back to slow once VAD returns to sleep. */
+     * back to slow once VAD returns to sleep.
+     *
+     * Deferred to a work item rather than called inline: the stack still holds the
+     * disconnecting conn object while this callback runs, so with
+     * CONFIG_BT_MAX_CONN=1 a connectable bt_le_adv_start() here can fail -ENOMEM.
+     * Letting the conn be released first removes that race, and routing every
+     * attempt through adv_restart_work means a failure retries instead of
+     * silently stranding the device off the air (see the guard block above). */
     current_adv_mode = "fast";
-    bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
+    adv_retry_delay_ms = ADV_RESTART_RETRY_MS;
+    k_work_schedule(&adv_restart_work, K_MSEC(ADV_RESTART_DEFER_MS));
+    k_work_schedule(&adv_watchdog_work, K_MSEC(ADV_WATCHDOG_INTERVAL_MS));
 }
 
 static bool _le_param_req(struct bt_conn *conn, struct bt_le_conn_param *param)
@@ -2368,12 +2506,13 @@ int transport_off()
     return 0;
 }
 
-/* Slow advertising parameters for low-power mode (~1 s interval).
- * BT_LE_ADV_CONN uses 100-150ms by default; 1000-1200ms saves ~300-500 µA.
- * Advertising interval unit = 0.625 ms → 1000 ms = 1600, 1200 ms = 1920. */
-static const struct bt_le_adv_param adv_param_slow =
-    BT_LE_ADV_PARAM_INIT(BT_LE_ADV_OPT_CONNECTABLE | BT_LE_ADV_OPT_ONE_TIME, 1600, 1920, NULL);
-
+/* Mode switches stop advertising and then start it again. The stop nearly always
+ * succeeds, so a failing start leaves the device provably off the air — which makes
+ * these the most dangerous of the three restart paths, not the least. Both callers
+ * in aad.c discard the return value AND clear their request flag with an atomic_cas
+ * before calling, so nothing upstream would ever retry. Hence: set current_adv_mode
+ * *before* attempting, so the retry/watchdog pair inherits the intended mode and
+ * owns recovery from here. */
 int transport_set_adv_slow(void)
 {
     if (is_connected) {
@@ -2384,14 +2523,14 @@ int transport_set_adv_slow(void)
         LOG_ERR("adv_slow: stop failed (%d)", err);
         return err;
     }
-    err = bt_le_adv_start(&adv_param_slow, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
-    if (err) {
-        LOG_ERR("adv_slow: start failed (%d)", err);
-    } else {
-        current_adv_mode = "slow";
-        LOG_INF("BLE advertising switched to slow interval");
+    current_adv_mode = "slow";
+    err = adv_start_raw();
+    if (err && err != -EALREADY) {
+        adv_schedule_retry(err, "adv_slow");
+        return err;
     }
-    return err;
+    LOG_INF("BLE advertising switched to slow interval");
+    return 0;
 }
 
 int transport_set_adv_fast(void)
@@ -2404,14 +2543,14 @@ int transport_set_adv_fast(void)
         LOG_ERR("adv_fast: stop failed (%d)", err);
         return err;
     }
-    err = bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
-    if (err) {
-        LOG_ERR("adv_fast: start failed (%d)", err);
-    } else {
-        current_adv_mode = "fast";
-        LOG_INF("BLE advertising switched to fast interval");
+    current_adv_mode = "fast";
+    err = adv_start_raw();
+    if (err && err != -EALREADY) {
+        adv_schedule_retry(err, "adv_fast");
+        return err;
     }
-    return err;
+    LOG_INF("BLE advertising switched to fast interval");
+    return 0;
 }
 
 static void count_bond_cb(const struct bt_bond_info *info, void *user_data)
@@ -2571,11 +2710,20 @@ int transport_start()
     // Button + haptic config now live under the Settings service — no separate service to register.
     err = bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
     if (err) {
-        LOG_ERR("Transport advertising failed to start (err %d)", err);
-        return err;
+        /* Do NOT fail transport_start here: returning an error aborts BLE bring-up
+         * and leaves the device with no radio at all and nothing retrying. Hand the
+         * failure to the retry/watchdog pair instead — the same machinery that
+         * covers every later restart — so a transient boot-time -ENOMEM/-EAGAIN
+         * self-heals within seconds rather than bricking the link until reboot. */
+        LOG_ERR("Transport advertising failed to start (err %d) — handing to adv retry", err);
+        adv_retry_delay_ms = ADV_RESTART_RETRY_MS;
+        adv_schedule_retry(err, "boot");
     } else {
         LOG_INF("Advertising successfully started");
     }
+    /* Arm the watchdog for the pre-first-connection window too: without this, a
+     * device that goes silent before it is ever connected has nothing watching it. */
+    k_work_schedule(&adv_watchdog_work, K_MSEC(ADV_WATCHDOG_INTERVAL_MS));
 
 #ifdef CONFIG_OMI_ENABLE_BATTERY
     k_work_schedule(&battery_work, K_MSEC(3000));
