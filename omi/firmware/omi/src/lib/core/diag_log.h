@@ -10,7 +10,7 @@
  * record (seq + uptime + cause context), ships it to the phone over 0x19B10063,
  * and clears on ack (0x19B10064) — so field diagnosis needs no RTT probe.
  *
- * Design constraints (see DIAG_LOG_SPEC.md):
+ * Design constraints:
  *   - Zero filesystem interference (lives entirely in RAM, never touches the SD FS).
  *   - RAM-neutral: the ring's bytes are reclaimed from SD_WORKER_STACK_SIZE (see
  *     DIAG_LOG_RING_BYTES use in sd_card.c), so a dev build costs the same RAM as prod.
