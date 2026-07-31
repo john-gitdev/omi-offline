@@ -10,10 +10,7 @@
 - [3. Diagnostic event log — persistent (reboot-surviving) upgrade [small] [Pending — post-LittleFS]](#3-diagnostic-event-log--persistent-reboot-surviving-upgrade-small-pending--post-littlefs)
 
 ### LARGE
-- [4. Device-driven BLE wake (firmware + iOS) [large] [Pending]](#4-device-driven-ble-wake-firmware-ios-large-pending)
-
-### DEFERRED
-- [5. iOS code signing & non-jailbroken distribution [medium] [Deferred]](#5-ios-code-signing-non-jailbroken-distribution-medium-deferred)
+- [4. Device-driven BLE wake (firmware + iOS) [large] [Parked — lost its primary motivation]](#4-device-driven-ble-wake-firmware--ios-large-parked--lost-its-primary-motivation)
 
 Shipped ideas are removed once they land — the code, CHANGELOG.md and CLAUDE.md are the
 record. Only open work lives here.
@@ -137,7 +134,22 @@ the true ceiling instead of LFS's deep allocator-scan/GC/format paths — freein
 
 ## LARGE
 
-### 4. Device-driven BLE wake (firmware + iOS) [large] [Pending]
+### 4. Device-driven BLE wake (firmware + iOS) [large] [Parked — lost its primary motivation]
+
+> **Parked 2026-07-31, when iOS support was removed** (see NOTES.md). By this idea's own
+> framing it was "mostly an iOS project" — the payoff was reliable iOS background wake, and
+> Android already wakes reliably via FGS + exact alarm + WorkManager. With no iOS target,
+> **the entire phone-side half (§iOS app changes) has no consumer**, and on Android the
+> windowing is a straight regression (it breaks instant on-demand connect, which is exactly
+> why `enabled` defaults to OFF for Android).
+>
+> **What survives the removal:** the *privacy / going-dark* motivation below is
+> platform-independent — an always-advertising audio recorder is trackable by any passive
+> scanner regardless of which phone syncs it. That argument stands on its own and needs only
+> the firmware half (dark state + window scheduler + button-to-wake), not the iOS work. If
+> this is ever revived for that reason, read it as a firmware-only idea and treat every iOS
+> section as historical. Kept in full because the firmware design and its tradeoffs are
+> still sound, and because restoring iOS restores the original case.
 
 Shift background-sync triggering from the *phone* (opportunistic iOS `BGTaskScheduler` / Android alarms) to the *device*: the Omi opens a connectable advertising **window** on its own RTC-driven schedule, and the phone — holding a standing pending-connect — is woken by the OS the moment that window opens. This is the model commercial BLE wearables (e.g. CGMs) use for reliable background sync on iOS.
 
@@ -267,24 +279,3 @@ Highest-leverage cheap validation: **Phase 1 window scheduler + Phase 2 standing
 - Android (phase 3, optional): `OmiBleForegroundService.kt`, `BackgroundSyncWorker.kt`, `SyncAlarmReceiver.kt`.
 
 ---
-
-## DEFERRED
-
-### 5. iOS code signing & non-jailbroken distribution [medium] [Deferred]
-
-The iOS build works end-to-end via CI (`.github/workflows/ios-build.yml`) and produces an **unsigned** dev IPA that installs on a **jailbroken** device (AppSync Unified / TrollStore — current path for the iPhone 6s Plus). To run on a **stock** (non-jailbroken) iPhone, the IPA must be code-signed, which needs an Apple Developer account plus signing material wired into CI.
-
-#### What it takes
-- **Apple Developer Program ($99/yr)** — required for a real signing certificate + provisioning profile. (A free Apple ID only does 7-day Xcode sideloading on a Mac, which headless CI can't drive.)
-- **Signing secrets in GitHub Actions** — distribution certificate (`.p12` + password) and a provisioning profile stored as encrypted repo secrets, imported into a temporary keychain on the runner (e.g. `apple-actions/import-codesign-certs`).
-- **Build a signed IPA** — replace the workflow's `flutter build ios --no-codesign` with `flutter build ipa` + an `ExportOptions.plist`: method `app-store` for TestFlight, or `ad-hoc` / `development` for direct install with the target device UDID registered in the profile.
-- **Distribution**
-  - **TestFlight** (cleanest — no per-device UDID): upload via `xcrun altool`/`notarytool` or `apple-actions/upload-testflight-build`; install via the TestFlight app. No Mac needed locally.
-  - **Ad-hoc**: register target device UDIDs in the profile; install the signed IPA directly (Apple Configurator / `ideviceinstaller`).
-
-#### Why deferred
-The jailbroken-device path (unsigned IPA, already working) covers the current 6s Plus for free. Signing only matters when targeting a non-jailbroken iPhone, and it carries an annual fee + secret management. Revisit if/when a stock-iOS device becomes a target.
-
-#### Relevant files
-- `.github/workflows/ios-build.yml` — today: `flutter build ios --flavor dev --no-codesign` → zips `Payload/Runner.app` into an unsigned IPA. Signing adds a cert-import step, switches to `flutter build ipa`, and adds an upload/export step.
-- Flavors (`app/flavorizr.yaml`): `dev` = `com.omi.offline.development`, `prod` = `com.omi.offline` — the provisioning profile must be issued for whichever bundle id is shipped.
