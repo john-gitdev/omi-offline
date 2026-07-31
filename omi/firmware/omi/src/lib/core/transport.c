@@ -1776,6 +1776,12 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
 static const struct bt_le_adv_param adv_param_slow =
     BT_LE_ADV_PARAM_INIT(BT_LE_ADV_OPT_CONNECTABLE | BT_LE_ADV_OPT_ONE_TIME, 1600, 1920, NULL);
 
+/* Deliberately NOT synchronized. Written from the workqueue handlers, the AAD
+ * thread (via adv_schedule_retry) and the BT RX thread; it is an aligned u32, so
+ * stores are atomic on this core and the only possible anomaly is a lost update to
+ * the backoff — one retry firing at the wrong delay, self-correcting on the next
+ * success. Guarding it would mean taking adv_mutex on the RX thread, which is the
+ * one thing that must never happen (see adv_mutex). */
 static uint32_t adv_retry_delay_ms = ADV_RESTART_RETRY_MS;
 
 /* Gate for the whole guard. 0 until transport_start() succeeds, and cleared again
@@ -1814,7 +1820,29 @@ static atomic_t adv_guard_active = ATOMIC_INIT(0);
  *    battery-critical path. The mutex is safe from all three shutdown contexts
  *    (button thread, storage thread, system workqueue), and on the workqueue path it
  *    is uncontended by construction, since a queue runs its items serially. */
+ *
+ *    One thread must NEVER take this mutex: the BT RX thread, i.e. the
+ *    _transport_connected / _transport_disconnected callbacks. bt_le_adv_start() is
+ *    an HCI command whose completion the RX thread itself processes, so a callback
+ *    blocking on a mutex held by a thread inside bt_le_adv_start() would deadlock
+ *    the stack. That constraint is what adv_reset_to_fast exists to satisfy. */
 static K_MUTEX_DEFINE(adv_mutex);
+
+/* Pending "come back up in fast mode" request from _transport_disconnected.
+ *
+ * The callback used to assign current_adv_mode = "fast" directly, which is the same
+ * unsynchronized-mode-write race cubic found in the AAD setters, just at the write
+ * site nobody was looking at: AAD holds adv_mutex, sets "slow", and the RX thread
+ * overwrites it with "fast" before AAD's own adv_start_raw() reads it — so we start
+ * the fast interval while logging "switched to slow". The obvious fix (lock the
+ * callback) is exactly the deadlock forbidden above, so instead the callback only
+ * raises this flag and whoever next starts advertising consumes it *under* the lock.
+ *
+ * Bonus correctness: current_adv_mode now keeps its pre-disconnect value until the
+ * restart actually runs, so the 0x3e diagnostic a few lines above — which records
+ * the advertising mode in effect at the failure — reads the true mode rather than a
+ * value already clobbered to "fast". */
+static atomic_t adv_reset_to_fast = ATOMIC_INIT(0);
 
 /* Start advertising in whatever mode current_adv_mode selects. Returns the raw
  * bt_le_adv_start() result: 0 = we were NOT advertising and now are, -EALREADY =
@@ -1823,6 +1851,11 @@ static K_MUTEX_DEFINE(adv_mutex);
  * rescue from a no-op. */
 static int adv_start_raw(void)
 {
+    /* Callers all hold adv_mutex, which is the only safe place to apply a pending
+     * post-disconnect mode reset — see adv_reset_to_fast. */
+    if (atomic_cas(&adv_reset_to_fast, 1, 0)) {
+        current_adv_mode = "fast";
+    }
     if (current_adv_mode[0] == 's') {
         return bt_le_adv_start(&adv_param_slow, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
     }
@@ -1952,7 +1985,10 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
      * Letting the conn be released first removes that race, and routing every
      * attempt through adv_restart_work means a failure retries instead of
      * silently stranding the device off the air (see the guard block above). */
-    current_adv_mode = "fast";
+    /* Request the mode reset rather than performing it: this is the BT RX thread,
+     * which must not take adv_mutex, and an unlocked write here races the AAD mode
+     * setters. adv_start_raw() applies it under the lock. */
+    atomic_set(&adv_reset_to_fast, 1);
     /* Skip entirely when transport_off() has already cleared the gate: this
      * callback is what its bt_conn_disconnect() triggers, and re-arming here would
      * schedule advertising work that runs after bt_disable(). */
@@ -2607,12 +2643,23 @@ int transport_set_adv_slow(void)
      * touches an atomic and a work item, and holding the lock across it buys
      * nothing. */
     k_mutex_lock(&adv_mutex, K_FOREVER);
+    /* Re-check under the lock: the is_connected test above and the gate can both
+     * flip between there and here, and stopping advertising while connected — or
+     * touching the radio mid-shutdown — is exactly what this guard exists to
+     * prevent. */
+    if (!atomic_get(&adv_guard_active) || is_connected) {
+        k_mutex_unlock(&adv_mutex);
+        return 0;
+    }
     int err = bt_le_adv_stop();
     if (err && err != -EALREADY) {
         k_mutex_unlock(&adv_mutex);
         LOG_ERR("adv_slow: stop failed (%d)", err);
         return err;
     }
+    /* An explicit mode request outranks a pending post-disconnect reset; drop it so
+     * adv_start_raw() below doesn't immediately flip us back to fast. */
+    atomic_set(&adv_reset_to_fast, 0);
     current_adv_mode = "slow";
     err = adv_start_raw();
     k_mutex_unlock(&adv_mutex);
@@ -2630,12 +2677,17 @@ int transport_set_adv_fast(void)
         return 0;
     }
     k_mutex_lock(&adv_mutex, K_FOREVER); /* see transport_set_adv_slow */
+    if (!atomic_get(&adv_guard_active) || is_connected) {
+        k_mutex_unlock(&adv_mutex);
+        return 0;
+    }
     int err = bt_le_adv_stop();
     if (err && err != -EALREADY) {
         k_mutex_unlock(&adv_mutex);
         LOG_ERR("adv_fast: stop failed (%d)", err);
         return err;
     }
+    atomic_set(&adv_reset_to_fast, 0);
     current_adv_mode = "fast";
     err = adv_start_raw();
     k_mutex_unlock(&adv_mutex);
@@ -2803,6 +2855,10 @@ int transport_start()
     bt_gatt_service_register(&led_service);
     // Button + haptic config now live under the Settings service — no separate service to register.
     err = bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
+    /* Open the gate only once bring-up has got this far, so nothing can queue
+     * advertising work against a stack that never came up. Set before the failure
+     * branch below, which needs it open for adv_schedule_retry() to arm anything. */
+    atomic_set(&adv_guard_active, 1);
     if (err) {
         /* Do NOT fail transport_start here: returning an error aborts BLE bring-up
          * and leaves the device with no radio at all and nothing retrying. Hand the
@@ -2811,14 +2867,10 @@ int transport_start()
          * self-heals within seconds rather than bricking the link until reboot. */
         LOG_ERR("Transport advertising failed to start (err %d) — handing to adv retry", err);
         adv_retry_delay_ms = ADV_RESTART_RETRY_MS;
-        atomic_set(&adv_guard_active, 1);
         adv_schedule_retry(err, "boot");
     } else {
         LOG_INF("Advertising successfully started");
     }
-    /* Open the gate only once bring-up has got this far, so nothing can queue
-     * advertising work against a stack that never came up. */
-    atomic_set(&adv_guard_active, 1);
     /* Arm the watchdog for the pre-first-connection window too: without this, a
      * device that goes silent before it is ever connected has nothing watching it. */
     k_work_schedule(&adv_watchdog_work, K_MSEC(ADV_WATCHDOG_INTERVAL_MS));

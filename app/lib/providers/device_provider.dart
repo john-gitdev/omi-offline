@@ -236,7 +236,7 @@ class DeviceProvider extends ChangeNotifier
       }
     };
     if (SharedPreferencesUtil().btDevice.id.isNotEmpty) {
-      Future.microtask(() => periodicConnect('app open', boundDeviceOnly: true));
+      Future.microtask(() => periodicConnect('app open', boundDeviceOnly: true, userInitiated: true));
       // Sync on app open whenever one is due. The device is disconnected in the
       // background, so the periodic timer/heartbeat may not have fired; opening
       // the app is the reliable trigger. _isAppInForeground is true here, so the
@@ -695,7 +695,13 @@ class DeviceProvider extends ChangeNotifier
     _lastBatteryNotifyTime = null;
   }
 
-  Future periodicConnect(String printer, {bool boundDeviceOnly = false}) async {
+  /// [userInitiated] marks the entry points that represent fresh user intent —
+  /// opening or resuming the app. Those clear the reconnect throttle so the attempt
+  /// happens now: the backoff exists to stop us churning at the daemon while nobody
+  /// is watching, not to make a user who just opened the app wait out a 12-minute
+  /// timer. Automatic callers (the post-disconnect retry) leave it armed.
+  Future periodicConnect(String printer, {bool boundDeviceOnly = false, bool userInitiated = false}) async {
+    if (userInitiated) _resetReconnectThrottle();
     _reconnectionTimer?.cancel();
     scan(t) async {
       if (!isBluetoothEnabled) return;
@@ -1287,7 +1293,7 @@ class DeviceProvider extends ChangeNotifier
         unawaited(_doBackgroundSync().then((_) => _startBackgroundSyncTimer()));
       } else {
         _pendingAppOpenSync = true;
-        periodicConnect('app resumed', boundDeviceOnly: true);
+        periodicConnect('app resumed', boundDeviceOnly: true, userInitiated: true);
       }
       return;
     }
@@ -1316,7 +1322,7 @@ class DeviceProvider extends ChangeNotifier
         _resumeReconnectDebounce?.cancel();
         _resumeReconnectDebounce = Timer(const Duration(seconds: 2), () {
           if (_isAppInForeground && !isConnected && !isConnecting) {
-            periodicConnect('app resumed', boundDeviceOnly: true);
+            periodicConnect('app resumed', boundDeviceOnly: true, userInitiated: true);
           }
         });
       }
