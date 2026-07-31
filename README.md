@@ -77,7 +77,7 @@ PDM mics → Opus encoder (firmware) → SD card (.bin segments)
 
 ### App (Flutter)
 
-- **Native BLE bridge.** Pigeon-generated code calls the platform's native iOS/Android Bluetooth stack directly, bypassing Dart BLE library limitations.
+- **Native BLE bridge.** Pigeon-generated code calls the platform's native Android Bluetooth stack directly, bypassing Dart BLE library limitations. (Android is the only supported platform — iOS was removed; see NOTES.md.)
 - **Connection serialization.** `DeviceService.ensureConnection()` uses a `Mutex` so N concurrent callers (battery, storage, WAL sync) share one attempt.
 - **Background lifecycle.** Pressing Back minimizes the app (keeps the BLE foreground service running); swiping from Recents still stops it. The app disconnects BLE ~15 s after going to background and reconnects on the auto-sync schedule or on app open. A skipped background sync (couldn't connect) is tracked separately from the last successful sync, so the next foreground reconnects immediately instead of waiting out the interval.
 - **WAL sync (`SDCardWalSyncImpl`).** Saves segments to `raw_segments/<timerStart>/<timerStart>_<sessionId>.bin`, where `timerStart` is the firmware-assigned UTC epoch seconds and `sessionId` is the 32-bit DeviceSession ID (or `0` if unknown). Pre-time-sync files land in a `raw_segments/session_<sessionId>/` fallback folder shown in the UI under "Unorganized".
