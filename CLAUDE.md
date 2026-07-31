@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Setup
 
 ```bash
-cd app && bash setup.sh ios    # or: bash setup.sh android
+cd app && bash setup.sh android    # Android only — iOS support was removed, see NOTES.md
 ```
 
 ## Commands
