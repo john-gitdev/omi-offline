@@ -92,6 +92,8 @@ void main() {
         emptyBinRotations: 4,
         sessionEndMarkerEmits: 3,
         markerPauseGateSaves: 2,
+        advRestartFailures: 9,
+        advWatchdogRecoveries: 8,
         readAt: DateTime.now(),
       );
 
@@ -109,6 +111,11 @@ void main() {
       expect(restored.emptyBinRotations, 4);
       expect(restored.sessionEndMarkerEmits, 3);
       expect(restored.markerPauseGateSaves, 2);
+      // Advertising-restart guard (oo-2.8.3+). These are monotonic event counters,
+      // so they baseline like the rest — unlike the high-water marks, which are
+      // deliberately excluded because peak − peak is not a since-reset peak.
+      expect(restored.advRestartFailures, 9);
+      expect(restored.advWatchdogRecoveries, 8);
       // currentUptimeMs is retained as provenance (when the reset was taken);
       // reboot detection is counter-based, so nothing reads it, but it round-trips.
       expect(restored.currentUptimeMs, 123456);
@@ -162,6 +169,75 @@ void main() {
 
     test('a zero baseline reads as not-rebooted (display is current − 0 either way)', () {
       expect(stats(blockDrops: 7).looksRebootedFrom(stats()), isFalse);
+    });
+
+    test('a reboot visible ONLY in the advertising counters is still detected', () {
+      // The wedge-guard counters can be the sole movers on a device that is
+      // otherwise healthy: no drops, no rotations, nothing else to go backwards.
+      // Before they were added to looksRebootedFrom, this reboot was invisible.
+      final base = DeviceDropStats(
+        blockDrops: 0,
+        lastBlockDropUptimeMs: 0,
+        streamFrameDrops: 0,
+        bootFrameDrops: 0,
+        currentUptimeMs: 5000,
+        advRestartFailures: 4,
+        advWatchdogRecoveries: 2,
+        readAt: DateTime.fromMillisecondsSinceEpoch(0),
+      );
+      final afterReboot = DeviceDropStats(
+        blockDrops: 0,
+        lastBlockDropUptimeMs: 0,
+        streamFrameDrops: 0,
+        bootFrameDrops: 0,
+        currentUptimeMs: 100,
+        advRestartFailures: 0,
+        advWatchdogRecoveries: 0,
+        readAt: DateTime.fromMillisecondsSinceEpoch(0),
+      );
+      expect(afterReboot.looksRebootedFrom(base), isTrue);
+
+      // And each counter independently suffices — a watchdog rescue can happen
+      // without any start ever having failed, and vice versa.
+      expect(
+        DeviceDropStats(
+          blockDrops: 0,
+          lastBlockDropUptimeMs: 0,
+          streamFrameDrops: 0,
+          bootFrameDrops: 0,
+          currentUptimeMs: 100,
+          advRestartFailures: 4,
+          advWatchdogRecoveries: 1, // only this one dropped
+          readAt: DateTime.fromMillisecondsSinceEpoch(0),
+        ).looksRebootedFrom(base),
+        isTrue,
+      );
+    });
+
+    test('advertising counters climbing within a boot is NOT a reboot', () {
+      // The watchdog firing repeatedly is exactly what a degraded-but-recovering
+      // device looks like; it must not be misread as a reboot.
+      final base = DeviceDropStats(
+        blockDrops: 0,
+        lastBlockDropUptimeMs: 0,
+        streamFrameDrops: 0,
+        bootFrameDrops: 0,
+        currentUptimeMs: 5000,
+        advRestartFailures: 1,
+        advWatchdogRecoveries: 1,
+        readAt: DateTime.fromMillisecondsSinceEpoch(0),
+      );
+      final later = DeviceDropStats(
+        blockDrops: 0,
+        lastBlockDropUptimeMs: 0,
+        streamFrameDrops: 0,
+        bootFrameDrops: 0,
+        currentUptimeMs: 90000,
+        advRestartFailures: 3,
+        advWatchdogRecoveries: 5,
+        readAt: DateTime.fromMillisecondsSinceEpoch(0),
+      );
+      expect(later.looksRebootedFrom(base), isFalse);
     });
   });
 }

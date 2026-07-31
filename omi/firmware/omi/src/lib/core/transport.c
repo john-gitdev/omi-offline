@@ -457,7 +457,7 @@ static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_ha
 //   uptime_seconds: how long the PREVIOUS session ran before it ended (crash or clean shutdown)
 //
 // Characteristic B:   19B10062-E8F2-537E-4F6C-D104768A1214
-// Returns 84 bytes LE (fields appended over time; older apps read a prefix):
+// Returns 92 bytes LE (fields appended over time; older apps read a prefix):
 //   [uint32 storage_block_drops]   storage_block_drops since boot (each = ~5 Opus frames lost)
 //   [uint32 last_drop_uptime_ms]   k_uptime_get() at the most recent block drop (0 = none)
 //   [uint32 sd_stream_drops]       stat_dropped_frames from sd_card.c (queue-full audio frame drops)
@@ -703,7 +703,7 @@ static struct bt_gatt_attr diagnostics_service_attr[] = {
 
 static struct bt_gatt_service diagnostics_service = BT_GATT_SERVICE(diagnostics_service_attr);
 
-/* Notify the 84-byte drop payload to every subscribed client. The value
+/* Notify the 92-byte drop payload to every subscribed client. The value
  * attribute is index 4: [0]=service, [1]/[2]=0x0061 decl/value,
  * [3]/[4]=0x0062 decl/value, [5]=CCC.
  *
@@ -1791,6 +1791,31 @@ static uint32_t adv_retry_delay_ms = ADV_RESTART_RETRY_MS;
  * device keeps running with BLE down instead of powering off. */
 static atomic_t adv_guard_active = ATOMIC_INIT(0);
 
+/* Serializes every advertising stop/start/mode change. Two distinct races need it:
+ *
+ * 1. AAD mode switches vs. the guard. transport_set_adv_slow() is stop → set mode →
+ *    start; a retry/watchdog tick landing inside that window starts the *previous*
+ *    interval, and the mode setter's own start then returns -EALREADY, which we
+ *    treat as success. Net effect: we log "switched to slow" while the radio keeps
+ *    advertising at the 100-150 ms fast interval — a silent battery regression that
+ *    -EALREADY actively hides. Holding this across the whole sequence makes it
+ *    atomic, so -EALREADY can no longer mask a stale-interval start.
+ *
+ * 2. Shutdown vs. an in-flight handler. k_work_cancel_delayable() does NOT wait for
+ *    a handler that is already running, so a handler past its gate check could call
+ *    bt_le_adv_start() after bt_disable(). Handlers hold this mutex across their
+ *    start, so transport_off() can drain them by taking it.
+ *
+ *    A mutex, specifically — NOT k_work_cancel_delayable_sync(). turnoff_all() is
+ *    reachable from broadcast_battery_level() (the critical-battery shutdown), which
+ *    is itself a system-workqueue handler — the same queue adv_restart_work and
+ *    adv_watchdog_work run on. A _sync() cancel there would block the workqueue
+ *    thread waiting for work only that thread can run: a hard deadlock on the
+ *    battery-critical path. The mutex is safe from all three shutdown contexts
+ *    (button thread, storage thread, system workqueue), and on the workqueue path it
+ *    is uncontended by construction, since a queue runs its items serially. */
+static K_MUTEX_DEFINE(adv_mutex);
+
 /* Start advertising in whatever mode current_adv_mode selects. Returns the raw
  * bt_le_adv_start() result: 0 = we were NOT advertising and now are, -EALREADY =
  * already on the air (a healthy no-op), anything else = failure. Callers must keep
@@ -1821,10 +1846,15 @@ static void adv_schedule_retry(int err, const char *who)
 static void adv_restart_work_handler(struct k_work *work)
 {
     ARG_UNUSED(work);
+    /* Gate re-checked *inside* the lock: transport_off() clears it before taking the
+     * mutex, so anything that acquires after shutdown began sees it closed. */
+    k_mutex_lock(&adv_mutex, K_FOREVER);
     if (!atomic_get(&adv_guard_active) || is_connected) {
+        k_mutex_unlock(&adv_mutex);
         return; /* shutting down, or a link came up; the disconnect path re-arms us */
     }
     int err = adv_start_raw();
+    k_mutex_unlock(&adv_mutex);
     if (err == 0 || err == -EALREADY) {
         adv_retry_delay_ms = ADV_RESTART_RETRY_MS;
         LOG_INF("adv: advertising active (mode=%s)", current_adv_mode);
@@ -1836,14 +1866,19 @@ static void adv_restart_work_handler(struct k_work *work)
 static void adv_watchdog_work_handler(struct k_work *work)
 {
     ARG_UNUSED(work);
+    k_mutex_lock(&adv_mutex, K_FOREVER);
     if (!atomic_get(&adv_guard_active) || is_connected) {
         /* Deliberately does NOT reschedule: shutdown must not leave a 60 s timer
          * spinning forever, and a live link is re-armed by the next disconnect. */
+        k_mutex_unlock(&adv_mutex);
         return;
     }
     /* We cannot portably ask "am I advertising?", so re-asserting IS the test:
-     * -EALREADY means healthy, 0 means we had gone silent and just rescued it. */
+     * -EALREADY means healthy, 0 means we had gone silent and just rescued it.
+     * Under the lock this reading is trustworthy: without it, a 0 here could just
+     * mean we won a race against a mode switch's stop, not that anything was wrong. */
     int err = adv_start_raw();
+    k_mutex_unlock(&adv_mutex);
     if (err == 0) {
         uint32_t n = (uint32_t) atomic_inc(&adv_watchdog_recoveries) + 1;
         LOG_WRN("adv: watchdog found advertising stopped — restarted (mode=%s, recoveries=%u)", current_adv_mode, n);
@@ -2489,6 +2524,16 @@ int transport_off()
      * bt_disable(). Clearing the gate ahead of the disconnect is what makes the
      * cancel stick; cancelling alone races the callback. */
     atomic_set(&adv_guard_active, 0);
+    /* Drain a handler that is already running: k_work_cancel_delayable() does not
+     * wait for one, so a handler past its gate check could otherwise reach
+     * bt_le_adv_start() after the bt_disable() below. Handlers hold adv_mutex across
+     * their start, so taking it here waits them out; the gate is already closed
+     * above, so nothing new can get in behind us. (Deliberately not
+     * k_work_cancel_delayable_sync() — that deadlocks when turnoff_all() is reached
+     * from the battery-critical path, which runs on the same workqueue. See
+     * adv_mutex.) */
+    k_mutex_lock(&adv_mutex, K_FOREVER);
+    k_mutex_unlock(&adv_mutex);
     k_work_cancel_delayable(&adv_restart_work);
     k_work_cancel_delayable(&adv_watchdog_work);
 
@@ -2557,13 +2602,20 @@ int transport_set_adv_slow(void)
     if (is_connected) {
         return 0;
     }
+    /* stop → set mode → start must be atomic against the retry/watchdog handlers;
+     * see adv_mutex. adv_schedule_retry() is called after unlocking — it only
+     * touches an atomic and a work item, and holding the lock across it buys
+     * nothing. */
+    k_mutex_lock(&adv_mutex, K_FOREVER);
     int err = bt_le_adv_stop();
     if (err && err != -EALREADY) {
+        k_mutex_unlock(&adv_mutex);
         LOG_ERR("adv_slow: stop failed (%d)", err);
         return err;
     }
     current_adv_mode = "slow";
     err = adv_start_raw();
+    k_mutex_unlock(&adv_mutex);
     if (err && err != -EALREADY) {
         adv_schedule_retry(err, "adv_slow");
         return err;
@@ -2577,13 +2629,16 @@ int transport_set_adv_fast(void)
     if (is_connected) {
         return 0;
     }
+    k_mutex_lock(&adv_mutex, K_FOREVER); /* see transport_set_adv_slow */
     int err = bt_le_adv_stop();
     if (err && err != -EALREADY) {
+        k_mutex_unlock(&adv_mutex);
         LOG_ERR("adv_fast: stop failed (%d)", err);
         return err;
     }
     current_adv_mode = "fast";
     err = adv_start_raw();
+    k_mutex_unlock(&adv_mutex);
     if (err && err != -EALREADY) {
         adv_schedule_retry(err, "adv_fast");
         return err;
