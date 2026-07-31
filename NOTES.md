@@ -4,6 +4,73 @@ Running log of investigated bugs, deferred decisions, and findings that don't fi
 
 ---
 
+## iOS support removed (2026-07-31) — how it worked and how to get it back
+
+**Status:** deliberate, reversible. iOS is not a target for now. Nothing about it was
+broken — the build worked; it was removed to shrink the maintenance and review surface.
+
+### Restore point
+
+Tag **`ios-last-working`** → `afc0eadf7`, the last commit with a working iOS build.
+
+```bash
+git checkout ios-last-working -- app/ios .github/workflows/ios-build.yml
+```
+
+Then re-apply the two **generator config** changes that were made in the same removal
+commit (they are *not* under `app/ios/`, so the checkout above won't bring them back):
+
+- `app/lib/pigeon_interfaces.dart` — re-add `swiftOut: 'ios/Runner/PigeonCommunicator.g.swift'`
+  and `swiftOptions: SwiftOptions(),` to `@ConfigurePigeon`, then `dart run pigeon`.
+- `app/flavorizr.yaml` — re-add the `ios:` blocks: prod `bundleId: com.omi.offline`,
+  dev `bundleId: com.omi.offline.development`, both `icon: assets/images/app_launcher_icon.png`.
+- `app/setup.sh` — the `run_build_ios()` function and its `ios)` case arm
+  (`flutter pub get && pushd ios && pod install --repo-update && popd && dart run build_runner build --delete-conflicting-outputs && flutter run --flavor dev`).
+
+**Do not** rebuild the project with `flutter create --platforms=ios`. That scaffolds a
+stock Runner and drops ~2,700 lines of hand-written Swift that has no equivalent in a
+fresh template: `OmiBleManager.swift` (the native BLE stack incl. `CBCentralManager`
+state restoration), `AppDelegate.swift` (BGTaskScheduler registration), `BleHostApiImpl`,
+`VadBatchRunner` (the native VAD batch path behind `vad_batch_runner_channel.dart`),
+`WifiNetworkPlugin`, `AppleHealthService`, `AppleRemindersService`.
+
+### Why the generator config had to change (the actual footgun)
+
+Pigeon and flavorizr **write** into `app/ios/`. Had their iOS config been left in place,
+the next `dart run pigeon` or flavorizr run would have silently recreated
+`app/ios/Runner/PigeonCommunicator.g.swift` and flavor files — a half-resurrected tree
+that looks restored but isn't. That, not the file deletion, was the risky part.
+
+### What was deliberately kept
+
+- **The 16 `Platform.isIOS` branches across 11 Dart files**, plus
+  `services/vad_batch_runner_channel.dart` (123 lines). Dead code on Android and nearly
+  free to carry, but they encode *why* iOS behaved differently — the GATT-cache refresh
+  being skipped on iOS (no `refresh()`, relies on Service Changed), the native VAD batch
+  path, DFU differences. Deleting them loses reasoning that git can return only as a diff
+  nobody will think to look for. Expect them to bit-rot; that's accepted.
+- **`opus_flutter_ios` override and the vendored `third_party/flutter_onnxruntime`** in
+  `app/pubspec.yaml`. The vendoring exists *only* to lower that plugin's iOS podspec from
+  16.0 → 15.1 so the app installs on iOS 15 devices. It costs nothing on Android, and
+  un-vendoring is a separate, independently revertible change.
+
+### What the iOS build was
+
+Unsigned dev IPA built on a GitHub-hosted macOS runner (`ios-build.yml`,
+`workflow_dispatch`-only to conserve 10×-billed macOS minutes), targeting **iOS 15.0**,
+installed on a **jailbroken** iPhone 6s Plus via AppSync Unified / TrollStore — no Apple
+Developer account, no signing. Signing for stock iOS was never done; that idea (Apple
+Developer Program, CI signing secrets, TestFlight vs ad-hoc) was dropped from IDEAS.md
+along with this removal and is recoverable from git history if a stock device ever
+becomes a target.
+
+### Consequence: the repo now has no CI
+
+`ios-build.yml` was the **only** workflow, so `.github/workflows/` is empty — there is no
+automated Android build or `flutter test` run on push. Worth adding one; unrelated to iOS.
+
+---
+
 ## Diagnostics `uptime` is the PREVIOUS session's length — a red herring for live health
 
 **Status:** not a bug (2026-07-12) — clarified while reviewing a "sync failed then crawled" log.
