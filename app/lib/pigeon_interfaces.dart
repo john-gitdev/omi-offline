@@ -1,10 +1,12 @@
 import 'package:pigeon/pigeon.dart';
 
+// iOS is not a supported platform for now, so no swiftOut/swiftOptions here —
+// leaving them in would make the next `dart run pigeon` recreate ios/Runner/ and
+// half-resurrect the deleted Xcode project. Re-add both when iOS comes back
+// (see "iOS support removed" in NOTES.md).
 @ConfigurePigeon(PigeonOptions(
   dartOut: 'lib/gen/pigeon_communicator.g.dart',
   dartOptions: DartOptions(),
-  swiftOut: 'ios/Runner/PigeonCommunicator.g.swift',
-  swiftOptions: SwiftOptions(),
   kotlinOut: 'android/app/src/main/kotlin/com/omi/offline/PigeonCommunicator.g.kt',
   kotlinOptions: KotlinOptions(package: 'com.omi.offline'),
   dartPackageName: 'omi_pigeon',

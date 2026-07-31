@@ -1,3 +1,7 @@
+# iOS is not a supported platform for now, so the flavors carry no ios: block —
+# leaving one in would make the next flavorizr run recreate the deleted ios/
+# project. Re-add both blocks when iOS comes back (bundleIds were
+# com.omi.offline / com.omi.offline.development); see NOTES.md.
 flavors:
   prod:
     app:
@@ -6,9 +10,6 @@ flavors:
     android:
       applicationId: "com.omi.offline"
       icon: "assets/images/app_launcher_icon.png"
-    ios:
-      bundleId: "com.omi.offline"
-      icon: "assets/images/app_launcher_icon.png"
   dev:
     app:
       name: "Omi Offline Dev"
@@ -16,6 +17,3 @@ flavors:
     android:
       icon: "assets/images/app_launcher_icon.png"
       applicationId: "com.omi.offline.dev"
-    ios:
-      bundleId: "com.omi.offline.development"
-      icon: "assets/images/app_launcher_icon.png"

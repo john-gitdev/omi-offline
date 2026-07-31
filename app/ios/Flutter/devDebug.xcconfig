@@ -1,9 +1,0 @@
-#include? "Pods/Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"
-#include "Generated.xcconfig"
-#include "Base.xcconfig"
-#include "Custom.xcconfig"
-
-ASSET_PREFIX=dev
-BUNDLE_NAME=Omi Offline Dev
-BUNDLE_DISPLAY_NAME=Omi Offline Dev
-APP_BUNDLE_IDENTIFIER=com.omi.offline.development
