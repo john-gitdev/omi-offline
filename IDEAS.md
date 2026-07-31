@@ -4,17 +4,19 @@
 
 ### ACTIVE
 - [1. BLE stability: partial syncs, stuck notifications [medium] [Active]](#1-ble-stability-partial-syncs-stuck-notifications-medium-active)
-- [2. Background reconnect recovery latency after native retry back-off [small] [Shipped — validate on device]](#2-background-reconnect-recovery-latency-after-native-retry-back-off-small-shipped--validate-on-device)
 
 ### PENDING
-- [3. Streaming WAV stitch — fix OOM on long-recording merge [small] [Pending]](#3-streaming-wav-stitch--fix-oom-on-long-recording-merge-small-pending)
-- [4. Diagnostic event log — persistent (reboot-surviving) upgrade [small] [Pending — post-LittleFS]](#4-diagnostic-event-log--persistent-reboot-surviving-upgrade-small-pending--post-littlefs)
+- [2. Streaming WAV stitch — fix OOM on long-recording merge [small] [Pending]](#2-streaming-wav-stitch--fix-oom-on-long-recording-merge-small-pending)
+- [3. Diagnostic event log — persistent (reboot-surviving) upgrade [small] [Pending — post-LittleFS]](#3-diagnostic-event-log--persistent-reboot-surviving-upgrade-small-pending--post-littlefs)
 
 ### LARGE
-- [5. Device-driven BLE wake (firmware + iOS) [large] [Pending]](#5-device-driven-ble-wake-firmware-ios-large-pending)
+- [4. Device-driven BLE wake (firmware + iOS) [large] [Pending]](#4-device-driven-ble-wake-firmware-ios-large-pending)
 
 ### DEFERRED
-- [6. iOS code signing & non-jailbroken distribution [medium] [Deferred]](#6-ios-code-signing-non-jailbroken-distribution-medium-deferred)
+- [5. iOS code signing & non-jailbroken distribution [medium] [Deferred]](#5-ios-code-signing-non-jailbroken-distribution-medium-deferred)
+
+Shipped ideas are removed once they land — the code, CHANGELOG.md and CLAUDE.md are the
+record. Only open work lives here.
 
 ---
 
@@ -22,14 +24,14 @@
 
 ### 1. BLE stability: partial syncs, stuck notifications [medium] [Active]
 
-Remaining BLE-reliability work from the 2026-06-27 device-log analysis plus a code
-review of [OmiBleManager.kt](app/android/app/src/main/kotlin/com/omi/offline/OmiBleManager.kt)
+From the 2026-06-27 device-log analysis plus a code review of
+[OmiBleManager.kt](app/android/app/src/main/kotlin/com/omi/offline/OmiBleManager.kt)
 and [OmiBleForegroundService.kt](app/android/app/src/main/kotlin/com/omi/offline/OmiBleForegroundService.kt).
-The GATT-churn fixes — exponential reconnect backoff and `disconnect()` before
-`close()` across all cleanup paths — shipped in app 0.26.9, and most follow-ups
-(resume-from-offset, the keepalive margin, and stuck-"Connecting…" recovery) have since
-shipped too. **The one remaining open item is connection-param tuning** (below); the
-already-handled items are noted in the callout below for context.
+Everything that analysis turned up has since shipped — the GATT-churn fixes (0.26.9),
+resume-from-offset, the keepalive margin, stuck-"Connecting…" recovery, and the
+outage-recovery alarm (0.29.0) — **except connection-param tuning**, which is all that
+remains below. The callout records what was investigated and deliberately *not* done, so
+it doesn't get re-litigated.
 
 > **Already handled, so not listed below.** The firmware LE **supervision timeout is
 > already 6 s** (`transport.c` `update_conn_params`, `.timeout = 600`) — the original
@@ -53,7 +55,7 @@ interval) — great throughput, RF-fragile. The open experiment is whether
 - `BALANCED` ~halves throughput, but each interval is more RF-robust (fewer drops per unit
   time) — at the cost of a longer transfer (more total exposure). Net effect on "did the
   whole transfer finish" is empirical.
-- **Kept at HIGH on purpose for now:** resume-from-offset (shipped, below) already makes a
+- **Kept at HIGH on purpose for now:** resume-from-offset (already shipped) already makes a
   drop cheap, so HIGH + resume beats BALANCED unless measurement shows BALANCED's lower drop
   rate outweighs the throughput cost. Wire it behind something measurable and A/B
   throughput vs. drop-rate before committing. Android-only lever; the firmware's
@@ -75,35 +77,14 @@ interval) — great throughput, RF-fragile. The open experiment is whether
 
 ---
 
-### 2. Background reconnect recovery latency after native retry back-off [small] [Shipped — validate on device]
-
-Shipped in **0.29.0 (PR #338)**, follow-up to PR #337. Once native pauses its retry loop
-(`AUTONOMOUS_RETRY_STOP_AFTER`) and hands reconnection to the sync schedule, two latencies regressed
-(recovery after a wedge clears: ~30 s → up to one sync interval; wedge re-probe of a returned device:
-~15 min → ~15 h). Both fixed: a dedicated **outage-recovery alarm** (`SyncAlarmReceiver`
-`ACTION_RECOVER`) bridges the gap — backs off 2 → 4 → 8 → 16 min then self-terminates onto the sync
-interval — and the wedge re-probe was re-keyed to wall-clock time (`WEDGE_REPROBE_INTERVAL_MS`). The
-whole recovery lifecycle is gated by one `recoveryWanted()` invariant (auto-sync on + user not
-disconnected + BT on + `wedgeDetected`). Mechanism + rationale live in the code
-(`OmiBleForegroundService.kt` `recoveryProbe*` / `recoveryWanted` / `onRecoveryProbeAlarm`,
-`SyncAlarmReceiver.kt` `ACTION_RECOVER`) and the 0.29 CHANGELOG entry — not duplicated here.
-
-**Remaining — on-device validation only** (the reason this stays open):
-- A wedge that clears mid-outage reconnects within the recovery-alarm cadence, not the sync interval.
-- The recovery alarm self-terminates (no indefinite tight polling) for a genuinely-absent device.
-- Doze throttling behaves as expected (the ~9 min `setExactAndAllowWhileIdle` floor).
-- Battery cost of the ~4 extra attempts vs. the recovery-latency win is acceptable.
-
----
-
 ## PENDING
 
-### 3. Streaming WAV stitch — fix OOM on long-recording merge [small] [Pending]
+### 2. Streaming WAV stitch — fix OOM on long-recording merge [small] [Pending]
 
 Observed 2026-07-08 00:39:06 (device log): `RecordingsManager: Stitch failed: Out of Memory` while stitching a draft onto a 2-hour recording (`recording_1783461803610.wav`, 7,353,745 ms of 16 kHz mono 16-bit PCM ≈ 235 MB).
 
 #### What happens today (no data loss, but conversations split) — code-verified 2026-07-08
-`_stitchWav` (`recordings_manager.dart:1465`) loads **both entire WAVs into RAM plus a combined copy** — `readAsBytes()` on draft + next, then a `BytesBuilder` (`copy:true` default) that copies draft PCM + silence + next PCM into a second buffer — peak ≈ 2× the combined file size (~½ GB in the observed case), worse momentarily if the `BytesBuilder` grow-doubles. It hard-fails on exactly the long recordings the stitch matters most for. The failure path is *mostly* clean: the allocations all precede `draftFile.openWrite()` (:1496), so the draft is untouched on disk and `_performStitch`'s catch (:1458) finalizes the draft as its own recording (`_draft.wav` → `.wav`, meta promoted, EDLs re-pointed). Net effect: one continuous conversation surfaces as **two separate recordings** with no inserted gap — cosmetic, not data loss. The finalized file even uploads fine afterwards.
+`_stitchWav` (`recordings_manager.dart:1557`) loads **both entire WAVs into RAM plus a combined copy** — `readAsBytes()` on draft + next, then a `BytesBuilder` (`copy:true` default) that copies draft PCM + silence + next PCM into a second buffer — peak ≈ 2× the combined file size (~½ GB in the observed case), worse momentarily if the `BytesBuilder` grow-doubles. It hard-fails on exactly the long recordings the stitch matters most for. The failure path is *mostly* clean: the allocations all precede `draftFile.openWrite()` (:1588), so the draft is untouched on disk and `_performStitch`'s catch (:1550) finalizes the draft as its own recording (`_draft.wav` → `.wav`, meta promoted, EDLs re-pointed). Net effect: one continuous conversation surfaces as **two separate recordings** with no inserted gap — cosmetic, not data loss. The finalized file even uploads fine afterwards.
 
 **Why it's worth fixing despite being cosmetic (the real argument):** `vadMaxConversationMinutes` defaults to `0` (no cap), so drafts grow unbounded, and every incremental stitch re-materializes the *entire* accumulated draft — peak memory is **O(total recording length)**. So multi-hour conversations don't just occasionally split; they **reliably fragment as they grow**, on exactly the long recordings stitching exists to hold together. That scaling behavior, not any single failure, is the reason to do this.
 
@@ -119,21 +100,21 @@ Stream instead of materializing:
 
 Trade-offs accepted: a small partial-write crash window (mitigated by the truncate-back rollback; an unpatched header still describes the original length, so players ignore a partial tail), and a bit more code. Performance is a wash or better (no giant allocation / GC pressure); final disk footprint identical.
 
-Same pattern applies to `_stitchBinIfPresent` (`:1528`), which reads the whole next Opus bin into RAM before appending — less urgent (bins are ~30× smaller than PCM) but trivial to convert while in there.
+Same pattern applies to `_stitchBinIfPresent` (`:1620`), which reads the whole next Opus bin into RAM before appending — less urgent (bins are ~30× smaller than PCM) but trivial to convert while in there.
 
 #### Implementation caveats (verified 2026-07-08 — the idea under-specifies these)
 1. **Dart has no O_RDWR-without-truncate-without-append `FileMode`, so the naive "append then seek-patch the header" won't work.** `FileMode.write`/`writeOnly` truncate; `FileMode.append`/`writeOnlyAppend` are `O_APPEND`, which on POSIX forces every write to EOF and **ignores `setPosition`** — so `setPosition(4)` + `writeFrom` to patch the RIFF/data-size fields silently lands at end-of-file instead. The header patch (step 3) needs a deliberate approach: precompute all sizes (they're all known up front — `draftLen-44`, silence, `nextLen-44`) and patch the 8 header bytes with a *non-append* handle, or do the body append and header patch as two distinct operations with the right mode. The naive version can pass a quick smoke test while shipping a broken/understated header.
-2. **The header patch is load-bearing because the default output format is WAV** (`preferences.dart:161`, `audioSaveFormat` defaults to `'wav'`), and `_finalizeDraft` (:1271) only **renames** the draft — it never rewrites the header. So for the default path a stale/understated `data` size truncates player playback. (For `m4a` users it's moot: `_transcodeWavToM4a` (:1409) reads everything past offset 44 and ignores the header — which is why the next point has gone unnoticed.)
-3. **Fix the pre-existing `_stitchSilence` stale-header bug in the same place.** `_stitchSilence` (:1236) **already appends silence to WAV drafts via `FileMode.append` without patching the header**, then only updates the `.meta`. So a WAV-format draft whose last pre-finalize mutation was a silence stitch already finalizes with an understated header today. The streaming rewrite of `_stitchWav` should share a header-patch helper that `_stitchSilence` also calls, closing both at once. (`_stitchWav` currently masks this by regenerating a full correct header via `_generateWavHeader` — but only when a WAV stitch *follows* the silence stitch.)
-4. **`_transcodeWavToM4a` (:1409) has the same whole-file `readAsBytes`** and can OOM independently on the finalize path — though it *views* (not copies) past offset 44, so its peak is 1× not 2×. Worth a glance while in there; not the OOM driver.
+2. **The header patch is load-bearing because the default output format is WAV** (`preferences.dart:208`, `audioSaveFormat` defaults to `'wav'`), and `_finalizeDraft` (:1363) only **renames** the draft — it never rewrites the header. So for the default path a stale/understated `data` size truncates player playback. (For `m4a` users it's moot: `_transcodeWavToM4a` (:1501) reads everything past offset 44 and ignores the header — which is why the next point has gone unnoticed.)
+3. **Fix the pre-existing `_stitchSilence` stale-header bug in the same place.** `_stitchSilence` (:1328) **already appends silence to WAV drafts via `FileMode.append` without patching the header**, then only updates the `.meta`. So a WAV-format draft whose last pre-finalize mutation was a silence stitch already finalizes with an understated header today. The streaming rewrite of `_stitchWav` should share a header-patch helper that `_stitchSilence` also calls, closing both at once. (`_stitchWav` currently masks this by regenerating a full correct header via `_generateWavHeader` — but only when a WAV stitch *follows* the silence stitch.)
+4. **`_transcodeWavToM4a` (:1501) has the same whole-file `readAsBytes`** and can OOM independently on the finalize path — though it *views* (not copies) past offset 44, so its peak is 1× not 2×. Worth a glance while in there; not the OOM driver.
 
 #### Relevant files
-- `app/lib/services/recordings_manager.dart` — `_stitchWav` (`:1465`, the in-memory read/combine/write), `_performStitch` (`:1441`, catch → `_finalizeDraft` fallback to keep), `_stitchSilence` (`:1236`, already appends without a header patch — fix in the same helper), `_stitchBinIfPresent` (`:1528`, whole-bin `readAsBytes` append), `_finalizeDraft` (`:1271`, unchanged fallback — renames only, no header rewrite), `_generateWavHeader` (`:1632`, offsets 4/40 for the patch), `_transcodeWavToM4a` (`:1409`, same whole-file read, 1× peak), `_mergeMeta` / `_reanchorMarkerEdls` (post-write steps that must gate on verified append).
-- `app/lib/backend/preferences.dart` — `audioSaveFormat` (`:153`, defaults to `'wav'`; why the header patch is load-bearing).
+- `app/lib/services/recordings_manager.dart` — `_stitchWav` (`:1557`, the in-memory read/combine/write), `_performStitch` (`:1533`, catch → `_finalizeDraft` fallback to keep), `_stitchSilence` (`:1328`, already appends without a header patch — fix in the same helper), `_stitchBinIfPresent` (`:1620`, whole-bin `readAsBytes` append), `_finalizeDraft` (`:1363`, unchanged fallback — renames only, no header rewrite), `_generateWavHeader` (`:1724`, offsets 4/40 for the patch), `_transcodeWavToM4a` (`:1501`, same whole-file read, 1× peak), `_mergeMeta` / `_reanchorMarkerEdls` (post-write steps that must gate on verified append).
+- `app/lib/backend/preferences.dart` — `audioSaveFormat` (`:208`, defaults to `'wav'`; why the header patch is load-bearing).
 
 ---
 
-### 4. Diagnostic event log — persistent (reboot-surviving) upgrade [small] [Pending — post-LittleFS]
+### 3. Diagnostic event log — persistent (reboot-surviving) upgrade [small] [Pending — post-LittleFS]
 
 The event log itself **shipped** in firmware `oo-2.8.0` / app 0.31.x (volatile RAM ring, GATT
 `0x0063`/`0x0064`, capability bit `1<<12`, dev-tools toggle). Record format and event codes live in
@@ -156,7 +137,7 @@ the true ceiling instead of LFS's deep allocator-scan/GC/format paths — freein
 
 ## LARGE
 
-### 5. Device-driven BLE wake (firmware + iOS) [large] [Pending]
+### 4. Device-driven BLE wake (firmware + iOS) [large] [Pending]
 
 Shift background-sync triggering from the *phone* (opportunistic iOS `BGTaskScheduler` / Android alarms) to the *device*: the Omi opens a connectable advertising **window** on its own RTC-driven schedule, and the phone — holding a standing pending-connect — is woken by the OS the moment that window opens. This is the model commercial BLE wearables (e.g. CGMs) use for reliable background sync on iOS.
 
@@ -180,8 +161,8 @@ DARK shrinks exposure from "always visible + reachable" to "brief periodic windo
 So DARK now carries two stacked upsides — **low-power + reliable iOS background wake**, *and* **a much smaller privacy/tracking/attack surface** — against the one cost (not instantly connectable on app open).
 
 #### Current state
-- **Firmware (`transport.c`, `aad.c`):** idle-disconnects after 15 s of no storage GATT activity (`idle_disconnect_work_handler`, `IDLE_DISCONNECT_TIMEOUT_MS`), then reverts to advertising. Two **always-connectable** modes: fast (`BT_LE_ADV_CONN`) and slow (`adv_param_slow`), via `transport_set_adv_fast/slow()`. **AAD currently owns advertising cadence** (recording → fast `aad.c:310`, silence → slow `aad.c:330`). Conn params 7.5–22.5 ms, **latency 0** (`update_conn_params`); iOS recheck falls back to 15–30 ms. Audio records to SD **independent of BLE** — nothing lost while dark/disconnected.
-- **iOS (`OmiBleManager.swift`, `device_provider.dart`):** state restoration *is* wired (`CBCentralManagerOptionRestoreIdentifierKey`, `willRestoreState` → `onStateRestored`), **but the aggressive disconnect neutralizes it**: `disconnectDevice(isManual:true)` (`device_provider.dart:884`, `:996`) → `disconnectPeripheral` adds to `manuallyDisconnected` + cancels the link, and `didDisconnectPeripheral` re-arms `connect()` *only if not manual*. Steady state = no pending connect = nothing for iOS to wake on.
+- **Firmware (`transport.c`, `aad.c`):** idle-disconnects after 15 s of no storage GATT activity (`idle_disconnect_work_handler`, `IDLE_DISCONNECT_TIMEOUT_MS`), then reverts to advertising. Two **always-connectable** modes: fast (`BT_LE_ADV_CONN`) and slow (`adv_param_slow`), via `transport_set_adv_fast/slow()`. **AAD currently owns advertising cadence** (recording → fast `aad.c:340`, silence → slow `aad.c:360`). Conn params 7.5–22.5 ms, **latency 0** (`update_conn_params`); iOS recheck falls back to 15–30 ms. Audio records to SD **independent of BLE** — nothing lost while dark/disconnected.
+- **iOS (`OmiBleManager.swift`, `device_provider.dart`):** state restoration *is* wired (`CBCentralManagerOptionRestoreIdentifierKey`, `willRestoreState` → `onStateRestored`), **but the aggressive disconnect neutralizes it**: `disconnectDevice(isManual: true)` (`device_provider.dart`, post-sync + pause-grace) → `disconnectPeripheral` adds to `manuallyDisconnected` + cancels the link, and `didDisconnectPeripheral` re-arms `connect()` *only if not manual*. Steady state = no pending connect = nothing for iOS to wake on.
 - **Android (`OmiBleForegroundService.kt`, `BackgroundSyncWorker.kt`, `SyncAlarmReceiver.kt`):** FGS (`FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE`) + WorkManager periodic + `setExactAndAllowWhileIdle`; already uses `connectGatt(autoConnect=true)` as a pending-connect fallback. Reliable today.
 
 #### Target architecture
@@ -207,9 +188,9 @@ Phone side: a **standing pending-connect is always armed** (iOS `connect()` + re
 #### Firmware changes (the enabling work)
 1. **Dark state** — `transport_set_adv_dark()`: prefer **non-connectable** advertising (`BT_LE_ADV_NCONN`) so the device stays visible for diagnostics/UI but rejects CONNECT_IND (or fully `bt_le_adv_stop()` for lowest power). Track in `current_adv_mode`.
 2. **Sync-window scheduler** (new `sync_window.c` or folded into `transport.c`, a `k_work_delayable`, driven by the **monotonic clock** so it's immune to time-sync state): DARK for `cooldown_ms` → open SYNC WINDOW (`transport_set_adv_fast()`). The window is a **connectability *ceiling*, not a broadcast duration** — fast-advertise up to `window_ms` (**45–60 s**; iOS background scan is duty-cycled and slow to notice adverts), but **stop advertising the moment a phone connects** (you only needed to be findable long enough to latch). Once connected, the existing `idle_disconnect_work` owns teardown, so a sync runs as long as data flows — far past `window_ms`. On `_transport_disconnected`, **schedule the next window as `now + cooldown` on the monotonic clock**: because it resets off the *last disconnect*, a manual button-sync automatically pushes the next scheduled window out by a full interval — the "manual sync moves the timer" behavior, free, no special handling. Window expiry with no connect → DARK, restart cooldown.
-3. **Hand advertising ownership from AAD to the scheduler** — keep AAD's VAD/SD-pause logic; remove/gate its `adv_*_req` writes (`aad.c:310,330,464`, applied in the AAD loop `aad.c:247-250`). Most invasive *refactor*; regression-test VAD recording, SD pause/resume, marker durability.
+3. **Hand advertising ownership from AAD to the scheduler** — keep AAD's VAD/SD-pause logic; remove/gate its `adv_*_req` writes (`aad.c:340,360,520`, applied in the AAD loop `aad.c:277-279`). Most invasive *refactor*; regression-test VAD recording, SD pause/resume, marker durability.
 4. **Gate windows on "has unsynced data"** — use "SD has stored files" as the proxy (app deletes via `CMD_DELETE_FILE`); SD empty → stay DARK until new audio is recorded.
-5. **Config characteristic + user-facing "Dark Mode" toggle (default OFF)** — new char under Settings service (`0010`, e.g. `0017` — `0014`/`0015`/`0016` are now taken by the priority-record cap + the consolidated button/haptic config): `interval_minutes(u16) + window_seconds(u8) + enabled(u8)` (+ optional `next_override_seconds(u16)` for app-side policy nudges), persisted via `settings.c`, range-validated, with a **compiled-in default** (`config.h`) as the floor for a never-configured device. Surfaces in the app as a single **Dark Mode** switch (writes `enabled=1`). **Cadence reuses the existing "Auto Sync Interval" dropdown** (`app_settings_page.dart`: 15/30/60 min / Manual Only) — no new cadence setting; the user's existing `backgroundSyncIntervalMinutes` drives the *device's* cooldown. **"Manual Only" (`-1`) maps to button-only wake** — firmware opens *no* scheduled windows, only the button window. The app **re-pushes config on every connect** (belt-and-suspenders: the device never holds stale config; the dropdown is the source of truth). Firmware default is `enabled=0` = today's always-connectable behavior (old apps and Android untouched). `enabled=1` activates DARK/window cycling. See "Cross-platform: why this is opt-in" below.
+5. **Config characteristic + user-facing "Dark Mode" toggle (default OFF)** — put it in a **new service registered last** (next free prefix after the LED service `0080`, e.g. `0090`), **not** a new Settings characteristic: Settings is registered first, so every char added there renumbers the handles of storage/diagnostics/mute/LED and costs a re-pair (see CLAUDE.md's Settings row — adding `0015`/`0016` already cost one, which is exactly why the LED service went last). Payload: `interval_minutes(u16) + window_seconds(u8) + enabled(u8)` (+ optional `next_override_seconds(u16)` for app-side policy nudges), persisted via `settings.c`, range-validated, with a **compiled-in default** (`config.h`) as the floor for a never-configured device. Surfaces in the app as a single **Dark Mode** switch (writes `enabled=1`). **Cadence reuses the existing "Auto Sync Interval" dropdown** (`app_settings_page.dart`: 15/30/60 min / Manual Only) — no new cadence setting; the user's existing `backgroundSyncIntervalMinutes` drives the *device's* cooldown. **"Manual Only" (`-1`) maps to button-only wake** — firmware opens *no* scheduled windows, only the button window. The app **re-pushes config on every connect** (belt-and-suspenders: the device never holds stale config; the dropdown is the source of truth). Firmware default is `enabled=0` = today's always-connectable behavior (old apps and Android untouched). `enabled=1` activates DARK/window cycling. See "Cross-platform: why windowing is opt-in" below.
 6. **Capability bit** — add `deviceDrivenSync` to the Features bitfield (`0021`, `OmiFeatures`) for mixed-version safety (new app + old fw → old timer path; old app + new fw → covered by #7).
 7. **On-demand connectability + recovery floors (critical UX safeguard, see "Button-to-wake" below)** — button/motion triggers open a window immediately. Plus two recovery behaviors so the device can't strand itself:
    - **Boot:** on reboot, **advertise connectably (like `enabled=0`) until the phone connects and writes config at least once, then resume the persisted dark schedule** — re-anchoring `last_disconnect` to that fresh contact so there's no post-reboot blackout (the phone's standing pending-connect latches the moment the device advertises). **Cap the stay-open at ~15 min:** if the phone never shows (rebooted away from the phone), fall back to the persisted last-known config and resume dark scheduling so continuous advertising doesn't drain the 150 mAh cell.
@@ -217,10 +198,10 @@ Phone side: a **standing pending-connect is always armed** (iOS `connect()` + re
 8. **(Alternative model) Held low-power connection** — instead of windowing, set **slave latency > 0** in `update_conn_params` + a "data ready" notify characteristic (the CGM model). Lower wake latency, simpler app logic, but the radio stays in-connection (more device power than DARK). Default to windowed for the 150 mAh budget; keep this in reserve.
 
 #### Button-to-wake (user-selectable, integrates with existing button mapping)
-The on-demand trigger (#7) is a natural fit for the **already-shipped customizable button-mapping system** (`button_config_service` in firmware, `button_config_page.dart` in app — maps None/Mute/Marker/Toggle-LED to single/double/triple tap and their holds, synced over the encrypted value-validated button-config characteristic). Add a **new "Wake for Sync" action** to that action set:
+The on-demand trigger (#7) is a natural fit for the **already-shipped customizable button-mapping system** (firmware char `0015` under the Settings service + `button_action_t` in `button.h`; `button_config_page.dart` in app — maps one action per gesture slot across single/double/triple tap and their holds, synced over the encrypted value-validated config char). Add a **new "Wake for Sync" action** to that action set:
 - Firmware: on the mapped gesture, `button.c` kicks the sync-window scheduler straight to SYNC WINDOW (open a connectable window now), regardless of cooldown.
-- App: expose "Wake for Sync" as a selectable action in `button_config_page.dart`; **default to single tap**, but user-customizable exactly like every other mapping (open to making it single tap out of the box or fully user-selectable — both are supported by the existing infra).
-- Firmware must range-accept the new action value (the config char already rejects out-of-range actions — bump the accepted enum).
+- App: expose "Wake for Sync" as a selectable action in `button_config_page.dart`; **default to single tap**, but user-customizable exactly like every other mapping (open to making it single tap out of the box or fully user-selectable — both are supported by the existing infra). Note the app now holds **two** per-mode configs (`buttonConfigManual`/`buttonConfigAuto`) and pushes the active one — the new action has to be valid in both, or explicitly mode-scoped.
+- Firmware must range-accept the new action value: `button_action_t` currently tops out at `BUTTON_ACTION_RECORD_TOGGLE = 6` and the write handler rejects anything higher, so the new action is `7` and that bound moves with it.
 - UX: foreground "Sync now" prompts "tap your Omi to sync now" when the device is DARK between windows.
 
 #### Decoupling wake from sync (a connection is not a sync)
@@ -228,20 +209,20 @@ A device wake — scheduled window *or* button combo — only establishes a **co
 - **Device** = *make a connection possible*: open a window on its RTC cadence (config-char interval) + immediately on the button combo.
 - **App** = *policy*: on each device-initiated connection, decide whether to sync.
 
-The building block already exists: `_onStateRestored` runs `final due = _shouldSyncNow(); if (!due) return;` (`device_provider.dart:232`) — "connection arrived, skip if not due." Generalize into a setting:
+The building block already exists: `_onStateRestored` runs `final due = _shouldSyncNow(); if (!due) return;` (`device_provider.dart:276`) — "connection arrived, skip if not due." Generalize into a setting:
 - **"Sync on every device wake"** → always pull whenever the device wakes/connects.
 - **"Only when due"** → gate on the autosync interval (`_shouldSyncNow()`); an early wake connects, finds nothing due, and disconnects without transferring.
 
 **Recommended semantics:** a *scheduled* window honors the setting (default "only when due"); a *button combo* is explicit user intent → **force-sync** (always pull), since the user tapped precisely to sync now. Make force the button's natural behavior; optionally expose the choice.
 
-**Telling the two apart on connect.** The app can't receive the button event *before* it connects (the tap is what wakes it), so the reason can't arrive over Button char `0041` in time. Add a **"last wake reason" byte the app reads on connect** (scheduled / button / motion) — a small new read char or folded into diagnostics `0061`; on `onDeviceReady` the app maps button ⇒ force-sync, scheduled ⇒ if-due. In `enabled=0`/always-connectable mode this is unneeded — the device never goes dark, so a button tap arrives live over `0041` while connected and force-syncs directly.
+**Telling the two apart on connect.** The app can't receive the button event *before* it connects (the tap is what wakes it), so the reason can't arrive over the button trigger char (`23ba7925`) in time. Add a **"last wake reason" byte the app reads on connect** (scheduled / button / motion) — cheapest as a second characteristic on the new dark-mode service (#5), which avoids touching the fixed-length diagnostics char `0061`; on `onDeviceReady` the app maps button ⇒ force-sync, scheduled ⇒ if-due. **This byte is load-bearing even in `enabled=0` mode:** the "tap arrives live over the button char instead" fallback does not exist today — `transport_notify_button_state()` is defined in `transport.c` but never called, so the firmware pushes no tap events at all and the app's button listener is inert (see CLAUDE.md's Button-service row). Either read the wake-reason byte or wire up that notify; don't assume the live path works.
 
 **Battery note:** align the device's window cadence with the app's autosync interval (push via the config char) so early "connect-then-skip" cycles are rare; the if-due check mainly backstops button taps and edge timing — a connect/disconnect with no transfer still costs a little device radio energy.
 
 #### iOS app changes (the real payoff)
 1. **Standing pending-connect** — after routine sync/disconnect, **re-arm `centralManager.connect(peripheral, options:nil)`** instead of leaving it cancelled, so iOS holds it pending and wakes the app at the device's next window. Add a `standingConnect: Set<String>` alongside `manuallyDisconnected`; distinguish "Forget Device" (truly cancel) from "routine post-sync disconnect" (cancel link, re-arm pending connect). **Also re-arm on app launch** — a user force-quit drops the OS-held pending connect, so re-issuing `connect()` at startup (iOS: `retrievePeripherals(withIdentifiers:)` with the saved device ID; Android: `connectGatt(autoConnect=true)` with the saved address) restores the wait that force-quit destroyed. Note this only re-arms the wait — it can't connect a *dark* device until its next window or a button tap; for an immediate post-relaunch sync the user taps the button (or the staleness banner, #5).
-2. **Routine disconnect ≠ terminal in Dart** — post-sync (`device_provider.dart:884`) and pause-grace (`:996`) map to a new "disconnect-but-stay-armed" path (`disconnectKeepingPendingConnect`), not `unmanageDevice`. Only true unpair calls full `unmanageDevice`/`disconnectPeripheral`.
-3. **Wake → sync** — mostly there: the wake arrives as `didConnect` → `onDeviceReady` → `_handleDeviceConnected`; ensure the background drop-guard lets a device-initiated wake through (set pending-sync flag, as `_onBackgroundSyncRequested` does). `_onStateRestored` (`device_provider.dart:232`) already sanctions a due sync.
+2. **Routine disconnect ≠ terminal in Dart** — the post-sync and pause-grace `disconnectDevice(isManual: true)` sites in `device_provider.dart` map to a new "disconnect-but-stay-armed" path (`disconnectKeepingPendingConnect`), not `unmanageDevice`. Only true unpair calls full `unmanageDevice`/`disconnectPeripheral`.
+3. **Wake → sync** — mostly there: the wake arrives as `didConnect` → `onDeviceReady` → `_handleDeviceConnected`; ensure the background drop-guard lets a device-initiated wake through (set pending-sync flag, as `_onBackgroundSyncRequested` does). `_onStateRestored` (`device_provider.dart:276`) already sanctions a due sync.
 4. **Demote BGTaskScheduler to backstop** — keep the `BGProcessing`/`BGAppRefresh` tasks (shipped 0.25.4) as the fallback for when pending-connect misses (notably after **user force-quit** — iOS won't relaunch for BLE then).
 5. **Foreground UX + staleness banner** — surface the button-to-wake affordance since the device may be DARK on app open. Add a **"haven't synced in a while — tap your Omi to sync" banner** that triggers after **N missed windows** (`now − lastSuccessfulSync ≥ N × interval`, with a floor so short intervals don't nag; suppressed in Manual-Only mode). It's the safety net for the irreducible cases — force-quit dropped the standing connect, or the device was out of range — proactively pointing the user at the button to realign instead of silently accumulating stale data. Tapping it re-arms the standing connect and prompts the physical tap. Generally useful even on `enabled=0`.
 
@@ -271,25 +252,25 @@ Android keeps today's path entirely: always-connectable firmware, FGS + WorkMana
 Highest-leverage cheap validation: **Phase 1 window scheduler + Phase 2 standing pending-connect**, measured against current BGTask reliability — tells you whether device-driven wake is worth the full build-out before committing.
 
 #### Relevant files
-- `omi/firmware/omi/src/lib/core/transport.c` — `idle_disconnect_work_handler` (15 s), `transport_set_adv_fast/slow` + `adv_param_slow`, `_transport_disconnected` (adv restart), `update_conn_params` (latency 0); add dark state + window scheduler.
-- `omi/firmware/omi/src/aad.c` — `adv_slow_req`/`adv_fast_req` writes (`:310,:330,:464`) and the apply loop (`:247-250`) to hand advertising ownership to the scheduler.
+- `omi/firmware/omi/src/lib/core/transport.c` — `idle_disconnect_work_handler` (`:1540`, 15 s), `transport_set_adv_fast/slow` (`:2397`) + `adv_param_slow`, `_transport_disconnected` (adv restart), `update_conn_params` (`:1886`, latency 0); add dark state + window scheduler.
+- `omi/firmware/omi/src/aad.c` — `adv_slow_req`/`adv_fast_req` writes (`:340,:360,:520`) and the apply loop (`:277-279`) to hand advertising ownership to the scheduler.
 - `omi/firmware/omi/src/lib/core/settings.c` / `settings.h` — persist the window config (mirror `app_settings_save_conn_fail`).
-- `omi/firmware/omi/src/button.c` + button-config service (registered `transport.c:1810`) — add the "Wake for Sync" action; kick the scheduler on the mapped gesture.
+- `omi/firmware/omi/src/lib/core/button.c` + `button.h` (`button_action_t`, ceiling `BUTTON_ACTION_RECORD_TOGGLE = 6`) and the config char `0015` under the Settings service (`transport.c:163,201`) — add the "Wake for Sync" action; kick the scheduler on the mapped gesture.
 - `app/ios/Runner/OmiBleManager.swift` — `manuallyDisconnected`/`disconnectPeripheral`/`didDisconnectPeripheral`/`willRestoreState`; add `standingConnect` + pending-connect re-arm.
 - `app/ios/Runner/AppDelegate.swift` — keep `BGProcessing`/`BGAppRefresh` as backstop.
-- `app/lib/providers/device_provider.dart` — `disconnectDevice(isManual:true)` sites (`:884`,`:996`), `_onStateRestored` (`:232`, already does the "skip if not due" gate to generalize), `_shouldSyncNow()`, `_onBackgroundSyncRequested` (`:208`); apply the wake→policy decision (force vs if-due) on device-initiated connect.
+- `app/lib/providers/device_provider.dart` — the `disconnectDevice(isManual: true)` sites (post-sync / pause-grace / unpair; grep the symbol — they move), `_onStateRestored` (`:276`, already does the "skip if not due" gate to generalize), `_shouldSyncNow()`, `_onBackgroundSyncRequested` (`:252`); apply the wake→policy decision (force vs if-due) on device-initiated connect.
 - `app/lib/backend/preferences.dart` — add the "sync on every device wake" vs "only when due" setting (alongside `backgroundSyncIntervalMinutes`).
 - Firmware "last wake reason" — expose a 1-byte read (scheduled/button/motion) via a new char or folded into diagnostics `0061` (`transport.c`), read by the app on `onDeviceReady` to pick force-sync vs if-due.
 - `app/lib/services/devices/transports/native_ble_transport.dart` — add `disconnectKeepingPendingConnect`; `app/lib/pigeon_interfaces.dart` for the new host API + the window-config write.
 - `app/lib/pages/settings/button_config_page.dart` — expose "Wake for Sync" as a selectable button action (default single tap).
-- `app/lib/pages/settings/app_settings_page.dart` — add the **Dark Mode** toggle (writes `enabled`); the existing "Auto Sync Interval" dropdown (15/30/60 / Manual Only, ~`:248`) already supplies the cadence — Manual Only = button-only. The staleness banner lives wherever sync status surfaces (home/recordings).
+- `app/lib/pages/settings/app_settings_page.dart` — add the **Dark Mode** toggle (writes `enabled`); the existing "Auto Sync Interval" dropdown (15/30/60 / Manual Only, ~`:190`) already supplies the cadence — Manual Only = button-only. The staleness banner lives wherever sync status surfaces (home/recordings).
 - Android (phase 3, optional): `OmiBleForegroundService.kt`, `BackgroundSyncWorker.kt`, `SyncAlarmReceiver.kt`.
 
 ---
 
 ## DEFERRED
 
-### 6. iOS code signing & non-jailbroken distribution [medium] [Deferred]
+### 5. iOS code signing & non-jailbroken distribution [medium] [Deferred]
 
 The iOS build works end-to-end via CI (`.github/workflows/ios-build.yml`) and produces an **unsigned** dev IPA that installs on a **jailbroken** device (AppSync Unified / TrollStore — current path for the iPhone 6s Plus). To run on a **stock** (non-jailbroken) iPhone, the IPA must be code-signed, which needs an Apple Developer account plus signing material wired into CI.
 
