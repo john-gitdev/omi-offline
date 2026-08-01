@@ -696,12 +696,14 @@ class DeviceProvider extends ChangeNotifier
   }
 
   /// [userInitiated] marks the entry points that represent fresh user intent —
-  /// opening or resuming the app. Those clear the reconnect throttle so the attempt
+  /// opening or resuming the app. Those drop the reconnect wait gate so the attempt
   /// happens now: the backoff exists to stop us churning at the daemon while nobody
   /// is watching, not to make a user who just opened the app wait out a 12-minute
-  /// timer. Automatic callers (the post-disconnect retry) leave it armed.
+  /// timer. It deliberately does NOT forgive the accumulated failure count — see
+  /// [_allowOneImmediateReconnect]. Automatic callers (the post-disconnect retry)
+  /// leave the gate armed.
   Future periodicConnect(String printer, {bool boundDeviceOnly = false, bool userInitiated = false}) async {
-    if (userInitiated) _resetReconnectThrottle();
+    if (userInitiated) _allowOneImmediateReconnect();
     _reconnectionTimer?.cancel();
     scan(t) async {
       if (!isBluetoothEnabled) return;
@@ -826,9 +828,26 @@ class DeviceProvider extends ChangeNotifier
 
   /// Clear the throttle so the next disconnect reconnects promptly. Called on any
   /// successful connect — including ones that arrive via native's own retry or the
-  /// recovery alarm, not just through scanAndConnectToDevice.
+  /// recovery alarm, not just through scanAndConnectToDevice. A connect is the only
+  /// event that proves the link is healthy, so it is the only one that may zero the
+  /// failure count.
   void _resetReconnectThrottle() {
     _consecutiveConnectFailures = 0;
+    _reconnectAt = null;
+  }
+
+  /// Let one attempt through **now** without forgiving the outage.
+  ///
+  /// User intent (opening or resuming the app) should not have to wait out a
+  /// 12-minute backoff, but it is not evidence the device came back. Zeroing
+  /// [_consecutiveConnectFailures] here would buy another six fast attempts at the
+  /// 15 s cadence — ~4.5 minutes of churn — every single time the app is opened, so
+  /// a user who reopens it during a dead-link outage, or just leaves it foregrounded,
+  /// would re-arm the exact connectGatt/closeGatt burst this throttle exists to stop
+  /// (BLE_Research.md, Wedge 5). Dropping only the wait gate gives the immediate
+  /// attempt; if it fails, the backoff resumes from where the outage had already
+  /// pushed it rather than restarting at the fast cadence.
+  void _allowOneImmediateReconnect() {
     _reconnectAt = null;
   }
 

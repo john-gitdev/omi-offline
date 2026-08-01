@@ -1929,6 +1929,20 @@ static void adv_schedule_retry(int err, const char *who)
     if (!atomic_get(&adv_guard_active)) {
         return; /* shutting down — not a real failure, and must not be counted */
     }
+    if (is_connected) {
+        /* A link came up between a handler's gate check and its bt_le_adv_start().
+         * The cancel in _transport_connected only drops *pending* work, and the RX
+         * thread cannot drain a running handler via adv_mutex (that is the forbidden
+         * lock), so this window cannot be closed on the producer side — and re-checking
+         * just before the start call would only narrow it, never remove it.
+         *
+         * Close it here instead, where it actually matters: the failure is fully
+         * explained by the live link (-ENOMEM under CONFIG_BT_MAX_CONN=1), so it is
+         * not evidence of the fault this guard hunts. Don't count it and don't retry;
+         * _transport_disconnected re-arms both works when the link goes away. */
+        LOG_DBG("adv: %s start failed (%d) but a link is up — not a fault, ignoring", who, err);
+        return;
+    }
     uint32_t delay = (uint32_t) atomic_get(&adv_retry_delay_ms);
     atomic_inc(&adv_restart_failures);
     LOG_ERR("adv: %s start failed (%d) mode=%s — retry in %u ms", who, err, current_adv_mode, delay);
