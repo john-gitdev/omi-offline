@@ -1797,7 +1797,20 @@ static void adv_watchdog_work_handler(struct k_work *work)
         atomic_set(&adv_believed_down, 1);
     }
 
-    k_work_reschedule(&adv_watchdog_work, K_MSEC(ok ? ADV_TICK_MS : ADV_TICK_RETRY_MS));
+    /* Choose the next tick under the lock:
+     *  - raced a connect → do not re-arm at all. _transport_connected cancelled us
+     *    deliberately, and re-arming here resurrects the timer it just cancelled;
+     *    _transport_disconnected arms us again when the link goes away.
+     *  - a mode request landed while we were inside the HCI calls → apply it promptly.
+     *    adv_request_mode() reschedules to ADV_TICK_MODE_MS, but it does so while this
+     *    handler is still running, so our own reschedule below would overwrite it and
+     *    strand the request for a full interval.
+     *  - failed → short retry; otherwise the healthy cadence. */
+    if (!raced_connect) {
+        const bool superseded = ((int) atomic_get(&adv_desired_mode) != desired);
+        uint32_t next_ms = !ok ? ADV_TICK_RETRY_MS : (superseded ? ADV_TICK_MODE_MS : ADV_TICK_MS);
+        k_work_reschedule(&adv_watchdog_work, K_MSEC(next_ms));
+    }
     k_mutex_unlock(&adv_mutex);
 
     /* Logged outside the lock from locals — never by re-reading shared state. */
