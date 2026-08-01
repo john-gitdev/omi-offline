@@ -85,6 +85,8 @@ class DiagLogRecord {
         return 'bond_state';
       case 13:
         return 'adv_start_fail';
+      case 14:
+        return 'adv_watchdog_rescue';
       default:
         return 'code_$code';
     }
@@ -149,6 +151,11 @@ class DiagLogRecord {
         // absorbed; a run of them means the radio would have gone dark before
         // oo-2.8.3. See BLE_Research.md "Wedge 5".
         return 'Advertising start failed (${arg0 == 1 ? "slow" : "fast"}) — errno -$arg1, watchdog will retry';
+      case 14:
+        // The watchdog restarted a radio it believed was off the air. arg0 = mode.
+        // This replaced a 0x0062 counter that proved impossible to keep truthful —
+        // read it as evidence, not as an exact tally. See BLE_Research.md "Wedge 5".
+        return 'Advertising watchdog rescue () — radio was off the air, restarted';
       default:
         return 'Event code=$code backend=$backend arg0=$arg0 arg1=$arg1';
     }

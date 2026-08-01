@@ -803,7 +803,13 @@ class DeviceProvider extends ChangeNotifier
       // assigned, so the gate was dead code. Arm it here: the first few failures
       // retry promptly (a transient blip must still clear fast), then back off
       // 45 s → 90 s → 3 min → 6 min → 12 min, capped. Reset on any success.
-      if (device == null && connectedDevice == null) {
+      // Keyed on isConnected, not on the returned device: _scanConnectDevice() ends
+      // by returning `connectedDevice`, which can be a stale non-null handle from an
+      // earlier session even when this attempt failed. Treating that as success reset
+      // the failure count every time, held the streak below the six-failure threshold
+      // and meant the backoff never engaged at all — the daemon-churn protection this
+      // exists for would have been silently inert.
+      if (!isConnected) {
         _consecutiveConnectFailures++;
         if (_consecutiveConnectFailures >= _reconnectThrottleAfter) {
           final steps = _consecutiveConnectFailures - _reconnectThrottleAfter;
@@ -1850,17 +1856,9 @@ class DeviceProvider extends ChangeNotifier
             'writeFair=${dropStats.writeFairActivations} '
             // Ring stall pinpoint: slowest SD op + which op, and NAND write/sync errors.
             'ringMaxIo=${dropStats.ringMaxIoMs}ms(${dropStats.ringMaxIoOp}) ringIoErr=${dropStats.ringIoErrors} '
-            'advRescues=${dropStats.advWatchdogRecoveries} '
             'liveUptime=$liveUptimeStr';
         if (dropStats.hasAnyDrops) {
           Logger.warning('$dropMsg — on-device audio drops since boot');
-        } else if (dropStats.advWatchdogRecoveries > 0) {
-          // Elevated deliberately: this is the one counter that says the BLE
-          // advertising fault actually occurred and the watchdog caught it. Before
-          // oo-2.8.3 each of these was an outage lasting until a power-cycle, so it
-          // must not sit at debug level waiting for an unrelated audio drop to
-          // promote it. See BLE_Research.md "Wedge 5".
-          Logger.warning('$dropMsg — advertising watchdog rescued the radio since boot');
         } else {
           Logger.debug(dropMsg);
         }
@@ -1874,14 +1872,6 @@ class DeviceProvider extends ChangeNotifier
           'ring_max_io_ms': dropStats.ringMaxIoMs,
           'ring_max_io_op': dropStats.ringMaxIoOp,
           'ring_io_errors': dropStats.ringIoErrors,
-          // Advertising-restart guard (oo-2.8.3+). adv_watchdog_recoveries > 0 means
-          // the radio had stopped and the watchdog rescued it — pre-oo-2.8.3 that was
-          // a wedge lasting until the next power-cycle (BLE_Research.md, Wedge 5).
-          'adv_watchdog_recoveries': dropStats.advWatchdogRecoveries,
-          // Thread-stack telemetry is logged here unconditionally — it applies to every
-          // device, not just ones with Priority-Recording activity (the priority block
-          // below is gated and would otherwise drop it on quiet devices). 0 on firmware
-          // older than oo-2.6.2.
           'sd_worker_stack_used': dropStats.sdWorkerStackUsed,
           'codec_stack_used': dropStats.codecStackUsed,
           'live_uptime_ms': dropStats.currentUptimeMs,

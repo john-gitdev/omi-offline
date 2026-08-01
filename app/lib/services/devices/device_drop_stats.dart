@@ -112,16 +112,6 @@ class DeviceDropStats {
   /// small [ringMaxIoMs] means the NAND was *rejecting* writes, not merely slow.
   final int ringIoErrors;
 
-  /// Times the firmware's advertising watchdog found the radio off the air while
-  /// disconnected and restarted it (offset 84; 0 on firmware older than oo-2.8.3).
-  ///
-  /// **Any nonzero value is an outage that would previously have lasted until the
-  /// next power cycle.** Before oo-2.8.3 nothing retried a failed
-  /// `bt_le_adv_start()`, so one failure left the device invisible — firmware
-  /// running and still recording, radio silent. This is the evidence that fix
-  /// earns its keep; see BLE_Research.md "Wedge 5".
-  final int advWatchdogRecoveries;
-
   /// Duration (ms) of the slowest SD primitive, decoded from [ringMaxIoRaw].
   int get ringMaxIoMs => ringMaxIoRaw & 0x00FFFFFF;
 
@@ -170,7 +160,6 @@ class DeviceDropStats {
     this.codecStackUsed = 0,
     this.ringMaxIoRaw = 0,
     this.ringIoErrors = 0,
-    this.advWatchdogRecoveries = 0,
     this.sdQueueMax = 120,
     required this.readAt,
   });
@@ -203,7 +192,6 @@ class DeviceDropStats {
         'emptyBinRotations': emptyBinRotations,
         'sessionEndMarkerEmits': sessionEndMarkerEmits,
         'markerPauseGateSaves': markerPauseGateSaves,
-        'advWatchdogRecoveries': advWatchdogRecoveries,
         'currentUptimeMs': currentUptimeMs,
       });
 
@@ -230,7 +218,6 @@ class DeviceDropStats {
         emptyBinRotations: g('emptyBinRotations'),
         sessionEndMarkerEmits: g('sessionEndMarkerEmits'),
         markerPauseGateSaves: g('markerPauseGateSaves'),
-        advWatchdogRecoveries: g('advWatchdogRecoveries'),
         readAt: DateTime.now(),
       );
     } catch (_) {
@@ -266,6 +253,5 @@ class DeviceDropStats {
       markerWriteDrops < baseline.markerWriteDrops ||
       emptyBinRotations < baseline.emptyBinRotations ||
       sessionEndMarkerEmits < baseline.sessionEndMarkerEmits ||
-      markerPauseGateSaves < baseline.markerPauseGateSaves ||
-      advWatchdogRecoveries < baseline.advWatchdogRecoveries;
+      markerPauseGateSaves < baseline.markerPauseGateSaves;
 }

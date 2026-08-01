@@ -274,10 +274,6 @@ class OmiDeviceConnection extends DeviceConnection {
       // older builds / LittleFS. ringMaxIoRaw packs (tag<<24)|ms.
       ringMaxIoRaw: data.length >= 80 ? data.getUint32LittleEndian(76) : 0,
       ringIoErrors: data.length >= 84 ? data.getUint32LittleEndian(80) : 0,
-      // Advertising watchdog rescues (offset 84), 88-byte firmware (oo-2.8.3+); 0 on
-      // older builds. Nonzero = the radio HAD gone off the air and the watchdog
-      // restarted it — pre-oo-2.8.3 that was an outage lasting until a power cycle.
-      advWatchdogRecoveries: data.length >= 88 ? data.getUint32LittleEndian(84) : 0,
       // Derived, not a wire field: the 76-byte payload is only produced by oo-2.6.2,
       // which is the build that raised SD_REQ_QUEUE_MSGS 100→120. A shorter payload is
       // older firmware still at 100. Keeps the peak-depth denominator honest.

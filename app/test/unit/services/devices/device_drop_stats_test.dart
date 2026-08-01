@@ -92,7 +92,6 @@ void main() {
         emptyBinRotations: 4,
         sessionEndMarkerEmits: 3,
         markerPauseGateSaves: 2,
-        advWatchdogRecoveries: 9,
         readAt: DateTime.now(),
       );
 
@@ -112,7 +111,6 @@ void main() {
       expect(restored.markerPauseGateSaves, 2);
       // Advertising watchdog rescues: a monotonic event counter, so it baselines
       // like the rest (unlike the high-water marks, deliberately excluded).
-      expect(restored.advWatchdogRecoveries, 9);
       // currentUptimeMs is retained as provenance (when the reset was taken);
       // reboot detection is counter-based, so nothing reads it, but it round-trips.
       expect(restored.currentUptimeMs, 123456);
@@ -166,55 +164,6 @@ void main() {
 
     test('a zero baseline reads as not-rebooted (display is current − 0 either way)', () {
       expect(stats(blockDrops: 7).looksRebootedFrom(stats()), isFalse);
-    });
-
-    test('a reboot visible ONLY in the advertising-watchdog counter is still detected', () {
-      // On an otherwise healthy device this can be the sole mover: no drops, no
-      // rotations, nothing else able to go backwards. If it were omitted from the
-      // comparison the reboot would be invisible.
-      final base = DeviceDropStats(
-        blockDrops: 0,
-        lastBlockDropUptimeMs: 0,
-        streamFrameDrops: 0,
-        bootFrameDrops: 0,
-        currentUptimeMs: 5000,
-        advWatchdogRecoveries: 3,
-        readAt: DateTime.fromMillisecondsSinceEpoch(0),
-      );
-      final afterReboot = DeviceDropStats(
-        blockDrops: 0,
-        lastBlockDropUptimeMs: 0,
-        streamFrameDrops: 0,
-        bootFrameDrops: 0,
-        currentUptimeMs: 100,
-        advWatchdogRecoveries: 0,
-        readAt: DateTime.fromMillisecondsSinceEpoch(0),
-      );
-      expect(afterReboot.looksRebootedFrom(base), isTrue);
-    });
-
-    test('watchdog rescues accumulating within a boot is NOT a reboot', () {
-      // A repeatedly-firing watchdog is what a degraded-but-recovering radio looks
-      // like; it must not be misread as a reboot.
-      final base = DeviceDropStats(
-        blockDrops: 0,
-        lastBlockDropUptimeMs: 0,
-        streamFrameDrops: 0,
-        bootFrameDrops: 0,
-        currentUptimeMs: 5000,
-        advWatchdogRecoveries: 1,
-        readAt: DateTime.fromMillisecondsSinceEpoch(0),
-      );
-      final later = DeviceDropStats(
-        blockDrops: 0,
-        lastBlockDropUptimeMs: 0,
-        streamFrameDrops: 0,
-        bootFrameDrops: 0,
-        currentUptimeMs: 90000,
-        advWatchdogRecoveries: 6,
-        readAt: DateTime.fromMillisecondsSinceEpoch(0),
-      );
-      expect(later.looksRebootedFrom(base), isFalse);
     });
   });
 }

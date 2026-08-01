@@ -48,8 +48,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
       ..setBackgroundColor(const Color(0xFF0D0D0D))
       // Google blocks OAuth in embedded WebViews (detects "wv" in default UA).
       // Override with a standard Chrome Mobile UA so sign-in is allowed.
-      ..setUserAgent(
-          'Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 '
+      ..setUserAgent('Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 '
           '(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36')
       ..setNavigationDelegate(
         NavigationDelegate(
@@ -131,18 +130,16 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
     if (mounted) setState(() => _isLoading = true);
 
     try {
-      final tokenRes = await http
-          .post(
-            Uri.parse(_omiTokenUrl),
-            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: {
-              'grant_type': 'authorization_code',
-              'code': code,
-              'redirect_uri': _omiRedirectUri,
-              'use_custom_token': 'true',
-            },
-          )
-          .timeout(const Duration(seconds: 15));
+      final tokenRes = await http.post(
+        Uri.parse(_omiTokenUrl),
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: {
+          'grant_type': 'authorization_code',
+          'code': code,
+          'redirect_uri': _omiRedirectUri,
+          'use_custom_token': 'true',
+        },
+      ).timeout(const Duration(seconds: 15));
 
       debugPrint('OmiLoginWebView: [new] v1/auth/token → ${tokenRes.statusCode}');
       if (tokenRes.statusCode < 200 || tokenRes.statusCode >= 300) {
@@ -184,7 +181,8 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
     final providerId = tokenJson['provider_id'] as String? ?? (provider == 'apple' ? 'apple.com' : 'google.com');
     final accessToken = tokenJson['access_token'] as String? ?? '';
 
-    final postBody = StringBuffer('id_token=${Uri.encodeComponent(idToken)}&providerId=${Uri.encodeComponent(providerId)}');
+    final postBody =
+        StringBuffer('id_token=${Uri.encodeComponent(idToken)}&providerId=${Uri.encodeComponent(providerId)}');
     if (accessToken.isNotEmpty) postBody.write('&access_token=${Uri.encodeComponent(accessToken)}');
 
     try {
@@ -429,7 +427,8 @@ class _ErrorOverlay extends StatelessWidget {
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   padding: const EdgeInsets.symmetric(vertical: 12),
                 ),
-                child: const Text('Try Another Method', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                child: const Text('Try Another Method',
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
               ),
             ),
             const SizedBox(height: 12),

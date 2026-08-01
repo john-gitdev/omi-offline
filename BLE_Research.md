@@ -534,16 +534,27 @@ Two supporting pieces earn their place:
 - `adv_guard_active` is cleared at the *top* of `transport_off()`, before it disconnects, so the
   disconnect callback cannot re-arm work that would then run after `bt_disable()`.
 
-One counter on `0x0062` (payload 84 → 88 B, append-only): `adv_watchdog_recoveries` at offset 84.
-It is derived from an explicit "we believed the radio was down" flag rather than inferred from
-surrounding state — an earlier design inferred it and got it backwards, reading 0 during exactly
-the sustained wedge it existed to detect. Start failures are `diag_log` events
-(`DIAG_ADV_START_FAIL`), not a counter: an event log that is occasionally approximate is still
-informative, whereas a counter that is occasionally wrong is worse than none.
+**No counter.** Both the failure and the rescue are `diag_log` events —
+`DIAG_ADV_START_FAIL` and `DIAG_ADV_WATCHDOG_RESCUE` on `0x0063`, dev builds only. `0x0062` is
+left at 84 bytes.
 
-**Not yet built or flashed** — no Zephyr toolchain on this machine. Verification is: flash, then
-watch `advRescues` over a few days. Any non-zero value is an outage that *would* have been a
-multi-hour wedge.
+That is the most-revised decision here and worth recording, because the instinct is to add a
+counter. An earlier revision did, and across five review passes **seven separate edge cases were
+found in which it counted something that was not an outage** — a failed `bt_le_adv_stop()`; a
+routine post-disconnect restart (whether the stack auto-restarts a non-`ONE_TIME` advertiser is
+version-dependent, so the same healthy sequence yields `0` or `-EALREADY`); an `-ENOMEM` from a
+link coming up mid-tick, in three distinct variants. Every fix spawned the next.
+
+The asymmetry is the lesson: **a counter has to be exactly right or it lies, an event log only
+has to be informative.** "Advertising restarted, we thought it was down" is useful even when the
+inference is occasionally generous, and a reader can weigh it against the timestamps around it. A
+tally that silently includes ~48 routine disconnects a day is worse than no tally at all — it
+would have read `advRescues=50` after a clean week and meant nothing.
+
+**Not yet built or flashed** — no Zephyr toolchain on this machine. Verification is: flash, enable
+the diagnostic event log, and look for `adv_watchdog_rescue` entries over a few days. Each one is
+an outage that *would* have been a multi-hour wedge. The device simply staying reachable is the
+other half of the evidence.
 
 **What this settles and unsettles.**
 
@@ -557,7 +568,7 @@ multi-hour wedge.
    reconnect on ADVERTISING) would not have helped a single establishment wedge yet observed.**
    #2 (firmware re-advertise latency) is the lever.
 3. **`ble_wedge_recovered` over-reports, 2-for-2.** Service discovery is too weak a success
-   criterion; both times it fired, the link failed under load within seconds. See §6 candidate #7.
+   criterion; both times it fired, the link failed under load within seconds. See §6 candidate #8.
 4. **Mid-transfer `Stream closed without EOT` → immediate re-wedge is now 2-for-2** (Wedge 2's
    lead-in, and 5a→5b here). The ordering here is cleaner than Wedge 2's: wedge cleared → sync
    started → died 18 s in on a 45 KB file → re-wedged for 76 min. Worth treating as one degraded-RF

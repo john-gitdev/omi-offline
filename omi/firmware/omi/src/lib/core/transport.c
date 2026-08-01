@@ -408,14 +408,6 @@ static inline const char *adv_mode_name(int mode)
 
 static uint8_t last_failed_adv_slow = 0; /* 1 if the most recent failure of either kind was during slow adv */
 
-/* Diagnostics: times the advertising watchdog found the radio off the air while
- * disconnected and restarted it (0x19B10062, offset 84). **Any nonzero value is an
- * outage that would previously have lasted until the next power cycle** — before
- * oo-2.8.3 nothing ever retried a failed bt_le_adv_start(). This is the single piece
- * of evidence that fix works, which is why the handler derives it from an explicit
- * "we believed the radio was down" flag rather than inferring it from surrounding
- * state. Monotonic since boot; only movement between two reads means anything. */
-static atomic_t adv_watchdog_recoveries = ATOMIC_INIT(0);
 
 /* Diagnostics: Priority Recording lifecycle, appended to 0x19B10062. These make a
  * lost Priority Recording traceable from the app log alone (no RTT/serial capture):
@@ -470,7 +462,7 @@ static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_ha
 //   uptime_seconds: how long the PREVIOUS session ran before it ended (crash or clean shutdown)
 //
 // Characteristic B:   19B10062-E8F2-537E-4F6C-D104768A1214
-// Returns 88 bytes LE (fields appended over time; older apps read a prefix):
+// Returns 84 bytes LE (fields appended over time; older apps read a prefix):
 //   [uint32 storage_block_drops]   storage_block_drops since boot (each = ~5 Opus frames lost)
 //   [uint32 last_drop_uptime_ms]   k_uptime_get() at the most recent block drop (0 = none)
 //   [uint32 sd_stream_drops]       stat_dropped_frames from sd_card.c (queue-full audio frame drops)
@@ -495,8 +487,6 @@ static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_ha
 //   [uint32 ring_max_io_ms]        ring: slowest SD primitive since boot, packed
 //                                  (tag<<24)|ms, tag 1=write 2=read 3=CTRL_SYNC (offset 76)
 //   [uint32 ring_io_errors]        ring: write/CTRL_SYNC failures (EIO) since boot (offset 80)
-//   [uint32 adv_watchdog_recoveries] times the advertising watchdog found the radio off
-//                                  the air while disconnected and restarted it (offset 84)
 static struct bt_uuid_128 diagnostics_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10060, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 diagnostics_characteristic_uuid =
@@ -544,10 +534,10 @@ static inline void pack_u32_le(uint8_t *dst, uint32_t v)
     dst[3] = (uint8_t) (v >> 24);
 }
 
-/* Pack the 88-byte drop-counter payload. Shared by the read handler (0x0062)
+/* Pack the 84-byte drop-counter payload. Shared by the read handler (0x0062)
  * and the notify path (diagnostics_drops_notify) so the wire layout has exactly
  * one definition. */
-static void diagnostics_drops_pack(uint8_t payload[88])
+static void diagnostics_drops_pack(uint8_t payload[84])
 {
     uint32_t block_drops = (uint32_t) atomic_get(&storage_block_drops);
     uint32_t last_drop_ms = (uint32_t) atomic_get(&last_storage_drop_uptime_ms);
@@ -569,16 +559,15 @@ static void diagnostics_drops_pack(uint8_t payload[88])
     uint32_t codec_stack_used = codec_get_stack_used();
     uint32_t ring_max_io = sd_get_ring_max_io_ms();
     uint32_t ring_io_errs = sd_get_ring_io_errors();
-    uint32_t adv_rescues = (uint32_t) atomic_get(&adv_watchdog_recoveries);
 
-    /* 88 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
+    /* 84 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
      * codec_drops + sd_msgq peak depth + write-fairness activations + establishment
      * failures + Priority Recording lifecycle (starts / stops / marker drops /
      * empty-bin rotations) + session-end emit attempts + pause-gate marker saves +
      * sd_worker & codec peak stack used + ring_max_io_ms + ring_io_errors +
-     * adv_watchdog_recoveries (offset 84). Each field is appended at the end so older
+     * Each field is appended at the end so older
      * app builds (which read only the first
-     * 20 / 28 / 32 / 40 / 44 / 60 / 68 / 76 / 84 bytes) keep working unchanged. */
+     * 20 / 28 / 32 / 40 / 44 / 60 / 68 / 76 bytes) keep working unchanged. */
     pack_u32_le(payload + 0, block_drops);
     pack_u32_le(payload + 4, last_drop_ms);
     pack_u32_le(payload + 8, sd_stream_drops);
@@ -600,7 +589,6 @@ static void diagnostics_drops_pack(uint8_t payload[88])
     pack_u32_le(payload + 72, codec_stack_used);
     pack_u32_le(payload + 76, ring_max_io);
     pack_u32_le(payload + 80, ring_io_errs);
-    pack_u32_le(payload + 84, adv_rescues);
 }
 
 static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
@@ -609,7 +597,7 @@ static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
                                               uint16_t len,
                                               uint16_t offset)
 {
-    uint8_t payload[88];
+    uint8_t payload[84];
     diagnostics_drops_pack(payload);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
 }
@@ -714,11 +702,11 @@ static struct bt_gatt_attr diagnostics_service_attr[] = {
 
 static struct bt_gatt_service diagnostics_service = BT_GATT_SERVICE(diagnostics_service_attr);
 
-/* Notify the 88-byte drop payload to every subscribed client. The value
+/* Notify the 84-byte drop payload to every subscribed client. The value
  * attribute is index 4: [0]=service, [1]/[2]=0x0061 decl/value,
  * [3]/[4]=0x0062 decl/value, [5]=CCC.
  *
- * An 88-byte notification needs ATT_MTU >= 91; on a link that never negotiated up
+ * An 84-byte notification needs ATT_MTU >= 87; on a link that never negotiated up
  * from the 23-byte default bt_gatt_notify returns -EMSGSIZE and the update is lost.
  * This is a *live* convenience path — the same payload is always available via a
  * plain READ (ATT read-blob is not MTU-bounded), which is the app's fallback — so we
@@ -728,7 +716,7 @@ static struct bt_gatt_service diagnostics_service = BT_GATT_SERVICE(diagnostics_
  * AUTO_UPDATE_MTU makes this the rare exception, not the rule. */
 static void diagnostics_drops_notify(void)
 {
-    uint8_t payload[88];
+    uint8_t payload[84];
     diagnostics_drops_pack(payload);
     int err = bt_gatt_notify(NULL, &diagnostics_service_attr[4], payload, sizeof(payload));
     if (err && err != -ENOTCONN) {
@@ -1714,12 +1702,18 @@ static atomic_t adv_guard_active = ATOMIC_INIT(0);
  * want: a disconnect resets to fast, and AAD re-requests slow at the next VAD sleep. */
 static atomic_t adv_desired_mode = ATOMIC_INIT(ADV_MODE_FAST);
 
-/* Set when a start fails, cleared when one succeeds. This is what makes
- * adv_watchdog_recoveries honest: a rescue is "a start actually did something while
- * we had reason to believe the radio was down", which is decidable from this handler
- * alone. An earlier version inferred it from whether a mode switch was pending, and
- * got it exactly backwards — during a sustained wedge a mode was always pending, so
- * the counter read 0 in precisely the fault it exists to detect. */
+/* Set when a *start* fails, cleared when one succeeds or a link comes up. Decides
+ * whether a later success is reported as a rescue (DIAG_ADV_WATCHDOG_RESCUE).
+ *
+ * This began life feeding a 0x0062 counter and that was a mistake: across five review
+ * passes, seven separate edge cases were found in which it counted something that was
+ * not an outage — a failed stop, a routine post-disconnect restart, an -ENOMEM from a
+ * link coming up mid-tick. Each fix spawned the next. A counter has to be exactly
+ * right or it lies, and this one never was; an event log only has to be informative,
+ * and "advertising restarted, we thought it was down" is useful even when the
+ * inference is occasionally generous. Cleared on connect because a successful link
+ * proves the radio was up, which kills a whole family of those false positives at
+ * once — a truly off-air device cannot accept a connection. */
 static atomic_t adv_believed_down = ATOMIC_INIT(0);
 
 /* Set by the disconnect callback, consumed by the next tick. Exists purely to keep
@@ -1816,10 +1810,12 @@ static void adv_watchdog_work_handler(struct k_work *work)
          * its 0 is expected, and so is the 0 after a disconnect if the stack did not
          * auto-restart (see adv_disconnect_since_tick). */
         rescued = atomic_cas(&adv_believed_down, 1, 0) || (!mode_change && !after_disconnect && err == 0);
-    } else if (!stop_err) {
-        /* Only a failed *start* means the radio is off the air. A failed stop leaves
-         * the old advertiser running, so marking us down there would make the next
-         * successful tick claim a rescue for an outage that never happened. */
+    } else if (!stop_err && !atomic_get(&adv_disconnect_since_tick)) {
+        /* Only a failed *start* means the radio is off the air: a failed stop leaves
+         * the old advertiser running. And a disconnect flag set again since we
+         * consumed it at the top means a link came up and went away inside our HCI
+         * calls, so the failure is a transient -ENOMEM from the occupied slot rather
+         * than a silent radio. Neither should be reported as an outage. */
         atomic_set(&adv_believed_down, 1);
     }
 
@@ -1854,6 +1850,17 @@ static void adv_watchdog_work_handler(struct k_work *work)
     }
     k_mutex_unlock(&adv_mutex);
 
+    /* Re-assert a producer's shorter deadline. A disconnect or mode request can land
+     * between our flag reads above and our k_work_reschedule() — its own reschedule
+     * then happens first and ours overwrites it, stranding the device for a full
+     * interval (a ONE_TIME slow advertiser would sit dark). Checking again *after* our
+     * reschedule closes that: we are now last, so this wins. Bounded — it runs at most
+     * once per tick and only shortens the deadline. */
+    if (!raced_connect &&
+        (atomic_get(&adv_disconnect_since_tick) || (int) atomic_get(&adv_desired_mode) != desired)) {
+        k_work_reschedule(&adv_watchdog_work, K_MSEC(ADV_TICK_DISCONNECT_MS));
+    }
+
     /* Logged outside the lock from locals — never by re-reading shared state. */
     if (raced_connect) {
         return;
@@ -1863,9 +1870,8 @@ static void adv_watchdog_work_handler(struct k_work *work)
                 adv_mode_name(desired), ADV_TICK_RETRY_MS);
         diag_log_event(DIAG_ADV_START_FAIL, 0, (uint16_t) desired, (uint32_t) -err);
     } else if (rescued) {
-        uint32_t n = (uint32_t) atomic_inc(&adv_watchdog_recoveries) + 1;
-        LOG_WRN("adv: watchdog found advertising stopped — restarted (mode=%s, recoveries=%u)", adv_mode_name(desired),
-                n);
+        LOG_WRN("adv: watchdog found advertising stopped — restarted (mode=%s)", adv_mode_name(desired));
+        diag_log_event(DIAG_ADV_WATCHDOG_RESCUE, 0, (uint16_t) desired, 0);
     } else if (mode_change) {
         LOG_INF("adv: interval switched to %s", adv_mode_name(desired));
     }
@@ -1922,6 +1928,12 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
      * such a build never entering the connected state at all. */
     atomic_set(&is_connected, 1);
     k_work_cancel_delayable(&adv_watchdog_work);
+    /* A link proves the radio is up, whatever a tick may have concluded while it was
+     * coming up. Clearing here kills a family of false rescues at once: a start that
+     * failed -ENOMEM because the slot was already taken would otherwise leave this set
+     * across the whole connection and be reported as a rescue after the next
+     * disconnect. A device that is genuinely off the air cannot accept a link. */
+    atomic_set(&adv_believed_down, 0);
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     storage_is_on = true;
