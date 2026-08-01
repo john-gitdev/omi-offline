@@ -1809,7 +1809,14 @@ static void adv_watchdog_work_handler(struct k_work *work)
          * The second needs both guards to mean anything: a mode change stops first, so
          * its 0 is expected, and so is the 0 after a disconnect if the stack did not
          * auto-restart (see adv_disconnect_since_tick). */
-        rescued = atomic_cas(&adv_believed_down, 1, 0) || (!mode_change && !after_disconnect && err == 0);
+        /* `after_disconnect` covers a disconnect that preceded this tick; the live read
+         * covers one that landed *during* the HCI calls, which the top-of-tick consume
+         * cannot see. Both mean the same thing — a routine post-disconnect restart, not
+         * a rescue — and without the second, an ordinary connect/disconnect racing the
+         * tick reports the reconnect path as a recovery. The failure branch below
+         * already applies the same test. */
+        rescued = atomic_cas(&adv_believed_down, 1, 0) ||
+                  (!mode_change && !after_disconnect && !atomic_get(&adv_disconnect_since_tick) && err == 0);
     } else if (!stop_err && !atomic_get(&adv_disconnect_since_tick)) {
         /* Only a failed *start* means the radio is off the air: a failed stop leaves
          * the old advertiser running. And a disconnect flag set again since we
