@@ -62,8 +62,7 @@ void main() {
 
       setUp(() {
         callLog = [];
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
           const MethodChannel('com.omi.offline/vadBatchRunner'),
           (MethodCall methodCall) async {
             callLog.add(methodCall.method);
@@ -90,8 +89,7 @@ void main() {
       });
 
       tearDown(() {
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
           const MethodChannel('com.omi.offline/vadBatchRunner'),
           null,
         );
@@ -130,8 +128,7 @@ void main() {
     group('MissingPluginException handling', () {
       setUp(() {
         // Mock channel that throws MissingPluginException on init
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
           const MethodChannel('com.omi.offline/vadBatchRunner'),
           (MethodCall methodCall) async {
             throw MissingPluginException('No handler');
@@ -140,8 +137,7 @@ void main() {
       });
 
       tearDown(() {
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
           const MethodChannel('com.omi.offline/vadBatchRunner'),
           null,
         );

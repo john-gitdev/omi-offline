@@ -1831,61 +1831,46 @@ static void adv_watchdog_work_handler(struct k_work *work)
          * marks it down and the eventual recovery is reported. */
         atomic_set(&adv_believed_down, 1);
     }
-
-    /* Choose the next tick under the lock:
-     *  - raced a connect → do not re-arm at all. _transport_connected cancelled us
-     *    deliberately, and re-arming here resurrects the timer it just cancelled;
-     *    _transport_disconnected arms us again when the link goes away.
-     *  - a mode request landed while we were inside the HCI calls → apply it promptly.
-     *    adv_request_mode() reschedules to ADV_TICK_MODE_MS, but it does so while this
-     *    handler is still running, so our own reschedule below would overwrite it and
-     *    strand the request for a full interval.
-     *  - failed → short retry; otherwise the healthy cadence. */
-    if (!raced_connect) {
-        /* A disconnect landing while we ran has already reset the deadline to
-         * ADV_TICK_DISCONNECT_MS; rescheduling to the ordinary cadence here would
-         * overwrite it and leave a ONE_TIME slow advertiser dark for a full interval.
-         * Its flag is still set (we consumed the previous one at the top), so it
-         * doubles as the "a newer deadline exists" signal. */
-        const bool disconnect_pending = atomic_get(&adv_disconnect_since_tick) != 0;
-        const bool superseded = ((int) atomic_get(&adv_desired_mode) != desired);
-        uint32_t next_ms;
-        if (!ok) {
-            next_ms = ADV_TICK_RETRY_MS;
-        } else if (disconnect_pending) {
-            next_ms = ADV_TICK_DISCONNECT_MS;
-        } else if (superseded) {
-            next_ms = ADV_TICK_MODE_MS;
-        } else {
-            next_ms = ADV_TICK_MS;
-        }
-        k_work_reschedule(&adv_watchdog_work, K_MSEC(next_ms));
-    }
     k_mutex_unlock(&adv_mutex);
 
-    /* Re-assert a producer's shorter deadline. A disconnect or mode request can land
-     * between our flag reads above and our k_work_reschedule() — its own reschedule
-     * then happens first and ours overwrites it, stranding the device for a full
-     * interval (a ONE_TIME slow advertiser would sit dark). Checking again *after* our
-     * reschedule closes that: we are now last, so this wins. Bounded — it runs at most
-     * once per tick and only shortens the deadline. */
+    /* Re-arm from ONE place, here, after the radio work — so the flags it reads
+     * already reflect anything that arrived while we were inside the HCI calls.
+     *
+     *  - raced a connect → do not re-arm at all. _transport_connected cancelled us
+     *    deliberately, and re-arming would resurrect the timer it just cancelled;
+     *    _transport_disconnected arms us again when the link goes away.
+     *  - a disconnect landed → the longer settle, so the stack can release the conn
+     *    object before we try a connectable start.
+     *  - a mode request landed → apply it promptly; giving it the disconnect delay
+     *    would make every AAD interval change four times slower than advertised.
+     *  - failed → short retry; otherwise the healthy cadence.
+     *
+     * Gate re-checked because transport_off() closes it and then drains on this mutex:
+     * whichever of us acquires first, its cancel stays definitive rather than us
+     * queueing work that outlives bt_disable().
+     *
+     * Residual, stated rather than papered over: the producers cannot take this lock
+     * (the RX thread must not), so one landing between our reads and our reschedule
+     * still loses its deadline to ours. That is bounded and self-correcting — its flag
+     * stays set, so the next tick honours it — and the cost is one late tick, never a
+     * permanently dark radio. Two overlapping re-arm blocks were tried to narrow it
+     * further and merely made the ownership harder to reason about. */
     if (!raced_connect) {
-        /* Back under the lock, and gate re-checked: transport_off() closes the gate and
-         * then drains on this mutex, so whichever of us acquires first, cancellation
-         * stays definitive. Unserialized, this could queue work after teardown had
-         * already cancelled it — the gate would stop it touching the radio, but a timer
-         * surviving bt_disable() is exactly what the shutdown path promises cannot
-         * happen. */
         k_mutex_lock(&adv_mutex, K_FOREVER);
-        const bool late_disconnect = atomic_get(&adv_disconnect_since_tick) != 0;
-        const bool late_mode_req = ((int) atomic_get(&adv_desired_mode) != desired);
-        if (atomic_get(&adv_guard_active) && (late_disconnect || late_mode_req)) {
-            /* A disconnect needs the longer settle so the stack can release the conn
-             * object before we try a connectable start; a bare mode request does not,
-             * and giving it the disconnect delay would make every AAD interval change
-             * four times slower than advertised. Disconnect wins when both apply. */
-            k_work_reschedule(&adv_watchdog_work,
-                              K_MSEC(late_disconnect ? ADV_TICK_DISCONNECT_MS : ADV_TICK_MODE_MS));
+        if (atomic_get(&adv_guard_active)) {
+            const bool late_disconnect = atomic_get(&adv_disconnect_since_tick) != 0;
+            const bool late_mode_req = ((int) atomic_get(&adv_desired_mode) != desired);
+            uint32_t next_ms;
+            if (!ok) {
+                next_ms = ADV_TICK_RETRY_MS;
+            } else if (late_disconnect) {
+                next_ms = ADV_TICK_DISCONNECT_MS;
+            } else if (late_mode_req) {
+                next_ms = ADV_TICK_MODE_MS;
+            } else {
+                next_ms = ADV_TICK_MS;
+            }
+            k_work_reschedule(&adv_watchdog_work, K_MSEC(next_ms));
         }
         k_mutex_unlock(&adv_mutex);
     }
@@ -1914,8 +1899,15 @@ static int adv_request_mode(int mode)
     atomic_set(&adv_desired_mode, mode);
     if (atomic_get(&adv_guard_active) && !atomic_get(&is_connected)) {
         /* reschedule, not schedule: the tick may be up to ADV_TICK_MS away and
-         * k_work_schedule() would leave it there. */
-        k_work_reschedule(&adv_watchdog_work, K_MSEC(ADV_TICK_MODE_MS));
+         * k_work_schedule() would leave it there.
+         *
+         * Never pull the tick inside a pending disconnect settle. A mode request
+         * arriving just after a disconnect would otherwise fire at 50 ms, before the
+         * stack has released the conn object, and the connectable start would fail
+         * -ENOMEM for no reason — wasting the attempt and pushing the real one out to
+         * the retry cadence. */
+        const bool settling = atomic_get(&adv_disconnect_since_tick) != 0;
+        k_work_reschedule(&adv_watchdog_work, K_MSEC(settling ? ADV_TICK_DISCONNECT_MS : ADV_TICK_MODE_MS));
     }
     return 0;
 }

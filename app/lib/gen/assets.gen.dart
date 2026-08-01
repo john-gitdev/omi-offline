@@ -13,28 +13,32 @@ class $AssetsImagesGen {
   const $AssetsImagesGen();
 
   /// File path: assets/images/app_launcher_icon.png
-  AssetGenImage get appLauncherIcon => const AssetGenImage('assets/images/app_launcher_icon.png');
+  AssetGenImage get appLauncherIcon =>
+      const AssetGenImage('assets/images/app_launcher_icon.png');
 
   /// File path: assets/images/omi-without-rope-turned-off.webp
-  AssetGenImage get omiWithoutRopeTurnedOff => const AssetGenImage('assets/images/omi-without-rope-turned-off.webp');
+  AssetGenImage get omiWithoutRopeTurnedOff =>
+      const AssetGenImage('assets/images/omi-without-rope-turned-off.webp');
 
   /// File path: assets/images/omi-without-rope.webp
-  AssetGenImage get omiWithoutRope => const AssetGenImage('assets/images/omi-without-rope.webp');
+  AssetGenImage get omiWithoutRope =>
+      const AssetGenImage('assets/images/omi-without-rope.webp');
 
   /// File path: assets/images/splash.png
   AssetGenImage get splash => const AssetGenImage('assets/images/splash.png');
 
   /// File path: assets/images/splash_icon.png
-  AssetGenImage get splashIcon => const AssetGenImage('assets/images/splash_icon.png');
+  AssetGenImage get splashIcon =>
+      const AssetGenImage('assets/images/splash_icon.png');
 
   /// List of all assets
   List<AssetGenImage> get values => [
-        appLauncherIcon,
-        omiWithoutRopeTurnedOff,
-        omiWithoutRope,
-        splash,
-        splashIcon,
-      ];
+    appLauncherIcon,
+    omiWithoutRopeTurnedOff,
+    omiWithoutRope,
+    splash,
+    splashIcon,
+  ];
 }
 
 class $AssetsModelsGen {
