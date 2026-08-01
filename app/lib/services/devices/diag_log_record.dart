@@ -155,7 +155,7 @@ class DiagLogRecord {
         // The watchdog restarted a radio it believed was off the air. arg0 = mode.
         // This replaced a 0x0062 counter that proved impossible to keep truthful —
         // read it as evidence, not as an exact tally. See BLE_Research.md "Wedge 5".
-        return 'Advertising watchdog rescue () — radio was off the air, restarted';
+        return 'Advertising watchdog rescue (${arg0 == 1 ? "slow" : "fast"}) — radio was off the air, restarted';
       default:
         return 'Event code=$code backend=$backend arg0=$arg0 arg1=$arg1';
     }

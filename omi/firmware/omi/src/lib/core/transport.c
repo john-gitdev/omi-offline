@@ -1856,9 +1856,17 @@ static void adv_watchdog_work_handler(struct k_work *work)
      * interval (a ONE_TIME slow advertiser would sit dark). Checking again *after* our
      * reschedule closes that: we are now last, so this wins. Bounded — it runs at most
      * once per tick and only shortens the deadline. */
-    if (!raced_connect &&
-        (atomic_get(&adv_disconnect_since_tick) || (int) atomic_get(&adv_desired_mode) != desired)) {
-        k_work_reschedule(&adv_watchdog_work, K_MSEC(ADV_TICK_DISCONNECT_MS));
+    if (!raced_connect) {
+        const bool late_disconnect = atomic_get(&adv_disconnect_since_tick) != 0;
+        const bool late_mode_req = ((int) atomic_get(&adv_desired_mode) != desired);
+        if (late_disconnect || late_mode_req) {
+            /* A disconnect needs the longer settle so the stack can release the conn
+             * object before we try a connectable start; a bare mode request does not,
+             * and giving it the disconnect delay would make every AAD interval change
+             * four times slower than advertised. Disconnect wins when both apply. */
+            k_work_reschedule(&adv_watchdog_work,
+                              K_MSEC(late_disconnect ? ADV_TICK_DISCONNECT_MS : ADV_TICK_MODE_MS));
+        }
     }
 
     /* Logged outside the lock from locals — never by re-reading shared state. */
