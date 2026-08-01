@@ -87,6 +87,8 @@ class DiagLogRecord {
         return 'adv_start_fail';
       case 14:
         return 'adv_watchdog_rescue';
+      case 15:
+        return 'adv_stop_fail';
       default:
         return 'code_$code';
     }
@@ -156,6 +158,11 @@ class DiagLogRecord {
         // This replaced a 0x0062 counter that proved impossible to keep truthful —
         // read it as evidence, not as an exact tally. See BLE_Research.md "Wedge 5".
         return 'Advertising watchdog rescue (${arg0 == 1 ? "slow" : "fast"}) — radio was off the air, restarted';
+      case 15:
+        // The stop half of a mode change failed, so the interval could not be
+        // reconfigured. The previous advertiser is still running — this is NOT an
+        // off-air event, which is why it is a separate code from 13.
+        return 'Advertising stop failed (${arg0 == 1 ? "slow" : "fast"}) — errno -$arg1, interval unchanged';
       default:
         return 'Event code=$code backend=$backend arg0=$arg0 arg1=$arg1';
     }

@@ -88,6 +88,33 @@ void main() {
       expect(rec(6).label, 'session_end_marker_emit');
       expect(rec(7).label, 'sd_block_drop');
       expect(rec(8).label, 'codec_drop');
+      expect(rec(13).label, 'adv_start_fail');
+      expect(rec(14).label, 'adv_watchdog_rescue');
+      expect(rec(15).label, 'adv_stop_fail');
+    });
+
+    test('advertising events decode mode and errno, and stay distinguishable', () {
+      // 13 and 15 are deliberately separate codes: a failed start means the radio is
+      // off the air, a failed stop only means the interval could not be changed.
+      // Conflating them would mislead field diagnosis, so assert they read differently.
+      DiagLogRecord rec(int code, int mode, int errnoMag) =>
+          DiagLogRecord(seq: 1, uptimeMs: 0, code: code, backend: 0, arg0: mode, arg1: errnoMag);
+
+      // arg1 carries the errno MAGNITUDE; the rendered form negates it (12 -> ENOMEM).
+      expect(rec(13, 0, 12).description, contains('start failed'));
+      expect(rec(13, 0, 12).description, contains('(fast)'));
+      expect(rec(13, 0, 12).description, contains('-12'));
+      expect(rec(13, 1, 12).description, contains('(slow)'));
+
+      expect(rec(15, 1, 5).description, contains('stop failed'));
+      expect(rec(15, 1, 5).description, contains('(slow)'));
+      expect(rec(15, 1, 5).description, contains('interval unchanged'));
+      // Must not read as an off-air event.
+      expect(rec(15, 1, 5).description, isNot(contains('off the air')));
+
+      expect(rec(14, 0, 0).description, contains('watchdog rescue'));
+      expect(rec(14, 0, 0).description, contains('off the air'));
+      expect(rec(14, 1, 0).description, contains('(slow)'));
     });
 
     test('unknown code falls back to a generic label + description', () {
@@ -100,8 +127,7 @@ void main() {
     });
 
     test('backend label maps 0/1 and is generic otherwise', () {
-      DiagLogRecord rec(int backend) =>
-          DiagLogRecord(seq: 1, uptimeMs: 0, code: 1, backend: backend, arg0: 0, arg1: 0);
+      DiagLogRecord rec(int backend) => DiagLogRecord(seq: 1, uptimeMs: 0, code: 1, backend: backend, arg0: 0, arg1: 0);
       expect(rec(0).backendLabel, 'littlefs');
       expect(rec(1).backendLabel, 'ring');
       expect(rec(7).backendLabel, 'b7');

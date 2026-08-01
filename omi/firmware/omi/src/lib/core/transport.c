@@ -1817,12 +1817,18 @@ static void adv_watchdog_work_handler(struct k_work *work)
          * already applies the same test. */
         rescued = atomic_cas(&adv_believed_down, 1, 0) ||
                   (!mode_change && !after_disconnect && !atomic_get(&adv_disconnect_since_tick) && err == 0);
-    } else if (!stop_err && !atomic_get(&adv_disconnect_since_tick)) {
+    } else if (!stop_err && !after_disconnect && !atomic_get(&adv_disconnect_since_tick)) {
         /* Only a failed *start* means the radio is off the air: a failed stop leaves
-         * the old advertiser running. And a disconnect flag set again since we
-         * consumed it at the top means a link came up and went away inside our HCI
-         * calls, so the failure is a transient -ENOMEM from the occupied slot rather
-         * than a silent radio. Neither should be reported as an outage. */
+         * the old advertiser running.
+         *
+         * Both disconnect tests are needed, and for different windows. The live read
+         * catches a link that came up and went away inside our HCI calls.
+         * `after_disconnect` catches the settle tick 200 ms after an ordinary
+         * disconnect — where a start can still fail because the stack has not released
+         * the conn object yet. Without it that routine retry marked the radio down and
+         * the next success reported a rescue. A genuinely stuck radio is still caught:
+         * the *following* tick has neither flag set, so a second consecutive failure
+         * marks it down and the eventual recovery is reported. */
         atomic_set(&adv_believed_down, 1);
     }
 
@@ -1864,9 +1870,16 @@ static void adv_watchdog_work_handler(struct k_work *work)
      * reschedule closes that: we are now last, so this wins. Bounded — it runs at most
      * once per tick and only shortens the deadline. */
     if (!raced_connect) {
+        /* Back under the lock, and gate re-checked: transport_off() closes the gate and
+         * then drains on this mutex, so whichever of us acquires first, cancellation
+         * stays definitive. Unserialized, this could queue work after teardown had
+         * already cancelled it — the gate would stop it touching the radio, but a timer
+         * surviving bt_disable() is exactly what the shutdown path promises cannot
+         * happen. */
+        k_mutex_lock(&adv_mutex, K_FOREVER);
         const bool late_disconnect = atomic_get(&adv_disconnect_since_tick) != 0;
         const bool late_mode_req = ((int) atomic_get(&adv_desired_mode) != desired);
-        if (late_disconnect || late_mode_req) {
+        if (atomic_get(&adv_guard_active) && (late_disconnect || late_mode_req)) {
             /* A disconnect needs the longer settle so the stack can release the conn
              * object before we try a connectable start; a bare mode request does not,
              * and giving it the disconnect delay would make every AAD interval change
@@ -1874,6 +1887,7 @@ static void adv_watchdog_work_handler(struct k_work *work)
             k_work_reschedule(&adv_watchdog_work,
                               K_MSEC(late_disconnect ? ADV_TICK_DISCONNECT_MS : ADV_TICK_MODE_MS));
         }
+        k_mutex_unlock(&adv_mutex);
     }
 
     /* Logged outside the lock from locals — never by re-reading shared state. */
@@ -1883,7 +1897,8 @@ static void adv_watchdog_work_handler(struct k_work *work)
     if (!ok) {
         LOG_ERR("adv: %s failed (%d) mode=%s — retrying in %d ms", stop_err ? "stop" : "start", err,
                 adv_mode_name(desired), ADV_TICK_RETRY_MS);
-        diag_log_event(DIAG_ADV_START_FAIL, 0, (uint16_t) desired, (uint32_t) -err);
+        diag_log_event(stop_err ? DIAG_ADV_STOP_FAIL : DIAG_ADV_START_FAIL, 0, (uint16_t) desired,
+                       (uint32_t) -err);
     } else if (rescued) {
         LOG_WRN("adv: watchdog found advertising stopped — restarted (mode=%s)", adv_mode_name(desired));
         diag_log_event(DIAG_ADV_WATCHDOG_RESCUE, 0, (uint16_t) desired, 0);
