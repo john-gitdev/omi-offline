@@ -838,15 +838,23 @@ class DeviceProvider extends ChangeNotifier
 
   /// Let one attempt through **now** without forgiving the outage.
   ///
-  /// User intent (opening or resuming the app) should not have to wait out a
-  /// 12-minute backoff, but it is not evidence the device came back. Zeroing
-  /// [_consecutiveConnectFailures] here would buy another six fast attempts at the
-  /// 15 s cadence — ~4.5 minutes of churn — every single time the app is opened, so
-  /// a user who reopens it during a dead-link outage, or just leaves it foregrounded,
-  /// would re-arm the exact connectGatt/closeGatt burst this throttle exists to stop
-  /// (BLE_Research.md, Wedge 5). Dropping only the wait gate gives the immediate
-  /// attempt; if it fails, the backoff resumes from where the outage had already
-  /// pushed it rather than restarting at the fast cadence.
+  /// Reserved for `app open` — a real launch, once per process. It deliberately does
+  /// NOT zero [_consecutiveConnectFailures]: that would buy another six fast attempts
+  /// at the 15 s cadence, ~4.5 minutes of churn, every time it fired. Dropping only
+  /// the wait gate gives the immediate attempt; if it fails, the backoff resumes from
+  /// where the outage had already pushed it rather than restarting at the fast
+  /// cadence.
+  ///
+  /// **Not called from the `resumed` lifecycle callback.** `resumed` is not a proxy
+  /// for user intent: OnePlus and similar OEMs emit transient paused/resumed cycles
+  /// for system overlays and the notification shade (which is why the resume scan is
+  /// debounced at all — see [_resumeReconnectDebounce]). Bypassing the backoff on
+  /// each of those blips would let a pulled-down notification panel restart the
+  /// connectGatt/closeGatt burst this throttle exists to stop (BLE_Research.md,
+  /// Wedge 5) — system events driving daemon churn with no user asking for anything.
+  /// An explicit reconnect is already unthrottled by a different route: the sync
+  /// page's buttons call [scanAndConnectToDevice] directly, which never consults
+  /// [_reconnectAt].
   void _allowOneImmediateReconnect() {
     _reconnectAt = null;
   }
@@ -1312,7 +1320,7 @@ class DeviceProvider extends ChangeNotifier
         unawaited(_doBackgroundSync().then((_) => _startBackgroundSyncTimer()));
       } else {
         _pendingAppOpenSync = true;
-        periodicConnect('app resumed', boundDeviceOnly: true, userInitiated: true);
+        periodicConnect('app resumed', boundDeviceOnly: true);
       }
       return;
     }
@@ -1341,7 +1349,7 @@ class DeviceProvider extends ChangeNotifier
         _resumeReconnectDebounce?.cancel();
         _resumeReconnectDebounce = Timer(const Duration(seconds: 2), () {
           if (_isAppInForeground && !isConnected && !isConnecting) {
-            periodicConnect('app resumed', boundDeviceOnly: true, userInitiated: true);
+            periodicConnect('app resumed', boundDeviceOnly: true);
           }
         });
       }

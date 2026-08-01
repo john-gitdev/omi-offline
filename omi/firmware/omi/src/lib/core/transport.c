@@ -1835,7 +1835,7 @@ static atomic_t adv_guard_active = ATOMIC_INIT(0);
  *    _transport_connected / _transport_disconnected callbacks. bt_le_adv_start() is
  *    an HCI command whose completion the RX thread itself processes, so a callback
  *    blocking on a mutex held by a thread inside bt_le_adv_start() would deadlock
- *    the stack. That constraint is what adv_reset_to_fast exists to satisfy. */
+ *    the stack. That constraint is what adv_pending_mode exists to satisfy. */
 static K_MUTEX_DEFINE(adv_mutex);
 
 /* Pending "come back up in fast mode" request from _transport_disconnected.
@@ -1846,40 +1846,54 @@ static K_MUTEX_DEFINE(adv_mutex);
  * overwrites it with "fast" before AAD's own adv_start_raw() reads it — so we start
  * the fast interval while logging "switched to slow". The obvious fix (lock the
  * callback) is exactly the deadlock forbidden above, so instead the callback only
- * raises this flag and whoever next starts advertising consumes it *under* the lock.
+ * raises a request and whoever next holds the lock applies it.
  *
- * Bonus correctness: current_adv_mode now keeps its pre-disconnect value until the
+ * That request is parked in adv_pending_mode (below) — the same slot an AAD switch
+ * uses — so the post-disconnect reset runs as a real stop → set mode → start.
+ * An earlier revision instead flipped current_adv_mode to "fast" inside
+ * adv_start_raw() *before* the start returned, which was broken: a start that
+ * answers -EALREADY has changed nothing, so if an advertiser was already running on
+ * the slow interval we recorded "fast" while the radio stayed slow, with the request
+ * already consumed and nothing left to correct it. The watchdog would then re-assert
+ * "fast", get -EALREADY again, and call it healthy — permanently wrong, and wrong in
+ * the direction that makes the device slower to rediscover, which is the entire
+ * failure this PR exists to prevent. Only a stop actually changes the interval.
+ *
+ * Bonus correctness: current_adv_mode keeps its pre-disconnect value until the
  * restart actually runs, so the 0x3e diagnostic a few lines above — which records
  * the advertising mode in effect at the failure — reads the true mode rather than a
  * value already clobbered to "fast". */
-static atomic_t adv_reset_to_fast = ATOMIC_INIT(0);
 
 /* Start advertising in whatever mode current_adv_mode selects. Returns the raw
  * bt_le_adv_start() result: 0 = we were NOT advertising and now are, -EALREADY =
  * already on the air (a healthy no-op), anything else = failure. Callers must keep
  * 0 and -EALREADY distinct — the watchdog uses exactly that difference to tell a
- * rescue from a no-op. */
+ * rescue from a no-op. Caller holds adv_mutex. */
 static int adv_start_raw(void)
 {
-    /* Callers all hold adv_mutex, which is the only safe place to apply a pending
-     * post-disconnect mode reset — see adv_reset_to_fast. */
-    if (atomic_cas(&adv_reset_to_fast, 1, 0)) {
-        current_adv_mode = "fast";
-    }
     if (current_adv_mode[0] == 's') {
         return bt_le_adv_start(&adv_param_slow, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
     }
     return bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
 }
 
-/* A mode switch (stop → set mode → start) that could not complete, parked for the
- * retry path. 0 = nothing pending, otherwise ADV_MODE_FAST / ADV_MODE_SLOW.
+/* The one place an advertising-mode request waits to be applied. 0 = nothing
+ * pending, otherwise ADV_MODE_FAST / ADV_MODE_SLOW. Two producers:
  *
- * Without this, a transient bt_le_adv_stop() failure lost the request outright: the
- * setters return the error, but both aad.c callers discard the return value AND have
- * already consumed their request flag via atomic_cas, so nothing ever retried. The
- * device would sit on the wrong advertising interval — burning ~300-500 µA more than
- * intended on a 150 mAh cell — until the next VAD transition happened to ask again. */
+ *   - an AAD switch whose stop or start failed, parked so it is retried rather than
+ *     lost. Without this a transient bt_le_adv_stop() failure dropped the request
+ *     outright: the setters return the error, but both aad.c callers discard the
+ *     return value AND have already consumed their own request flag, so nothing ever
+ *     retried and the device sat on the wrong interval — ~300-500 µA of avoidable
+ *     drain on a 150 mAh cell — until the next VAD transition happened to ask again.
+ *   - _transport_disconnected asking to come back up fast, which cannot touch
+ *     current_adv_mode itself (it runs on the BT RX thread, which must never take
+ *     adv_mutex).
+ *
+ * Last writer wins, which is the semantics we want: an explicit AAD request placed
+ * after a disconnect supersedes the fast default, and a disconnect after a parked
+ * switch supersedes it in turn (post-disconnect fast is correct, and AAD re-requests
+ * slow at the next VAD sleep). */
 #define ADV_MODE_FAST 1
 #define ADV_MODE_SLOW 2
 static atomic_t adv_pending_mode = ATOMIC_INIT(0);
@@ -1899,8 +1913,8 @@ static int adv_apply_mode_locked(int mode)
         atomic_set(&adv_pending_mode, (atomic_val_t) mode); /* park it, don't lose it */
         return err;
     }
-    /* An explicit mode request outranks a pending post-disconnect reset. */
-    atomic_set(&adv_reset_to_fast, 0);
+    /* Only now, after a stop that actually took effect — this assignment must never
+     * happen ahead of a start that could answer -EALREADY and change nothing. */
     current_adv_mode = (mode == ADV_MODE_SLOW) ? "slow" : "fast";
     err = adv_start_raw();
     if (err && err != -EALREADY) {
@@ -2088,10 +2102,12 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
      * Letting the conn be released first removes that race, and routing every
      * attempt through adv_restart_work means a failure retries instead of
      * silently stranding the device off the air (see the guard block above). */
-    /* Request the mode reset rather than performing it: this is the BT RX thread,
-     * which must not take adv_mutex, and an unlocked write here races the AAD mode
-     * setters. adv_start_raw() applies it under the lock. */
-    atomic_set(&adv_reset_to_fast, 1);
+    /* Park the request rather than performing it: this is the BT RX thread, which
+     * must not take adv_mutex, and an unlocked write to current_adv_mode here races
+     * the AAD mode setters. The restart handler applies it under the lock as a real
+     * stop → start, which is the only thing that can actually change the interval if
+     * an advertiser is somehow still running. */
+    atomic_set(&adv_pending_mode, ADV_MODE_FAST);
     /* Skip entirely when transport_off() has already cleared the gate: this
      * callback is what its bt_conn_disconnect() triggers, and re-arming here would
      * schedule advertising work that runs after bt_disable(). */
