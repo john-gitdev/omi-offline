@@ -1816,7 +1816,10 @@ static void adv_watchdog_work_handler(struct k_work *work)
          * its 0 is expected, and so is the 0 after a disconnect if the stack did not
          * auto-restart (see adv_disconnect_since_tick). */
         rescued = atomic_cas(&adv_believed_down, 1, 0) || (!mode_change && !after_disconnect && err == 0);
-    } else {
+    } else if (!stop_err) {
+        /* Only a failed *start* means the radio is off the air. A failed stop leaves
+         * the old advertiser running, so marking us down there would make the next
+         * successful tick claim a rescue for an outage that never happened. */
         atomic_set(&adv_believed_down, 1);
     }
 
@@ -1830,8 +1833,23 @@ static void adv_watchdog_work_handler(struct k_work *work)
      *    strand the request for a full interval.
      *  - failed → short retry; otherwise the healthy cadence. */
     if (!raced_connect) {
+        /* A disconnect landing while we ran has already reset the deadline to
+         * ADV_TICK_DISCONNECT_MS; rescheduling to the ordinary cadence here would
+         * overwrite it and leave a ONE_TIME slow advertiser dark for a full interval.
+         * Its flag is still set (we consumed the previous one at the top), so it
+         * doubles as the "a newer deadline exists" signal. */
+        const bool disconnect_pending = atomic_get(&adv_disconnect_since_tick) != 0;
         const bool superseded = ((int) atomic_get(&adv_desired_mode) != desired);
-        uint32_t next_ms = !ok ? ADV_TICK_RETRY_MS : (superseded ? ADV_TICK_MODE_MS : ADV_TICK_MS);
+        uint32_t next_ms;
+        if (!ok) {
+            next_ms = ADV_TICK_RETRY_MS;
+        } else if (disconnect_pending) {
+            next_ms = ADV_TICK_DISCONNECT_MS;
+        } else if (superseded) {
+            next_ms = ADV_TICK_MODE_MS;
+        } else {
+            next_ms = ADV_TICK_MS;
+        }
         k_work_reschedule(&adv_watchdog_work, K_MSEC(next_ms));
     }
     k_mutex_unlock(&adv_mutex);
@@ -2827,6 +2845,10 @@ int transport_start()
          * end. Mark the radio down and let the watchdog take it from here. */
         LOG_ERR("Transport advertising failed to start (err %d) — watchdog will retry", err);
         atomic_set(&adv_believed_down, 1);
+        /* Same event the watchdog emits, so a boot-time failure the retry later fixes
+         * still leaves evidence — otherwise the only trace would be a rescue count
+         * with nothing explaining what it rescued. */
+        diag_log_event(DIAG_ADV_START_FAIL, 0, (uint16_t) ADV_MODE_FAST, (uint32_t) -err);
     } else {
         LOG_INF("Advertising successfully started");
     }

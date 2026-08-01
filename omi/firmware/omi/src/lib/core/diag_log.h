@@ -44,7 +44,8 @@ typedef enum {
     DIAG_RING_IO_ERROR = 10,         /* reserved (not yet instrumented) */
     DIAG_BACKEND_MOUNT = 11,         /* reserved (not yet instrumented) */
     DIAG_BOND_STATE = 12,            /* arg0 = diag_bond_cause_t; arg1 = bond count AFTER the event */
-    DIAG_ADV_START_FAIL = 13,        /* arg0 = adv mode (0=fast 1=slow); arg1 = -errno from bt_le_adv_start/stop */
+    DIAG_ADV_START_FAIL = 13,        /* arg0 = adv mode (0=fast 1=slow); arg1 = errno MAGNITUDE, i.e.
+                                      * -(return of bt_le_adv_start/stop), so 12 = ENOMEM. Positive. */
 } diag_event_code_t;
 
 /* arg0 values for DIAG_BOND_STATE. Appended-only, same discipline as the codes. */

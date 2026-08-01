@@ -143,7 +143,8 @@ class DiagLogRecord {
             return 'Bond state — cause=$arg0, $arg1 key(s)';
         }
       case 13:
-        // arg0 = advertising mode being started (0 fast / 1 slow), arg1 = -errno.
+        // arg0 = advertising mode being started (0 fast / 1 slow); arg1 = errno magnitude
+        // (positive, e.g. 12 = ENOMEM), so the negated form is rendered below.
         // The watchdog retries regardless, so a lone entry is a transient the guard
         // absorbed; a run of them means the radio would have gone dark before
         // oo-2.8.3. See BLE_Research.md "Wedge 5".
