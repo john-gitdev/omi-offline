@@ -150,8 +150,8 @@ Record the sub-class in the "Recovery trigger" column below.
 
 **Wedge 5 is SOLVED** — see the resolution block below. Root cause: the post-disconnect
 `bt_le_adv_start()` in `transport.c` was fire-and-forget, so a single failure left the device
-permanently off the air with the firmware still running and still recording. Fixed with a
-retry + 60 s watchdog. This is very likely the same fault behind Wedges 0–2 (all SILENT, all
+permanently off the air with the firmware still running and still recording. Fixed with
+a 30 s advertising watchdog. This is very likely the same fault behind Wedges 0–2 (all SILENT, all
 no-ghost, all cleared by "device-return" — which is what a lucky later restart would look like).
 
 Wedge 0 is the **origin of the ghost-GATT hypothesis** and the purge fixes now shipped

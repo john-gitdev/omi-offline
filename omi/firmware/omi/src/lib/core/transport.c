@@ -571,12 +571,13 @@ static void diagnostics_drops_pack(uint8_t payload[88])
     uint32_t ring_io_errs = sd_get_ring_io_errors();
     uint32_t adv_rescues = (uint32_t) atomic_get(&adv_watchdog_recoveries);
 
-    /* 84 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
+    /* 88 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
      * codec_drops + sd_msgq peak depth + write-fairness activations + establishment
      * failures + Priority Recording lifecycle (starts / stops / marker drops /
      * empty-bin rotations) + session-end emit attempts + pause-gate marker saves +
-     * sd_worker & codec peak stack used + ring_max_io_ms + ring_io_errors. Each field
-     * is appended at the end so older app builds (which read only the first
+     * sd_worker & codec peak stack used + ring_max_io_ms + ring_io_errors +
+     * adv_watchdog_recoveries (offset 84). Each field is appended at the end so older
+     * app builds (which read only the first
      * 20 / 28 / 32 / 40 / 44 / 60 / 68 / 76 / 84 bytes) keep working unchanged. */
     pack_u32_le(payload + 0, block_drops);
     pack_u32_le(payload + 4, last_drop_ms);
@@ -743,7 +744,7 @@ static void diagnostics_notify_work_handler(struct k_work *work)
     ARG_UNUSED(work);
     /* Stop the chain if the client unsubscribed or the link dropped; a fresh
      * subscribe re-arms it from diagnostics_drops_ccc_changed. */
-    if (!atomic_get(&diag_notify_subscribed) || !is_connected) {
+    if (!atomic_get(&diag_notify_subscribed) || !atomic_get(&is_connected)) {
         return;
     }
     diagnostics_drops_notify();
@@ -1474,7 +1475,8 @@ void broadcast_battery_level(struct k_work *work_item)
         LOG_ERR("Failed to read battery level");
     }
 
-    uint32_t interval = is_connected ? BATTERY_REFRESH_INTERVAL_CONNECTED : BATTERY_REFRESH_INTERVAL_DISCONNECTED;
+    uint32_t interval =
+        atomic_get(&is_connected) ? BATTERY_REFRESH_INTERVAL_CONNECTED : BATTERY_REFRESH_INTERVAL_DISCONNECTED;
     k_work_reschedule(&battery_work, K_MSEC(interval));
 }
 
@@ -1516,7 +1518,7 @@ K_WORK_DELAYABLE_DEFINE(mtu_recheck_work, mtu_recheck_work_handler);
 
 static void post_pairing_work_handler(struct k_work *work)
 {
-    if (!is_connected || !current_connection) {
+    if (!atomic_get(&is_connected) || !current_connection) {
         return;
     }
 
@@ -1532,7 +1534,7 @@ K_WORK_DELAYABLE_DEFINE(post_pairing_work, post_pairing_work_handler);
 
 static void post_connect_work_handler(struct k_work *work)
 {
-    if (!is_connected || !current_connection) {
+    if (!atomic_get(&is_connected) || !current_connection) {
         return;
     }
 
@@ -1569,7 +1571,7 @@ void transport_mark_activity(void)
 
 static void idle_disconnect_work_handler(struct k_work *work)
 {
-    if (!is_connected) {
+    if (!atomic_get(&is_connected)) {
         return;
     }
 
@@ -1770,8 +1772,19 @@ static void adv_watchdog_work_handler(struct k_work *work)
 
     int err = stop_err ? stop_err : adv_start_mode(desired);
     const bool ok = (err == 0 || err == -EALREADY);
+    /* A link that came up while we were inside those HCI calls explains any result we
+     * got, so nothing here is evidence of anything. The cancel in _transport_connected
+     * only drops *pending* work — it cannot preempt this handler, and the RX thread
+     * cannot wait on adv_mutex (that is the forbidden lock), so the window is
+     * unclosable on the producer side; re-checking just before the radio calls would
+     * only narrow it. Classify instead: a failure with a live link is a -ENOMEM from
+     * the full conn slot, not a silent radio, and must not set believed_down or emit a
+     * fault event. The next tick after the disconnect re-establishes the truth. */
+    const bool raced_connect = atomic_get(&is_connected) != 0;
     bool rescued = false;
-    if (ok) {
+    if (raced_connect) {
+        LOG_DBG("adv: tick raced an incoming link (err %d) — not evidence, ignoring", err);
+    } else if (ok) {
         atomic_set(&adv_active_mode, desired);
         /* Two independent signals that the radio had gone quiet, and either counts:
          *   - a previous start failed and we have not succeeded since; or
@@ -1788,6 +1801,9 @@ static void adv_watchdog_work_handler(struct k_work *work)
     k_mutex_unlock(&adv_mutex);
 
     /* Logged outside the lock from locals — never by re-reading shared state. */
+    if (raced_connect) {
+        return;
+    }
     if (!ok) {
         LOG_ERR("adv: %s failed (%d) mode=%s — retrying in %d ms", stop_err ? "stop" : "start", err,
                 adv_mode_name(desired), ADV_TICK_RETRY_MS);
@@ -1838,16 +1854,22 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
     }
 
     struct bt_conn_info info = {0};
-#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+
     /* Claim the link and silence the watchdog FIRST, ahead of the setup below. Until
      * both happen the guard still believes we are disconnected, so a tick landing
      * mid-setup would call bt_le_adv_start() against a live link and fail -ENOMEM
      * under CONFIG_BT_MAX_CONN=1 — which the handler would then read as "the radio was
      * down", fabricating a recovery. Any later failure here ends in a disconnect,
-     * whose callback re-arms the watchdog. */
+     * whose callback re-arms the watchdog.
+     *
+     * Deliberately OUTSIDE the offline-storage #ifdef below: the connection state and
+     * the advertising guard have nothing to do with the SD card, and
+     * CONFIG_OMI_ENABLE_OFFLINE_STORAGE defaults to n — gating them on it would leave
+     * such a build never entering the connected state at all. */
     atomic_set(&is_connected, 1);
     k_work_cancel_delayable(&adv_watchdog_work);
 
+#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     storage_is_on = true;
 #endif
 
@@ -2052,7 +2074,7 @@ static void update_mtu(struct bt_conn *conn)
  * intervals so iOS / Android apps that negotiate MTU late still get a fast path. */
 static void mtu_recheck_work_handler(struct k_work *work)
 {
-    if (!is_connected || !current_connection) {
+    if (!atomic_get(&is_connected) || !current_connection) {
         return;
     }
     uint16_t mtu = bt_gatt_get_mtu(current_connection);
