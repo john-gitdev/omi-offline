@@ -49,7 +49,18 @@ extern bool storage_is_on;
 static bool storage_full_warned = false;
 #endif
 
-extern bool is_connected;
+/* Defined in main.c. atomic_t rather than bool because the BT RX thread writes it
+ * (_transport_connected / _transport_disconnected) while the system workqueue and
+ * the AAD thread read it — the advertising guard's gate checks, main.c's LED state
+ * machine, the battery-interval pick. Concurrent access to a plain bool there is a
+ * data race in the C memory model even where the load is single-instruction, and
+ * holding adv_mutex does not help: the RX thread never takes it, and must not.
+ *
+ * This buys UB-freedom and a guaranteed re-read, NOT atomicity of the decisions
+ * built on it — every reader is still check-then-act with a window afterwards. The
+ * guard is correct because it classifies results (adv_schedule_retry ignores a
+ * failure that arrives while a link is up), not because it wins that race. */
+extern atomic_t is_connected;
 extern bool is_charging;
 static atomic_t pusher_stop_flag;
 
@@ -740,7 +751,7 @@ static void diagnostics_notify_work_handler(struct k_work *work)
     ARG_UNUSED(work);
     /* Stop the chain if the client unsubscribed or the link dropped; a fresh
      * subscribe re-arms it from diagnostics_drops_ccc_changed. */
-    if (!atomic_get(&diag_notify_subscribed) || !is_connected) {
+    if (!atomic_get(&diag_notify_subscribed) || !atomic_get(&is_connected)) {
         return;
     }
     diagnostics_drops_notify();
@@ -1471,7 +1482,8 @@ void broadcast_battery_level(struct k_work *work_item)
         LOG_ERR("Failed to read battery level");
     }
 
-    uint32_t interval = is_connected ? BATTERY_REFRESH_INTERVAL_CONNECTED : BATTERY_REFRESH_INTERVAL_DISCONNECTED;
+    uint32_t interval =
+        atomic_get(&is_connected) ? BATTERY_REFRESH_INTERVAL_CONNECTED : BATTERY_REFRESH_INTERVAL_DISCONNECTED;
     k_work_reschedule(&battery_work, K_MSEC(interval));
 }
 
@@ -1513,7 +1525,7 @@ K_WORK_DELAYABLE_DEFINE(mtu_recheck_work, mtu_recheck_work_handler);
 
 static void post_pairing_work_handler(struct k_work *work)
 {
-    if (!is_connected || !current_connection) {
+    if (!atomic_get(&is_connected) || !current_connection) {
         return;
     }
 
@@ -1529,7 +1541,7 @@ K_WORK_DELAYABLE_DEFINE(post_pairing_work, post_pairing_work_handler);
 
 static void post_connect_work_handler(struct k_work *work)
 {
-    if (!is_connected || !current_connection) {
+    if (!atomic_get(&is_connected) || !current_connection) {
         return;
     }
 
@@ -1566,7 +1578,7 @@ void transport_mark_activity(void)
 
 static void idle_disconnect_work_handler(struct k_work *work)
 {
-    if (!is_connected) {
+    if (!atomic_get(&is_connected)) {
         return;
     }
 
@@ -1694,7 +1706,7 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
      * as adv_restart_failures and retried. That is fabricated telemetry in the one
      * counter this whole guard exists to make trustworthy. Any later failure path in
      * this callback ends in a disconnect, whose callback re-arms both. */
-    is_connected = true;
+    atomic_set(&is_connected, 1);
     k_work_cancel_delayable(&adv_restart_work);
     k_work_cancel_delayable(&adv_watchdog_work);
 
@@ -1943,7 +1955,7 @@ static void adv_schedule_retry(int err, const char *who)
     if (!atomic_get(&adv_guard_active)) {
         return; /* shutting down — not a real failure, and must not be counted */
     }
-    if (is_connected) {
+    if (atomic_get(&is_connected)) {
         /* A link came up between a handler's gate check and its bt_le_adv_start().
          * The cancel in _transport_connected only drops *pending* work, and the RX
          * thread cannot drain a running handler via adv_mutex (that is the forbidden
@@ -1978,7 +1990,7 @@ static void adv_restart_work_handler(struct k_work *work)
     /* Gate re-checked *inside* the lock: transport_off() clears it before taking the
      * mutex, so anything that acquires after shutdown began sees it closed. */
     k_mutex_lock(&adv_mutex, K_FOREVER);
-    if (!atomic_get(&adv_guard_active) || is_connected) {
+    if (!atomic_get(&adv_guard_active) || atomic_get(&is_connected)) {
         k_mutex_unlock(&adv_mutex);
         return; /* shutting down, or a link came up; the disconnect path re-arms us */
     }
@@ -1997,7 +2009,7 @@ static void adv_watchdog_work_handler(struct k_work *work)
 {
     ARG_UNUSED(work);
     k_mutex_lock(&adv_mutex, K_FOREVER);
-    if (!atomic_get(&adv_guard_active) || is_connected) {
+    if (!atomic_get(&adv_guard_active) || atomic_get(&is_connected)) {
         /* Deliberately does NOT reschedule: shutdown must not leave a 60 s timer
          * spinning forever, and a live link is re-armed by the next disconnect. */
         k_mutex_unlock(&adv_mutex);
@@ -2040,7 +2052,7 @@ static void adv_watchdog_work_handler(struct k_work *work)
 
 static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
 {
-    is_connected = false;
+    atomic_set(&is_connected, 0);
 
     /* Stop diagnostics notifications; the CCC state is per-bond and the next
      * client will re-subscribe. The work handler already bails on !is_connected,
@@ -2207,7 +2219,7 @@ static void update_mtu(struct bt_conn *conn)
  * intervals so iOS / Android apps that negotiate MTU late still get a fast path. */
 static void mtu_recheck_work_handler(struct k_work *work)
 {
-    if (!is_connected || !current_connection) {
+    if (!atomic_get(&is_connected) || !current_connection) {
         return;
     }
     uint16_t mtu = bt_gatt_get_mtu(current_connection);
@@ -2735,7 +2747,7 @@ int transport_off()
 #endif
 
     // Ensure all Bluetooth resources are cleaned up
-    is_connected = false;
+    atomic_set(&is_connected, 0);
     current_mtu = 0;
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
@@ -2754,7 +2766,7 @@ int transport_off()
  * owns recovery from here. */
 static int transport_set_adv_mode(int mode, const char *label)
 {
-    if (is_connected) {
+    if (atomic_get(&is_connected)) {
         return 0;
     }
     /* stop → set mode → start must be atomic against the retry/watchdog handlers;
@@ -2766,7 +2778,7 @@ static int transport_set_adv_mode(int mode, const char *label)
      * flip between there and here, and stopping advertising while connected — or
      * touching the radio mid-shutdown — is exactly what this guard exists to
      * prevent. */
-    if (!atomic_get(&adv_guard_active) || is_connected) {
+    if (!atomic_get(&adv_guard_active) || atomic_get(&is_connected)) {
         k_mutex_unlock(&adv_mutex);
         return 0;
     }
