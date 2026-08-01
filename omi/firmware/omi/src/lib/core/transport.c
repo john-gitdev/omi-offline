@@ -1722,6 +1722,24 @@ static atomic_t adv_desired_mode = ATOMIC_INIT(ADV_MODE_FAST);
  * the counter read 0 in precisely the fault it exists to detect. */
 static atomic_t adv_believed_down = ATOMIC_INIT(0);
 
+/* Set by the disconnect callback, consumed by the next tick. Exists purely to keep
+ * the recovery counter honest across a behaviour of the stack we cannot verify here.
+ *
+ * A connection stops the advertiser. Whether it comes back on its own depends on the
+ * parameters: slow sets BT_LE_ADV_OPT_ONE_TIME and definitely does not auto-restart,
+ * while BT_LE_ADV_CONN (fast) does not set it and — depending on the Zephyr version —
+ * may. So the post-disconnect tick's start can legitimately return either -EALREADY
+ * (it came back by itself) or 0 (it did not, and we just restarted it), for the same
+ * healthy sequence. Counting that 0 as a rescue would add one per disconnect — with a
+ * 30-minute sync cadence, ~48 phantom rescues a day, drowning the signal the counter
+ * exists to carry.
+ *
+ * With this flag the routine post-disconnect restart is never counted, while a radio
+ * that stops spontaneously mid-idle still is. Consumed at the top of the tick, so a
+ * disconnect landing mid-tick suppresses the *next* one too: the bias is toward
+ * under-counting, which is the right direction for evidence. */
+static atomic_t adv_disconnect_since_tick = ATOMIC_INIT(0);
+
 static void adv_watchdog_work_handler(struct k_work *work);
 K_WORK_DELAYABLE_DEFINE(adv_watchdog_work, adv_watchdog_work_handler);
 
@@ -1756,6 +1774,9 @@ static void adv_watchdog_work_handler(struct k_work *work)
         return;
     }
 
+    /* Consumed here, before the radio work, so a disconnect arriving mid-tick is left
+     * for the next one rather than being swallowed by this one. */
+    const bool after_disconnect = atomic_cas(&adv_disconnect_since_tick, 1, 0);
     const int desired = (int) atomic_get(&adv_desired_mode);
     const int active = (int) atomic_get(&adv_active_mode);
     /* Only a stop actually changes the interval: bt_le_adv_start() against a running
@@ -1787,12 +1808,14 @@ static void adv_watchdog_work_handler(struct k_work *work)
     } else if (ok) {
         atomic_set(&adv_active_mode, desired);
         /* Two independent signals that the radio had gone quiet, and either counts:
-         *   - a previous start failed and we have not succeeded since; or
-         *   - this was a plain re-assert (we believed we were already advertising)
-         *     and the start returned 0, meaning it wasn't.
-         * A mode change always stops first, so its 0 proves nothing on its own — hence
-         * the !mode_change guard on the second signal. */
-        rescued = atomic_cas(&adv_believed_down, 1, 0) || (!mode_change && err == 0);
+         *   - a previous start failed and we have not succeeded since. Unambiguous,
+         *     and this is the one that catches the Wedge 5 fault; or
+         *   - a plain re-assert (we believed we were already advertising) returned 0,
+         *     meaning it wasn't — a radio that stopped with no failure we ever saw.
+         * The second needs both guards to mean anything: a mode change stops first, so
+         * its 0 is expected, and so is the 0 after a disconnect if the stack did not
+         * auto-restart (see adv_disconnect_since_tick). */
+        rescued = atomic_cas(&adv_believed_down, 1, 0) || (!mode_change && !after_disconnect && err == 0);
     } else {
         atomic_set(&adv_believed_down, 1);
     }
@@ -1993,6 +2016,7 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
      *
      * Only atomics and a reschedule here — this is the BT RX thread (see adv_mutex). */
     atomic_set(&adv_desired_mode, ADV_MODE_FAST);
+    atomic_set(&adv_disconnect_since_tick, 1);
     if (atomic_get(&adv_guard_active)) {
         k_work_reschedule(&adv_watchdog_work, K_MSEC(ADV_TICK_DISCONNECT_MS));
     }

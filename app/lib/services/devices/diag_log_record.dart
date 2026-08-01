@@ -83,6 +83,8 @@ class DiagLogRecord {
         return 'backend_mount';
       case 12:
         return 'bond_state';
+      case 13:
+        return 'adv_start_fail';
       default:
         return 'code_$code';
     }
@@ -140,6 +142,12 @@ class DiagLogRecord {
           default:
             return 'Bond state — cause=$arg0, $arg1 key(s)';
         }
+      case 13:
+        // arg0 = advertising mode being started (0 fast / 1 slow), arg1 = -errno.
+        // The watchdog retries regardless, so a lone entry is a transient the guard
+        // absorbed; a run of them means the radio would have gone dark before
+        // oo-2.8.3. See BLE_Research.md "Wedge 5".
+        return 'Advertising start failed (${arg0 == 1 ? "slow" : "fast"}) — errno -$arg1, watchdog will retry';
       default:
         return 'Event code=$code backend=$backend arg0=$arg0 arg1=$arg1';
     }

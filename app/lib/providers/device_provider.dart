@@ -1854,6 +1854,13 @@ class DeviceProvider extends ChangeNotifier
             'liveUptime=$liveUptimeStr';
         if (dropStats.hasAnyDrops) {
           Logger.warning('$dropMsg — on-device audio drops since boot');
+        } else if (dropStats.advWatchdogRecoveries > 0) {
+          // Elevated deliberately: this is the one counter that says the BLE
+          // advertising fault actually occurred and the watchdog caught it. Before
+          // oo-2.8.3 each of these was an outage lasting until a power-cycle, so it
+          // must not sit at debug level waiting for an unrelated audio drop to
+          // promote it. See BLE_Research.md "Wedge 5".
+          Logger.warning('$dropMsg — advertising watchdog rescued the radio since boot');
         } else {
           Logger.debug(dropMsg);
         }
