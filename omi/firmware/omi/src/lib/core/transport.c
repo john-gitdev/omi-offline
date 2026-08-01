@@ -1687,6 +1687,17 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
         return;
     }
 
+    /* Claim the link and silence the advertising guard FIRST, before the lengthy
+     * setup below. Until both happen the guard still believes we are disconnected,
+     * so a restart/watchdog tick landing mid-setup calls bt_le_adv_start() against a
+     * live link — which fails -ENOMEM under CONFIG_BT_MAX_CONN=1 and is then counted
+     * as adv_restart_failures and retried. That is fabricated telemetry in the one
+     * counter this whole guard exists to make trustworthy. Any later failure path in
+     * this callback ends in a disconnect, whose callback re-arms both. */
+    is_connected = true;
+    k_work_cancel_delayable(&adv_restart_work);
+    k_work_cancel_delayable(&adv_watchdog_work);
+
     struct bt_conn_info info = {0};
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     storage_is_on = true;
@@ -1729,14 +1740,8 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
     sd_notify_ble_state(true);
 #endif
 
-    is_connected = true;
-    /* A link is up, so advertising has served its purpose and both guards must go
-     * quiet — otherwise the watchdog would keep re-asserting a connectable
-     * advertiser against a full conn slot and manufacture -ENOMEM failures of its
-     * own. Both handlers also re-check is_connected, so this is belt-and-braces
-     * against a tick already in flight. The disconnect path re-arms them. */
-    k_work_cancel_delayable(&adv_restart_work);
-    k_work_cancel_delayable(&adv_watchdog_work);
+    /* is_connected and the guard cancels were hoisted to the top of this callback —
+     * see the comment there. */
     transport_mark_activity();
     k_work_schedule(&idle_disconnect_work, K_MSEC(IDLE_DISCONNECT_POLL_MS));
 }
@@ -1776,13 +1781,18 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
 static const struct bt_le_adv_param adv_param_slow =
     BT_LE_ADV_PARAM_INIT(BT_LE_ADV_OPT_CONNECTABLE | BT_LE_ADV_OPT_ONE_TIME, 1600, 1920, NULL);
 
-/* Deliberately NOT synchronized. Written from the workqueue handlers, the AAD
- * thread (via adv_schedule_retry) and the BT RX thread; it is an aligned u32, so
- * stores are atomic on this core and the only possible anomaly is a lost update to
- * the backoff — one retry firing at the wrong delay, self-correcting on the next
- * success. Guarding it would mean taking adv_mutex on the RX thread, which is the
- * one thing that must never happen (see adv_mutex). */
-static uint32_t adv_retry_delay_ms = ADV_RESTART_RETRY_MS;
+/* atomic_t, not a plain u32: this is touched from the workqueue handlers, the AAD
+ * thread (via adv_schedule_retry) and the BT RX thread, and concurrent access to a
+ * non-atomic object is a data race in the C memory model regardless of whether the
+ * underlying store happens to be single-instruction on this core. A lock is not an
+ * option — guarding it would mean taking adv_mutex on the RX thread, the one thing
+ * that must never happen (see adv_mutex).
+ *
+ * The escalation in adv_schedule_retry() is still a non-atomic read-modify-write, so
+ * two racing failures can lose one doubling. That is deliberate and harmless: every
+ * individual access is atomic (no UB), and the worst outcome is one retry firing at
+ * half the intended delay, which the next success resets anyway. */
+static atomic_t adv_retry_delay_ms = ATOMIC_INIT(ADV_RESTART_RETRY_MS);
 
 /* Gate for the whole guard. 0 until transport_start() succeeds, and cleared again
  * at the very top of transport_off() — *before* it disconnects, which is the point:
@@ -1862,6 +1872,55 @@ static int adv_start_raw(void)
     return bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
 }
 
+/* A mode switch (stop → set mode → start) that could not complete, parked for the
+ * retry path. 0 = nothing pending, otherwise ADV_MODE_FAST / ADV_MODE_SLOW.
+ *
+ * Without this, a transient bt_le_adv_stop() failure lost the request outright: the
+ * setters return the error, but both aad.c callers discard the return value AND have
+ * already consumed their request flag via atomic_cas, so nothing ever retried. The
+ * device would sit on the wrong advertising interval — burning ~300-500 µA more than
+ * intended on a 150 mAh cell — until the next VAD transition happened to ask again. */
+#define ADV_MODE_FAST 1
+#define ADV_MODE_SLOW 2
+static atomic_t adv_pending_mode = ATOMIC_INIT(0);
+
+static inline bool adv_pending_mode_pending(void)
+{
+    return atomic_get(&adv_pending_mode) != 0;
+}
+
+/* Apply stop → set mode → start as one unit. Caller holds adv_mutex.
+ * Returns 0 / -EALREADY on success, else the failing errno with the request left
+ * parked so the retry path picks it up again. */
+static int adv_apply_mode_locked(int mode)
+{
+    int err = bt_le_adv_stop();
+    if (err && err != -EALREADY) {
+        atomic_set(&adv_pending_mode, (atomic_val_t) mode); /* park it, don't lose it */
+        return err;
+    }
+    /* An explicit mode request outranks a pending post-disconnect reset. */
+    atomic_set(&adv_reset_to_fast, 0);
+    current_adv_mode = (mode == ADV_MODE_SLOW) ? "slow" : "fast";
+    err = adv_start_raw();
+    if (err && err != -EALREADY) {
+        atomic_set(&adv_pending_mode, (atomic_val_t) mode);
+        return err;
+    }
+    atomic_set(&adv_pending_mode, 0);
+    return 0;
+}
+
+/* Retry a parked mode switch. Caller holds adv_mutex. */
+static int adv_apply_pending_mode_locked(void)
+{
+    int mode = (int) atomic_get(&adv_pending_mode);
+    if (mode == 0) {
+        return adv_start_raw();
+    }
+    return adv_apply_mode_locked(mode);
+}
+
 /* Record a failed start and queue another attempt. Never gives up: being
  * unreachable is a total loss of function, so an unbounded retry at an 8 s ceiling
  * is strictly better than any finite budget. */
@@ -1870,10 +1929,19 @@ static void adv_schedule_retry(int err, const char *who)
     if (!atomic_get(&adv_guard_active)) {
         return; /* shutting down — not a real failure, and must not be counted */
     }
+    uint32_t delay = (uint32_t) atomic_get(&adv_retry_delay_ms);
     atomic_inc(&adv_restart_failures);
-    LOG_ERR("adv: %s start failed (%d) mode=%s — retry in %u ms", who, err, current_adv_mode, adv_retry_delay_ms);
-    k_work_schedule(&adv_restart_work, K_MSEC(adv_retry_delay_ms));
-    adv_retry_delay_ms = MIN(adv_retry_delay_ms * 2, ADV_RESTART_RETRY_MAX_MS);
+    LOG_ERR("adv: %s start failed (%d) mode=%s — retry in %u ms", who, err, current_adv_mode, delay);
+    k_work_schedule(&adv_restart_work, K_MSEC(delay));
+    atomic_set(&adv_retry_delay_ms, (atomic_val_t) MIN(delay * 2, ADV_RESTART_RETRY_MAX_MS));
+}
+
+/* A recovered radio must restart its backoff from the fast baseline: leaving it at
+ * the 8 s ceiling would make the *next* single failure wait 8 s before its first
+ * retry, blunting exactly the self-healing this guard exists to provide. */
+static inline void adv_reset_backoff(void)
+{
+    atomic_set(&adv_retry_delay_ms, (atomic_val_t) ADV_RESTART_RETRY_MS);
 }
 
 static void adv_restart_work_handler(struct k_work *work)
@@ -1886,10 +1954,11 @@ static void adv_restart_work_handler(struct k_work *work)
         k_mutex_unlock(&adv_mutex);
         return; /* shutting down, or a link came up; the disconnect path re-arms us */
     }
-    int err = adv_start_raw();
+    /* A mode switch whose stop failed left its request here rather than losing it. */
+    int err = adv_pending_mode_pending() ? adv_apply_pending_mode_locked() : adv_start_raw();
     k_mutex_unlock(&adv_mutex);
     if (err == 0 || err == -EALREADY) {
-        adv_retry_delay_ms = ADV_RESTART_RETRY_MS;
+        adv_reset_backoff();
         LOG_INF("adv: advertising active (mode=%s)", current_adv_mode);
         return;
     }
@@ -1910,15 +1979,35 @@ static void adv_watchdog_work_handler(struct k_work *work)
      * -EALREADY means healthy, 0 means we had gone silent and just rescued it.
      * Under the lock this reading is trustworthy: without it, a 0 here could just
      * mean we won a race against a mode switch's stop, not that anything was wrong. */
-    int err = adv_start_raw();
+    /* Whether this tick was a plain re-assert or a deferred mode switch decides how
+     * to read its result, so capture it before the call clears the request. Applying
+     * a parked mode switch necessarily returns 0 (it stops first), and counting that
+     * as a rescue would be a fabricated adv_watchdog_recoveries bump — the one
+     * counter that must stay trustworthy, since it is the sole evidence this guard
+     * does anything. */
+    bool had_pending = adv_pending_mode_pending();
+    int err = had_pending ? adv_apply_pending_mode_locked() : adv_start_raw();
+    /* Re-armed while STILL HOLDING the lock. transport_off() uses this same mutex as
+     * its drain barrier, so re-arming after the unlock leaves a window in which
+     * shutdown's k_work_cancel_delayable() runs first and this schedule then
+     * resurrects a timer shutdown had already cancelled. Under the lock, shutdown's
+     * cancel is guaranteed to come after this schedule and therefore to stick. */
+    k_work_schedule(&adv_watchdog_work, K_MSEC(ADV_WATCHDOG_INTERVAL_MS));
     k_mutex_unlock(&adv_mutex);
+
+    if (err && err != -EALREADY) {
+        adv_schedule_retry(err, "watchdog");
+        return;
+    }
+    adv_reset_backoff(); /* radio is healthy — next failure starts from the baseline */
+    if (had_pending) {
+        LOG_INF("adv: watchdog applied a deferred mode switch (mode=%s)", current_adv_mode);
+        return;
+    }
     if (err == 0) {
         uint32_t n = (uint32_t) atomic_inc(&adv_watchdog_recoveries) + 1;
         LOG_WRN("adv: watchdog found advertising stopped — restarted (mode=%s, recoveries=%u)", current_adv_mode, n);
-    } else if (err != -EALREADY) {
-        adv_schedule_retry(err, "watchdog");
     }
-    k_work_schedule(&adv_watchdog_work, K_MSEC(ADV_WATCHDOG_INTERVAL_MS));
 }
 
 static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
@@ -1993,7 +2082,7 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
      * callback is what its bt_conn_disconnect() triggers, and re-arming here would
      * schedule advertising work that runs after bt_disable(). */
     if (atomic_get(&adv_guard_active)) {
-        adv_retry_delay_ms = ADV_RESTART_RETRY_MS;
+        adv_reset_backoff();
         k_work_schedule(&adv_restart_work, K_MSEC(ADV_RESTART_DEFER_MS));
         k_work_schedule(&adv_watchdog_work, K_MSEC(ADV_WATCHDOG_INTERVAL_MS));
     }
@@ -2633,14 +2722,14 @@ int transport_off()
  * before calling, so nothing upstream would ever retry. Hence: set current_adv_mode
  * *before* attempting, so the retry/watchdog pair inherits the intended mode and
  * owns recovery from here. */
-int transport_set_adv_slow(void)
+static int transport_set_adv_mode(int mode, const char *label)
 {
     if (is_connected) {
         return 0;
     }
     /* stop → set mode → start must be atomic against the retry/watchdog handlers;
      * see adv_mutex. adv_schedule_retry() is called after unlocking — it only
-     * touches an atomic and a work item, and holding the lock across it buys
+     * touches atomics and a work item, and holding the lock across it buys
      * nothing. */
     k_mutex_lock(&adv_mutex, K_FOREVER);
     /* Re-check under the lock: the is_connected test above and the gate can both
@@ -2651,52 +2740,28 @@ int transport_set_adv_slow(void)
         k_mutex_unlock(&adv_mutex);
         return 0;
     }
-    int err = bt_le_adv_stop();
-    if (err && err != -EALREADY) {
-        k_mutex_unlock(&adv_mutex);
-        LOG_ERR("adv_slow: stop failed (%d)", err);
-        return err;
-    }
-    /* An explicit mode request outranks a pending post-disconnect reset; drop it so
-     * adv_start_raw() below doesn't immediately flip us back to fast. */
-    atomic_set(&adv_reset_to_fast, 0);
-    current_adv_mode = "slow";
-    err = adv_start_raw();
+    int err = adv_apply_mode_locked(mode);
     k_mutex_unlock(&adv_mutex);
-    if (err && err != -EALREADY) {
-        adv_schedule_retry(err, "adv_slow");
+    if (err) {
+        /* adv_apply_mode_locked has parked the request in adv_pending_mode, so the
+         * retry re-runs the whole stop/set/start rather than only the start —
+         * without which a failed stop silently stranded us on the wrong interval,
+         * since both aad.c callers discard this return value. */
+        adv_schedule_retry(err, label);
         return err;
     }
-    LOG_INF("BLE advertising switched to slow interval");
+    LOG_INF("BLE advertising switched to %s interval", label);
     return 0;
+}
+
+int transport_set_adv_slow(void)
+{
+    return transport_set_adv_mode(ADV_MODE_SLOW, "slow");
 }
 
 int transport_set_adv_fast(void)
 {
-    if (is_connected) {
-        return 0;
-    }
-    k_mutex_lock(&adv_mutex, K_FOREVER); /* see transport_set_adv_slow */
-    if (!atomic_get(&adv_guard_active) || is_connected) {
-        k_mutex_unlock(&adv_mutex);
-        return 0;
-    }
-    int err = bt_le_adv_stop();
-    if (err && err != -EALREADY) {
-        k_mutex_unlock(&adv_mutex);
-        LOG_ERR("adv_fast: stop failed (%d)", err);
-        return err;
-    }
-    atomic_set(&adv_reset_to_fast, 0);
-    current_adv_mode = "fast";
-    err = adv_start_raw();
-    k_mutex_unlock(&adv_mutex);
-    if (err && err != -EALREADY) {
-        adv_schedule_retry(err, "adv_fast");
-        return err;
-    }
-    LOG_INF("BLE advertising switched to fast interval");
-    return 0;
+    return transport_set_adv_mode(ADV_MODE_FAST, "fast");
 }
 
 static void count_bond_cb(const struct bt_bond_info *info, void *user_data)
@@ -2866,7 +2931,7 @@ int transport_start()
          * covers every later restart — so a transient boot-time -ENOMEM/-EAGAIN
          * self-heals within seconds rather than bricking the link until reboot. */
         LOG_ERR("Transport advertising failed to start (err %d) — handing to adv retry", err);
-        adv_retry_delay_ms = ADV_RESTART_RETRY_MS;
+        adv_reset_backoff();
         adv_schedule_retry(err, "boot");
     } else {
         LOG_INF("Advertising successfully started");

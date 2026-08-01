@@ -197,8 +197,9 @@ void main() {
       );
       expect(afterReboot.looksRebootedFrom(base), isTrue);
 
-      // And each counter independently suffices — a watchdog rescue can happen
-      // without any start ever having failed, and vice versa.
+      // And each counter independently suffices, in BOTH directions — a watchdog
+      // rescue can happen with no start ever having failed, and a start can fail
+      // without the watchdog ever rescuing anything.
       expect(
         DeviceDropStats(
           blockDrops: 0,
@@ -206,8 +207,21 @@ void main() {
           streamFrameDrops: 0,
           bootFrameDrops: 0,
           currentUptimeMs: 100,
-          advRestartFailures: 4,
+          advRestartFailures: 4, // flat
           advWatchdogRecoveries: 1, // only this one dropped
+          readAt: DateTime.fromMillisecondsSinceEpoch(0),
+        ).looksRebootedFrom(base),
+        isTrue,
+      );
+      expect(
+        DeviceDropStats(
+          blockDrops: 0,
+          lastBlockDropUptimeMs: 0,
+          streamFrameDrops: 0,
+          bootFrameDrops: 0,
+          currentUptimeMs: 100,
+          advRestartFailures: 3, // only this one dropped
+          advWatchdogRecoveries: 2, // flat
           readAt: DateTime.fromMillisecondsSinceEpoch(0),
         ).looksRebootedFrom(base),
         isTrue,
