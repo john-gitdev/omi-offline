@@ -330,4 +330,22 @@ int app_settings_arm_post_dfu_unpair(bool arm, const char *current_fw);
  */
 bool app_settings_consume_post_dfu_unpair(const char *current_fw);
 
+/**
+ * @brief Whether this is the first boot of [current_fw], and record it if so.
+ *
+ * Unconditional counterpart to @ref app_settings_consume_post_dfu_unpair: that
+ * marker only exists when the user opted into a pairing reset and is consumed by
+ * it, so it cannot answer "did we just update?" on an ordinary flash. This one
+ * persists the running version on every boot where it differs.
+ *
+ * One-shot per version: the new version is written before returning true, so a
+ * second call in the same boot (or the next boot of the same image) returns false.
+ * A device with no stored version — one that predates this key — reports a change
+ * on its first boot after upgrading, which is the correct answer.
+ *
+ * @param current_fw Compile-time firmware version string (e.g. CONFIG_BT_DIS_FW_REV_STR).
+ * @return true on the first boot of a different firmware version.
+ */
+bool app_settings_firmware_version_changed(const char *current_fw);
+
 #endif // SETTINGS_H
