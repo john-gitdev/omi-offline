@@ -73,13 +73,8 @@ bool diag_log_is_enabled(void)
 /* Enqueue                                                            */
 /* ------------------------------------------------------------------ */
 
-void diag_log_event(uint8_t code, uint8_t backend, uint16_t arg0, uint32_t arg1)
+static void diag_log_enqueue(uint8_t code, uint8_t backend, uint16_t arg0, uint32_t arg1)
 {
-    /* Disabled = a single predictable branch, no lock, no write. */
-    if (!atomic_get(&diag_enabled)) {
-        return;
-    }
-
     k_spinlock_key_t key = k_spin_lock(&diag_lock);
 
     diag_event_t *slot = &ring[ring_head];
@@ -116,6 +111,26 @@ void diag_log_event(uint8_t code, uint8_t backend, uint16_t arg0, uint32_t arg1)
      * rare (empty-bin rotations, marker drops) against a sub-ms transfer window. */
 
     k_spin_unlock(&diag_lock, key);
+}
+
+void diag_log_event(uint8_t code, uint8_t backend, uint16_t arg0, uint32_t arg1)
+{
+    /* Disabled = a single predictable branch, no lock, no write. */
+    if (!atomic_get(&diag_enabled)) {
+        return;
+    }
+    diag_log_enqueue(code, backend, arg0, arg1);
+}
+
+void diag_log_event_forced(uint8_t code, uint8_t backend, uint16_t arg0, uint32_t arg1)
+{
+    /* No gate check by design — see the header. diag_log_init() has already run by
+     * every call site's point in boot (main.c: app_settings_init → diag_log_init →
+     * app_sd_init → storage_init → transport_start), so the ring state these records
+     * land in is initialised, not .bss defaults. Keep that ordering: a forced record
+     * enqueued before diag_log_init() would be wiped by it and would take seq 0, the
+     * reserved "none" value the ack protocol relies on. */
+    diag_log_enqueue(code, backend, arg0, arg1);
 }
 
 /* ------------------------------------------------------------------ */
