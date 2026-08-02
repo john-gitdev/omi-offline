@@ -54,7 +54,7 @@ correctly when a bin was missing.
 |---|---|---|
 | `consecutive_failures` / `failures_before_recovery` | Failed connect attempts of any status this outage | Higher = longer/harder outage |
 | `last_gatt_status` | Most recent status; `-1` = our own connect-timeout backstop fired (Android never reported) | `-1` alone = initiator wedged silent |
-| `last_real_gatt_status` | Most recent *real* status Android delivered (not `-1`, not `0`) | `147` = stack actively rejecting; `8` = supervision timeout (0x08); `null` = all-timeout outage, zero callbacks |
+| `last_real_gatt_status` | Most recent *real* status Android delivered (not `-1`, not `0`) | `147` = `BluetoothGatt.GATT_CONNECTION_TIMEOUT` (0x93, API 33+) — **the peer never completed the link**, not "the stack rejected us"; `8` = supervision timeout (0x08), which means the link *did* come up and then died, so the peripheral was demonstrably on the air; `null` = all-timeout outage, zero callbacks |
 | `bond_state` | Should be `bonded` | If not bonded, different problem |
 | `omi_in_gatt_list` | Is Omi in the system GATT-profile connected list | `false` at wedge = **no ghost host link to purge** |
 | `omi_acl_connected` | Does the phone hold a live ACL to Omi | `false` + `omi_in_gatt_list=false` = nothing host-side holding the firmware's single slot |
@@ -147,6 +147,8 @@ Record the sub-class in the "Recovery trigger" column below.
 | 4 | 2026-07-28 19:47→22:27 | ~2h 40m (3 cycles) | **ADVERTISING** (first ever) | Forget Device + power-cycle | **No** | +0 (flat at 61) | fast | *none — all `-1`* |
 | 5a | 2026-07-31 15:52→16:07 | 14m 41s | SILENT | device-return / self (screen already on) | **No** | *(not captured)* | — | 147 |
 | 5b | 2026-07-31 16:10→18:19 | 2h 06m | SILENT ×5 | **device power-cycle** (toggle tried twice, both failed) | **Yes — ineffective** | *(not captured)* | — | 147 |
+| 6a | 2026-08-02 09:22→10:07 | 44m 52s | SILENT, then **ADVERTISING @ −103 dBm** | device-return / self (Doze on, screen off) | **No** | *(not in excerpt)* | — | **8** |
+| 6b | 2026-08-02 10:45→15:23 | 4h 37m 30s | SILENT ×10, then **ADVERTISING @ −91 dBm** | device-return / self (screen on) | **No** | *(not in excerpt)* | — | 147 |
 
 **Wedge 5 is SOLVED** — see the resolution block below. Root cause: the post-disconnect
 `bt_le_adv_start()` in `transport.c` was fire-and-forget, so a single failure left the device
@@ -588,6 +590,102 @@ other half of the evidence.
    re-advertise latency" to a sharper question: *can `transport.c` reach a state where advertising
    stops and nothing restarts it?* Held loosely, because of the short-toggle caveat above and
    because we still have no independent receiver confirming the silence.
+
+---
+
+### Detail — Wedge 6 (2026-08-02, 45 min then 4 h 37 m) — two wedges, two mechanisms, one app-side cause
+
+Log source: app 0.31.x, device `C3:94:71:EA:A8:D5`, phone uptime 1.925–1.947 Gms (~22.3 d).
+**Firmware oo-2.8.2 — before the advertising watchdog.** The Garmin `Instinct 2X Solar` is the
+only other LE link throughout (`contending_le_links=1`, never varies).
+
+**Both outages start on an app-initiated disconnect, from the same line.**
+
+| | Lead-in | Outage |
+|---|---|---|
+| 6a | 08:32:06 connect → 08:32:07 `Disconnecting device (isManual: true)` → 08:32:16 `error=unmanaged` | 08:52 first failure → recovered 10:07:39 |
+| 6b | 10:08:06 connect → 10:08:11 `Disconnecting device (isManual: true)` → `error=unmanaged` | 10:37 first failure → recovered 15:23:11 |
+
+That is `device_provider.dart:1988` — `_handleDeviceConnected: dropping — app is backgrounded
+and no sync was pending`. Wedge 5's outage likewise began at "the 15:22:53 disconnect — the last
+healthy sync's own teardown." **Three for three: every outage with a known start begins at a
+central-initiated disconnect**, which is exactly the callback in which pre-2.8.3 `transport.c`
+called `bt_le_adv_start()` fire-and-forget.
+
+**But 6a and 6b are not the same failure.** Split them by `last_real_gatt_status`:
+
+- **6a is `8` throughout** (08:53:22, 08:53:45, 09:03:40, 09:05:00, 09:05:47, 09:08:12, 09:52:59),
+  and links *do* come up: 08:31:55 and 09:02:59 both reach service setup and die 5–7 s in, mid-DIS
+  read (`2a24` → Error 133, `2a26` → `Disconnected`). A device that is not advertising cannot
+  produce status `8`, and cannot answer a CONNECT_IND. **6a is a link that establishes and
+  collapses — not an off-air wedge.**
+- **6b is `147`/`-1` throughout**, ten SILENT probes, and no link ever forms. That is the
+  off-air/unreachable signature of Wedges 1, 2 and 5.
+
+**First ADVERTISING probes inside a bonded, no-ghost establishment wedge — and the RSSI is the
+finding.** This supersedes §4 Wedge-5 point 2 ("SILENT is 7 of 7 for the establishment class;
+both ADVERTISING verdicts belong to the bond-mismatch class"):
+
+| Probe | Packets / 8 s | first_seen | RSSI min…max |
+|---|---|---|---|
+| 09:38:37 (during 6a) | 4 | 759 ms | −104 … −103 |
+| 15:19:09 (2 min before 6b cleared) | 2 | 1604 ms | −99 … **−91** |
+
+Every other probe (10:49, 11:10, 11:41, 12:10, 12:41, 12:56, 13:26, 14:08, 14:26, 14:58) was
+SILENT. −103 dBm is the receiver noise floor; 2–4 packets out of the ~8 a 1 s advertiser emits in
+the window is what 50–75 % packet loss at that level looks like. **So a competing explanation is
+live for this episode and was not live for Wedge 5: the device may simply have been out of
+range** — left in another room / behind walls — which independently produces SILENT probes, `147`
+timeouts, links that establish at −100 dB and supervision-time-out during service discovery, and a
+recovery that coincides with RSSI climbing to −91. The 15:23 recovery is consistent with a
+still-marginal link: 8576 ms to device-ready and a 23 KB/s transfer.
+
+Wedge 5 killed that alternative with three interventions **none of which were run here** — a second
+phone that also couldn't see it, a full BT toggle that changed nothing, and a power-cycle that fixed
+it instantly. Here the RSSI evidence actively points the other way (Wedge 5's probes had `rssi_*`
+all `null`; two of these do not).
+
+**What settles it, and it may already be in the untruncated log.** `device_conn_fail` /
+`device_drop_stats` are logged on every successful connect (`device_provider.dart:1832-1843`).
+Diff `estab_fail_count` between the 10:07:39 connect and the 15:23:12 one:
+
+- **Rose** ⟹ the Omi heard the CONNECT_INDs and the links died at establishment ⟹ peripheral/RF or
+  range, **not** the advertising wedge.
+- **Flat** ⟹ it heard nothing in 4 h 37 m ⟹ off the air (or far out of range).
+
+Caveat when hunting for it: `getDropStats()` self-skips while a sync holds the storage mutex, and
+the 15:23:12 connect went straight into a 14-segment sync — so the reading may have landed on the
+*next* connect instead.
+
+**The app-side defect this exposes — a failed sync buys 30 minutes of "nothing is pending".**
+`_shouldSyncNow()` (`device_provider.dart:1286`) gates on `lastSyncCompletedMs`, and
+`_doBackgroundSync` stamps that field in **both** its success path (`:1086`) and its failure path
+(`:1094`, alongside `lastSyncPartial = true`). The 6b chain:
+
+1. 10:07:39 — `ble_wedge_recovered` after 44 min.
+2. 10:07:57 — sync starts, card reads `0/6 segments`; 10:07:58 the link dies mid-LIST
+   (`getMissingWals returned 0 WALs` on a corpse).
+3. The `catch` stamps `lastSyncCompletedMs = now`.
+4. 10:08:06 — native auto-reconnect **succeeds**. The link is back.
+5. 10:08:11 — `_shouldSyncNow()` sees a "sync" 13 s old against a 30 min interval → `false` →
+   the background guard drops the link, `isManual: true`.
+6. That clean central-initiated disconnect is the 2.8.2 adv-restart trigger. 4 h 37 m gone, and
+   the 6 stranded segments were 14 by the time the device came back.
+
+The guard at `:1976-1982` exists *specifically* to adopt hard-won wedge-recovery links, and it was
+defeated because a failed sync resets the same clock a successful one does. `lastSyncPartial`
+already records the difference and `_shouldSyncNow()` never consults it.
+
+**`ble_wedge_recovered` over-reported again — now 3-for-3.** 10:07:39 fired at service discovery;
+the link was dead 19 s later having fetched nothing. Only the 15:23:11 recovery passed the "a sync
+actually completed" test (14 segments, 23 KB/s).
+
+- Bluetooth toggle in window? **No** — `adapter_state=on` in all 12 snapshots, no STATE_OFF.
+- Bucket: both **self-clearing (device-return)**. 6a cleared under Doze with the screen off; 6b
+  cleared with the screen on — screen-wake remains a non-mechanism (Wedge 5 point 1 holds).
+- Would 2.8.4 have prevented this? **6b: plausibly yes** — it is the disconnect-triggered off-air
+  signature the watchdog re-asserts out of within 30 s. **6a: no** — links were forming and dying,
+  which the watchdog does not address. And if the range hypothesis holds, neither.
 
 ---
 
