@@ -89,6 +89,10 @@ class DiagLogRecord {
         return 'adv_watchdog_rescue';
       case 15:
         return 'adv_stop_fail';
+      case 16:
+        return 'vad_level';
+      case 17:
+        return 'mic_power_cycle';
       default:
         return 'code_$code';
     }
@@ -169,6 +173,28 @@ class DiagLogRecord {
         // reconfigured. The previous advertiser is still running — this is NOT an
         // off-air event, which is why it is a separate code from 13.
         return 'Advertising stop failed (${arg0 == 1 ? "slow" : "fast"}) — errno -$arg1, interval unchanged';
+      case 16:
+        // Peak-hold of the AAD input level over a 5-minute window. arg0 = max avg
+        // amplitude seen, arg1 packs min in the high 16 bits and the threshold in
+        // force in the low 16.
+        //
+        // This is the one reading that separates "the mic is dead" from "the room is
+        // quiet" — the ambiguity that made the 2026-08-02 mic outage un-diagnosable
+        // from logs, since a silent room and a wedged part both produce zero
+        // recordings and zero bins. A max pinned at 0 across consecutive windows is a
+        // wedged T5838 (digital-zero PDM output); any real room clears zero within
+        // five minutes even when nothing ever crosses the threshold.
+        final levelMin = (arg1 >> 16) & 0xFFFF;
+        final levelThreshold = arg1 & 0xFFFF;
+        final verdict = arg0 == 0 ? ' — NO SIGNAL (mic may be wedged)' : '';
+        return 'Mic level: peak $arg0, floor $levelMin (threshold $levelThreshold)$verdict';
+      case 17:
+        // First boot of a new firmware version power-cycles PDM_EN, because a warm
+        // reset leaves the T5838 powered through the flash and can strand it emitting
+        // digital zero. arg0 = whether the rail GPIO was actually usable.
+        return arg0 == 1
+            ? 'Mic rail power-cycled after firmware update'
+            : 'Mic rail power-cycle SKIPPED after update — PDM_EN gpio not ready';
       default:
         return 'Event code=$code backend=$backend arg0=$arg0 arg1=$arg1';
     }
