@@ -34,23 +34,31 @@ void mic_resume();
  * calling it while paused, since the cycle discards in-flight samples.
  */
 /**
- * @return true only if the full low-then-restore cycle completed.
- *
- * False means the cycle did not complete — NOT that the part kept its supply
- * throughout. Three shapes, and they differ:
- *   - never started: the GPIO was not ready, the pull-down failed, or the dmic STOP
- *     failed and aborted the reset. The call degrades to at most a dmic re-trigger,
- *     which does not clear a wedged T5838.
- *   - partial: the rail went low but could not be driven back up. The pin is then
- *     released to the board pull-up to re-power the part, so it may in fact have
- *     been cycled — the result is simply not something this function can assert.
- *   - stuck: even the release failed, so PDM_EN is low and the mic has no supply.
- *     Capture is deliberately left stopped rather than restarted into a dead rail.
- *
- * A caller recording this in the diagnostic log must report the returned value
- * rather than assume a complete cycle happened; RTT carries which shape it was.
+ * Outcome of @ref mic_reset. These are materially different states, not degrees of
+ * success, which is why this is an enum rather than a bool: only CYCLED clears a
+ * wedged T5838, and only RAIL_OFF means capture must not be started. Values are
+ * persisted as DIAG_MIC_POWER_CYCLE arg0 — APPEND-ONLY, never renumber.
  */
-bool mic_reset();
+typedef enum {
+    /** Rail never dropped — GPIO not ready, pull-down failed, or the dmic STOP
+     *  aborted the reset. Still powered, but nothing was cleared. */
+    MIC_RESET_NOT_CYCLED = 0,
+    /** Full low-then-restore completed. The only outcome that clears a wedge. */
+    MIC_RESET_CYCLED = 1,
+    /** Rail dropped but could not be driven back up; the pin was released to the
+     *  board pull-up, which should re-power it. Probably cycled — not assertable. */
+    MIC_RESET_PARTIAL = 2,
+    /** PDM_EN is stuck low and the release failed too: the mic has NO supply.
+     *  Callers must not start capture, or they will report a running mic over a
+     *  dead part and produce silence that looks healthy from every layer above. */
+    MIC_RESET_RAIL_OFF = 3,
+} mic_reset_result_t;
+
+/**
+ * @return which of @ref mic_reset_result_t occurred. RTT carries the same shape,
+ *         but this is what callers gate on and what reaches the drained log.
+ */
+mic_reset_result_t mic_reset();
 bool mic_is_running();
 void mic_set_gain(uint8_t gain_level);
 #endif

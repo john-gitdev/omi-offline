@@ -198,10 +198,21 @@ class DiagLogRecord {
       case 17:
         // First boot of a new firmware version power-cycles PDM_EN, because a warm
         // reset leaves the T5838 powered through the flash and can strand it emitting
-        // digital zero. arg0 = whether the rail GPIO was actually usable.
-        return arg0 == 1
-            ? 'Mic rail power-cycled after firmware update'
-            : 'Mic rail power-cycle SKIPPED after update — PDM_EN gpio not ready';
+        // digital zero. arg0 = mic_reset_result_t — four distinct states, not degrees
+        // of success: 0 and 3 both mean "no cycle happened" but only 3 means the mic
+        // has no supply at all, and only 1 actually clears a wedge.
+        switch (arg0) {
+          case 0:
+            return 'Mic rail cycle after update did NOT run — rail never dropped, a wedge would persist';
+          case 1:
+            return 'Mic rail power-cycled after firmware update';
+          case 2:
+            return 'Mic rail cycle after update was PARTIAL — restore failed, released to the board pull-up';
+          case 3:
+            return 'Mic rail STUCK OFF after update — no supply, capture skipped this boot';
+          default:
+            return 'Mic rail cycle after update — unknown result $arg0';
+        }
       default:
         return 'Event code=$code backend=$backend arg0=$arg0 arg1=$arg1';
     }

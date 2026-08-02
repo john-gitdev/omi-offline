@@ -154,15 +154,30 @@ void main() {
       expect(rec(0, 1).description, isNot(contains('UNPAIRED')));
     });
 
-    test('mic_power_cycle distinguishes a real rail cycle from a skipped one', () {
-      // arg0 = whether PDM_EN was actually usable. A not-ready GPIO turns mic_reset()
-      // into a plain dmic re-trigger, which does NOT clear a wedged T5838 — so the
-      // record must never claim a power cycle that did not happen.
-      DiagLogRecord rec(int ok) => DiagLogRecord(seq: 1, uptimeMs: 0, code: 17, backend: 0, arg0: ok, arg1: 0);
+    test('mic_power_cycle keeps all four outcomes distinguishable', () {
+      // arg0 = mic_reset_result_t. These are distinct states, not degrees of success:
+      // 0 and 3 both mean no cycle happened, but only 3 means the part has no supply,
+      // and only 1 actually clears a wedged T5838. Collapsing them would defeat the
+      // reason this record is persisted at all.
+      DiagLogRecord rec(int result) => DiagLogRecord(seq: 1, uptimeMs: 0, code: 17, backend: 0, arg0: result, arg1: 0);
 
+      // Only 1 may claim the cycle happened.
       expect(rec(1).description, contains('power-cycled'));
-      expect(rec(1).description, isNot(contains('SKIPPED')));
-      expect(rec(0).description, contains('SKIPPED'));
+      for (final other in [0, 2, 3]) {
+        expect(rec(other).description, isNot(contains('Mic rail power-cycled')),
+            reason: 'result $other must not read as a completed cycle');
+      }
+
+      // 0 vs 3 — both "no cycle", but only 3 is a dead mic.
+      expect(rec(0).description, contains('did NOT run'));
+      expect(rec(0).description, isNot(contains('STUCK OFF')));
+      expect(rec(3).description, contains('STUCK OFF'));
+      expect(rec(3).description, contains('capture skipped'));
+
+      expect(rec(2).description, contains('PARTIAL'));
+
+      // A newer firmware state must not silently render as one of the known ones.
+      expect(rec(9).description, contains('unknown result 9'));
     });
 
     test('advertising events decode mode and errno, and stay distinguishable', () {

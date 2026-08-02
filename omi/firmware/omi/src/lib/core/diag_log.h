@@ -64,10 +64,15 @@ typedef enum {
                                       * Emitted on a silent<->non-silent transition or hourly. A max
                                       * of 0 is digital silence from the part; a quiet room always
                                       * peaks above 0 even when nothing reaches the threshold. */
-    DIAG_MIC_POWER_CYCLE = 17,       /* PDM_EN was power-cycled at boot because the running
-                                      * firmware version differs from the last booted one, i.e.
-                                      * first boot after an update. arg0 = 1 if the rail was
-                                      * actually cycled, 0 if the GPIO was not ready. */
+    DIAG_MIC_POWER_CYCLE = 17,       /* PDM_EN cycle attempted at boot because the running firmware
+                                      * version differs from the last booted one, i.e. first boot
+                                      * after an update. arg0 = mic_reset_result_t (mic.h):
+                                      *   0 NOT_CYCLED rail never dropped, nothing cleared
+                                      *   1 CYCLED     full cycle -- the only outcome that clears a wedge
+                                      *   2 PARTIAL    dropped, restore failed, released to the pull-up
+                                      *   3 RAIL_OFF   stuck low, mic has NO supply, capture skipped
+                                      * These are distinct states, not degrees of success: 0 and 3
+                                      * both mean "no cycle" but only 3 means the mic is dead. */
 } diag_event_code_t;
 
 /* arg0 values for DIAG_BOND_STATE. Appended-only, same discipline as the codes. */

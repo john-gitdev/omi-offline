@@ -223,11 +223,10 @@ void mic_resume()
     }
 }
 
-bool mic_reset()
+mic_reset_result_t mic_reset()
 {
     const bool was_running = mic_running;
-    bool rail_cycled = false;  /* the full low-then-restore actually completed */
-    bool rail_powered = true;  /* false only if PDM_EN is known to be stuck LOW */
+    mic_reset_result_t result = MIC_RESET_NOT_CYCLED;
 
     if (mic_running) {
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_STOP);
@@ -239,7 +238,7 @@ bool mic_reset()
              * desync worse than the wedge this is trying to clear. The caller
              * simply doesn't get a reset this time. */
             LOG_ERR("mic_reset: STOP trigger failed: %d — leaving mic untouched", ret);
-            return false;
+            return MIC_RESET_NOT_CYCLED;
         }
         mic_running = false;
     }
@@ -277,14 +276,15 @@ bool mic_reset()
                     LOG_ERR("mic_reset: PDM_EN stuck LOW (restore %d, release %d) — mic has NO supply",
                             hi,
                             rel);
-                    rail_powered = false;
+                    result = MIC_RESET_RAIL_OFF;
                 } else {
                     LOG_WRN("mic_reset: PDM_EN restore failed (%d) — released to the board pull-up", hi);
                     k_msleep(20);
+                    result = MIC_RESET_PARTIAL;
                 }
             } else {
                 k_msleep(20);
-                rail_cycled = true;
+                result = MIC_RESET_CYCLED;
                 LOG_INF("mic_reset: PDM_EN power-cycled");
             }
         }
@@ -297,19 +297,19 @@ bool mic_reset()
      * every layer above believes is healthy — the exact failure this whole change
      * set exists to make visible. Leaving mic_running false is the honest state and
      * lets a later mic_start()/mic_reset() try again. */
-    if (was_running && !rail_powered) {
+    if (was_running && result == MIC_RESET_RAIL_OFF) {
         LOG_ERR("mic_reset: not restarting capture — PDM_EN is off, mic left stopped");
     } else if (was_running) {
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
         if (ret < 0) {
             LOG_ERR("mic_reset: START trigger failed: %d", ret);
-            return rail_cycled;
+            return result;
         }
         mic_running = true;
     }
 
-    LOG_INF("Microphone reset (running=%d, rail_cycled=%d, rail_powered=%d)", mic_running, rail_cycled, rail_powered);
-    return rail_cycled;
+    LOG_INF("Microphone reset (running=%d, result=%d)", mic_running, (int) result);
+    return result;
 }
 
 bool mic_is_running()

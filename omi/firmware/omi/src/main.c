@@ -440,21 +440,38 @@ int main(void)
      * A DFU that ships an unchanged version string will not cycle. Every release
      * bumps it (see the RELEASE flow in CLAUDE.md), so this only affects
      * same-version dev rebuilds, where the mic can be reset with a button gesture. */
+    mic_reset_result_t rail = MIC_RESET_NOT_CYCLED;
     if (app_settings_firmware_version_changed(CONFIG_BT_DIS_FW_REV_STR)) {
         LOG_INF("First boot of %s — power-cycling the mic rail", CONFIG_BT_DIS_FW_REV_STR);
-        bool cycled = mic_reset();
-        diag_log_event_forced(DIAG_MIC_POWER_CYCLE, 0, cycled ? 1 : 0, 0);
-        if (cycled) {
+        rail = mic_reset();
+        /* Record the outcome, not a success bit: only CYCLED clears a wedge, and
+         * RAIL_OFF is a dead mic. Collapsing them would leave the drained log unable
+         * to tell "nothing was cleared" from "the part has no supply" — the exact
+         * distinction this record was added to persist. */
+        diag_log_event_forced(DIAG_MIC_POWER_CYCLE, 0, (uint16_t) rail, 0);
+        if (rail == MIC_RESET_CYCLED) {
             app_settings_mark_firmware_version_booted(CONFIG_BT_DIS_FW_REV_STR);
         } else {
-            LOG_WRN("Mic rail not cycled — leaving the version unrecorded so the next boot retries");
+            LOG_WRN("Mic rail cycle incomplete (result=%d) — version left unrecorded so the next boot retries",
+                    (int) rail);
         }
     }
 
-    ret = mic_start();
-    if (ret) {
-        LOG_ERR("Mic failed %d", ret);
-        return ret;
+    /* mic_reset()'s own "don't restart into a dead rail" guard cannot help here: it
+     * only fires when capture was already running, and at boot it never is. So the
+     * check has to be repeated at this call site, or a stuck-low rail would be
+     * followed straight into mic_start() — reporting a running microphone over a
+     * part with no supply, which is silent capture that looks healthy from every
+     * layer above. Boot continues either way: BLE stays up so the diagnostic record
+     * above can actually be drained, which is the whole point of persisting it. */
+    if (rail == MIC_RESET_RAIL_OFF) {
+        LOG_ERR("PDM_EN stuck low — skipping mic_start(); no audio will be captured this boot");
+    } else {
+        ret = mic_start();
+        if (ret) {
+            LOG_ERR("Mic failed %d", ret);
+            return ret;
+        }
     }
 
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
