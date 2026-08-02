@@ -2806,10 +2806,13 @@ int transport_start()
      * unpaired, reconnects forever" outage (BLE_Research.md §9), and nothing else
      * surfaces it: the LOG_INF above goes nowhere without an RTT probe
      * (CONFIG_CONSOLE=n / CONFIG_UART_CONSOLE=n), and the phone can only observe the
-     * downstream symptom. Logged unconditionally — the ring is runtime-gated and this
-     * is one event per boot. */
-    diag_log_event(DIAG_BOND_STATE, 0, DIAG_BOND_CAUSE_BOOT_LOAD,
-                   transport_bond_count());
+     * downstream symptom. Forced past the runtime gate: this fires seconds before the
+     * app connects and opens the gate, so the plain diag_log_event() this used to be
+     * was discarded on every single boot — the reboot that produces the record also
+     * closes the gate that would keep it. One event per boot into an already-allocated
+     * ring. */
+    diag_log_event_forced(DIAG_BOND_STATE, 0, DIAG_BOND_CAUSE_BOOT_LOAD,
+                          transport_bond_count());
 
     /* One-shot post-update bond wipe: if the app armed it before a flash (via
      * CMD_ARM_POST_DFU_UNPAIR, which records the version at arm time), a boot on
@@ -2830,9 +2833,11 @@ int transport_start()
             LOG_INF("post-DFU unpair: firmware changed — wiped BLE bonds");
         }
         /* Distinguishes an intentional post-update wipe from an unexplained loss:
-         * without this, both look identical from the phone's side. */
-        diag_log_event(DIAG_BOND_STATE, 0, DIAG_BOND_CAUSE_POST_DFU,
-                       transport_bond_count());
+         * without this, both look identical from the phone's side. Forced for the
+         * same reason as the boot-load record above — and this is the one that
+         * matters most, since it is the only proof the wipe was ours. */
+        diag_log_event_forced(DIAG_BOND_STATE, 0, DIAG_BOND_CAUSE_POST_DFU,
+                              transport_bond_count());
     }
 
     LOG_INF("Transport bluetooth initialized");
