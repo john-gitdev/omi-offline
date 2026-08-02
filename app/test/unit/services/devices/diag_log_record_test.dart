@@ -113,7 +113,7 @@ void main() {
       expect(rec(15, 1, 5).description, isNot(contains('off the air')));
 
       expect(rec(14, 0, 0).description, contains('watchdog rescue'));
-      expect(rec(14, 0, 0).description, contains('off the air'));
+      expect(rec(14, 0, 0).description, contains('believed off the air'));
       expect(rec(14, 1, 0).description, contains('(slow)'));
     });
 

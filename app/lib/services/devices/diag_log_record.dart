@@ -154,10 +154,16 @@ class DiagLogRecord {
         // oo-2.8.3. See BLE_Research.md "Wedge 5".
         return 'Advertising start failed (${arg0 == 1 ? "slow" : "fast"}) — errno -$arg1, watchdog will retry';
       case 14:
-        // The watchdog restarted a radio it believed was off the air. arg0 = mode.
-        // This replaced a 0x0062 counter that proved impossible to keep truthful —
-        // read it as evidence, not as an exact tally. See BLE_Research.md "Wedge 5".
-        return 'Advertising watchdog rescue (${arg0 == 1 ? "slow" : "fast"}) — radio was off the air, restarted';
+        // The watchdog restarted advertising after concluding it was down. arg0 = mode.
+        //
+        // That conclusion is an inference — a previous start failed, or a plain
+        // re-assert returned success where it should have said "already advertising".
+        // Neither is proof, so the wording says "believed" rather than asserting the
+        // radio was off. This replaced a 0x0062 counter precisely because it could not
+        // be kept exact; overstating it here would reintroduce the same problem in the
+        // UI. Read it as evidence, not a verdict. See BLE_Research.md "Wedge 5".
+        return 'Advertising watchdog rescue (${arg0 == 1 ? "slow" : "fast"}) — '
+            'believed off the air, restarted';
       case 15:
         // The stop half of a mode change failed, so the interval could not be
         // reconfigured. The previous advertiser is still running — this is NOT an

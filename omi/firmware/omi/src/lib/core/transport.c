@@ -406,7 +406,10 @@ static inline const char *adv_mode_name(int mode)
     return (mode == ADV_MODE_SLOW) ? "slow" : "fast";
 }
 
-static uint8_t last_failed_adv_slow = 0; /* 1 if the most recent failure of either kind was during slow adv */
+/* 1 if the most recent failure of either kind was during slow advertising. atomic_t
+ * because the BT RX callbacks write it while the persistence worker and the 0x0062
+ * packer read it — the same cross-context exposure the advertising mode was fixed for. */
+static atomic_t last_failed_adv_slow = ATOMIC_INIT(0);
 
 
 /* Diagnostics: Priority Recording lifecycle, appended to 0x19B10062. These make a
@@ -447,7 +450,7 @@ static atomic_t session_end_marker_emits = ATOMIC_INIT(0);
 static void conn_fail_persist_work_handler(struct k_work *work)
 {
     app_settings_save_conn_fail((uint32_t) atomic_get(&failed_conn_count),
-                                last_failed_adv_slow,
+                                (uint8_t) atomic_get(&last_failed_adv_slow),
                                 (uint32_t) atomic_get(&estab_fail_count));
 }
 static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_handler);
@@ -574,7 +577,7 @@ static void diagnostics_drops_pack(uint8_t payload[84])
     pack_u32_le(payload + 12, sd_boot_drops);
     pack_u32_le(payload + 16, now_ms);
     pack_u32_le(payload + 20, conn_fails);
-    pack_u32_le(payload + 24, (uint32_t) last_failed_adv_slow);
+    pack_u32_le(payload + 24, (uint32_t) atomic_get(&last_failed_adv_slow));
     pack_u32_le(payload + 28, codec_drops);
     pack_u32_le(payload + 32, msgq_peak);
     pack_u32_le(payload + 36, fair_acts);
@@ -1924,7 +1927,7 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
          * CONNECT_IND is never reaching the device. adv_mode reveals slow-interval
          * correlation. */
         uint32_t fails = (uint32_t) atomic_inc(&failed_conn_count) + 1;
-        last_failed_adv_slow = (atomic_get(&adv_active_mode) == ADV_MODE_SLOW) ? 1 : 0;
+        atomic_set(&last_failed_adv_slow, (atomic_get(&adv_active_mode) == ADV_MODE_SLOW) ? 1 : 0);
         LOG_ERR("Connection failed (err 0x%02x) adv_mode=%s failed_conn_count=%u uptime=%lld ms",
                 err,
                 adv_mode_name((int) atomic_get(&adv_active_mode)),
@@ -1964,6 +1967,21 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
     int info_err = bt_conn_get_info(conn, &info);
     if (info_err) {
         LOG_ERR("Failed to get connection info (err %d)", info_err);
+        /* Undo the claim made above before bailing. Hoisting is_connected and the
+         * watchdog cancel to the top of this callback (so a tick could not race the
+         * setup below) put them *ahead* of this early return, which previously ran
+         * with the link still unclaimed. Left as-is we would return with the guard
+         * believing in a link we never finished configuring: the tick gate bails on
+         * is_connected forever, nothing is rescheduled, current_connection is NULL and
+         * even the idle-disconnect timer below is never armed. Restore the disconnected
+         * state and re-arm, flagging it as a disconnect so the first advertising
+         * attempt is not counted as a fault. */
+        atomic_set(&is_connected, 0);
+        atomic_set(&adv_desired_mode, ADV_MODE_FAST);
+        atomic_set(&adv_disconnect_since_tick, 1);
+        if (atomic_get(&adv_guard_active)) {
+            k_work_reschedule(&adv_watchdog_work, K_MSEC(ADV_TICK_DISCONNECT_MS));
+        }
         return;
     }
 
@@ -2019,7 +2037,7 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
  * this must happen before the watchdog applies the post-disconnect reset below. */
     if (err == BT_HCI_ERR_CONN_FAIL_TO_ESTAB) {
         uint32_t estab_fails = (uint32_t) atomic_inc(&estab_fail_count) + 1;
-        last_failed_adv_slow = (atomic_get(&adv_active_mode) == ADV_MODE_SLOW) ? 1 : 0;
+        atomic_set(&last_failed_adv_slow, (atomic_get(&adv_active_mode) == ADV_MODE_SLOW) ? 1 : 0);
         LOG_ERR("Link died at establishment (0x3e) adv_mode=%s estab_fail_count=%u",
                 adv_mode_name((int) atomic_get(&adv_active_mode)), estab_fails);
         k_work_schedule(&conn_fail_persist_work, K_MSEC(CONN_FAIL_PERSIST_DELAY_MS));
@@ -2758,9 +2776,13 @@ int transport_start()
     {
         uint32_t persisted = 0;
         uint32_t persisted_estab = 0;
-        app_settings_get_conn_fail(&persisted, &last_failed_adv_slow, &persisted_estab);
+        /* Via a local: the settings API takes a uint8_t*, and last_failed_adv_slow is
+         * now an atomic_t so it cannot be written through a raw pointer. */
+        uint8_t persisted_adv_slow = 0;
+        app_settings_get_conn_fail(&persisted, &persisted_adv_slow, &persisted_estab);
         atomic_set(&failed_conn_count, (atomic_val_t) persisted);
         atomic_set(&estab_fail_count, (atomic_val_t) persisted_estab);
+        atomic_set(&last_failed_adv_slow, (atomic_val_t) persisted_adv_slow);
     }
 
     // Enable Bluetooth
