@@ -56,6 +56,17 @@ typedef enum {
                                       * still up, so this is NOT an off-air event -- split from
                                       * code 13 so field diagnosis is not misled. arg0 = mode,
                                       * arg1 = errno magnitude. */
+    DIAG_VAD_LEVEL = 16,             /* periodic AAD input level -- the one number that separates
+                                      * "the mic is dead" from "the room is quiet", which no
+                                      * counter or bin listing can. arg0 = avg abs amplitude over
+                                      * the frame (int16 units, saturated at 65535); arg1 =
+                                      * vad_threshold in the low 16 bits, bit 16 = vad_is_recording.
+                                      * avg pinned at 0 across many records = wedged mic; avg
+                                      * fluctuating below threshold = a genuinely silent room. */
+    DIAG_MIC_POWER_CYCLE = 17,       /* PDM_EN was power-cycled at boot because the running
+                                      * firmware version differs from the last booted one, i.e.
+                                      * first boot after an update. arg0 = 1 if the rail was
+                                      * actually cycled, 0 if the GPIO was not ready. */
 } diag_event_code_t;
 
 /* arg0 values for DIAG_BOND_STATE. Appended-only, same discipline as the codes. */
@@ -94,6 +105,22 @@ void diag_log_set_enabled(bool on);    /* dev-tools toggle target (0x0064 enable
 bool diag_log_is_enabled(void);
 void diag_log_event(uint8_t code, uint8_t backend, uint16_t arg0, uint32_t arg1);
 
+/* Same enqueue, but bypassing the runtime gate.
+ *
+ * The gate is volatile and starts closed at every boot; the app only opens it once
+ * it has connected, which is seconds later. Any event emitted at boot therefore hits
+ * a closed gate and is discarded — including DIAG_BOND_STATE, the single record that
+ * says whether the device came up with its pairing keys. That made the one piece of
+ * evidence for a post-update bond wipe structurally unreachable: the reboot that
+ * produces the record is the same reboot that closes the gate that would keep it.
+ *
+ * Use this ONLY for events that (a) fire in the boot window and (b) cannot be
+ * reconstructed later. The ring is already allocated, so unconditional records cost
+ * RAM we have paid for; the gate still governs the drain, so an app that never asks
+ * never sees them. Everything periodic or high-rate must keep using diag_log_event()
+ * so a disabled log stays one predictable branch. */
+void diag_log_event_forced(uint8_t code, uint8_t backend, uint16_t arg0, uint32_t arg1);
+
 /* Snapshot-based, byte-offset-addressable drain for GATT Long Read. The FIRST read
  * (offset 0) snapshots the ring boundary so records don't shift mid-transfer;
  * subsequent offsets serve the same snapshot. Writes up to `max` bytes of the blob
@@ -110,6 +137,13 @@ static inline void diag_log_init(void) {}
 static inline void diag_log_set_enabled(bool on) { (void) on; }
 static inline bool diag_log_is_enabled(void) { return false; }
 static inline void diag_log_event(uint8_t code, uint8_t backend, uint16_t arg0, uint32_t arg1)
+{
+    (void) code;
+    (void) backend;
+    (void) arg0;
+    (void) arg1;
+}
+static inline void diag_log_event_forced(uint8_t code, uint8_t backend, uint16_t arg0, uint32_t arg1)
 {
     (void) code;
     (void) backend;
