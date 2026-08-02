@@ -226,7 +226,8 @@ void mic_resume()
 bool mic_reset()
 {
     const bool was_running = mic_running;
-    bool rail_cycled = false;
+    bool rail_cycled = false;  /* the full low-then-restore actually completed */
+    bool rail_powered = true;  /* false only if PDM_EN is known to be stuck LOW */
 
     if (mic_running) {
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_STOP);
@@ -248,7 +249,7 @@ bool mic_reset()
      * whole point of the call — a wedged T5838 (digital-zero PDM output, WAKE
      * never asserting) is only cleared by removing its supply, which neither
      * mic_pause()/mic_resume() nor a dmic re-trigger does. INACTIVE = physical
-     * low = disabled (pdm_en_pin is GPIO_ACTIVE_HIGH). */
+     * low = disabled (pdm_en_pin is GPIO_ACTIVE_HIGH).
      *
      * Both configure calls are checked. A ready GPIO controller does not mean the
      * pin was actually driven, and callers that record this in the diagnostic log
@@ -265,7 +266,22 @@ bool mic_reset()
             k_msleep(20);
             int hi = gpio_pin_configure_dt(&pdm_en, GPIO_OUTPUT_ACTIVE);
             if (hi < 0) {
-                LOG_ERR("mic_reset: PDM_EN restore failed: %d — RAIL LEFT OFF", hi);
+                /* The rail is LOW and we cannot drive it back up — the one outcome
+                 * worse than never having tried, because the part now has no supply
+                 * at all. Release the pin to an input so the board pull-up re-powers
+                 * it: that pull-up is what holds PDM_EN high whenever the firmware
+                 * doesn't touch the pin, so handing control back to it is the best
+                 * recovery available here. */
+                int rel = gpio_pin_configure_dt(&pdm_en, GPIO_INPUT);
+                if (rel < 0) {
+                    LOG_ERR("mic_reset: PDM_EN stuck LOW (restore %d, release %d) — mic has NO supply",
+                            hi,
+                            rel);
+                    rail_powered = false;
+                } else {
+                    LOG_WRN("mic_reset: PDM_EN restore failed (%d) — released to the board pull-up", hi);
+                    k_msleep(20);
+                }
             } else {
                 k_msleep(20);
                 rail_cycled = true;
@@ -276,7 +292,14 @@ bool mic_reset()
         LOG_WRN("mic_reset: PDM_EN gpio not ready — rail NOT cycled");
     }
 
-    if (was_running) {
+    /* Never restart capture into a rail we know is off. Doing so would report
+     * mic_running = true while the part has no supply, i.e. silent capture that
+     * every layer above believes is healthy — the exact failure this whole change
+     * set exists to make visible. Leaving mic_running false is the honest state and
+     * lets a later mic_start()/mic_reset() try again. */
+    if (was_running && !rail_powered) {
+        LOG_ERR("mic_reset: not restarting capture — PDM_EN is off, mic left stopped");
+    } else if (was_running) {
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
         if (ret < 0) {
             LOG_ERR("mic_reset: START trigger failed: %d", ret);
@@ -285,7 +308,7 @@ bool mic_reset()
         mic_running = true;
     }
 
-    LOG_INF("Microphone reset (running=%d, rail_cycled=%d)", mic_running, rail_cycled);
+    LOG_INF("Microphone reset (running=%d, rail_cycled=%d, rail_powered=%d)", mic_running, rail_cycled, rail_powered);
     return rail_cycled;
 }
 

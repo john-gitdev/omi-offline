@@ -427,7 +427,8 @@ int main(void)
      * its own evidence rather than papered over here.
      *
      * Runs before mic_start(), so mic_running is false and mic_reset() does only the
-     * rail cycle — no dmic trigger against an unconfigured device. */
+     * rail cycle — no dmic trigger against an unconfigured device.
+     *
      * Cycle FIRST, record the version AFTER. A reset in that window costs a repeat
      * of a 40 ms rail cycle on the next boot; the other ordering costs the cycle
      * entirely, for every remaining boot of that image — which is the wedge this

@@ -34,13 +34,21 @@ void mic_resume();
  * calling it while paused, since the cycle discards in-flight samples.
  */
 /**
- * @return true only if the PDM_EN rail was actually taken low and restored.
+ * @return true only if the full low-then-restore cycle completed.
  *
- * False means the part never lost its supply — a not-ready GPIO, a failed
- * `gpio_pin_configure_dt()`, or an aborted reset because the dmic STOP failed. In
- * every one of those cases the call degrades to at most a dmic re-trigger, which
- * does NOT clear a wedged T5838, so a caller recording this in the diagnostic log
- * must report the returned value rather than assume the cycle happened.
+ * False means the cycle did not complete — NOT that the part kept its supply
+ * throughout. Three shapes, and they differ:
+ *   - never started: the GPIO was not ready, the pull-down failed, or the dmic STOP
+ *     failed and aborted the reset. The call degrades to at most a dmic re-trigger,
+ *     which does not clear a wedged T5838.
+ *   - partial: the rail went low but could not be driven back up. The pin is then
+ *     released to the board pull-up to re-power the part, so it may in fact have
+ *     been cycled — the result is simply not something this function can assert.
+ *   - stuck: even the release failed, so PDM_EN is low and the mic has no supply.
+ *     Capture is deliberately left stopped rather than restarted into a dead rail.
+ *
+ * A caller recording this in the diagnostic log must report the returned value
+ * rather than assume a complete cycle happened; RTT carries which shape it was.
  */
 bool mic_reset();
 bool mic_is_running();
