@@ -91,6 +91,57 @@ void main() {
       expect(rec(13).label, 'adv_start_fail');
       expect(rec(14).label, 'adv_watchdog_rescue');
       expect(rec(15).label, 'adv_stop_fail');
+      expect(rec(16).label, 'vad_level');
+      expect(rec(17).label, 'mic_power_cycle');
+    });
+
+    test('vad_level unpacks peak, floor and threshold from the packed arg1', () {
+      // arg0 = window peak; arg1 = [floor u16 high][threshold u16 low]. The packing
+      // is the only arithmetic in the decode table, so assert both halves land in
+      // the right place — a swapped shift renders a plausible-looking wrong number.
+      DiagLogRecord rec(int peak, int floor, int threshold) => DiagLogRecord(
+            seq: 1,
+            uptimeMs: 0,
+            code: 16,
+            backend: 0,
+            arg0: peak,
+            arg1: (floor << 16) | threshold,
+          );
+
+      final d = rec(1400, 37, 250).description;
+      expect(d, contains('peak 1400'));
+      expect(d, contains('floor 37'));
+      expect(d, contains('threshold 250'));
+
+      // Full-scale values must survive the 16-bit fields rather than wrapping.
+      final wide = rec(65535, 65535, 65535).description;
+      expect(wide, contains('peak 65535'));
+      expect(wide, contains('floor 65535'));
+      expect(wide, contains('threshold 65535'));
+    });
+
+    test('vad_level calls out a zero peak, and only a zero peak', () {
+      // This is the whole point of the event: a peak pinned at zero is a wedged mic
+      // (digital-zero PDM output), whereas a quiet room always peaks above zero even
+      // when it never reaches the threshold. The two must not read alike.
+      DiagLogRecord rec(int peak, int floor) =>
+          DiagLogRecord(seq: 1, uptimeMs: 0, code: 16, backend: 0, arg0: peak, arg1: (floor << 16) | 250);
+
+      expect(rec(0, 0).description, contains('NO SIGNAL'));
+      // A quiet room: peak well under the 250 threshold but not silent.
+      expect(rec(31, 2).description, isNot(contains('NO SIGNAL')));
+      expect(rec(1, 0).description, isNot(contains('NO SIGNAL')));
+    });
+
+    test('mic_power_cycle distinguishes a real rail cycle from a skipped one', () {
+      // arg0 = whether PDM_EN was actually usable. A not-ready GPIO turns mic_reset()
+      // into a plain dmic re-trigger, which does NOT clear a wedged T5838 — so the
+      // record must never claim a power cycle that did not happen.
+      DiagLogRecord rec(int ok) => DiagLogRecord(seq: 1, uptimeMs: 0, code: 17, backend: 0, arg0: ok, arg1: 0);
+
+      expect(rec(1).description, contains('power-cycled'));
+      expect(rec(1).description, isNot(contains('SKIPPED')));
+      expect(rec(0).description, contains('SKIPPED'));
     });
 
     test('advertising events decode mode and errno, and stay distinguishable', () {
