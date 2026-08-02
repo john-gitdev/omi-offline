@@ -35,5 +35,16 @@ void mic_resume();
  */
 void mic_reset();
 bool mic_is_running();
+
+/**
+ * @brief Whether the PDM_EN rail GPIO is usable, i.e. whether mic_reset() can
+ *        actually power-cycle the part.
+ *
+ * A not-ready GPIO makes mic_reset() a no-op that only re-triggers the nRF PDM
+ * peripheral — it logs a warning to RTT and otherwise looks identical to a real
+ * reset. Callers that record a reset in the diagnostic log use this so the record
+ * says which of the two happened.
+ */
+bool mic_pdm_rail_is_ready();
 void mic_set_gain(uint8_t gain_level);
 #endif

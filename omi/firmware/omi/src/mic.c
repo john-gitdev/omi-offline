@@ -270,6 +270,11 @@ void mic_reset()
     LOG_INF("Microphone reset (running=%d)", mic_running);
 }
 
+bool mic_pdm_rail_is_ready()
+{
+    return gpio_is_ready_dt(&pdm_en);
+}
+
 bool mic_is_running()
 {
     return mic_running;
