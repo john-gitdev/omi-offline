@@ -109,6 +109,8 @@ void main() {
       expect(restored.emptyBinRotations, 4);
       expect(restored.sessionEndMarkerEmits, 3);
       expect(restored.markerPauseGateSaves, 2);
+      // Advertising watchdog rescues: a monotonic event counter, so it baselines
+      // like the rest (unlike the high-water marks, deliberately excluded).
       // currentUptimeMs is retained as provenance (when the reset was taken);
       // reboot detection is counter-based, so nothing reads it, but it round-trips.
       expect(restored.currentUptimeMs, 123456);

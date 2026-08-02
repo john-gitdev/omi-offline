@@ -83,6 +83,12 @@ class DiagLogRecord {
         return 'backend_mount';
       case 12:
         return 'bond_state';
+      case 13:
+        return 'adv_start_fail';
+      case 14:
+        return 'adv_watchdog_rescue';
+      case 15:
+        return 'adv_stop_fail';
       default:
         return 'code_$code';
     }
@@ -140,6 +146,29 @@ class DiagLogRecord {
           default:
             return 'Bond state — cause=$arg0, $arg1 key(s)';
         }
+      case 13:
+        // arg0 = advertising mode being started (0 fast / 1 slow); arg1 = errno magnitude
+        // (positive, e.g. 12 = ENOMEM), so the negated form is rendered below.
+        // The watchdog retries regardless, so a lone entry is a transient the guard
+        // absorbed; a run of them means the radio would have gone dark before
+        // oo-2.8.3. See BLE_Research.md "Wedge 5".
+        return 'Advertising start failed (${arg0 == 1 ? "slow" : "fast"}) — errno -$arg1, watchdog will retry';
+      case 14:
+        // The watchdog restarted advertising after concluding it was down. arg0 = mode.
+        //
+        // That conclusion is an inference — a previous start failed, or a plain
+        // re-assert returned success where it should have said "already advertising".
+        // Neither is proof, so the wording says "believed" rather than asserting the
+        // radio was off. This replaced a 0x0062 counter precisely because it could not
+        // be kept exact; overstating it here would reintroduce the same problem in the
+        // UI. Read it as evidence, not a verdict. See BLE_Research.md "Wedge 5".
+        return 'Advertising watchdog rescue (${arg0 == 1 ? "slow" : "fast"}) — '
+            'believed off the air, restarted';
+      case 15:
+        // The stop half of a mode change failed, so the interval could not be
+        // reconfigured. The previous advertiser is still running — this is NOT an
+        // off-air event, which is why it is a separate code from 13.
+        return 'Advertising stop failed (${arg0 == 1 ? "slow" : "fast"}) — errno -$arg1, interval unchanged';
       default:
         return 'Event code=$code backend=$backend arg0=$arg0 arg1=$arg1';
     }

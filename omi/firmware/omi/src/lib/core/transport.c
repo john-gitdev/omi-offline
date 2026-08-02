@@ -49,7 +49,12 @@ extern bool storage_is_on;
 static bool storage_full_warned = false;
 #endif
 
-extern bool is_connected;
+/* Defined in main.c. atomic_t rather than bool: the BT RX thread writes it while the
+ * advertising watchdog (system workqueue) and main.c's LED state machine read it, and
+ * concurrent access to a plain bool is a data race in the C memory model even where
+ * the load is single-instruction. A lock is not an option — the RX thread must never
+ * take adv_mutex. */
+extern atomic_t is_connected;
 extern bool is_charging;
 static atomic_t pusher_stop_flag;
 
@@ -388,8 +393,24 @@ static atomic_t last_storage_drop_uptime_ms = ATOMIC_INIT(0);
  * slow (1 s) advertising. */
 static atomic_t failed_conn_count = ATOMIC_INIT(0);
 static atomic_t estab_fail_count = ATOMIC_INIT(0);
-static const char *current_adv_mode = "fast"; /* boot + post-disconnect both start fast */
-static uint8_t last_failed_adv_slow = 0;      /* 1 if the most recent failure of either kind was during slow adv */
+/* Advertising interval currently applied. An atomic enum rather than a `const char *`
+ * because the BT RX callbacks read it for the diagnostics below while the advertising
+ * watchdog writes it — and the RX thread must never take the watchdog's lock (see
+ * adv_mutex). Strings are derived only for logs. */
+#define ADV_MODE_FAST 0
+#define ADV_MODE_SLOW 1
+static atomic_t adv_active_mode = ATOMIC_INIT(ADV_MODE_FAST); /* boot starts fast */
+
+static inline const char *adv_mode_name(int mode)
+{
+    return (mode == ADV_MODE_SLOW) ? "slow" : "fast";
+}
+
+/* 1 if the most recent failure of either kind was during slow advertising. atomic_t
+ * because the BT RX callbacks write it while the persistence worker and the 0x0062
+ * packer read it — the same cross-context exposure the advertising mode was fixed for. */
+static atomic_t last_failed_adv_slow = ATOMIC_INIT(0);
+
 
 /* Diagnostics: Priority Recording lifecycle, appended to 0x19B10062. These make a
  * lost Priority Recording traceable from the app log alone (no RTT/serial capture):
@@ -429,7 +450,7 @@ static atomic_t session_end_marker_emits = ATOMIC_INIT(0);
 static void conn_fail_persist_work_handler(struct k_work *work)
 {
     app_settings_save_conn_fail((uint32_t) atomic_get(&failed_conn_count),
-                                last_failed_adv_slow,
+                                (uint8_t) atomic_get(&last_failed_adv_slow),
                                 (uint32_t) atomic_get(&estab_fail_count));
 }
 static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_handler);
@@ -546,8 +567,9 @@ static void diagnostics_drops_pack(uint8_t payload[84])
      * codec_drops + sd_msgq peak depth + write-fairness activations + establishment
      * failures + Priority Recording lifecycle (starts / stops / marker drops /
      * empty-bin rotations) + session-end emit attempts + pause-gate marker saves +
-     * sd_worker & codec peak stack used + ring_max_io_ms + ring_io_errors. Each field
-     * is appended at the end so older app builds (which read only the first
+     * sd_worker & codec peak stack used + ring_max_io_ms + ring_io_errors +
+     * Each field is appended at the end so older
+     * app builds (which read only the first
      * 20 / 28 / 32 / 40 / 44 / 60 / 68 / 76 bytes) keep working unchanged. */
     pack_u32_le(payload + 0, block_drops);
     pack_u32_le(payload + 4, last_drop_ms);
@@ -555,7 +577,7 @@ static void diagnostics_drops_pack(uint8_t payload[84])
     pack_u32_le(payload + 12, sd_boot_drops);
     pack_u32_le(payload + 16, now_ms);
     pack_u32_le(payload + 20, conn_fails);
-    pack_u32_le(payload + 24, (uint32_t) last_failed_adv_slow);
+    pack_u32_le(payload + 24, (uint32_t) atomic_get(&last_failed_adv_slow));
     pack_u32_le(payload + 28, codec_drops);
     pack_u32_le(payload + 32, msgq_peak);
     pack_u32_le(payload + 36, fair_acts);
@@ -713,7 +735,7 @@ static void diagnostics_notify_work_handler(struct k_work *work)
     ARG_UNUSED(work);
     /* Stop the chain if the client unsubscribed or the link dropped; a fresh
      * subscribe re-arms it from diagnostics_drops_ccc_changed. */
-    if (!atomic_get(&diag_notify_subscribed) || !is_connected) {
+    if (!atomic_get(&diag_notify_subscribed) || !atomic_get(&is_connected)) {
         return;
     }
     diagnostics_drops_notify();
@@ -1444,7 +1466,8 @@ void broadcast_battery_level(struct k_work *work_item)
         LOG_ERR("Failed to read battery level");
     }
 
-    uint32_t interval = is_connected ? BATTERY_REFRESH_INTERVAL_CONNECTED : BATTERY_REFRESH_INTERVAL_DISCONNECTED;
+    uint32_t interval =
+        atomic_get(&is_connected) ? BATTERY_REFRESH_INTERVAL_CONNECTED : BATTERY_REFRESH_INTERVAL_DISCONNECTED;
     k_work_reschedule(&battery_work, K_MSEC(interval));
 }
 
@@ -1486,7 +1509,7 @@ K_WORK_DELAYABLE_DEFINE(mtu_recheck_work, mtu_recheck_work_handler);
 
 static void post_pairing_work_handler(struct k_work *work)
 {
-    if (!is_connected || !current_connection) {
+    if (!atomic_get(&is_connected) || !current_connection) {
         return;
     }
 
@@ -1502,7 +1525,7 @@ K_WORK_DELAYABLE_DEFINE(post_pairing_work, post_pairing_work_handler);
 
 static void post_connect_work_handler(struct k_work *work)
 {
-    if (!is_connected || !current_connection) {
+    if (!atomic_get(&is_connected) || !current_connection) {
         return;
     }
 
@@ -1539,7 +1562,7 @@ void transport_mark_activity(void)
 
 static void idle_disconnect_work_handler(struct k_work *work)
 {
-    if (!is_connected) {
+    if (!atomic_get(&is_connected)) {
         return;
     }
 
@@ -1629,6 +1652,269 @@ static void update_conn_params(struct bt_conn *conn);
 static void conn_param_recheck_work_handler(struct k_work *work);
 K_WORK_DELAYABLE_DEFINE(conn_param_recheck_work, conn_param_recheck_work_handler);
 
+/* ── Advertising watchdog ────────────────────────────────────────────────────
+ *
+ * Until oo-2.8.3 every path that restarted advertising discarded the result of
+ * bt_le_adv_start(). One failure left the device permanently invisible — firmware
+ * running, SD still recording, radio silent — recoverable only by a power cycle.
+ *
+ * Confirmed 2026-07-31 (BLE_Research.md, Wedge 5): a 2 h outage in which an
+ * independent scanner heard nothing, ten in-app probes heard nothing, a 2.5 min
+ * phone Bluetooth toggle changed nothing, and the device — uptime 33 h 40 m, no
+ * reset, 8 unsynced WALs waiting — reconnected instantly on a power cycle.
+ *
+ * DESIGN: one periodic work item is the entire mechanism. It re-asserts advertising
+ * on a timer, so *every* way the radio can end up off the air — a failed start, a
+ * dropped mode switch, something we have not thought of — self-heals within one
+ * tick. There is no separate retry path and no backoff state machine: the tick
+ * interval IS the retry interval.
+ *
+ * The invariant that keeps this simple: **while the guard is armed, this handler is
+ * the only code that touches the radio.** The AAD mode setters merely record an
+ * intent and return; transport_start() and transport_off() are bookends that run
+ * with the gate closed. A single writer means the whole class of "two things
+ * reconfiguring the advertiser at once" cannot occur — which is what an earlier,
+ * far more elaborate version of this guard kept failing to defend against.
+ *
+ * The BT RX callbacks (_transport_connected / _transport_disconnected) must NEVER
+ * take adv_mutex: bt_le_adv_start() is an HCI command whose completion the RX thread
+ * itself processes, so an RX callback blocking on a lock held by a thread inside
+ * bt_le_adv_start() would deadlock the stack. They only set atomics and (re)schedule.
+ */
+#define ADV_TICK_MS 30000        /* healthy re-assert cadence */
+#define ADV_TICK_RETRY_MS 5000   /* after a failed attempt */
+#define ADV_TICK_DISCONNECT_MS 200 /* let the stack release the conn object first */
+#define ADV_TICK_MODE_MS 50      /* apply a mode request promptly */
+
+/* Serializes the handler against transport_off()'s teardown. transport_off() closes
+ * the gate, then takes this lock, which waits out a handler already inside
+ * bt_le_adv_start() — k_work_cancel_delayable() does NOT wait for a running handler,
+ * and k_work_cancel_delayable_sync() would deadlock, because turnoff_all() is
+ * reachable from broadcast_battery_level(), itself a system-workqueue handler on the
+ * same queue this work runs on. */
+static K_MUTEX_DEFINE(adv_mutex);
+
+/* 0 until transport_start() has the stack up; cleared at the top of transport_off()
+ * BEFORE it disconnects, so the disconnect callback cannot re-arm the work we are
+ * about to cancel. Without it, power-off queued a restart that ran after
+ * bt_disable(). */
+static atomic_t adv_guard_active = ATOMIC_INIT(0);
+
+/* What the interval *should* be. Written by the AAD setters and by the disconnect
+ * callback; read only by the handler. Last writer wins, which is the behaviour we
+ * want: a disconnect resets to fast, and AAD re-requests slow at the next VAD sleep. */
+static atomic_t adv_desired_mode = ATOMIC_INIT(ADV_MODE_FAST);
+
+/* Set when a *start* fails, cleared when one succeeds or a link comes up. Decides
+ * whether a later success is reported as a rescue (DIAG_ADV_WATCHDOG_RESCUE).
+ *
+ * This began life feeding a 0x0062 counter and that was a mistake: across five review
+ * passes, seven separate edge cases were found in which it counted something that was
+ * not an outage — a failed stop, a routine post-disconnect restart, an -ENOMEM from a
+ * link coming up mid-tick. Each fix spawned the next. A counter has to be exactly
+ * right or it lies, and this one never was; an event log only has to be informative,
+ * and "advertising restarted, we thought it was down" is useful even when the
+ * inference is occasionally generous. Cleared on connect because a successful link
+ * proves the radio was up, which kills a whole family of those false positives at
+ * once — a truly off-air device cannot accept a connection. */
+static atomic_t adv_believed_down = ATOMIC_INIT(0);
+
+/* Set by the disconnect callback, consumed by the next tick. Exists purely to keep
+ * the recovery counter honest across a behaviour of the stack we cannot verify here.
+ *
+ * A connection stops the advertiser. Whether it comes back on its own depends on the
+ * parameters: slow sets BT_LE_ADV_OPT_ONE_TIME and definitely does not auto-restart,
+ * while BT_LE_ADV_CONN (fast) does not set it and — depending on the Zephyr version —
+ * may. So the post-disconnect tick's start can legitimately return either -EALREADY
+ * (it came back by itself) or 0 (it did not, and we just restarted it), for the same
+ * healthy sequence. Counting that 0 as a rescue would add one per disconnect — with a
+ * 30-minute sync cadence, ~48 phantom rescues a day, drowning the signal the counter
+ * exists to carry.
+ *
+ * With this flag the routine post-disconnect restart is never counted, while a radio
+ * that stops spontaneously mid-idle still is. Consumed at the top of the tick, so a
+ * disconnect landing mid-tick suppresses the *next* one too: the bias is toward
+ * under-counting, which is the right direction for evidence. */
+static atomic_t adv_disconnect_since_tick = ATOMIC_INIT(0);
+
+static void adv_watchdog_work_handler(struct k_work *work);
+K_WORK_DELAYABLE_DEFINE(adv_watchdog_work, adv_watchdog_work_handler);
+
+/* Slow advertising parameters for low-power mode (~1 s interval).
+ * BT_LE_ADV_CONN uses 100-150ms by default; 1000-1200ms saves ~300-500 µA.
+ * Advertising interval unit = 0.625 ms → 1000 ms = 1600, 1200 ms = 1920.
+ * ONE_TIME because Zephyr must not auto-restart it behind the watchdog's back. */
+static const struct bt_le_adv_param adv_param_slow =
+    BT_LE_ADV_PARAM_INIT(BT_LE_ADV_OPT_CONNECTABLE | BT_LE_ADV_OPT_ONE_TIME, 1600, 1920, NULL);
+
+/* Caller holds adv_mutex. Starts the advertiser for `mode`, returning the raw
+ * bt_le_adv_start() result — 0 and -EALREADY must stay distinct, since the handler
+ * uses the difference to tell "we were off the air" from "already advertising". */
+static int adv_start_mode(int mode)
+{
+    if (mode == ADV_MODE_SLOW) {
+        return bt_le_adv_start(&adv_param_slow, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
+    }
+    return bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
+}
+
+static void adv_watchdog_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    k_mutex_lock(&adv_mutex, K_FOREVER);
+    /* Re-checked under the lock: transport_off() clears the gate before acquiring it,
+     * so anything getting in after teardown began sees it closed. Deliberately does
+     * NOT reschedule — shutdown must not leave a timer running, and a live link is
+     * re-armed by the next disconnect. */
+    if (!atomic_get(&adv_guard_active) || atomic_get(&is_connected)) {
+        k_mutex_unlock(&adv_mutex);
+        return;
+    }
+
+    /* Consumed here, before the radio work, so a disconnect arriving mid-tick is left
+     * for the next one rather than being swallowed by this one. */
+    const bool after_disconnect = atomic_cas(&adv_disconnect_since_tick, 1, 0);
+    const int desired = (int) atomic_get(&adv_desired_mode);
+    const int active = (int) atomic_get(&adv_active_mode);
+    /* Only a stop actually changes the interval: bt_le_adv_start() against a running
+     * advertiser answers -EALREADY and reconfigures nothing. So a mode change must
+     * stop first, and a plain re-assert must not. */
+    const bool mode_change = (desired != active);
+    int stop_err = 0;
+    if (mode_change) {
+        stop_err = bt_le_adv_stop();
+        if (stop_err == -EALREADY) {
+            stop_err = 0;
+        }
+    }
+
+    int err = stop_err ? stop_err : adv_start_mode(desired);
+    const bool ok = (err == 0 || err == -EALREADY);
+    /* A link that came up while we were inside those HCI calls explains any result we
+     * got, so nothing here is evidence of anything. The cancel in _transport_connected
+     * only drops *pending* work — it cannot preempt this handler, and the RX thread
+     * cannot wait on adv_mutex (that is the forbidden lock), so the window is
+     * unclosable on the producer side; re-checking just before the radio calls would
+     * only narrow it. Classify instead: a failure with a live link is a -ENOMEM from
+     * the full conn slot, not a silent radio, and must not set believed_down or emit a
+     * fault event. The next tick after the disconnect re-establishes the truth. */
+    const bool raced_connect = atomic_get(&is_connected) != 0;
+    bool rescued = false;
+    if (raced_connect) {
+        LOG_DBG("adv: tick raced an incoming link (err %d) — not evidence, ignoring", err);
+    } else if (ok) {
+        atomic_set(&adv_active_mode, desired);
+        /* Two independent signals that the radio had gone quiet, and either counts:
+         *   - a previous start failed and we have not succeeded since. Unambiguous,
+         *     and this is the one that catches the Wedge 5 fault; or
+         *   - a plain re-assert (we believed we were already advertising) returned 0,
+         *     meaning it wasn't — a radio that stopped with no failure we ever saw.
+         * The second needs both guards to mean anything: a mode change stops first, so
+         * its 0 is expected, and so is the 0 after a disconnect if the stack did not
+         * auto-restart (see adv_disconnect_since_tick). */
+        /* `after_disconnect` covers a disconnect that preceded this tick; the live read
+         * covers one that landed *during* the HCI calls, which the top-of-tick consume
+         * cannot see. Both mean the same thing — a routine post-disconnect restart, not
+         * a rescue — and without the second, an ordinary connect/disconnect racing the
+         * tick reports the reconnect path as a recovery. The failure branch below
+         * already applies the same test. */
+        rescued = atomic_cas(&adv_believed_down, 1, 0) ||
+                  (!mode_change && !after_disconnect && !atomic_get(&adv_disconnect_since_tick) && err == 0);
+    } else if (!stop_err && !after_disconnect && !atomic_get(&adv_disconnect_since_tick)) {
+        /* Only a failed *start* means the radio is off the air: a failed stop leaves
+         * the old advertiser running.
+         *
+         * Both disconnect tests are needed, and for different windows. The live read
+         * catches a link that came up and went away inside our HCI calls.
+         * `after_disconnect` catches the settle tick 200 ms after an ordinary
+         * disconnect — where a start can still fail because the stack has not released
+         * the conn object yet. Without it that routine retry marked the radio down and
+         * the next success reported a rescue. A genuinely stuck radio is still caught:
+         * the *following* tick has neither flag set, so a second consecutive failure
+         * marks it down and the eventual recovery is reported. */
+        atomic_set(&adv_believed_down, 1);
+    }
+    k_mutex_unlock(&adv_mutex);
+
+    /* Re-arm from ONE place, here, after the radio work — so the flags it reads
+     * already reflect anything that arrived while we were inside the HCI calls.
+     *
+     *  - raced a connect → do not re-arm at all. _transport_connected cancelled us
+     *    deliberately, and re-arming would resurrect the timer it just cancelled;
+     *    _transport_disconnected arms us again when the link goes away.
+     *  - a disconnect landed → the longer settle, so the stack can release the conn
+     *    object before we try a connectable start.
+     *  - a mode request landed → apply it promptly; giving it the disconnect delay
+     *    would make every AAD interval change four times slower than advertised.
+     *  - failed → short retry; otherwise the healthy cadence.
+     *
+     * Gate re-checked because transport_off() closes it and then drains on this mutex:
+     * whichever of us acquires first, its cancel stays definitive rather than us
+     * queueing work that outlives bt_disable().
+     *
+     * Residual, stated rather than papered over: the producers cannot take this lock
+     * (the RX thread must not), so one landing between our reads and our reschedule
+     * still loses its deadline to ours. That is bounded and self-correcting — its flag
+     * stays set, so the next tick honours it — and the cost is one late tick, never a
+     * permanently dark radio. Two overlapping re-arm blocks were tried to narrow it
+     * further and merely made the ownership harder to reason about. */
+    if (!raced_connect) {
+        k_mutex_lock(&adv_mutex, K_FOREVER);
+        if (atomic_get(&adv_guard_active)) {
+            const bool late_disconnect = atomic_get(&adv_disconnect_since_tick) != 0;
+            const bool late_mode_req = ((int) atomic_get(&adv_desired_mode) != desired);
+            uint32_t next_ms;
+            if (!ok) {
+                next_ms = ADV_TICK_RETRY_MS;
+            } else if (late_disconnect) {
+                next_ms = ADV_TICK_DISCONNECT_MS;
+            } else if (late_mode_req) {
+                next_ms = ADV_TICK_MODE_MS;
+            } else {
+                next_ms = ADV_TICK_MS;
+            }
+            k_work_reschedule(&adv_watchdog_work, K_MSEC(next_ms));
+        }
+        k_mutex_unlock(&adv_mutex);
+    }
+
+    /* Logged outside the lock from locals — never by re-reading shared state. */
+    if (raced_connect) {
+        return;
+    }
+    if (!ok) {
+        LOG_ERR("adv: %s failed (%d) mode=%s — retrying in %d ms", stop_err ? "stop" : "start", err,
+                adv_mode_name(desired), ADV_TICK_RETRY_MS);
+        diag_log_event(stop_err ? DIAG_ADV_STOP_FAIL : DIAG_ADV_START_FAIL, 0, (uint16_t) desired,
+                       (uint32_t) -err);
+    } else if (rescued) {
+        LOG_WRN("adv: watchdog found advertising stopped — restarted (mode=%s)", adv_mode_name(desired));
+        diag_log_event(DIAG_ADV_WATCHDOG_RESCUE, 0, (uint16_t) desired, 0);
+    } else if (mode_change) {
+        LOG_INF("adv: interval switched to %s", adv_mode_name(desired));
+    }
+}
+
+/* Ask for an interval. Records intent only — the handler owns the radio. Callers in
+ * aad.c discard the return value, which is now honest: there is nothing to fail. */
+static int adv_request_mode(int mode)
+{
+    atomic_set(&adv_desired_mode, mode);
+    if (atomic_get(&adv_guard_active) && !atomic_get(&is_connected)) {
+        /* reschedule, not schedule: the tick may be up to ADV_TICK_MS away and
+         * k_work_schedule() would leave it there.
+         *
+         * Never pull the tick inside a pending disconnect settle. A mode request
+         * arriving just after a disconnect would otherwise fire at 50 ms, before the
+         * stack has released the conn object, and the connectable start would fail
+         * -ENOMEM for no reason — wasting the attempt and pushing the real one out to
+         * the retry cadence. */
+        const bool settling = atomic_get(&adv_disconnect_since_tick) != 0;
+        k_work_reschedule(&adv_watchdog_work, K_MSEC(settling ? ADV_TICK_DISCONNECT_MS : ADV_TICK_MODE_MS));
+    }
+    return 0;
+}
+
 static void _transport_connected(struct bt_conn *conn, uint8_t err)
 {
     /* HCI connection failure: conn is borrowed and being torn down by the stack.
@@ -1641,10 +1927,10 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
          * CONNECT_IND is never reaching the device. adv_mode reveals slow-interval
          * correlation. */
         uint32_t fails = (uint32_t) atomic_inc(&failed_conn_count) + 1;
-        last_failed_adv_slow = (current_adv_mode[0] == 's') ? 1 : 0; /* "slow" vs "fast" */
+        atomic_set(&last_failed_adv_slow, (atomic_get(&adv_active_mode) == ADV_MODE_SLOW) ? 1 : 0);
         LOG_ERR("Connection failed (err 0x%02x) adv_mode=%s failed_conn_count=%u uptime=%lld ms",
                 err,
-                current_adv_mode,
+                adv_mode_name((int) atomic_get(&adv_active_mode)),
                 fails,
                 (long long) k_uptime_get());
         /* Coalesced flash persist so the count survives the power-cycle needed to read it. */
@@ -1653,6 +1939,27 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
     }
 
     struct bt_conn_info info = {0};
+
+    /* Claim the link and silence the watchdog FIRST, ahead of the setup below. Until
+     * both happen the guard still believes we are disconnected, so a tick landing
+     * mid-setup would call bt_le_adv_start() against a live link and fail -ENOMEM
+     * under CONFIG_BT_MAX_CONN=1 — which the handler would then read as "the radio was
+     * down", fabricating a recovery. Any later failure here ends in a disconnect,
+     * whose callback re-arms the watchdog.
+     *
+     * Deliberately OUTSIDE the offline-storage #ifdef below: the connection state and
+     * the advertising guard have nothing to do with the SD card, and
+     * CONFIG_OMI_ENABLE_OFFLINE_STORAGE defaults to n — gating them on it would leave
+     * such a build never entering the connected state at all. */
+    atomic_set(&is_connected, 1);
+    k_work_cancel_delayable(&adv_watchdog_work);
+    /* A link proves the radio is up, whatever a tick may have concluded while it was
+     * coming up. Clearing here kills a family of false rescues at once: a start that
+     * failed -ENOMEM because the slot was already taken would otherwise leave this set
+     * across the whole connection and be reported as a rescue after the next
+     * disconnect. A device that is genuinely off the air cannot accept a link. */
+    atomic_set(&adv_believed_down, 0);
+
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     storage_is_on = true;
 #endif
@@ -1660,6 +1967,21 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
     int info_err = bt_conn_get_info(conn, &info);
     if (info_err) {
         LOG_ERR("Failed to get connection info (err %d)", info_err);
+        /* Undo the claim made above before bailing. Hoisting is_connected and the
+         * watchdog cancel to the top of this callback (so a tick could not race the
+         * setup below) put them *ahead* of this early return, which previously ran
+         * with the link still unclaimed. Left as-is we would return with the guard
+         * believing in a link we never finished configuring: the tick gate bails on
+         * is_connected forever, nothing is rescheduled, current_connection is NULL and
+         * even the idle-disconnect timer below is never armed. Restore the disconnected
+         * state and re-arm, flagging it as a disconnect so the first advertising
+         * attempt is not counted as a fault. */
+        atomic_set(&is_connected, 0);
+        atomic_set(&adv_desired_mode, ADV_MODE_FAST);
+        atomic_set(&adv_disconnect_since_tick, 1);
+        if (atomic_get(&adv_guard_active)) {
+            k_work_reschedule(&adv_watchdog_work, K_MSEC(ADV_TICK_DISCONNECT_MS));
+        }
         return;
     }
 
@@ -1694,14 +2016,14 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
     sd_notify_ble_state(true);
 #endif
 
-    is_connected = true;
+    /* is_connected and the watchdog cancel were hoisted to the top of this callback. */
     transport_mark_activity();
     k_work_schedule(&idle_disconnect_work, K_MSEC(IDLE_DISCONNECT_POLL_MS));
 }
 
 static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
 {
-    is_connected = false;
+    atomic_set(&is_connected, 0);
 
     /* Stop diagnostics notifications; the CCC state is per-bond and the next
      * client will re-subscribe. The work handler already bails on !is_connected,
@@ -1712,11 +2034,12 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
     /* A link that comes up and immediately dies with 0x3e never exchanged a
      * data-channel packet. Count it separately from failed_conn_count (see the
      * counter declarations) and record the advertising mode that was in effect —
-     * this must happen before current_adv_mode is reset to "fast" below. */
+ * this must happen before the watchdog applies the post-disconnect reset below. */
     if (err == BT_HCI_ERR_CONN_FAIL_TO_ESTAB) {
         uint32_t estab_fails = (uint32_t) atomic_inc(&estab_fail_count) + 1;
-        last_failed_adv_slow = (current_adv_mode[0] == 's') ? 1 : 0;
-        LOG_ERR("Link died at establishment (0x3e) adv_mode=%s estab_fail_count=%u", current_adv_mode, estab_fails);
+        atomic_set(&last_failed_adv_slow, (atomic_get(&adv_active_mode) == ADV_MODE_SLOW) ? 1 : 0);
+        LOG_ERR("Link died at establishment (0x3e) adv_mode=%s estab_fail_count=%u",
+                adv_mode_name((int) atomic_get(&adv_active_mode)), estab_fails);
         k_work_schedule(&conn_fail_persist_work, K_MSEC(CONN_FAIL_PERSIST_DELAY_MS));
     }
 
@@ -1751,13 +2074,22 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
     k_mutex_unlock(&conn_mutex);
     current_mtu = 0;
 
-    /* Restart advertising so the device is rediscoverable after any disconnect.
-     * Without this, slow-adv mode (BT_LE_ADV_OPT_ONE_TIME) leaves the device
-     * invisible after a connect/disconnect cycle — Zephyr does not auto-restart
-     * advertising when ONE_TIME is set. Start with fast params; AAD will switch
-     * back to slow once VAD returns to sleep. */
-    current_adv_mode = "fast";
-    bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
+    /* Advertising must come back, or the device is invisible until someone reboots it:
+     * slow mode sets BT_LE_ADV_OPT_ONE_TIME, and Zephyr does not auto-restart that.
+     *
+     * This is the root cause of Wedge 5, and BOTH halves of the old one-liner were
+     * wrong. It called bt_le_adv_start() *inline*, where the stack still holds the
+     * disconnecting conn object — so under CONFIG_BT_MAX_CONN=1 a connectable start
+     * here can fail -ENOMEM. And it discarded the result, so that failure was
+     * permanent. Hand it to the watchdog instead: a short delay lets the conn be
+     * released, and if the start still fails the next tick retries it forever.
+     *
+     * Only atomics and a reschedule here — this is the BT RX thread (see adv_mutex). */
+    atomic_set(&adv_desired_mode, ADV_MODE_FAST);
+    atomic_set(&adv_disconnect_since_tick, 1);
+    if (atomic_get(&adv_guard_active)) {
+        k_work_reschedule(&adv_watchdog_work, K_MSEC(ADV_TICK_DISCONNECT_MS));
+    }
 }
 
 static bool _le_param_req(struct bt_conn *conn, struct bt_le_conn_param *param)
@@ -1849,7 +2181,7 @@ static void update_mtu(struct bt_conn *conn)
  * intervals so iOS / Android apps that negotiate MTU late still get a fast path. */
 static void mtu_recheck_work_handler(struct k_work *work)
 {
-    if (!is_connected || !current_connection) {
+    if (!atomic_get(&is_connected) || !current_connection) {
         return;
     }
     uint16_t mtu = bt_gatt_get_mtu(current_connection);
@@ -2315,6 +2647,22 @@ void pusher(void)
 
 int transport_off()
 {
+    /* Disarm the advertising watchdog FIRST — before the bt_conn_disconnect() below,
+     * whose callback would otherwise re-arm the very work we are about to cancel, and
+     * it would then run bt_le_adv_start() after bt_disable(). Clearing the gate ahead
+     * of the disconnect is what makes the cancel stick.
+     *
+     * Then take adv_mutex: k_work_cancel_delayable() does not wait for a handler that
+     * is already running, and the handler holds this lock across its radio calls, so
+     * acquiring it here waits that out. Deliberately not
+     * k_work_cancel_delayable_sync(), which would deadlock when turnoff_all() is
+     * reached from broadcast_battery_level() — itself a handler on the same
+     * workqueue. */
+    atomic_set(&adv_guard_active, 0);
+    k_mutex_lock(&adv_mutex, K_FOREVER);
+    k_mutex_unlock(&adv_mutex);
+    k_work_cancel_delayable(&adv_watchdog_work);
+
     // Stop pusher thread when transport is turned off
     atomic_set(&pusher_stop_flag, 1);
     k_sem_give(&tx_queue_sem); // unblock pusher if waiting
@@ -2358,7 +2706,7 @@ int transport_off()
 #endif
 
     // Ensure all Bluetooth resources are cleaned up
-    is_connected = false;
+    atomic_set(&is_connected, 0);
     current_mtu = 0;
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
@@ -2368,50 +2716,20 @@ int transport_off()
     return 0;
 }
 
-/* Slow advertising parameters for low-power mode (~1 s interval).
- * BT_LE_ADV_CONN uses 100-150ms by default; 1000-1200ms saves ~300-500 µA.
- * Advertising interval unit = 0.625 ms → 1000 ms = 1600, 1200 ms = 1920. */
-static const struct bt_le_adv_param adv_param_slow =
-    BT_LE_ADV_PARAM_INIT(BT_LE_ADV_OPT_CONNECTABLE | BT_LE_ADV_OPT_ONE_TIME, 1600, 1920, NULL);
-
+/* Both setters only record intent; the watchdog owns the radio (see its comment).
+ * They can no longer fail, and always return 0 — which is honest, since both callers
+ * in aad.c discard the return value. The previous versions did stop → start inline
+ * from the AAD thread, racing the guard: a tick landing between their stop and their
+ * start began the *old* interval, their own start then answered -EALREADY, and they
+ * logged "switched to slow" while the radio stayed fast. */
 int transport_set_adv_slow(void)
 {
-    if (is_connected) {
-        return 0;
-    }
-    int err = bt_le_adv_stop();
-    if (err && err != -EALREADY) {
-        LOG_ERR("adv_slow: stop failed (%d)", err);
-        return err;
-    }
-    err = bt_le_adv_start(&adv_param_slow, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
-    if (err) {
-        LOG_ERR("adv_slow: start failed (%d)", err);
-    } else {
-        current_adv_mode = "slow";
-        LOG_INF("BLE advertising switched to slow interval");
-    }
-    return err;
+    return adv_request_mode(ADV_MODE_SLOW);
 }
 
 int transport_set_adv_fast(void)
 {
-    if (is_connected) {
-        return 0;
-    }
-    int err = bt_le_adv_stop();
-    if (err && err != -EALREADY) {
-        LOG_ERR("adv_fast: stop failed (%d)", err);
-        return err;
-    }
-    err = bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
-    if (err) {
-        LOG_ERR("adv_fast: start failed (%d)", err);
-    } else {
-        current_adv_mode = "fast";
-        LOG_INF("BLE advertising switched to fast interval");
-    }
-    return err;
+    return adv_request_mode(ADV_MODE_FAST);
 }
 
 static void count_bond_cb(const struct bt_bond_info *info, void *user_data)
@@ -2458,9 +2776,13 @@ int transport_start()
     {
         uint32_t persisted = 0;
         uint32_t persisted_estab = 0;
-        app_settings_get_conn_fail(&persisted, &last_failed_adv_slow, &persisted_estab);
+        /* Via a local: the settings API takes a uint8_t*, and last_failed_adv_slow is
+         * now an atomic_t so it cannot be written through a raw pointer. */
+        uint8_t persisted_adv_slow = 0;
+        app_settings_get_conn_fail(&persisted, &persisted_adv_slow, &persisted_estab);
         atomic_set(&failed_conn_count, (atomic_val_t) persisted);
         atomic_set(&estab_fail_count, (atomic_val_t) persisted_estab);
+        atomic_set(&last_failed_adv_slow, (atomic_val_t) persisted_adv_slow);
     }
 
     // Enable Bluetooth
@@ -2569,13 +2891,29 @@ int transport_start()
     // LED service appended last, same reason — see the note on settings_service_attr.
     bt_gatt_service_register(&led_service);
     // Button + haptic config now live under the Settings service — no separate service to register.
+    /* Started here rather than deferred to the first tick, so the device is
+     * discoverable the instant BLE is up rather than one workqueue hop later. Safe as
+     * a direct call because the gate is still closed — no tick can be in flight. */
     err = bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
     if (err) {
-        LOG_ERR("Transport advertising failed to start (err %d)", err);
-        return err;
+        /* Do NOT return an error: that aborts BLE bring-up and leaves the device with
+         * no radio and nothing retrying — the very failure mode this guard exists to
+         * end. Mark the radio down and let the watchdog take it from here. */
+        LOG_ERR("Transport advertising failed to start (err %d) — watchdog will retry", err);
+        atomic_set(&adv_believed_down, 1);
+        /* Same event the watchdog emits, so a boot-time failure the retry later fixes
+         * still leaves evidence — otherwise the only trace would be a rescue count
+         * with nothing explaining what it rescued. */
+        diag_log_event(DIAG_ADV_START_FAIL, 0, (uint16_t) ADV_MODE_FAST, (uint32_t) -err);
     } else {
         LOG_INF("Advertising successfully started");
     }
+    atomic_set(&adv_active_mode, ADV_MODE_FAST);
+    atomic_set(&adv_desired_mode, ADV_MODE_FAST);
+    /* Arm the guard only once the stack is up, so nothing can queue radio work
+     * against a stack that never came up. */
+    atomic_set(&adv_guard_active, 1);
+    k_work_reschedule(&adv_watchdog_work, K_MSEC(err ? ADV_TICK_RETRY_MS : ADV_TICK_MS));
 
 #ifdef CONFIG_OMI_ENABLE_BATTERY
     k_work_schedule(&battery_work, K_MSEC(3000));

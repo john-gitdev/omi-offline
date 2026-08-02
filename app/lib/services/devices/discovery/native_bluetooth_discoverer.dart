@@ -63,8 +63,7 @@ class NativeBluetoothDiscoverer extends DeviceDiscoverer {
     final name = p.name.toLowerCase();
     // Firmware advertises the device name plus the Settings service (0010) as
     // UUID128_ALL, so match on either the name or that advertised service.
-    return name.contains('omi') ||
-        _hasService(p, '19B10010-E8F2-537E-4F6C-D104768A1214');
+    return name.contains('omi') || _hasService(p, '19B10010-E8F2-537E-4F6C-D104768A1214');
   }
 
   bool _hasService(BlePeripheral p, String serviceUuid) {

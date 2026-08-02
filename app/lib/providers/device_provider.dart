@@ -236,7 +236,7 @@ class DeviceProvider extends ChangeNotifier
       }
     };
     if (SharedPreferencesUtil().btDevice.id.isNotEmpty) {
-      Future.microtask(() => periodicConnect('app open', boundDeviceOnly: true));
+      Future.microtask(() => periodicConnect('app open', boundDeviceOnly: true, userInitiated: true));
       // Sync on app open whenever one is due. The device is disconnected in the
       // background, so the periodic timer/heartbeat may not have fired; opening
       // the app is the reliable trigger. _isAppInForeground is true here, so the
@@ -695,7 +695,15 @@ class DeviceProvider extends ChangeNotifier
     _lastBatteryNotifyTime = null;
   }
 
-  Future periodicConnect(String printer, {bool boundDeviceOnly = false}) async {
+  /// [userInitiated] marks the entry points that represent fresh user intent —
+  /// opening or resuming the app. Those drop the reconnect wait gate so the attempt
+  /// happens now: the backoff exists to stop us churning at the daemon while nobody
+  /// is watching, not to make a user who just opened the app wait out a 12-minute
+  /// timer. It deliberately does NOT forgive the accumulated failure count — see
+  /// [_allowOneImmediateReconnect]. Automatic callers (the post-disconnect retry)
+  /// leave the gate armed.
+  Future periodicConnect(String printer, {bool boundDeviceOnly = false, bool userInitiated = false}) async {
+    if (userInitiated) _allowOneImmediateReconnect();
     _reconnectionTimer?.cancel();
     scan(t) async {
       if (!isBluetoothEnabled) return;
@@ -780,9 +788,81 @@ class DeviceProvider extends ChangeNotifier
           setIsConnected(true);
         }
       }
+      // Throttle the foreground reconnect loop during a real outage.
+      //
+      // Native stops its own fast retry loop after AUTONOMOUS_RETRY_STOP_AFTER (6)
+      // failures and hands over to a backing-off recovery alarm (2→4→8→16 min) —
+      // precisely because rapid connectGatt/closeGatt churn is the most common cause
+      // of the Android Bluetooth daemon wedging. Dart never honoured that handoff:
+      // periodicConnect's fixed 15 s timer plus the 30 s connect budget kept firing
+      // an attempt every ~45 s, i.e. ~80/hour, for as long as the app stayed open.
+      // BLE_Research.md Wedge 5 logged 12 attempts in 16 min into an already-dead
+      // stack that way.
+      //
+      // _reconnectAt has always gated periodicConnect's scan() but was never
+      // assigned, so the gate was dead code. Arm it here: the first few failures
+      // retry promptly (a transient blip must still clear fast), then back off
+      // 45 s → 90 s → 3 min → 6 min → 12 min, capped. Reset on any success.
+      // Keyed on isConnected, not on the returned device: _scanConnectDevice() ends
+      // by returning `connectedDevice`, which can be a stale non-null handle from an
+      // earlier session even when this attempt failed. Treating that as success reset
+      // the failure count every time, held the streak below the six-failure threshold
+      // and meant the backoff never engaged at all — the daemon-churn protection this
+      // exists for would have been silently inert.
+      if (!isConnected) {
+        _consecutiveConnectFailures++;
+        if (_consecutiveConnectFailures >= _reconnectThrottleAfter) {
+          final steps = _consecutiveConnectFailures - _reconnectThrottleAfter;
+          final delay = Duration(seconds: (45 << steps.clamp(0, 4)).clamp(45, 720));
+          _reconnectAt = DateTime.now().add(delay);
+          Logger.debug('[BLE] reconnect throttled: failure #$_consecutiveConnectFailures, '
+              'next attempt in ${delay.inSeconds}s');
+        }
+      } else {
+        _resetReconnectThrottle();
+      }
     } finally {
       updateConnectingStatus(false);
     }
+  }
+
+  /// Failures tolerated at the full 15 s cadence before the backoff engages.
+  /// Matches native's AUTONOMOUS_RETRY_STOP_AFTER so Dart steps back at the same
+  /// point native does, rather than hammering on past it.
+  static const int _reconnectThrottleAfter = 6;
+  int _consecutiveConnectFailures = 0;
+
+  /// Clear the throttle so the next disconnect reconnects promptly. Called on any
+  /// successful connect — including ones that arrive via native's own retry or the
+  /// recovery alarm, not just through scanAndConnectToDevice. A connect is the only
+  /// event that proves the link is healthy, so it is the only one that may zero the
+  /// failure count.
+  void _resetReconnectThrottle() {
+    _consecutiveConnectFailures = 0;
+    _reconnectAt = null;
+  }
+
+  /// Let one attempt through **now** without forgiving the outage.
+  ///
+  /// Reserved for `app open` — a real launch, once per process. It deliberately does
+  /// NOT zero [_consecutiveConnectFailures]: that would buy another six fast attempts
+  /// at the 15 s cadence, ~4.5 minutes of churn, every time it fired. Dropping only
+  /// the wait gate gives the immediate attempt; if it fails, the backoff resumes from
+  /// where the outage had already pushed it rather than restarting at the fast
+  /// cadence.
+  ///
+  /// **Not called from the `resumed` lifecycle callback.** `resumed` is not a proxy
+  /// for user intent: OnePlus and similar OEMs emit transient paused/resumed cycles
+  /// for system overlays and the notification shade (which is why the resume scan is
+  /// debounced at all — see [_resumeReconnectDebounce]). Bypassing the backoff on
+  /// each of those blips would let a pulled-down notification panel restart the
+  /// connectGatt/closeGatt burst this throttle exists to stop (BLE_Research.md,
+  /// Wedge 5) — system events driving daemon churn with no user asking for anything.
+  /// An explicit reconnect is already unthrottled by a different route: the sync
+  /// page's buttons call [scanAndConnectToDevice] directly, which never consults
+  /// [_reconnectAt].
+  void _allowOneImmediateReconnect() {
+    _reconnectAt = null;
   }
 
   void updateConnectingStatus(bool value) {
@@ -802,7 +882,13 @@ class DeviceProvider extends ChangeNotifier
 
   void setIsConnected(bool value) {
     isConnected = value;
-    if (isConnected) _reconnectionTimer?.cancel();
+    // Any route to "connected" clears the throttle, not just scanAndConnectToDevice's
+    // own success path — a link that native's retry or the recovery alarm brought up
+    // must not leave a stale _reconnectAt suppressing the next reconnect.
+    if (isConnected) {
+      _reconnectionTimer?.cancel();
+      _resetReconnectThrottle();
+    }
     notifyListeners();
   }
 
@@ -1786,10 +1872,6 @@ class DeviceProvider extends ChangeNotifier
           'ring_max_io_ms': dropStats.ringMaxIoMs,
           'ring_max_io_op': dropStats.ringMaxIoOp,
           'ring_io_errors': dropStats.ringIoErrors,
-          // Thread-stack telemetry is logged here unconditionally — it applies to every
-          // device, not just ones with Priority-Recording activity (the priority block
-          // below is gated and would otherwise drop it on quiet devices). 0 on firmware
-          // older than oo-2.6.2.
           'sd_worker_stack_used': dropStats.sdWorkerStackUsed,
           'codec_stack_used': dropStats.codecStackUsed,
           'live_uptime_ms': dropStats.currentUptimeMs,

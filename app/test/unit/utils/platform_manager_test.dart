@@ -16,7 +16,8 @@ void main() {
 
       // Initialize SharedPreferencesUtil to avoid dependency issues
       const secureStorageChannel = MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(secureStorageChannel, (call) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(secureStorageChannel,
+          (call) async {
         if (call.method == 'readAll') return <String, String>{};
         return null;
       });
@@ -24,8 +25,8 @@ void main() {
 
       // Mock package_info
       const packageInfoChannel = MethodChannel('dev.fluttercommunity.plus/package_info');
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(packageInfoChannel, (MethodCall methodCall) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(packageInfoChannel,
+          (MethodCall methodCall) async {
         if (methodCall.method == 'getAll') {
           return <String, dynamic>{
             'appName': 'Test App',
@@ -40,8 +41,8 @@ void main() {
 
       // Mock device_info
       const deviceInfoChannel = MethodChannel('dev.fluttercommunity.plus/device_info');
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(deviceInfoChannel, (MethodCall methodCall) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(deviceInfoChannel,
+          (MethodCall methodCall) async {
         if (methodCall.method == 'getDeviceInfo') {
           if (simulateDeviceInfoError) {
             throw PlatformException(code: 'ERROR', message: 'Simulated device info error');

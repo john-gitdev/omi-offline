@@ -269,7 +269,8 @@ class OmiPassthroughIntegration implements PassthroughIntegration {
         if (_prefs.isOmiSegmentSynced(segmentKey)) continue;
 
         final existingJobId = _prefs.getOmiSegmentJobId(segmentKey);
-        final outcome = await OmiApiClient.syncSegment(segments[i], existingJobId: existingJobId, isCancelled: isCancelled);
+        final outcome =
+            await OmiApiClient.syncSegment(segments[i], existingJobId: existingJobId, isCancelled: isCancelled);
 
         switch (outcome.status) {
           case OmiJobStatus.completed:
