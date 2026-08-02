@@ -13,6 +13,7 @@
 
 #include "aad.h"
 
+#include <stdint.h>
 #include <string.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
@@ -23,6 +24,7 @@
 
 #include "lib/core/codec.h"
 #include "lib/core/config.h"
+#include "lib/core/diag_log.h"
 #include "lib/core/sd_card.h"
 #include "lib/core/transport.h"
 #include "lib/core/settings.h"
@@ -85,6 +87,13 @@ static uint16_t vad_voice_streak = 0;
 static int64_t vad_last_voice_ms = 0;
 static int64_t vad_next_status_ms = 0;
 
+/* Peak-hold window for DIAG_VAD_LEVEL. Only ever touched from aad_process_audio()
+ * on the mic thread, so no atomics needed. next_ms == 0 means "window not started";
+ * the first processed frame arms it. */
+static int64_t vad_next_diag_level_ms = 0;
+static uint16_t vad_diag_level_max = 0;
+static uint16_t vad_diag_level_min = UINT16_MAX;
+
 /* ---- Pre-roll ring buffer ---- */
 /* 8 frames * 100 ms/frame ~= 0.8 s pre-roll. */
 #define VAD_PREROLL_FRAMES 8
@@ -102,6 +111,23 @@ static uint8_t vad_live_backlog_wr = 0;
 static uint8_t vad_live_backlog_cnt = 0;
 
 #define VAD_STATUS_LOG_INTERVAL_MS 2000
+
+/* Diagnostic level reporting (DIAG_VAD_LEVEL). Deliberately far slower than the RTT
+ * status line above, and a peak-hold rather than a sample.
+ *
+ * Rate: the ring is 128 records deep and shared with every other event, so emitting
+ * at the 2 s status cadence would evict the whole log every ~4 minutes and make the
+ * rare events (empty-bin rotation, marker drop, bond state) unreadable. At 5 minutes
+ * this costs ~12 records/hour, leaving ~10 h of history.
+ *
+ * Peak-hold rather than sample: it makes the emit rate irrelevant to the question
+ * being asked. A wedged mic (digital-zero PDM output) reports max == 0 for every
+ * window no matter when you look; a genuinely quiet room always catches SOMETHING
+ * over five minutes — a door, a keystroke, movement — so max climbs well clear of
+ * zero even when it never reaches the recording threshold. An instantaneous sample
+ * confuses the two whenever it happens to land in a silent gap, which is exactly the
+ * ambiguity that left the 2026-08-02 mic outage un-diagnosable from logs. */
+#define VAD_DIAG_LEVEL_INTERVAL_MS 300000
 
 /* ---- Helpers ---- */
 
@@ -374,6 +400,33 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
                 CONFIG_OMI_VAD_DEBOUNCE_FRAMES,
                 CONFIG_OMI_VAD_HOLD_MS);
         vad_next_status_ms = now + VAD_STATUS_LOG_INTERVAL_MS;
+    }
+
+    /* Peak-hold the input level between diagnostic emissions (see
+     * VAD_DIAG_LEVEL_INTERVAL_MS). Saturate at UINT16_MAX so a full-scale frame
+     * can't wrap arg0 and read as silence — the one value we must never fake. */
+    uint16_t avg_u16 = (avg > UINT16_MAX) ? UINT16_MAX : (uint16_t) avg;
+    if (avg_u16 > vad_diag_level_max) {
+        vad_diag_level_max = avg_u16;
+    }
+    if (avg_u16 < vad_diag_level_min) {
+        vad_diag_level_min = avg_u16;
+    }
+    if (vad_next_diag_level_ms == 0) {
+        /* First frame after boot: start the window here rather than firing
+         * immediately on a single sample. */
+        vad_next_diag_level_ms = now + VAD_DIAG_LEVEL_INTERVAL_MS;
+    } else if (now >= vad_next_diag_level_ms) {
+        /* arg1 packs the window minimum above the threshold that was in force, so a
+         * reader can tell "quiet room under a high threshold" from "no signal at all"
+         * without needing a second event to cross-reference. */
+        diag_log_event(DIAG_VAD_LEVEL,
+                       0,
+                       vad_diag_level_max,
+                       ((uint32_t) vad_diag_level_min << 16) | (uint32_t) vad_threshold);
+        vad_diag_level_max = 0;
+        vad_diag_level_min = UINT16_MAX;
+        vad_next_diag_level_ms = now + VAD_DIAG_LEVEL_INTERVAL_MS;
     }
 
     if (!vad_is_recording) {
