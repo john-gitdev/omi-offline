@@ -791,6 +791,16 @@ int app_settings_arm_post_dfu_unpair(bool arm, const char *current_fw)
     return 0;
 }
 
+/* Truncate [src] into the fixed-width, always-NUL-terminated form that is both
+ * persisted and compared. Doing this in one place is what keeps the two consistent:
+ * comparing a caller's full string against a truncated stored one made every boot
+ * look like a version change once the string reached the buffer width. */
+static void fw_version_to_slot(const char *src, char *out, size_t out_size)
+{
+    memset(out, 0, out_size);
+    strncpy(out, src, out_size - 1);
+}
+
 bool app_settings_firmware_version_changed(const char *current_fw)
 {
     if (current_fw == NULL || current_fw[0] == '\0') {
@@ -799,26 +809,34 @@ bool app_settings_firmware_version_changed(const char *current_fw)
         return false;
     }
 
-    bool changed = strncmp(last_boot_fw, current_fw, sizeof(last_boot_fw)) != 0;
-    if (!changed) {
-        return false;
+    /* Compare the STORED form against the form this version would store, not against
+     * the raw argument: a version string at or past sizeof(last_boot_fw) loses its
+     * tail on the way to flash, so comparing the raw string would differ forever and
+     * re-run the caller's one-shot on every boot. */
+    char slot[sizeof(last_boot_fw)];
+    fw_version_to_slot(current_fw, slot, sizeof(slot));
+    return memcmp(last_boot_fw, slot, sizeof(last_boot_fw)) != 0;
+}
+
+int app_settings_mark_firmware_version_booted(const char *current_fw)
+{
+    if (current_fw == NULL || current_fw[0] == '\0') {
+        return -EINVAL;
     }
 
-    /* Persist BEFORE the caller acts on the result. A failed write means the next
-     * boot re-reports a change and repeats the action, which for the mic rail cycle
-     * is a harmless ~40 ms; the alternative ordering risks acting and then never
-     * recording that we did. */
-    char buf[sizeof(last_boot_fw)];
-    memset(buf, 0, sizeof(buf));
-    strncpy(buf, current_fw, sizeof(buf) - 1);
-    int err = settings_save_one("omi/last_boot_fw", buf, sizeof(buf));
+    char slot[sizeof(last_boot_fw)];
+    fw_version_to_slot(current_fw, slot, sizeof(slot));
+
+    int err = settings_save_one("omi/last_boot_fw", slot, sizeof(slot));
     if (err) {
+        /* Leave the cached value alone so the caller's next boot retries. Reported
+         * rather than swallowed — the caller decides whether a repeat is cheap. */
         LOG_ERR("Failed to save last_boot_fw (err %d)", err);
-    } else {
-        memcpy(last_boot_fw, buf, sizeof(last_boot_fw));
-        LOG_INF("Firmware version changed -> '%s'", last_boot_fw);
+        return err;
     }
-    return true;
+    memcpy(last_boot_fw, slot, sizeof(last_boot_fw));
+    LOG_INF("Recorded boot of firmware '%s'", last_boot_fw);
+    return 0;
 }
 
 bool app_settings_consume_post_dfu_unpair(const char *current_fw)

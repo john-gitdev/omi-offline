@@ -133,6 +133,27 @@ void main() {
       expect(rec(1, 0).description, isNot(contains('NO SIGNAL')));
     });
 
+    test('bond_state reports a failed wipe as failed, not as a wipe', () {
+      // The firmware emits the post-DFU / gesture records whether or not bt_unpair()
+      // succeeded, because an attempted-but-failed wipe is exactly the case that
+      // strands the device holding a bond the phone thinks is gone. arg1 is the count
+      // AFTER, so a non-zero remainder must not render as "wiped".
+      DiagLogRecord rec(int cause, int remaining) =>
+          DiagLogRecord(seq: 1, uptimeMs: 0, code: 12, backend: 0, arg0: cause, arg1: remaining);
+
+      expect(rec(1, 0).description, contains('Bonds wiped by post-update unpair'));
+      expect(rec(1, 0).description, isNot(contains('FAILED')));
+      expect(rec(1, 1).description, contains('FAILED'));
+      expect(rec(1, 1).description, contains('1 key(s) still on device'));
+
+      expect(rec(2, 0).description, contains('Bonds wiped by 5-tap gesture'));
+      expect(rec(2, 2).description, contains('FAILED'));
+
+      // Boot-load records are unaffected: zero keys there means an unexplained loss.
+      expect(rec(0, 0).description, contains('UNPAIRED'));
+      expect(rec(0, 1).description, isNot(contains('UNPAIRED')));
+    });
+
     test('mic_power_cycle distinguishes a real rail cycle from a skipped one', () {
       // arg0 = whether PDM_EN was actually usable. A not-ready GPIO turns mic_reset()
       // into a plain dmic re-trigger, which does NOT clear a wedged T5838 — so the

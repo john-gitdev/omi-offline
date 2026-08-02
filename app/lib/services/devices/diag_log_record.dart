@@ -143,10 +143,17 @@ class DiagLogRecord {
           case 0:
             return 'Bonds at boot — $arg1 key(s) loaded'
                 '${arg1 == 0 ? ' (device is UNPAIRED)' : ''}';
+          // The firmware emits these whether or not bt_unpair() actually succeeded —
+          // an attempted-but-failed wipe is itself worth recording, since the device
+          // then keeps a bond the phone believes is gone. arg1 is the count AFTER, so
+          // a non-zero remainder means the wipe did not take; say that rather than
+          // asserting "wiped" over the top of it.
           case 1:
-            return 'Bonds wiped by post-update unpair — $arg1 key(s) remain';
+            return arg1 == 0
+                ? 'Bonds wiped by post-update unpair'
+                : 'Post-update unpair FAILED — $arg1 key(s) still on device';
           case 2:
-            return 'Bonds wiped by 5-tap gesture — $arg1 key(s) remain';
+            return arg1 == 0 ? 'Bonds wiped by 5-tap gesture' : '5-tap unpair FAILED — $arg1 key(s) still on device';
           default:
             return 'Bond state — cause=$arg0, $arg1 key(s)';
         }

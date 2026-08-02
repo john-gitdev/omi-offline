@@ -223,9 +223,10 @@ void mic_resume()
     }
 }
 
-void mic_reset()
+bool mic_reset()
 {
     const bool was_running = mic_running;
+    bool rail_cycled = false;
 
     if (mic_running) {
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_STOP);
@@ -237,7 +238,7 @@ void mic_reset()
              * desync worse than the wedge this is trying to clear. The caller
              * simply doesn't get a reset this time. */
             LOG_ERR("mic_reset: STOP trigger failed: %d — leaving mic untouched", ret);
-            return;
+            return false;
         }
         mic_running = false;
     }
@@ -248,12 +249,29 @@ void mic_reset()
      * never asserting) is only cleared by removing its supply, which neither
      * mic_pause()/mic_resume() nor a dmic re-trigger does. INACTIVE = physical
      * low = disabled (pdm_en_pin is GPIO_ACTIVE_HIGH). */
+     *
+     * Both configure calls are checked. A ready GPIO controller does not mean the
+     * pin was actually driven, and callers that record this in the diagnostic log
+     * must never claim a power cycle that did not happen — a discarded error here
+     * would leave the rail up while the record says otherwise, which is exactly the
+     * confusion the record exists to prevent. If the pull-down fails there is no
+     * cycle at all; if only the restore fails the rail is left LOW, which is worse
+     * than not trying, so say so loudly. */
     if (gpio_is_ready_dt(&pdm_en)) {
-        gpio_pin_configure_dt(&pdm_en, GPIO_OUTPUT_INACTIVE);
-        k_msleep(20);
-        gpio_pin_configure_dt(&pdm_en, GPIO_OUTPUT_ACTIVE);
-        k_msleep(20);
-        LOG_INF("mic_reset: PDM_EN power-cycled");
+        int lo = gpio_pin_configure_dt(&pdm_en, GPIO_OUTPUT_INACTIVE);
+        if (lo < 0) {
+            LOG_ERR("mic_reset: PDM_EN pull-down failed: %d — rail NOT cycled", lo);
+        } else {
+            k_msleep(20);
+            int hi = gpio_pin_configure_dt(&pdm_en, GPIO_OUTPUT_ACTIVE);
+            if (hi < 0) {
+                LOG_ERR("mic_reset: PDM_EN restore failed: %d — RAIL LEFT OFF", hi);
+            } else {
+                k_msleep(20);
+                rail_cycled = true;
+                LOG_INF("mic_reset: PDM_EN power-cycled");
+            }
+        }
     } else {
         LOG_WRN("mic_reset: PDM_EN gpio not ready — rail NOT cycled");
     }
@@ -262,17 +280,13 @@ void mic_reset()
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
         if (ret < 0) {
             LOG_ERR("mic_reset: START trigger failed: %d", ret);
-            return;
+            return rail_cycled;
         }
         mic_running = true;
     }
 
-    LOG_INF("Microphone reset (running=%d)", mic_running);
-}
-
-bool mic_pdm_rail_is_ready()
-{
-    return gpio_is_ready_dt(&pdm_en);
+    LOG_INF("Microphone reset (running=%d, rail_cycled=%d)", mic_running, rail_cycled);
+    return rail_cycled;
 }
 
 bool mic_is_running()

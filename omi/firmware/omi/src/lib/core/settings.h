@@ -331,21 +331,40 @@ int app_settings_arm_post_dfu_unpair(bool arm, const char *current_fw);
 bool app_settings_consume_post_dfu_unpair(const char *current_fw);
 
 /**
- * @brief Whether this is the first boot of [current_fw], and record it if so.
+ * @brief Whether [current_fw] differs from the last version recorded as booted.
  *
  * Unconditional counterpart to @ref app_settings_consume_post_dfu_unpair: that
  * marker only exists when the user opted into a pairing reset and is consumed by
- * it, so it cannot answer "did we just update?" on an ordinary flash. This one
- * persists the running version on every boot where it differs.
+ * it, so it cannot answer "did we just update?" on an ordinary flash.
  *
- * One-shot per version: the new version is written before returning true, so a
- * second call in the same boot (or the next boot of the same image) returns false.
+ * PURE CHECK — it persists nothing, and keeps returning true until
+ * @ref app_settings_mark_firmware_version_booted succeeds. That split is
+ * deliberate: the caller's action (power-cycling the mic rail) is the point of
+ * asking, and recording the version first would mean a reset in the window between
+ * the two silently skipped that action for the entire lifetime of the new image.
+ * Act first, record after, and an interrupted boot simply retries.
+ *
  * A device with no stored version — one that predates this key — reports a change
  * on its first boot after upgrading, which is the correct answer.
  *
+ * Comparison uses the same truncation as persistence, so a version string at or
+ * past the storage width does not read as "changed" on every boot forever.
+ *
  * @param current_fw Compile-time firmware version string (e.g. CONFIG_BT_DIS_FW_REV_STR).
- * @return true on the first boot of a different firmware version.
+ * @return true when a different firmware version is running.
  */
 bool app_settings_firmware_version_changed(const char *current_fw);
+
+/**
+ * @brief Record [current_fw] as booted, closing out a version change.
+ *
+ * Call only after whatever @ref app_settings_firmware_version_changed gated has
+ * actually completed. On failure the stored version is left untouched so the next
+ * boot repeats the action rather than losing it — the caller decides whether that
+ * repeat is acceptable, which is why the error is returned rather than swallowed.
+ *
+ * @return 0 on success, or a negative errno from the settings write.
+ */
+int app_settings_mark_firmware_version_booted(const char *current_fw);
 
 #endif // SETTINGS_H

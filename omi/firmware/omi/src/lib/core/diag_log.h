@@ -56,13 +56,14 @@ typedef enum {
                                       * still up, so this is NOT an off-air event -- split from
                                       * code 13 so field diagnosis is not misled. arg0 = mode,
                                       * arg1 = errno magnitude. */
-    DIAG_VAD_LEVEL = 16,             /* periodic AAD input level -- the one number that separates
-                                      * "the mic is dead" from "the room is quiet", which no
-                                      * counter or bin listing can. arg0 = avg abs amplitude over
-                                      * the frame (int16 units, saturated at 65535); arg1 =
-                                      * vad_threshold in the low 16 bits, bit 16 = vad_is_recording.
-                                      * avg pinned at 0 across many records = wedged mic; avg
-                                      * fluctuating below threshold = a genuinely silent room. */
+    DIAG_VAD_LEVEL = 16,             /* AAD input level over a 5 min peak-hold window -- the one
+                                      * reading that separates "the mic is dead" from "the room is
+                                      * quiet", which no counter or bin listing can.
+                                      *   arg0 = window MAX avg-abs-amplitude (int16 units, sat 65535)
+                                      *   arg1 = [window MIN u16 high 16][vad_threshold u16 low 16]
+                                      * Emitted on a silent<->non-silent transition or hourly. A max
+                                      * of 0 is digital silence from the part; a quiet room always
+                                      * peaks above 0 even when nothing reaches the threshold. */
     DIAG_MIC_POWER_CYCLE = 17,       /* PDM_EN was power-cycled at boot because the running
                                       * firmware version differs from the last booted one, i.e.
                                       * first boot after an update. arg0 = 1 if the rail was

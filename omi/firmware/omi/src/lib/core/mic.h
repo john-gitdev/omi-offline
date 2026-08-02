@@ -33,18 +33,16 @@ void mic_resume();
  * it is safe to call whether or not capture is currently running — but prefer
  * calling it while paused, since the cycle discards in-flight samples.
  */
-void mic_reset();
-bool mic_is_running();
-
 /**
- * @brief Whether the PDM_EN rail GPIO is usable, i.e. whether mic_reset() can
- *        actually power-cycle the part.
+ * @return true only if the PDM_EN rail was actually taken low and restored.
  *
- * A not-ready GPIO makes mic_reset() a no-op that only re-triggers the nRF PDM
- * peripheral — it logs a warning to RTT and otherwise looks identical to a real
- * reset. Callers that record a reset in the diagnostic log use this so the record
- * says which of the two happened.
+ * False means the part never lost its supply — a not-ready GPIO, a failed
+ * `gpio_pin_configure_dt()`, or an aborted reset because the dmic STOP failed. In
+ * every one of those cases the call degrades to at most a dmic re-trigger, which
+ * does NOT clear a wedged T5838, so a caller recording this in the diagnostic log
+ * must report the returned value rather than assume the cycle happened.
  */
-bool mic_pdm_rail_is_ready();
+bool mic_reset();
+bool mic_is_running();
 void mic_set_gain(uint8_t gain_level);
 #endif

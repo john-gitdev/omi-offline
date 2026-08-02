@@ -428,10 +428,26 @@ int main(void)
      *
      * Runs before mic_start(), so mic_running is false and mic_reset() does only the
      * rail cycle — no dmic trigger against an unconfigured device. */
+     * Cycle FIRST, record the version AFTER. A reset in that window costs a repeat
+     * of a 40 ms rail cycle on the next boot; the other ordering costs the cycle
+     * entirely, for every remaining boot of that image — which is the wedge this
+     * exists to clear. Same reason the version is only recorded when the rail
+     * genuinely went down: mic_reset() degrades to a dmic re-trigger if the GPIO
+     * is unusable, and that clears nothing, so it must not close out the update.
+     *
+     * Known limit: this keys off CONFIG_BT_DIS_FW_REV_STR, which is edited by hand.
+     * A DFU that ships an unchanged version string will not cycle. Every release
+     * bumps it (see the RELEASE flow in CLAUDE.md), so this only affects
+     * same-version dev rebuilds, where the mic can be reset with a button gesture. */
     if (app_settings_firmware_version_changed(CONFIG_BT_DIS_FW_REV_STR)) {
         LOG_INF("First boot of %s — power-cycling the mic rail", CONFIG_BT_DIS_FW_REV_STR);
-        mic_reset();
-        diag_log_event_forced(DIAG_MIC_POWER_CYCLE, 0, mic_pdm_rail_is_ready() ? 1 : 0, 0);
+        bool cycled = mic_reset();
+        diag_log_event_forced(DIAG_MIC_POWER_CYCLE, 0, cycled ? 1 : 0, 0);
+        if (cycled) {
+            app_settings_mark_firmware_version_booted(CONFIG_BT_DIS_FW_REV_STR);
+        } else {
+            LOG_WRN("Mic rail not cycled — leaving the version unrecorded so the next boot retries");
+        }
     }
 
     ret = mic_start();
