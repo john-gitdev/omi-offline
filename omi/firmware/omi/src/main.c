@@ -412,6 +412,22 @@ int main(void)
         return ret;
     }
 
+    /* Honour a mute that arrived before the mic existed. transport_start() runs
+     * earlier in this function, so a phone can connect and write the mute
+     * characteristic (or the user can tap the gesture) while mic_running is still
+     * false — mute_apply() sets is_muted and calls mic_pause(), which finds nothing
+     * to stop, and mic_start() then happily begins capturing on a device the user
+     * has muted. Narrow window, but the failure is capture-while-muted, so it gets
+     * closed rather than argued about.
+     *
+     * is_muted is the source of truth (button.c) and already visible here, so this
+     * needs no new state — a mute landing after this point takes the normal
+     * mute_apply() path, which now finds a running mic and stops it. */
+    if (is_muted) {
+        LOG_WRN("Muted before the mic started — pausing capture to honour it");
+        mic_pause();
+    }
+
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
     ret = aad_start();
     if (ret) {
