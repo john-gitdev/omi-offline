@@ -122,9 +122,14 @@ void diag_log_event(uint8_t code, uint8_t backend, uint16_t arg0, uint32_t arg1)
  *
  * Use this ONLY for events that (a) fire in the boot window and (b) cannot be
  * reconstructed later. The ring is already allocated, so unconditional records cost
- * RAM we have paid for; the gate still governs the drain, so an app that never asks
- * never sees them. Everything periodic or high-rate must keep using diag_log_event()
- * so a disabled log stays one predictable branch. */
+ * RAM we have paid for. Everything periodic or high-rate must keep using
+ * diag_log_event() so a disabled log stays one predictable branch.
+ *
+ * Note the gate governs CAPTURE, not readback: diag_log_drain() deliberately does
+ * not consult it, so forced records are served to any app that reads 0x0063 even
+ * while the log is disabled. That is the intent — a record nobody can read is the
+ * problem this function was added to solve — and it costs nothing, since 0x0063 is
+ * an encrypted characteristic that only exists in CONFIG_OMI_DIAG_LOG builds. */
 void diag_log_event_forced(uint8_t code, uint8_t backend, uint16_t arg0, uint32_t arg1);
 
 /* Snapshot-based, byte-offset-addressable drain for GATT Long Read. The FIRST read

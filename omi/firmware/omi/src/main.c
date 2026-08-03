@@ -463,7 +463,14 @@ int main(void)
      * followed straight into mic_start() — reporting a running microphone over a
      * part with no supply, which is silent capture that looks healthy from every
      * layer above. Boot continues either way: BLE stays up so the diagnostic record
-     * above can actually be drained, which is the whole point of persisting it. */
+     * above can actually be drained, which is the whole point of persisting it.
+     *
+     * Only RAIL_OFF skips. PARTIAL is unconfirmed rather than known-dead, and the
+     * two options at boot are not symmetric: starting risks silent capture, which
+     * DIAG_VAD_LEVEL now reports within a window, while not starting guarantees no
+     * audio for the entire session with nothing to retry it. mic_reset() takes the
+     * opposite view for its own restart because there the mic was already running
+     * and a later gesture can retry — here nothing else will. */
     if (rail == MIC_RESET_RAIL_OFF) {
         LOG_ERR("PDM_EN stuck low — skipping mic_start(); no audio will be captured this boot");
     } else {

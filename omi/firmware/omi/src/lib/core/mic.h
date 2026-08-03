@@ -46,7 +46,10 @@ typedef enum {
     /** Full low-then-restore completed. The only outcome that clears a wedge. */
     MIC_RESET_CYCLED = 1,
     /** Rail dropped but could not be driven back up; the pin was released to the
-     *  board pull-up, which should re-power it. Probably cycled — not assertable. */
+     *  board pull-up, which should re-power it. Probably cycled — not assertable,
+     *  and treated as unconfirmed: capture is NOT auto-restarted, because a weak
+     *  pull-up's rise time is nothing like a driven output's and we cannot tell
+     *  whether the rail actually came back. */
     MIC_RESET_PARTIAL = 2,
     /** PDM_EN is stuck low and the release failed too: the mic has NO supply.
      *  Callers must not start capture, or they will report a running mic over a

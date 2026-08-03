@@ -292,13 +292,25 @@ mic_reset_result_t mic_reset()
         LOG_WRN("mic_reset: PDM_EN gpio not ready — rail NOT cycled");
     }
 
-    /* Never restart capture into a rail we know is off. Doing so would report
-     * mic_running = true while the part has no supply, i.e. silent capture that
-     * every layer above believes is healthy — the exact failure this whole change
-     * set exists to make visible. Leaving mic_running false is the honest state and
-     * lets a later mic_start()/mic_reset() try again. */
-    if (was_running && result == MIC_RESET_RAIL_OFF) {
-        LOG_ERR("mic_reset: not restarting capture — PDM_EN is off, mic left stopped");
+    /* Never restart capture unless the rail is CONFIRMED up. Doing so would report
+     * mic_running = true over a part that may have no supply, i.e. silent capture
+     * that every layer above believes is healthy — the exact failure this whole
+     * change set exists to make visible.
+     *
+     * PARTIAL counts as unconfirmed, not as good enough. The pin was released to the
+     * board pull-up, which should re-power the part, but "should" is the problem: a
+     * pull-up is deliberately weak, so its rise time through the mic's decoupling is
+     * nothing like a driven output and the 20 ms settle above was sized for the
+     * latter. If the pull-up is absent or damaged the rail simply stays low. We
+     * cannot tell, and starting capture is a claim we would have no basis for.
+     *
+     * Leaving mic_running false is the honest state and lets a later
+     * mic_start()/mic_reset() retry once the rail has had time to recover. */
+    /* Positive form on purpose: an enum value appended later defaults to "not
+     * confirmed", i.e. to leaving capture stopped, which is the safe side. */
+    const bool rail_confirmed_up = (result == MIC_RESET_CYCLED || result == MIC_RESET_NOT_CYCLED);
+    if (was_running && !rail_confirmed_up) {
+        LOG_ERR("mic_reset: not restarting capture — rail unconfirmed (result=%d), mic left stopped", (int) result);
     } else if (was_running) {
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
         if (ret < 0) {
