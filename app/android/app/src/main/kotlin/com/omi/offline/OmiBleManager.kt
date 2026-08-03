@@ -98,15 +98,13 @@ class OmiBleManager private constructor(private val application: Application) {
     @Volatile
     private var isProcessingCommand = false
 
-    // Keyed by address, NOT a single field: a phone can be bonded to several Omis, and
-    // with one shared field the second device's start*KeepAlive() overwrote the first's
-    // Runnable reference after its own stop*KeepAlive() had already cancelled the first
-    // device's pending callback — silently leaving device #1 with no keep-alive at all,
-    // so the firmware idle-dropped it 15 s later mid-sync.
-    private val rssiKeepAliveRunnables = ConcurrentHashMap<String, Runnable>()
+    // Single field, not keyed by address: the app manages exactly one peripheral at a
+    // time (one paired device in prefs, one NativeBleTransport), so there is never a
+    // second device whose start could cancel this one's callback.
+    private var rssiKeepAliveRunnable: Runnable? = null
     private val rssiKeepAliveInterval = 3000L
 
-    private val storageKeepAliveRunnables = ConcurrentHashMap<String, Runnable>()
+    private var storageKeepAliveRunnable: Runnable? = null
     // 5 s, not 15 s: the firmware idle-disconnect is 15 s, so a 15 s cadence left
     // zero margin — one silently-dropped write (Android flow-control backoff) tripped
     // the idle-drop. 5 s fits 2+ attempts inside the 15 s window, so a single missed
@@ -498,20 +496,21 @@ class OmiBleManager private constructor(private val application: Application) {
     }
 
     fun startRssiKeepAlive(address: String) {
+        stopRssiKeepAlive()
         val addr = address.uppercase()
-        stopRssiKeepAlive(addr)
         val runnable = object : Runnable {
             override fun run() {
                 connectedGatts[addr]?.readRemoteRssi()
                 mainHandler.postDelayed(this, rssiKeepAliveInterval)
             }
         }
-        rssiKeepAliveRunnables[addr] = runnable
+        rssiKeepAliveRunnable = runnable
         mainHandler.postDelayed(runnable, rssiKeepAliveInterval)
     }
 
-    fun stopRssiKeepAlive(address: String) {
-        rssiKeepAliveRunnables.remove(address.uppercase())?.let { mainHandler.removeCallbacks(it) }
+    fun stopRssiKeepAlive() {
+        rssiKeepAliveRunnable?.let { mainHandler.removeCallbacks(it) }
+        rssiKeepAliveRunnable = null
     }
 
     // Sends 0x32 (KEEP_ALIVE) to the storage characteristic every 5 s using
@@ -519,20 +518,21 @@ class OmiBleManager private constructor(private val application: Application) {
     // an in-flight file read. Resets the firmware's 15 s idle-disconnect timer
     // (IDLE_DISCONNECT_TIMEOUT_MS) regardless of whether a data stream is active.
     fun startStorageKeepAlive(address: String) {
+        stopStorageKeepAlive()
         val addr = address.uppercase()
-        stopStorageKeepAlive(addr)
         val runnable = object : Runnable {
             override fun run() {
                 sendStorageKeepAliveNoResponse(addr)
                 mainHandler.postDelayed(this, storageKeepAliveInterval)
             }
         }
-        storageKeepAliveRunnables[addr] = runnable
+        storageKeepAliveRunnable = runnable
         mainHandler.postDelayed(runnable, storageKeepAliveInterval)
     }
 
-    fun stopStorageKeepAlive(address: String) {
-        storageKeepAliveRunnables.remove(address.uppercase())?.let { mainHandler.removeCallbacks(it) }
+    fun stopStorageKeepAlive() {
+        storageKeepAliveRunnable?.let { mainHandler.removeCallbacks(it) }
+        storageKeepAliveRunnable = null
     }
 
     // Last time CONNECTION_PRIORITY_HIGH was asserted, per address — debounces the
@@ -621,8 +621,8 @@ class OmiBleManager private constructor(private val application: Application) {
         val addr = address.uppercase()
         servicesDiscoveredFor.remove(addr)
         discoveryTimeouts.remove(addr)?.let { mainHandler.removeCallbacks(it) }
-        stopRssiKeepAlive(addr)
-        stopStorageKeepAlive(addr)
+        stopRssiKeepAlive()
+        stopStorageKeepAlive()
         lastPriorityAssertMs.remove(addr)
         val prefix = addr.lowercase()
         readCompletions.keys().toList().filter { it.startsWith(prefix) }.forEach { readCompletions.remove(it)?.invoke(Result.failure(Exception("Disconnected"))) }
