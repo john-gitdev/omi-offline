@@ -49,6 +49,22 @@ static volatile uint32_t mute_since_uptime_ms = 0;
  * overrides back to the pre-mute state. */
 static volatile bool led_state_before_mute = false;
 
+/* Serializes a whole mute transition — the state change, the BLE notify and the
+ * inline stream marker — so concurrent opposite requests cannot emit out of order.
+ *
+ * mic_state_lock cannot do this job: it is deliberately released before the notify
+ * and the marker write, because those can block on a saturated SD queue and every
+ * mic transition on every thread queues behind that mutex. But releasing it early
+ * left a window where a later unmute could overtake an in-flight mute and write
+ * 0xFFFFFFF9 to the stream before the earlier 0xFFFFFFFA, leaving the app's bracket
+ * parser with a close before its open, and the BLE state notifications inverted.
+ *
+ * So the ordering guarantee gets its own lock, held across the whole body, while
+ * mic_state_lock keeps its narrow scope for the is_muted/mic agreement. Lock order
+ * is always mute_apply_lock → mic_state_lock and never the reverse: nothing in
+ * mic.c calls mute_apply(), and this is the only user of this mutex. */
+static K_MUTEX_DEFINE(mute_apply_lock);
+
 bool mute_apply(bool on)
 {
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
@@ -62,8 +78,20 @@ bool mute_apply(bool on)
         return false;
     }
     if (on == is_muted) {
+        return false; /* fast path — re-checked under the lock below */
+    }
+
+    k_mutex_lock(&mute_apply_lock, K_FOREVER);
+    /* Re-check under the lock. The check above is only a fast path: two threads
+     * (button gesture and BLE mute write) can both observe the old value and both
+     * fall through, and without this they would both apply the change — two mic
+     * transitions and two mute markers bracketing the same stretch of audio, which
+     * the app's bracket parsing reads as a nested mute. */
+    if (on == is_muted) {
+        k_mutex_unlock(&mute_apply_lock);
         return false;
     }
+
     /* is_muted and the mic's run state must never disagree, so the write and the
      * mic call are one atomic unit. Without this the pair is a check-then-act for
      * anyone else reading is_muted to decide whether to stop capture (main.c does
@@ -76,15 +104,6 @@ bool mute_apply(bool on)
      * every mic transition on every thread. Recursive, so the nested mic calls are
      * fine. */
     k_mutex_lock(&mic_state_lock, K_FOREVER);
-    /* Re-check under the lock. The early return above is only a fast path: two
-     * threads (button gesture and BLE mute write) can both observe the old value
-     * and both fall through, and without this they would both apply the change —
-     * two mic transitions and, worse, two mute-on/off markers bracketing the same
-     * stretch of audio, which the app's bracket parsing reads as a nested mute. */
-    if (on == is_muted) {
-        k_mutex_unlock(&mic_state_lock);
-        return false;
-    }
     is_muted = on;
     if (on) {
         // Force the LED on so the solid-red mute indicator shows even from
@@ -123,6 +142,7 @@ bool mute_apply(bool on)
         write_mute_off_marker_to_storage();
     }
 #endif
+    k_mutex_unlock(&mute_apply_lock);
     return true;
 }
 
