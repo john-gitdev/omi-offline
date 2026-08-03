@@ -10,6 +10,7 @@
 - [3. Diagnostic event log — persistent (reboot-surviving) upgrade [small] [Pending — post-LittleFS]](#3-diagnostic-event-log--persistent-reboot-surviving-upgrade-small-pending--post-littlefs)
 - [5. Mic rail (PDM_EN) is not driven by firmware [small] [Pending — awaiting field evidence]](#5-mic-rail-pdm_en-is-not-driven-by-firmware-small-pending--awaiting-field-evidence)
 - [6. Offer a re-pair when an OTA eats the bond [small] [Pending]](#6-offer-a-re-pair-when-an-ota-eats-the-bond-small-pending)
+- [7. An OTA that eats `storage_backend` wipes the SD card [small] [Pending — closes itself with LittleFS removal]](#7-an-ota-that-eats-storage_backend-wipes-the-sd-card-small-pending--closes-itself-with-littlefs-removal)
 
 ### LARGE
 - [4. Device-driven BLE wake (firmware + iOS) [large] [Parked — lost its primary motivation]](#4-device-driven-ble-wake-firmware--ios-large-parked--lost-its-primary-motivation)
@@ -125,6 +126,9 @@ If reboot-survival is later needed, promote the ring to a persistent CRC'd log i
 **already-reserved metadata sectors 81–255** (`sd_ring.h:30-33,69` — 128 KB, never touched by audio,
 DFU-proof because DFU never addresses the SD NAND), reusing the ring cursor's torn-write pattern
 (per-sector CRC, highest valid seq wins, discard torn tail on boot; `sd_ring.h:35-42`).
+
+**Also closed by LittleFS removal:** IDEAS entry 7 — an OTA that loses `storage_backend` currently
+reformats the SD card, which one backend makes impossible.
 
 **Why it waits for LittleFS removal:** the reserved sectors exist only on the ring backend, so doing
 it now means backend asymmetry (a persistent log on ring, volatile on LittleFS) plus torn-write
@@ -268,6 +272,61 @@ disabled status-5 self-heal above.
 - `app/lib/providers/device_provider.dart` — `_onDeviceConnected` / setup failure path
 - `app/android/.../OmiBleForegroundService.kt:964-970` — the disabled self-heal, and why
 - `BLE_Research.md` §9 — root cause, the wired-flash fix, and the two dead ends
+
+---
+
+### 7. An OTA that eats `storage_backend` wipes the SD card [small] [Pending — closes itself with LittleFS removal]
+
+**Do not build a guard for this. Sync before flashing, and let LittleFS removal delete it.**
+
+Same mechanism as entry 6 and `BLE_Research.md` §9 — one NVS sector erased per OTA, ~1 flash in 8
+for any rarely-rewritten key — but the consequence is data loss rather than a re-pair:
+
+```
+omi/storage_backend lost in the sector erase
+  → app_settings_get_storage_backend() falls back to DEFAULT_STORAGE_BACKEND (LittleFS)
+  → card is actually ring-formatted
+  → lfs_mount() fails (no LFS superblock)
+  → boot mount has allow_format = true
+  → lfs_format()  ← every unsynced recording is gone
+```
+
+`sd_card.c` narrates it: *"LFS mount failed — existing data on SD will be ERASED by format"*.
+Symmetric: a LittleFS card on a device that lost the key while set to ring hits `sd_ring_format()`.
+
+`sd_ring.c` already defends the *other* direction — when a partial tail sector is unreadable it
+refuses to fail the mount precisely because "the caller would fall back to LittleFS and
+lfs_format() the volume, wiping every…". The NVS-loss route into the same place was never
+considered.
+
+#### Why no fix
+
+Removing LittleFS deletes the failure mode outright: no second backend means no
+`storage_backend` key to lose, no `DEFAULT_STORAGE_BACKEND` fallback, and no mismatch path. A
+guard written now is dead code the day that lands.
+
+The interim mitigation is operational and free: **sync before flashing.** Only unsynced audio is
+at risk, and flashing is a deliberate act — a drained card can be reformatted at no cost.
+
+#### The fix, if the gap turns out to be long
+
+Only worth building if LittleFS removal stalls *and* flashes with unsynced audio become routine.
+Make the card authoritative for its own layout and NVS merely advisory: before either branch
+formats, probe the other backend. `sd_ring_mount()` is already a safe read-only probe — one header
+sector, magic + CRC32, `-ENOENT` if it is not a ring. If the other backend mounts, the setting was
+lost rather than the data: adopt it and re-persist `storage_backend`. Costs one sector read on a
+mount that was about to fail anyway, and inverts the trust the right way round — the bytes on the
+card know what they are; a 32 KB NVS partition sitting inside the bootloader's erase path does not.
+
+**Not a candidate: flipping `DEFAULT_STORAGE_BACKEND` to ring.** It only moves the bullet — a
+LittleFS device that lost the key would then hit `sd_ring_format()` instead.
+
+#### Relevant files
+
+- `omi/firmware/omi/src/sd_card.c` — `sd_mount()`, the `ring_active()` branch and the `lfs_format()` fallback
+- `omi/firmware/omi/src/sd_ring.c` — `sd_ring_mount()`, the read-only probe
+- `omi/firmware/omi/src/settings.c` — `DEFAULT_STORAGE_BACKEND`
+- `BLE_Research.md` §9 — the NVS-erase mechanism and why the real fix needs a wired flash
 
 ---
 
