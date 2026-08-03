@@ -440,45 +440,27 @@ int main(void)
      * A DFU that ships an unchanged version string will not cycle. Every release
      * bumps it (see the RELEASE flow in CLAUDE.md), so this only affects
      * same-version dev rebuilds, where the mic can be reset with a button gesture. */
-    mic_reset_result_t rail = MIC_RESET_NOT_CYCLED;
     if (app_settings_firmware_version_changed(CONFIG_BT_DIS_FW_REV_STR)) {
         LOG_INF("First boot of %s — power-cycling the mic rail", CONFIG_BT_DIS_FW_REV_STR);
-        rail = mic_reset();
-        /* Record the outcome, not a success bit: only CYCLED clears a wedge, and
-         * RAIL_OFF is a dead mic. Collapsing them would leave the drained log unable
-         * to tell "nothing was cleared" from "the part has no supply" — the exact
-         * distinction this record was added to persist. */
-        diag_log_event_forced(DIAG_MIC_POWER_CYCLE, 0, (uint16_t) rail, 0);
-        if (rail == MIC_RESET_CYCLED) {
+        bool cycled = mic_reset();
+        diag_log_event_forced(DIAG_MIC_POWER_CYCLE, 0, cycled ? 1 : 0, 0);
+        if (cycled) {
             app_settings_mark_firmware_version_booted(CONFIG_BT_DIS_FW_REV_STR);
         } else {
-            LOG_WRN("Mic rail cycle incomplete (result=%d) — version left unrecorded so the next boot retries",
-                    (int) rail);
+            LOG_WRN("Mic rail not cycled — version left unrecorded so the next boot retries");
         }
     }
 
-    /* mic_reset()'s own "don't restart into a dead rail" guard cannot help here: it
-     * only fires when capture was already running, and at boot it never is. So the
-     * check has to be repeated at this call site, or a stuck-low rail would be
-     * followed straight into mic_start() — reporting a running microphone over a
-     * part with no supply, which is silent capture that looks healthy from every
-     * layer above. Boot continues either way: BLE stays up so the diagnostic record
-     * above can actually be drained, which is the whole point of persisting it.
-     *
-     * Only RAIL_OFF skips. PARTIAL is unconfirmed rather than known-dead, and the
-     * two options at boot are not symmetric: starting risks silent capture, which
-     * DIAG_VAD_LEVEL now reports within a window, while not starting guarantees no
-     * audio for the entire session with nothing to retry it. mic_reset() takes the
-     * opposite view for its own restart because there the mic was already running
-     * and a later gesture can retry — here nothing else will. */
-    if (rail == MIC_RESET_RAIL_OFF) {
-        LOG_ERR("PDM_EN stuck low — skipping mic_start(); no audio will be captured this boot");
-    } else {
-        ret = mic_start();
-        if (ret) {
-            LOG_ERR("Mic failed %d", ret);
-            return ret;
-        }
+    /* Started unconditionally, including after a rail cycle that reported failure.
+     * An earlier revision skipped mic_start() on a known-dead rail; it was removed
+     * because DIAG_VAD_LEVEL already reports silent capture within one window, so
+     * the gating duplicated a detector we now have — and unlike the detector, it
+     * could turn a transient into a whole session with no audio and nothing to
+     * retry it. Starting and being told it is silent beats refusing to start. */
+    ret = mic_start();
+    if (ret) {
+        LOG_ERR("Mic failed %d", ret);
+        return ret;
     }
 
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD

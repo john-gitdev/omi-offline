@@ -154,30 +154,20 @@ void main() {
       expect(rec(0, 1).description, isNot(contains('UNPAIRED')));
     });
 
-    test('mic_power_cycle keeps all four outcomes distinguishable', () {
-      // arg0 = mic_reset_result_t. These are distinct states, not degrees of success:
-      // 0 and 3 both mean no cycle happened, but only 3 means the part has no supply,
-      // and only 1 actually clears a wedged T5838. Collapsing them would defeat the
-      // reason this record is persisted at all.
+    test('mic_power_cycle never claims a cycle that did not happen', () {
+      // arg0 = 1 only if PDM_EN was actually taken low and restored, which is the
+      // only outcome that clears a wedged T5838. Anything else must read as "not
+      // cycled": a record asserting a power cycle in the one case where the mic
+      // stays wedged is worse than no record at all.
       DiagLogRecord rec(int result) => DiagLogRecord(seq: 1, uptimeMs: 0, code: 17, backend: 0, arg0: result, arg1: 0);
 
-      // Only 1 may claim the cycle happened.
       expect(rec(1).description, contains('power-cycled'));
-      for (final other in [0, 2, 3]) {
-        expect(rec(other).description, isNot(contains('Mic rail power-cycled')),
-            reason: 'result $other must not read as a completed cycle');
-      }
+      expect(rec(1).description, isNot(contains('NOT cycled')));
 
-      // 0 vs 3 — both "no cycle", but only 3 is a dead mic.
-      expect(rec(0).description, contains('did NOT run'));
-      expect(rec(0).description, isNot(contains('STUCK OFF')));
-      expect(rec(3).description, contains('STUCK OFF'));
-      expect(rec(3).description, contains('capture skipped'));
-
-      expect(rec(2).description, contains('PARTIAL'));
-
-      // A newer firmware state must not silently render as one of the known ones.
-      expect(rec(9).description, contains('unknown result 9'));
+      expect(rec(0).description, contains('NOT cycled'));
+      // Any unexpected value must fall to the safe reading, never to "cycled".
+      expect(rec(2).description, isNot(contains('Mic rail power-cycled')));
+      expect(rec(9).description, isNot(contains('Mic rail power-cycled')));
     });
 
     test('advertising events decode mode and errno, and stay distinguishable', () {

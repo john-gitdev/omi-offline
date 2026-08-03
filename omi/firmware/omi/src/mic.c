@@ -40,37 +40,20 @@ static const struct device *dmic_dev;
 static volatile mix_handler callback_func = NULL;
 static volatile bool mic_running = false;
 
-/* Whether capture is SUPPOSED to be running, as distinct from whether the dmic is
- * currently triggered. The two diverge when mic_reset() declines to restart on an
- * unconfirmed rail: without a separate intent flag, that leaves mic_running false,
- * and every later mic_reset() then sees "wasn't running" and declines to start it
- * either — so one partial cycle would silently end capture for the rest of the
- * session. Six of the seven mic_reset() call sites are bare (only the unmute path
- * follows with mic_resume()), so nothing else would notice or recover.
- *
- * INVARIANT: every entry point that starts capture must set this — mic_start(),
- * mic_resume() and mic_on() — and every one that deliberately stops it must clear
- * it — mic_pause(), mic_off(). Only mic_reset() writes mic_running without touching
- * the intent, which is the point: its restart is *gated* by the intent rather than
- * setting it. A start that forgets leaves capture running with the intent false, and
- * the next mic_reset() then stops the dmic and declines to bring it back.
- *
- * To check the invariant, list the two sets and diff them:
- *   awk '/^[a-zA-Z_].*mic_[a-z_]*\(/{fn=$0} /mic_running *= *true/{print NR, fn}' mic.c
- *   awk '/^[a-zA-Z_].*mic_[a-z_]*\(/{fn=$0} /mic_capture_intended *= *true/{print NR, fn}' mic.c */
-static volatile bool mic_capture_intended = false;
-
-/* Serializes every transition of mic_running / mic_capture_intended together with
- * the dmic_trigger() and PDM_EN operations that implement it.
+/* Serializes every transition of mic_running together with the dmic_trigger() and
+ * PDM_EN operations that implement it.
  *
  * These are reached from at least three threads: the button work handler
  * (button.c mute_apply / record start-stop), the BT RX thread (transport.c mute
  * write at :930 and VAD-threshold write at :1247), and main() at boot. Without a
  * lock the check-then-act in mic_reset() is wide open — it sleeps ~40 ms inside the
- * rail cycle, so a mute arriving in that window clears the intent AFTER it was
- * read, and mic_reset() then starts capture on a device the user just muted. The
- * mic ends up running while muted with the two flags disagreeing, which is both a
- * privacy problem and unrecoverable state.
+ * rail cycle, so a mute arriving in that window is observed too late and
+ * mic_reset() restarts capture on a device the user just muted. Privacy bug, and
+ * the reason this lock exists.
+ *
+ * It is also what lets mic_reset() key its restart off a plain `was_running`
+ * snapshot: read under the lock, that value cannot go stale before it is used, so
+ * no separate "capture intended" state is needed to carry it.
  *
  * Held across the sleeps deliberately: a mute blocks for at most the rail settle
  * and then applies, which is the correct outcome. Zephyr mutexes are recursive for
@@ -233,7 +216,6 @@ int mic_start()
     }
 
     mic_running = true;
-    mic_capture_intended = true;
     /* Inside the lock, like mic_on()'s. mic_off() holds this lock while it calls
      * k_thread_abort(mic_thread_id), so unlocking first opens a window where a
      * power-off aborts the thread between here and the start below — and
@@ -267,11 +249,6 @@ void mic_pause()
         }
         mic_running = false;
     }
-    /* A deliberate stop also withdraws the intent, so a mic_reset() during a mute
-     * does not helpfully "restore" capture the user asked to be off. Clearing it
-     * under the lock is what makes that guarantee hold against a concurrent reset
-     * rather than merely usually hold. */
-    mic_capture_intended = false;
     k_mutex_unlock(&mic_state_lock);
 }
 
@@ -288,18 +265,21 @@ void mic_resume()
         }
         mic_running = true;
     }
-    mic_capture_intended = true;
     k_mutex_unlock(&mic_state_lock);
 }
 
-mic_reset_result_t mic_reset()
+bool mic_reset()
 {
-    mic_reset_result_t result = MIC_RESET_NOT_CYCLED;
+    bool rail_cycled = false;
 
-    /* Held for the whole sequence — STOP, rail cycle, intent check, START — because
-     * the intent read below is a check-then-act separated from its check by ~40 ms
-     * of settle sleeps. See mic_state_lock. */
+    /* Held for the whole sequence — STOP, rail cycle, START — so the was_running
+     * snapshot below cannot go stale across the ~40 ms of settle sleeps. That is
+     * what removes the need for any separate "capture intended" state: under the
+     * lock, what was running when we entered is still what should be running when
+     * we leave. See mic_state_lock. */
     k_mutex_lock(&mic_state_lock, K_FOREVER);
+
+    const bool was_running = mic_running;
 
     if (mic_running) {
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_STOP);
@@ -312,7 +292,7 @@ mic_reset_result_t mic_reset()
              * simply doesn't get a reset this time. */
             LOG_ERR("mic_reset: STOP trigger failed: %d — leaving mic untouched", ret);
             k_mutex_unlock(&mic_state_lock);
-            return MIC_RESET_NOT_CYCLED;
+            return false;
         }
         mic_running = false;
     }
@@ -324,89 +304,45 @@ mic_reset_result_t mic_reset()
      * mic_pause()/mic_resume() nor a dmic re-trigger does. INACTIVE = physical
      * low = disabled (pdm_en_pin is GPIO_ACTIVE_HIGH).
      *
-     * Both configure calls are checked. A ready GPIO controller does not mean the
-     * pin was actually driven, and callers that record this in the diagnostic log
-     * must never claim a power cycle that did not happen — a discarded error here
-     * would leave the rail up while the record says otherwise, which is exactly the
-     * confusion the record exists to prevent. If the pull-down fails there is no
-     * cycle at all; if only the restore fails the rail is left LOW, which is worse
-     * than not trying, so say so loudly. */
+     * Both configure results are checked, but only so the return value — and the
+     * DIAG_MIC_POWER_CYCLE record built from it — is honest about whether the part
+     * actually lost power. Nothing branches on the failure beyond logging it: with
+     * a static devicetree spec on a port already proven ready, these calls have no
+     * realistic runtime failure, and an earlier revision that built a four-state
+     * recovery machine around them cost five review rounds without ever executing
+     * a line of it. If the rail really does fail to come back, the result is silent
+     * capture, which DIAG_VAD_LEVEL reports within one window. */
     if (gpio_is_ready_dt(&pdm_en)) {
         int lo = gpio_pin_configure_dt(&pdm_en, GPIO_OUTPUT_INACTIVE);
-        if (lo < 0) {
-            LOG_ERR("mic_reset: PDM_EN pull-down failed: %d — rail NOT cycled", lo);
-        } else {
+        int hi = -EIO;
+        if (lo == 0) {
             k_msleep(20);
-            int hi = gpio_pin_configure_dt(&pdm_en, GPIO_OUTPUT_ACTIVE);
-            if (hi < 0) {
-                /* The rail is LOW and we cannot drive it back up — the one outcome
-                 * worse than never having tried, because the part now has no supply
-                 * at all. Release the pin to an input so the board pull-up re-powers
-                 * it: that pull-up is what holds PDM_EN high whenever the firmware
-                 * doesn't touch the pin, so handing control back to it is the best
-                 * recovery available here. */
-                int rel = gpio_pin_configure_dt(&pdm_en, GPIO_INPUT);
-                if (rel < 0) {
-                    LOG_ERR("mic_reset: PDM_EN stuck LOW (restore %d, release %d) — mic has NO supply",
-                            hi,
-                            rel);
-                    result = MIC_RESET_RAIL_OFF;
-                } else {
-                    LOG_WRN("mic_reset: PDM_EN restore failed (%d) — released to the board pull-up", hi);
-                    k_msleep(20);
-                    result = MIC_RESET_PARTIAL;
-                }
-            } else {
-                k_msleep(20);
-                result = MIC_RESET_CYCLED;
-                LOG_INF("mic_reset: PDM_EN power-cycled");
-            }
+            hi = gpio_pin_configure_dt(&pdm_en, GPIO_OUTPUT_ACTIVE);
+            k_msleep(20);
+        }
+        rail_cycled = (lo == 0 && hi == 0);
+        if (rail_cycled) {
+            LOG_INF("mic_reset: PDM_EN power-cycled");
+        } else {
+            LOG_ERR("mic_reset: PDM_EN cycle failed (low=%d high=%d) — part not re-powered", lo, hi);
         }
     } else {
         LOG_WRN("mic_reset: PDM_EN gpio not ready — rail NOT cycled");
     }
 
-    /* Never restart capture unless the rail is CONFIRMED up. Doing so would report
-     * mic_running = true over a part that may have no supply, i.e. silent capture
-     * that every layer above believes is healthy — the exact failure this whole
-     * change set exists to make visible.
-     *
-     * PARTIAL counts as unconfirmed, not as good enough. The pin was released to the
-     * board pull-up, which should re-power the part, but "should" is the problem: a
-     * pull-up is deliberately weak, so its rise time through the mic's decoupling is
-     * nothing like a driven output and the 20 ms settle above was sized for the
-     * latter. If the pull-up is absent or damaged the rail simply stays low. We
-     * cannot tell, and starting capture is a claim we would have no basis for.
-     *
-     * Leaving mic_running false is the honest state and lets a later
-     * mic_start()/mic_reset() retry once the rail has had time to recover. */
-    /* Gate on the INTENT, not on whether the dmic happened to be triggered when we
-     * were called. A previous reset that declined to restart on an unconfirmed rail
-     * leaves mic_running false while capture is still wanted; keying off that would
-     * make this call decline too, and the one after it, so a single partial cycle
-     * would end capture for the rest of the session with nothing to notice — six of
-     * the seven call sites never follow up with mic_resume(). Keying off the intent
-     * means the first reset that confirms the rail restores capture by itself.
-     *
-     * Positive form on purpose: an enum value appended later defaults to "not
-     * confirmed", i.e. to leaving capture stopped, which is the safe side. */
-    const bool rail_confirmed_up = (result == MIC_RESET_CYCLED || result == MIC_RESET_NOT_CYCLED);
-    if (mic_capture_intended && !rail_confirmed_up) {
-        LOG_ERR("mic_reset: not restarting capture — rail unconfirmed (result=%d), will retry on the next reset",
-                (int) result);
-    } else if (mic_capture_intended) {
+    if (was_running) {
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
         if (ret < 0) {
             LOG_ERR("mic_reset: START trigger failed: %d", ret);
             k_mutex_unlock(&mic_state_lock);
-            return result;
+            return rail_cycled;
         }
         mic_running = true;
     }
 
-    LOG_INF("Microphone reset (running=%d, result=%d)", mic_running, (int) result);
+    LOG_INF("Microphone reset (running=%d, rail_cycled=%d)", mic_running, rail_cycled);
     k_mutex_unlock(&mic_state_lock);
-    return result;
+    return rail_cycled;
 }
 
 bool mic_is_running()
@@ -421,8 +357,6 @@ void mic_off()
      * ~1 mA System-OFF saving this exists for. Waits at most one rail settle, which
      * is irrelevant on the power-down path. */
     k_mutex_lock(&mic_state_lock, K_FOREVER);
-    /* Ship mode — capture is not coming back without a reboot. */
-    mic_capture_intended = false;
     if (mic_running) {
         mic_running = false;
         k_thread_abort(mic_thread_id);
@@ -468,7 +402,6 @@ void mic_on()
         }
 
         mic_running = true;
-        mic_capture_intended = true;
         k_thread_start(mic_thread_id);
 
         LOG_INF("Microphone restarted");

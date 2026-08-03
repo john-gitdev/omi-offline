@@ -66,13 +66,11 @@ typedef enum {
                                       * peaks above 0 even when nothing reaches the threshold. */
     DIAG_MIC_POWER_CYCLE = 17,       /* PDM_EN cycle attempted at boot because the running firmware
                                       * version differs from the last booted one, i.e. first boot
-                                      * after an update. arg0 = mic_reset_result_t (mic.h):
-                                      *   0 NOT_CYCLED rail never dropped, nothing cleared
-                                      *   1 CYCLED     full cycle -- the only outcome that clears a wedge
-                                      *   2 PARTIAL    dropped, restore failed, released to the pull-up
-                                      *   3 RAIL_OFF   stuck low, mic has NO supply, capture skipped
-                                      * These are distinct states, not degrees of success: 0 and 3
-                                      * both mean "no cycle" but only 3 means the mic is dead. */
+                                      * after an update. arg0 = 1 if the rail was actually taken low
+                                      * and restored (the only outcome that clears a wedged T5838),
+                                      * 0 if it was not -- unready GPIO, a failed configure, or an
+                                      * aborted reset. Capture starts either way; a rail that stays
+                                      * down shows up as DIAG_VAD_LEVEL with a zero peak. */
 } diag_event_code_t;
 
 /* arg0 values for DIAG_BOND_STATE. Appended-only, same discipline as the codes. */
