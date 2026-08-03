@@ -688,15 +688,23 @@ static struct bt_gatt_attr diagnostics_service_attr[] = {
     /* Diag-log drain + control — appended AFTER the 0x0062 CCC so the notify value
      * attribute stays at index 4 (diagnostics_drops_notify) regardless of this build
      * option. */
+    /* ENCRYPT, unlike the two 0x0061/0x0062 characteristics above, and unlike this
+     * pair before diag_log_event_forced() existed. The log now holds DIAG_BOND_STATE
+     * from every boot whether or not the app ever enables it, so a plain
+     * BT_GATT_PERM_READ here would let any peer that can connect learn how many
+     * pairing keys the device holds — and "0 bonds" is precisely the signal an
+     * attacker wants, per the CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE note in omi.conf.
+     * Matches the 11 other encrypted characteristics in this file. Permission-only
+     * change: no attribute is added or removed, so no handle moves. */
     BT_GATT_CHARACTERISTIC(&diag_log_read_characteristic_uuid.uuid,
                            BT_GATT_CHRC_READ,
-                           BT_GATT_PERM_READ,
+                           BT_GATT_PERM_READ_ENCRYPT,
                            diag_log_read_handler,
                            NULL,
                            NULL),
     BT_GATT_CHARACTERISTIC(&diag_log_control_characteristic_uuid.uuid,
                            BT_GATT_CHRC_WRITE,
-                           BT_GATT_PERM_WRITE,
+                           BT_GATT_PERM_WRITE_ENCRYPT,
                            NULL,
                            diag_log_control_write_handler,
                            NULL),
