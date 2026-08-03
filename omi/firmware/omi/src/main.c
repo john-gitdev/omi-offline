@@ -420,13 +420,18 @@ int main(void)
      * has muted. Narrow window, but the failure is capture-while-muted, so it gets
      * closed rather than argued about.
      *
-     * is_muted is the source of truth (button.c) and already visible here, so this
-     * needs no new state — a mute landing after this point takes the normal
-     * mute_apply() path, which now finds a running mic and stops it. */
+     * Read and act under mic_state_lock, which mute_apply() now also holds across
+     * its own is_muted write. Without that this reconciliation is itself a
+     * check-then-act: an unmute landing between the read and the pause would resume
+     * capture and then have it stopped here, leaving is_muted false with a stopped
+     * mic and nothing to resume it — the mirror of the bug being fixed. Under the
+     * lock the two orderings are the only possibilities, and both end consistent. */
+    k_mutex_lock(&mic_state_lock, K_FOREVER);
     if (is_muted) {
         LOG_WRN("Muted before the mic started — pausing capture to honour it");
         mic_pause();
     }
+    k_mutex_unlock(&mic_state_lock);
 
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
     ret = aad_start();
