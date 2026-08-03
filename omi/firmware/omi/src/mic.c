@@ -48,8 +48,16 @@ static volatile bool mic_running = false;
  * session. Six of the seven mic_reset() call sites are bare (only the unmute path
  * follows with mic_resume()), so nothing else would notice or recover.
  *
- * Set by mic_start()/mic_resume(), cleared by mic_pause()/mic_off(). A deliberate
- * stop clears the intent; a failure to restart does not. */
+ * INVARIANT: every entry point that starts capture must set this — mic_start(),
+ * mic_resume() and mic_on() — and every one that deliberately stops it must clear
+ * it — mic_pause(), mic_off(). Only mic_reset() writes mic_running without touching
+ * the intent, which is the point: its restart is *gated* by the intent rather than
+ * setting it. A start that forgets leaves capture running with the intent false, and
+ * the next mic_reset() then stops the dmic and declines to bring it back.
+ *
+ * To check the invariant, list the two sets and diff them:
+ *   awk '/^[a-zA-Z_].*mic_[a-z_]*\(/{fn=$0} /mic_running *= *true/{print NR, fn}' mic.c
+ *   awk '/^[a-zA-Z_].*mic_[a-z_]*\(/{fn=$0} /mic_capture_intended *= *true/{print NR, fn}' mic.c */
 static volatile bool mic_capture_intended = false;
 
 /* PDM_EN (board net, P1.4): active-high enable for the T5838 mic + TXS0104
@@ -400,6 +408,7 @@ void mic_on()
         }
 
         mic_running = true;
+        mic_capture_intended = true;
         k_thread_start(mic_thread_id);
 
         LOG_INF("Microphone restarted");
