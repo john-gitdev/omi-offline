@@ -60,6 +60,25 @@ static volatile bool mic_running = false;
  *   awk '/^[a-zA-Z_].*mic_[a-z_]*\(/{fn=$0} /mic_capture_intended *= *true/{print NR, fn}' mic.c */
 static volatile bool mic_capture_intended = false;
 
+/* Serializes every transition of mic_running / mic_capture_intended together with
+ * the dmic_trigger() and PDM_EN operations that implement it.
+ *
+ * These are reached from at least three threads: the button work handler
+ * (button.c mute_apply / record start-stop), the BT RX thread (transport.c mute
+ * write at :930 and VAD-threshold write at :1247), and main() at boot. Without a
+ * lock the check-then-act in mic_reset() is wide open — it sleeps ~40 ms inside the
+ * rail cycle, so a mute arriving in that window clears the intent AFTER it was
+ * read, and mic_reset() then starts capture on a device the user just muted. The
+ * mic ends up running while muted with the two flags disagreeing, which is both a
+ * privacy problem and unrecoverable state.
+ *
+ * Held across the sleeps deliberately: a mute blocks for at most the rail settle
+ * and then applies, which is the correct outcome. Zephyr mutexes are recursive for
+ * the owning thread, so mic_start() calling mic_set_gain() while holding this is
+ * safe. Nothing here is reachable from an ISR (all call sites are work handlers or
+ * thread context), so a mutex rather than a spinlock is the right primitive. */
+K_MUTEX_DEFINE(mic_state_lock);
+
 /* PDM_EN (board net, P1.4): active-high enable for the T5838 mic + TXS0104
  * level-shifter power rail (schematic: PDM_EN gates the shifter's VCCA/VCCB).
  * It is hardware-default-enabled via a pull-up, so the mic runs without the
@@ -189,9 +208,16 @@ int mic_start()
 
     LOG_INF("PCM output rate: %u, channels: %u", cfg.streams[0].pcm_rate, cfg.channel.req_num_chan);
 
+    /* Locked from here: the configure/gain/START sequence and the flag writes must
+     * be one atomic unit. transport_start() runs BEFORE mic_start() in main(), so a
+     * BLE mute write can already arrive and STOP the dmic between the trigger below
+     * and mic_running = true, leaving capture running with the flags saying muted. */
+    k_mutex_lock(&mic_state_lock, K_FOREVER);
+
     ret = dmic_configure(dmic_dev, &cfg);
     if (ret < 0) {
         LOG_ERR("Failed to configure the driver: %d", ret);
+        k_mutex_unlock(&mic_state_lock);
         return ret;
     }
 
@@ -202,11 +228,14 @@ int mic_start()
     ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
     if (ret < 0) {
         LOG_ERR("START trigger failed: %d", ret);
+        k_mutex_unlock(&mic_state_lock);
         return ret;
     }
 
     mic_running = true;
     mic_capture_intended = true;
+    k_mutex_unlock(&mic_state_lock);
+
     k_thread_start(mic_thread_id);
 
     LOG_INF("Microphone started");
@@ -221,36 +250,49 @@ void set_mic_callback(mix_handler callback)
 void mic_pause()
 {
     LOG_INF("Pausing microphone");
+    k_mutex_lock(&mic_state_lock, K_FOREVER);
     if (mic_running) {
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_STOP);
         if (ret < 0) {
             LOG_ERR("STOP trigger failed: %d", ret);
+            k_mutex_unlock(&mic_state_lock);
             return;
         }
         mic_running = false;
     }
     /* A deliberate stop also withdraws the intent, so a mic_reset() during a mute
-     * does not helpfully "restore" capture the user asked to be off. */
+     * does not helpfully "restore" capture the user asked to be off. Clearing it
+     * under the lock is what makes that guarantee hold against a concurrent reset
+     * rather than merely usually hold. */
     mic_capture_intended = false;
+    k_mutex_unlock(&mic_state_lock);
 }
 
 void mic_resume()
 {
     LOG_INF("Resuming microphone");
+    k_mutex_lock(&mic_state_lock, K_FOREVER);
     if (!mic_running) {
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
         if (ret < 0) {
             LOG_ERR("START trigger failed: %d", ret);
+            k_mutex_unlock(&mic_state_lock);
             return;
         }
         mic_running = true;
     }
     mic_capture_intended = true;
+    k_mutex_unlock(&mic_state_lock);
 }
 
 mic_reset_result_t mic_reset()
 {
     mic_reset_result_t result = MIC_RESET_NOT_CYCLED;
+
+    /* Held for the whole sequence — STOP, rail cycle, intent check, START — because
+     * the intent read below is a check-then-act separated from its check by ~40 ms
+     * of settle sleeps. See mic_state_lock. */
+    k_mutex_lock(&mic_state_lock, K_FOREVER);
 
     if (mic_running) {
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_STOP);
@@ -262,6 +304,7 @@ mic_reset_result_t mic_reset()
              * desync worse than the wedge this is trying to clear. The caller
              * simply doesn't get a reset this time. */
             LOG_ERR("mic_reset: STOP trigger failed: %d — leaving mic untouched", ret);
+            k_mutex_unlock(&mic_state_lock);
             return MIC_RESET_NOT_CYCLED;
         }
         mic_running = false;
@@ -348,12 +391,14 @@ mic_reset_result_t mic_reset()
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
         if (ret < 0) {
             LOG_ERR("mic_reset: START trigger failed: %d", ret);
+            k_mutex_unlock(&mic_state_lock);
             return result;
         }
         mic_running = true;
     }
 
     LOG_INF("Microphone reset (running=%d, result=%d)", mic_running, (int) result);
+    k_mutex_unlock(&mic_state_lock);
     return result;
 }
 
@@ -364,6 +409,11 @@ bool mic_is_running()
 
 void mic_off()
 {
+    /* Locked like the rest: an in-flight mic_reset() would otherwise be mid rail
+     * cycle and could drive PDM_EN back high after this drove it low, defeating the
+     * ~1 mA System-OFF saving this exists for. Waits at most one rail settle, which
+     * is irrelevant on the power-down path. */
+    k_mutex_lock(&mic_state_lock, K_FOREVER);
     /* Ship mode — capture is not coming back without a reboot. */
     mic_capture_intended = false;
     if (mic_running) {
@@ -386,10 +436,12 @@ void mic_off()
         gpio_pin_configure_dt(&pdm_en, GPIO_OUTPUT_INACTIVE);
         LOG_INF("PDM_EN low — mic + shifter powered down");
     }
+    k_mutex_unlock(&mic_state_lock);
 }
 
 void mic_on()
 {
+    k_mutex_lock(&mic_state_lock, K_FOREVER);
     if (!mic_running) {
         /* Restore the mic + TXS0104 rail in case a prior mic_off() drove PDM_EN
          * low. Normally PDM_EN is already high (default-enable pull-up), so this
@@ -404,6 +456,7 @@ void mic_on()
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
         if (ret < 0) {
             LOG_ERR("START trigger failed: %d", ret);
+            k_mutex_unlock(&mic_state_lock);
             return;
         }
 
@@ -413,6 +466,7 @@ void mic_on()
 
         LOG_INF("Microphone restarted");
     }
+    k_mutex_unlock(&mic_state_lock);
 }
 
 void mic_set_gain(uint8_t gain_level)
