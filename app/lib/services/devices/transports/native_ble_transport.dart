@@ -382,6 +382,30 @@ class NativeBleTransport extends DeviceTransport {
   }
 
   void _handleDeviceReady(List<BleService> services) {
+    // A ready carrying an empty service table is not a usable link, and must never be
+    // latched as connected. readCharacteristic short-circuits to [] whenever
+    // _hasCharacteristic misses, so with _services empty the app looks connected while
+    // the capability read returns 0 (Device Settings → Customization collapses to its one
+    // ungated row) and every storage write throws (nothing ever syncs). Worse, connect()
+    // early-returns while _state is connected, so nothing re-drives the link and the
+    // session stays stranded until the app is force-closed.
+    //
+    // Native's manageDevice used to produce exactly this by taking its
+    // "Dart restarted, native kept the link" shortcut in the window between
+    // STATE_CONNECTED and onServicesDiscovered (fixed there too — it now gates on
+    // hasDiscoveredServices). Keep the guard here regardless: an empty table is never
+    // worth adopting, and native's own discovery fires a real ready moments later.
+    if (services.isEmpty) {
+      Logger.warning('[NativeBleTransport] $_peripheralUuid: device-ready carried 0 services — rejecting '
+          '(waiting for the real discovery)');
+      final completer = _deviceReadyCompleter;
+      _deviceReadyCompleter = null;
+      if (completer != null && !completer.isCompleted) {
+        completer.completeError(Exception('Device ready with no services'));
+      }
+      return;
+    }
+
     _services = services;
     if (_deviceReadyCompleter != null && !_deviceReadyCompleter!.isCompleted) {
       Logger.debug(
