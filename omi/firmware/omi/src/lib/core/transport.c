@@ -17,6 +17,7 @@
 #include <zephyr/random/random.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/sys/atomic.h>
+#include <zephyr/sys/reboot.h>
 #include <zephyr/sys/ring_buffer.h>
 
 #include "accel.h"
@@ -1460,7 +1461,23 @@ void broadcast_battery_level(struct k_work *work_item)
 
         if (battery_millivolt < CONFIG_OMI_BATTERY_CRITICAL_MV) {
             LOG_WRN("Battery critical level reached (%d mV). Initiating shutdown.", battery_millivolt);
-            turnoff_all();
+            /* Match CMD_POWER_OFF (storage.c): a bailed teardown has already run
+             * transport_off() and mic_off(), leaving BLE down, the mic thread aborted
+             * by k_thread_abort() and PDM_EN driven low — the device stays awake and
+             * deaf, and nothing calls mic_on() to restore the rail. Cold-reboot
+             * instead; a SoC reset returns PDM_EN to an input and the board pull-up
+             * re-powers the mic.
+             *
+             * This path matters most of the three: it fires unattended on a failing
+             * cell, which is exactly when hardware teardown is likeliest to misbehave
+             * and when nobody is watching to notice the mic went quiet. If the
+             * battery really is critical the reboot simply re-enters this check and
+             * shuts down properly. */
+            if (turnoff_all() == TURNOFF_BAILED) {
+                LOG_ERR("Critical-battery shutdown: turnoff_all() bailed — rebooting to recover");
+                k_msleep(100); /* let the error log flush before the cold reboot */
+                sys_reboot(SYS_REBOOT_COLD);
+            }
         }
     } else {
         LOG_ERR("Failed to read battery level");
