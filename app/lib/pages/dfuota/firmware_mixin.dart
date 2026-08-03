@@ -117,7 +117,17 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   // often as "never armed". When it means the former, this gate produces exactly
   // the half-applied reset it exists to prevent — device unbonded, phone bonded —
   // and the link then establishes, fails every encrypted read, and drops, forever.
-  // That cost ~26 min of retries on 2026-08-02 until the bond was deleted by hand.
+  //
+  // LATENT, NOT LIVE, and do not attribute field bond losses to it without
+  // checking that first. `firmware_update.dart:43` has
+  // `_showResetPairingToggle = false`, and :575 forces `wipeBonds` false
+  // regardless of the stored pref, so today every flash sends a *disarm* and
+  // `_wipePhoneBondOnSuccess` returns early — neither side can wipe. A log line
+  // reading "Arming post-DFU unpair failed or timed out" is therefore a failed
+  // DISARM, which is harmless; it was misread as an arm once already. The
+  // 2026-08-02 unpairing has a different and established cause: the settings
+  // partition overlaps the MCUboot primary slot, so one NVS sector is erased per
+  // OTA and bonds land in it roughly one flash in eight (BLE_Research.md §9).
   //
   // Why unconditional wiping is NOT the answer: the reverse mismatch is not
   // recoverable either. omi.conf pins CONFIG_BT_MAX_PAIRED=1 and deliberately
