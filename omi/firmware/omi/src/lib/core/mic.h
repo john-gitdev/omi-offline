@@ -22,28 +22,22 @@ void mic_pause();
 void mic_resume();
 
 /**
- * @brief Hard-reset the T5838 by power-cycling its supply rail.
+ * @brief Stop and restart the nRF PDM peripheral, preserving whether capture was
+ *        running.
  *
- * mic_pause()/mic_resume() only stop and start the nRF PDM peripheral — they
- * never touch PDM_EN — so a wedged mic (PDM data stuck at digital zero, hw AAD
- * never asserting WAKE) survives a mute/unmute cycle untouched. This is the only
- * path short of a reboot that re-powers the part.
+ * DESPITE THE NAME, THIS DOES NOT POWER-CYCLE THE MIC. It used to drop PDM_EN,
+ * which is the only thing that clears a wedged T5838 (PDM data stuck at digital
+ * zero, hw AAD never asserting WAKE). That was removed because driving PDM_EN at
+ * all is the prime suspect for the wedging it was meant to cure: the firmware
+ * never touched that pin before oo-2.6.0, and the mic never froze before then.
  *
- * Blocks ~40 ms for the rail to settle. Restores whatever run state it found, so
- * it is safe to call whether or not capture is currently running — but prefer
- * calling it while paused, since the cycle discards in-flight samples.
- */
-/**
- * Stop and restart the nRF PDM peripheral, preserving whether capture was running.
+ * What remains is a dmic re-trigger — the same thing mic_pause()/mic_resume() do —
+ * so it does NOT recover a wedged part, and no path short of a full power-cycle
+ * currently does. Returns quickly; the ~40 ms rail settle is gone with the cycle.
  *
- * NO LONGER POWER-CYCLES THE MIC. It used to drop PDM_EN, which is the only thing
- * that clears a wedged T5838 — that was removed because driving PDM_EN at all is
- * the prime suspect for the wedging it was meant to cure (the firmware never
- * touched that pin before oo-2.6.0, and the mic never froze before then). What
- * remains is a dmic re-trigger, which does NOT recover a wedged part.
- *
- * The call sites are kept so the cycle is one small edit away. See IDEAS.md
- * "Mic rail (PDM_EN) is not driven by firmware".
+ * Safe to call whether or not capture is running. The call sites are kept so the
+ * cycle is one small edit away. See IDEAS.md "Mic rail (PDM_EN) is not driven by
+ * firmware" for the evidence and the restore order.
  */
 void mic_reset();
 bool mic_is_running();
