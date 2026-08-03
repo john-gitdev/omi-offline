@@ -122,43 +122,7 @@ void main() {
       expect(completed, isTrue);
     });
 
-    test('rejects a device-ready that carries no services', () async {
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockDecodedMessageHandler<Object?>(
-        const BasicMessageChannel<Object?>(
-          'dev.flutter.pigeon.omi_pigeon.BleHostApi.manageDevice',
-          BleHostApi.pigeonChannelCodec,
-        ),
-        (message) async => <Object?>[null],
-      );
-
-      final states = <DeviceTransportState>[];
-      final subscription = transport.connectionStateStream.listen(states.add);
-
-      // Native can fire ready in the window between STATE_CONNECTED and
-      // onServicesDiscovered, when gatt.services is still empty. Latching that as
-      // connected strands the session: reads short-circuit to [] (capabilities read as 0)
-      // and connect() early-returns forever, so only a force-close recovers.
-      await runZonedGuarded(
-        () async {
-          final connectFuture = transport.connect();
-          await Future.delayed(Duration.zero);
-          BleBridge.instance.onDeviceReady('test-uuid', []);
-          try {
-            await connectFuture;
-            fail('connect() should not succeed on an empty service table');
-          } catch (_) {}
-        },
-        (error, stack) {},
-      );
-
-      await Future.delayed(const Duration(milliseconds: 10));
-      expect(states, isNot(contains(DeviceTransportState.connected)));
-      expect(states.last, DeviceTransportState.disconnected);
-
-      await subscription.cancel();
-    });
-
-    test('accepts a later device-ready once the real service table arrives', () async {
+    test('ignores a device-ready with no services and waits for the real one', () async {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockDecodedMessageHandler<Object?>(
         const BasicMessageChannel<Object?>(
           'dev.flutter.pigeon.omi_pigeon.BleHostApi.manageDevice',
@@ -171,13 +135,28 @@ void main() {
       final subscription = transport.connectionStateStream.listen(states.add);
 
       final connectFuture = transport.connect();
+      // Track resolution without awaiting, so "still pending" is assertable. onError keeps
+      // a failure from escaping as an unhandled zone error; settled is what the test reads.
+      String settled = 'pending';
+      connectFuture.then((_) => settled = 'ok', onError: (_) => settled = 'error');
       await Future.delayed(Duration.zero);
 
-      // The discovery that lands moments after the (dropped) empty ready is what counts.
-      BleBridge.instance.onDeviceReady('test-uuid', [_service()]);
+      // Native can fire ready in the window between STATE_CONNECTED and
+      // onServicesDiscovered, when gatt.services is still empty. Latching that as connected
+      // strands the session: reads short-circuit to [] (capabilities read as 0) and
+      // connect() early-returns forever, so only a force-close recovers.
+      BleBridge.instance.onDeviceReady('test-uuid', []);
+      await Future.delayed(const Duration(milliseconds: 10));
 
+      expect(states, isNot(contains(DeviceTransportState.connected)));
+      expect(settled, 'pending', reason: 'an empty table must neither resolve nor fail connect()');
+
+      // The real discovery lands a moment later and is what resolves the connect.
+      BleBridge.instance.onDeviceReady('test-uuid', [_service()]);
       await connectFuture;
       await Future.delayed(const Duration(milliseconds: 10));
+
+      expect(settled, 'ok');
       expect(states.last, DeviceTransportState.connected);
 
       await subscription.cancel();

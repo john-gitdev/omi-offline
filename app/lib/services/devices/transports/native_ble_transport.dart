@@ -395,14 +395,18 @@ class NativeBleTransport extends DeviceTransport {
     // STATE_CONNECTED and onServicesDiscovered (fixed there too — it now gates on
     // hasDiscoveredServices). Keep the guard here regardless: an empty table is never
     // worth adopting, and native's own discovery fires a real ready moments later.
+    //
+    // Drop the event and leave any pending completer alone, rather than failing it. The
+    // real ready is what should resolve connect(), and it lands within a second or so;
+    // erroring here instead would make connect() throw for something that immediately
+    // succeeded, and push the caller through a spurious disconnected → connected
+    // transition. Nothing can hang on this: a genuine disconnect fails the pending
+    // completer in _handleConnectionState, and connect() times out at 30s regardless —
+    // well outside native's 15s discovery timeout, which drops a stuck link into the
+    // ordinary retry path long before then.
     if (services.isEmpty) {
-      Logger.warning('[NativeBleTransport] $_peripheralUuid: device-ready carried 0 services — rejecting '
-          '(waiting for the real discovery)');
-      final completer = _deviceReadyCompleter;
-      _deviceReadyCompleter = null;
-      if (completer != null && !completer.isCompleted) {
-        completer.completeError(Exception('Device ready with no services'));
-      }
+      Logger.warning('[NativeBleTransport] $_peripheralUuid: device-ready carried 0 services — ignoring, '
+          'waiting for the real discovery');
       return;
     }
 
