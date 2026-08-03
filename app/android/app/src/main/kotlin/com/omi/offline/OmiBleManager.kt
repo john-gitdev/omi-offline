@@ -12,7 +12,6 @@ import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
-import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
 import java.util.UUID
@@ -535,34 +534,6 @@ class OmiBleManager private constructor(private val application: Application) {
         storageKeepAliveRunnable = null
     }
 
-    // Last time CONNECTION_PRIORITY_HIGH was asserted, per address — debounces the
-    // re-assert below so a file that fails and retries can't hammer the link with
-    // connection-parameter update procedures.
-    private val lastPriorityAssertMs = ConcurrentHashMap<String, Long>()
-    private val priorityReassertDebounceMs = 30_000L
-
-    /**
-     * Re-assert CONNECTION_PRIORITY_HIGH at the start of a transfer.
-     *
-     * It is requested once per link in onServicesDiscovered, and that is the only place
-     * it was ever set — so across a long multi-file sync the link keeps whatever interval
-     * it drifted to. Re-asserting per transfer is cheap (a no-op at the controller when
-     * the parameters already match) and keeps the throughput we deliberately chose HIGH
-     * for. See IDEAS.md #1 for the open HIGH-vs-BALANCED experiment; this does not
-     * prejudge it, it just makes the setting actually hold for the whole sync.
-     */
-    private fun assertHighConnectionPriority(addr: String) {
-        val now = SystemClock.uptimeMillis()
-        val last = lastPriorityAssertMs[addr] ?: 0L
-        if (last != 0L && now - last < priorityReassertDebounceMs) return
-        lastPriorityAssertMs[addr] = now
-        try {
-            connectedGatts[addr]?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
-        } catch (e: Exception) {
-            Log.w(TAG, "requestConnectionPriority failed for $addr: ${e.message}")
-        }
-    }
-
     private fun sendStorageKeepAliveNoResponse(address: String) {
         val addr = address.uppercase()
         val gatt = connectedGatts[addr] ?: return
@@ -623,7 +594,6 @@ class OmiBleManager private constructor(private val application: Application) {
         discoveryTimeouts.remove(addr)?.let { mainHandler.removeCallbacks(it) }
         stopRssiKeepAlive()
         stopStorageKeepAlive()
-        lastPriorityAssertMs.remove(addr)
         val prefix = addr.lowercase()
         readCompletions.keys().toList().filter { it.startsWith(prefix) }.forEach { readCompletions.remove(it)?.invoke(Result.failure(Exception("Disconnected"))) }
         writeCompletions.keys().toList().filter { it.startsWith(prefix) }.forEach { writeCompletions.remove(it)?.invoke(Result.failure(Exception("Disconnected"))) }
@@ -741,8 +711,6 @@ class OmiBleManager private constructor(private val application: Application) {
         // Subscribe to notifications so the binder-thread callback fires.
         // Goes through the GATT queue so it completes before CMD_READ_FILE.
         subscribeCharacteristic(addr, STORAGE_SERVICE_UUID.toString(), STORAGE_CHAR_UUID.toString())
-
-        assertHighConnectionPriority(addr)
 
         // Register session BEFORE enqueuing CMD_READ_FILE so the start-ACK (0x03 0x00)
         // is never missed if the write callback and the notification race.
