@@ -12,6 +12,12 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
 
     companion object {
         private const val TAG = "OmiBle.HostApi"
+
+        // Backstop timeout on the partial wake-lock, re-armed every RENEW_MS while an
+        // owner still holds it (see scheduleWakeLockRenewal). Renewal at half the
+        // timeout means one missed tick can't leave a gap.
+        private const val WAKE_LOCK_TIMEOUT_MS = 10 * 60 * 1000L
+        private const val WAKE_LOCK_RENEW_MS = 5 * 60 * 1000L
     }
 
     private val bleManager get() = OmiBleManager.instance
@@ -28,6 +34,8 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
     // partial wake-lock without one owner's release pulling it out from under
     // another's still-running work. Held while > 0.
     private var wakeLockRefCount = 0
+    private val wakeLockHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var wakeLockRenewRunnable: Runnable? = null
 
     fun initCompanionManager(activity: Activity) {
         companionManager = OmiCompanionManager(activity, getActivity)
@@ -181,13 +189,60 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
         if (processingWakeLock?.isHeld == true) return
         val ctx = getActivity()?.applicationContext ?: return
         val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
-        processingWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "omi:VadProcessing")
-            .also { it.acquire(30 * 60 * 1000L) }
+        processingWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "omi:VadProcessing").also {
+            // NOT reference-counted: renewal below re-acquires the same lock, and a
+            // ref-counted lock would need one release() per acquire() — so a renewed
+            // lock could never be released and would pin the CPU until process death.
+            it.setReferenceCounted(false)
+            it.acquire(WAKE_LOCK_TIMEOUT_MS)
+        }
+        scheduleWakeLockRenewal()
+    }
+
+    /**
+     * Re-arm the wake-lock timeout while an owner still holds a reference.
+     *
+     * The timeout exists so a leaked reference can't pin the CPU forever, but it is a
+     * BACKSTOP, not a budget: a background sync+process cycle over a large backlog
+     * (BLE drain plus VAD decode) routinely runs longer than it. When the timeout
+     * fired mid-run the OS released the lock silently, the SoC was free to suspend,
+     * and both keep-alives — the native storage 0x32 tick and Dart's timer, each a
+     * Handler post — stopped firing. The firmware's 15 s idle-disconnect then dropped
+     * the link and the sync came back partial. That is background-only: in the
+     * foreground WakelockPlus keeps the screen (and so the CPU) up for the whole run,
+     * which is exactly why partials skew to the background.
+     */
+    private fun scheduleWakeLockRenewal() {
+        cancelWakeLockRenewal()
+        val runnable = object : Runnable {
+            override fun run() {
+                // Owners all released, or the lock went away — stop renewing.
+                val wl = processingWakeLock
+                if (wakeLockRefCount <= 0 || wl == null) {
+                    wakeLockRenewRunnable = null
+                    return
+                }
+                try {
+                    wl.acquire(WAKE_LOCK_TIMEOUT_MS)
+                } catch (e: Exception) {
+                    Log.w(TAG, "wake-lock renewal failed: ${e.message}")
+                }
+                wakeLockHandler.postDelayed(this, WAKE_LOCK_RENEW_MS)
+            }
+        }
+        wakeLockRenewRunnable = runnable
+        wakeLockHandler.postDelayed(runnable, WAKE_LOCK_RENEW_MS)
+    }
+
+    private fun cancelWakeLockRenewal() {
+        wakeLockRenewRunnable?.let { wakeLockHandler.removeCallbacks(it) }
+        wakeLockRenewRunnable = null
     }
 
     override fun releaseProcessingWakeLock() {
         if (wakeLockRefCount > 0) wakeLockRefCount--
         if (wakeLockRefCount > 0) return
+        cancelWakeLockRenewal()
         processingWakeLock?.let { if (it.isHeld) it.release() }
         processingWakeLock = null
     }
