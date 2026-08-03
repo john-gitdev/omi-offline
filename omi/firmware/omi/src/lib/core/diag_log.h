@@ -64,13 +64,12 @@ typedef enum {
                                       * Emitted on a silent<->non-silent transition or hourly. A max
                                       * of 0 is digital silence from the part; a quiet room always
                                       * peaks above 0 even when nothing reaches the threshold. */
-    DIAG_MIC_POWER_CYCLE = 17,       /* PDM_EN cycle attempted at boot because the running firmware
-                                      * version differs from the last booted one, i.e. first boot
-                                      * after an update. arg0 = 1 if the rail was actually taken low
-                                      * and restored (the only outcome that clears a wedged T5838),
-                                      * 0 if it was not -- unready GPIO, a failed configure, or an
-                                      * aborted reset. Capture starts either way; a rail that stays
-                                      * down shows up as DIAG_VAD_LEVEL with a zero peak. */
+    DIAG_MIC_POWER_CYCLE = 17,       /* RESERVED, not currently emitted. Was the post-update PDM_EN
+                                      * cycle (arg0 = 1 if the rail really went low and back). The
+                                      * firmware no longer drives PDM_EN at all -- see IDEAS.md
+                                      * "Mic rail (PDM_EN) is not driven by firmware". The code stays
+                                      * reserved (append-only) and the app still decodes it, so
+                                      * re-enabling the cycle needs no protocol change. */
 } diag_event_code_t;
 
 /* arg0 values for DIAG_BOND_STATE. Appended-only, same discipline as the codes. */
