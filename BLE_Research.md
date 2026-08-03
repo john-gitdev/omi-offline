@@ -1108,6 +1108,15 @@ Both were proposed and implemented on 2026-08-02 while fixing the post-DFU arm g
 and both had to be reverted. Recording them because each looks obviously correct
 until you read one specific file.
 
+**First, the framing they were built on was wrong**, and that is worth recording too.
+The arm gate is a real defect but it is **latent**: `_showResetPairingToggle = false`
+since 2026-07-23, so every flash since has sent a *disarm* and neither side can wipe.
+The `Arming post-DFU unpair failed or timed out` line in the 08-02 log is a failed
+disarm — harmless — and was misread as a failed arm, which is how the arm gate got
+blamed for that day's unpairing. The real cause is the partition overlap documented
+above: one NVS sector erased per OTA, bonds landing in it roughly one flash in eight.
+Fix the gate on its own merits, not because it caused an outage.
+
 **Dead end 1 — "just always wipe the phone bond after a successful flash."**
 The appeal: the firmware persists the post-DFU arm to NVS *before* it ACKs, so a lost
 ACK cannot be read as "not armed", and the current gate (`_postDfuArmWriteOk` in
