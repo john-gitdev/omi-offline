@@ -162,6 +162,18 @@ bool mute_apply(bool on)
 
 void mute_get_state(uint8_t *muted, uint32_t *since_utc_s, uint32_t *since_uptime_ms)
 {
+    /* Read all three under the same lock mute_apply() writes them under. It sets
+     * is_muted BEFORE the timestamps, so an unsynchronized reader landing between
+     * the two returns muted=1 with the previous session's since_* — or zeros on the
+     * very first mute — and the app renders "Muted since" against a time that never
+     * happened. Both writes are inside mic_state_lock's critical section, so taking
+     * it here makes the trio one atomic snapshot.
+     *
+     * Lock order holds: the only callers are the GATT read handler and
+     * mute_state_notify(), and mute_apply() calls the latter only AFTER releasing
+     * mic_state_lock — so this never runs with that mutex already held, and the
+     * mute_apply_lock → mic_state_lock order is never inverted. */
+    k_mutex_lock(&mic_state_lock, K_FOREVER);
     if (is_muted) {
         *muted = 1;
         *since_utc_s = mute_since_utc_s;
@@ -171,6 +183,7 @@ void mute_get_state(uint8_t *muted, uint32_t *since_utc_s, uint32_t *since_uptim
         *since_utc_s = 0;
         *since_uptime_ms = 0;
     }
+    k_mutex_unlock(&mic_state_lock);
 }
 
 static const struct device *const buttons = DEVICE_DT_GET(DT_ALIAS(buttons));
