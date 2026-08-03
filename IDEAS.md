@@ -9,6 +9,7 @@
 - [2. Streaming WAV stitch — fix OOM on long-recording merge [small] [Pending]](#2-streaming-wav-stitch--fix-oom-on-long-recording-merge-small-pending)
 - [3. Diagnostic event log — persistent (reboot-surviving) upgrade [small] [Pending — post-LittleFS]](#3-diagnostic-event-log--persistent-reboot-surviving-upgrade-small-pending--post-littlefs)
 - [5. Mic rail (PDM_EN) is not driven by firmware [small] [Pending — awaiting field evidence]](#5-mic-rail-pdm_en-is-not-driven-by-firmware-small-pending--awaiting-field-evidence)
+- [6. Offer a re-pair when an OTA eats the bond [small] [Pending]](#6-offer-a-re-pair-when-an-ota-eats-the-bond-small-pending)
 
 ### LARGE
 - [4. Device-driven BLE wake (firmware + iOS) [large] [Parked — lost its primary motivation]](#4-device-driven-ble-wake-firmware--ios-large-parked--lost-its-primary-motivation)
@@ -210,6 +211,63 @@ before.
 - `omi/firmware/omi/src/aad.c` — `DIAG_VAD_LEVEL` emit (`VAD_DIAG_LEVEL_WINDOW_MS`)
 - `omi/firmware/boards/omi/omi_nrf5340_cpuapp.dts` — `pdm_en_pin`, `pdm_thsel_pin`
 - `BLE_Research.md` — "Wedge 4 companion finding" for the first freeze
+
+---
+
+### 6. Offer a re-pair when an OTA eats the bond [small] [Pending]
+
+Roughly **1 OTA in 8** silently drops the BLE pairing — see `BLE_Research.md` §9: the settings NVS
+sits inside the MCUboot primary slot, and overwrite-only-FAST erases one of its eight sectors on
+every update. Whichever key's live copy is in that sector is lost, and bonds are rewritten rarely
+enough to sit still between flashes.
+
+The definitive fix is a partition move, and it **cannot ship over the air**: MCUboot is not
+OTA-updatable here (`SB_CONFIG_MCUBOOT_UPDATEABLE_IMAGES=2` covers the app and net cores only), so
+the installed bootloader keeps writing its trailer at `0x100000` no matter what the new app image
+believes. Wired flash only. Until that happens, the user-facing problem is not the loss — it is
+that the loss is *opaque*: the device connects and drops every few seconds, forever, with nothing
+explaining why. On 2026-08-02 that took ~26 minutes to work out by hand.
+
+#### What does NOT work, and why
+
+**Reading `DIAG_BOND_STATE` from the device.** The obvious idea, and it cannot fire. `0x0063` is
+`BT_GATT_PERM_READ_ENCRYPT` (deliberately — forced boot records put `transport_bond_count()` behind
+it, and unauthenticated peers must not learn pairing state). The failure being detected *is*
+encryption failing, so the characteristic is unreadable exactly when it matters. It only reads
+after a successful re-pair, which is forensics, not a prompt. The drain is also gated on the
+`diagLogEnabled` dev pref and needs a `CONFIG_OMI_DIAG_LOG` build.
+
+**A general stale-bond self-heal.** `OmiBleForegroundService.kt:964-970` already has one, disabled,
+because intercepting status 5 sabotages Android's own security elevation. Widening it to 8/133 is
+worse — those dominate ordinary RF trouble.
+
+#### What does work
+
+Detect the signature app-side, which needs nothing encrypted:
+
+```
+connect succeeds → service discovery completes (15 services)
+→ every encrypted read fails (133 / Rejected) → drop within seconds → repeats
+```
+
+This is specifically **not** the marginal-RF signature: in the 2026-08-02 overnight range episode
+discovery itself failed or took 6–11 s, whereas here discovery completes cleanly and only the reads
+fail. That distinction is what keeps the false-positive rate low enough to act on.
+
+**Scope it to the post-DFU window** rather than running a general detector. The app knows when it
+just flashed; arm a one-shot "watch the next connect" flag on DFU success, and if that connect shows
+the signature, surface *"Pairing may have been lost during the update — re-pair?"* → `removeBond()`
++ reconnect. Bounded window, near-zero false positives, and it targets the 1-in-8 directly.
+
+Keep the destructive action **user-confirmed**. That is the whole difference between this and the
+disabled status-5 self-heal above.
+
+#### Relevant files
+
+- `app/lib/pages/dfuota/firmware_mixin.dart` — DFU success callbacks; where the one-shot arms
+- `app/lib/providers/device_provider.dart` — `_onDeviceConnected` / setup failure path
+- `app/android/.../OmiBleForegroundService.kt:964-970` — the disabled self-heal, and why
+- `BLE_Research.md` §9 — root cause, the wired-flash fix, and the two dead ends
 
 ---
 
