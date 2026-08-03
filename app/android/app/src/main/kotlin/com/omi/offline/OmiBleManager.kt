@@ -338,6 +338,16 @@ class OmiBleManager private constructor(private val application: Application) {
             // is orphaned: its callback never fires and the next download overwrites the
             // map entry, so the Dart side waits on a future nothing will ever complete.
             activeDownloads.remove(addr)?.complete(Result.failure(Exception("GATT replaced")))
+            // Same for in-flight characteristic ops — these maps are per-address (keyed
+            // "<addr>:<service>:<char>"), so failing this device's entries touches nothing
+            // another managed device owns. close() eats their callbacks, so without this
+            // the Dart side waits out its 10 s op timeout instead of erroring immediately,
+            // and the stale entry leaks until some later op on the same key overwrites it.
+            val prefix = addr.lowercase()
+            readCompletions.keys().toList().filter { k -> k.startsWith(prefix) }
+                .forEach { k -> readCompletions.remove(k)?.invoke(Result.failure(Exception("GATT replaced"))) }
+            writeCompletions.keys().toList().filter { k -> k.startsWith(prefix) }
+                .forEach { k -> writeCompletions.remove(k)?.invoke(Result.failure(Exception("GATT replaced"))) }
         }
 
         // Check if device is already connected to the system by another app or previous session
@@ -385,8 +395,16 @@ class OmiBleManager private constructor(private val application: Application) {
      * Distinct from [isPeripheralConnected], which reports only the ACL/GATT link state and
      * so goes true a discovery round-trip early. Anything that hands a service table to Dart
      * must gate on this one — the link being up says nothing about gatt.services being filled.
+     *
+     * Checks the table itself as well as the flag, so the predicate validates what callers
+     * actually consume rather than a flag that is merely supposed to imply it. The flag alone
+     * is accurate today (both paths that retire a gatt clear it), but that is bookkeeping a
+     * future edit could break silently, and the table is the ground truth either way.
      */
-    fun hasDiscoveredServices(address: String): Boolean = servicesDiscoveredFor.contains(address.uppercase())
+    fun hasDiscoveredServices(address: String): Boolean {
+        val addr = address.uppercase()
+        return servicesDiscoveredFor.contains(addr) && connectedGatts[addr]?.services?.isNotEmpty() == true
+    }
 
     fun isPeripheralConnected(address: String): Boolean {
         val addr = address.uppercase()
