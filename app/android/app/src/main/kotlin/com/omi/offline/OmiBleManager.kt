@@ -641,7 +641,21 @@ class OmiBleManager private constructor(private val application: Application) {
      * @Synchronized to match [completeCommand]/[enqueueCommand], which lock on the same
      * monitor. Safe to hold: nothing here blocks or invokes a caller-supplied callback.
      */
-    @Synchronized fun resetCommandPipeline() { gattQueue.clear(); isProcessingCommand = false }
+    @Synchronized fun resetCommandPipeline() {
+        // Unpost the in-flight command before dropping the queue. [processNextCommand] PEEKS
+        // rather than polls, so the posted runnable is still the head here — which is the
+        // only reference to it there is, and the only entry ever posted (one at a time).
+        // Left posted, it can run after the reset, fail against the closed gatt, and call
+        // completeCommand() on its way out — which polls the NEW gatt's command off the
+        // head. That entry was already posted so it still runs, but its own callback then
+        // polls a third entry, and from there the accounting is permanently off by one:
+        // commands get posted while another is in flight, breaking the one-op-at-a-time
+        // serialization this queue exists to enforce (overlapping GATT ops drop the link
+        // with Error 133 on Android).
+        gattQueue.peek()?.let { mainHandler.removeCallbacks(it) }
+        gattQueue.clear()
+        isProcessingCommand = false
+    }
 
     private fun findCharacteristic(gatt: BluetoothGatt?, serviceUuid: String, characteristicUuid: String): BluetoothGattCharacteristic? =
         gatt?.getService(UUID.fromString(serviceUuid))?.getCharacteristic(UUID.fromString(characteristicUuid))
