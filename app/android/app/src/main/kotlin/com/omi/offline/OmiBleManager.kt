@@ -97,6 +97,9 @@ class OmiBleManager private constructor(private val application: Application) {
     @Volatile
     private var isProcessingCommand = false
 
+    // Single field, not keyed by address: the app manages exactly one peripheral at a
+    // time (one paired device in prefs, one NativeBleTransport), so there is never a
+    // second device whose start could cancel this one's callback.
     private var rssiKeepAliveRunnable: Runnable? = null
     private val rssiKeepAliveInterval = 3000L
 
@@ -493,9 +496,10 @@ class OmiBleManager private constructor(private val application: Application) {
 
     fun startRssiKeepAlive(address: String) {
         stopRssiKeepAlive()
+        val addr = address.uppercase()
         val runnable = object : Runnable {
             override fun run() {
-                connectedGatts[address]?.readRemoteRssi()
+                connectedGatts[addr]?.readRemoteRssi()
                 mainHandler.postDelayed(this, rssiKeepAliveInterval)
             }
         }
@@ -514,9 +518,10 @@ class OmiBleManager private constructor(private val application: Application) {
     // (IDLE_DISCONNECT_TIMEOUT_MS) regardless of whether a data stream is active.
     fun startStorageKeepAlive(address: String) {
         stopStorageKeepAlive()
+        val addr = address.uppercase()
         val runnable = object : Runnable {
             override fun run() {
-                sendStorageKeepAliveNoResponse(address)
+                sendStorageKeepAliveNoResponse(addr)
                 mainHandler.postDelayed(this, storageKeepAliveInterval)
             }
         }

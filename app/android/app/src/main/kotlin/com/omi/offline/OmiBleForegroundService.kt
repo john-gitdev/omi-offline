@@ -1337,6 +1337,10 @@ class OmiBleForegroundService : Service() {
                         managed.stabilityTimerRunnable?.let { handler.removeCallbacks(it) }
                         managed.stabilityTimerRunnable = null
                         bleManager.stopRssiKeepAlive()
+                        // Was omitted: with the radio going down the storage keep-alive
+                        // otherwise kept reposting every 5 s against a dead gatt until
+                        // the next connect happened to replace it.
+                        bleManager.stopStorageKeepAlive()
                         bleManager.disconnectGatt(addr)
                         bleManager.closeGatt(addr)
                         managed.currentGattHash = null

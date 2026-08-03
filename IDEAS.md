@@ -48,6 +48,41 @@ are genuine multi-second RF/firmware stalls — not a tuning problem — so the 
 below mitigate the *fallout* (don't lose the partial transfer, don't strand the UI)
 rather than preventing the stall.
 
+> **Background-specific partials had TWO further causes, both CPU-wakelock, both fixed
+> 2026-08-03 — don't re-derive them.** Neither is RF, and both present as a mid-sync
+> `gatt_status_8`, so they are easy to misattribute to the tuning item below.
+>
+> 1. **The foreground pipeline never held a CPU lock at all (the bigger one).**
+>    `RecordingsController._acquireWake` called only `WakelockPlus.enable()` —
+>    `FLAG_KEEP_SCREEN_ON`, a *screen* flag that lapses as soon as the app is
+>    backgrounded. Tap Sync, pocket the phone, and nothing held the CPU: suspend within
+>    seconds. Now takes `acquireProcessingWakeLock` alongside, released when the last
+>    wake reason drops (and in `dispose()`, since the native lock is refcounted).
+> 2. **The background cycle's lock expired mid-run.** `acquireProcessingWakeLock` used
+>    `acquire(30 * 60 * 1000L)` and never renewed, and a large backlog outlives 30 min.
+>    Now renewed on a timer, with a **2 h absolute ceiling** — renewing forever would
+>    have defeated the leak backstop the timeout existed to be.
+>
+> Why either one drops the link: **both** keep-alives are `Handler`/`Timer` posts (native
+> 0x32 in `OmiBleManager`, Dart's 5 s timer), and `postDelayed` runs on `uptimeMillis()`,
+> which **does not advance while the SoC is suspended**. So both stall together and the
+> firmware's 15 s `IDLE_DISCONNECT_TIMEOUT_MS` fires. **Lesson: a wake-lock timeout is a
+> leak backstop, not a work budget — and any Handler-driven keep-alive is only as
+> reliable as the wake-lock above it.**
+>
+> Also landed: the Bluetooth-off path now stops the *storage* keep-alive too (it stopped
+> only the RSSI one, so the storage Runnable kept reposting every 5 s against a dead gatt
+> until the next connect replaced it).
+>
+> **Two changes tried and reverted, deliberately — don't re-add without evidence.**
+> (a) Keying the keep-alive Runnables by address: the app manages exactly one peripheral
+> (one paired device in prefs, one `NativeBleTransport`), so the multi-device
+> cancel-each-other hazard cannot occur. (b) Re-asserting `CONNECTION_PRIORITY_HIGH` per
+> transfer in `downloadStorageFile`: the premise (Android silently downgrades priority for
+> background apps) was never verified, and `requestConnectionPriority` triggers an LL
+> parameter-update procedure, so one per file is not free on an RF-fragile link. It is a
+> *candidate* for the experiment below, not a fix — measure it, don't assume it.
+
 #### Open: connection-param tuning during transfer
 Syncs transfer over `CONNECTION_PRIORITY_HIGH` (`OmiBleManager.kt`, ~11.25–15 ms
 interval) — great throughput, RF-fragile. The open experiment is whether
@@ -60,6 +95,11 @@ interval) — great throughput, RF-fragile. The open experiment is whether
   rate outweighs the throughput cost. Wire it behind something measurable and A/B
   throughput vs. drop-rate before committing. Android-only lever; the firmware's
   `update_conn_params` (7.5–22.5 ms) bounds the floor either way.
+- **Re-measure before running this experiment.** Both wakelock fixes above changed the
+  baseline this A/B would be judged against, and both presented as mid-sync drops —
+  i.e. indistinguishable from the RF stalls this item is about. Get a clean post-fix
+  partial-sync rate first, or `BALANCED` will be credited with someone else's fix.
+  The reverted per-transfer HIGH re-assert belongs in the same experiment, as a third arm.
 
 > **Guardrail (learned while shipping the stuck-notification fix):** don't reduce
 > `CONNECT_SETTLE_MS` (160 s) below Dart's 150 s connect-settle watchdog — it sits just above
