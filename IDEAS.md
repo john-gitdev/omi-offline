@@ -48,6 +48,23 @@ are genuine multi-second RF/firmware stalls — not a tuning problem — so the 
 below mitigate the *fallout* (don't lose the partial transfer, don't strand the UI)
 rather than preventing the stall.
 
+> **Background-specific partials had a second, unrelated cause — fixed 2026-08-03, so
+> don't re-derive it.** `acquireProcessingWakeLock` took its `PARTIAL_WAKE_LOCK` with
+> `acquire(30 * 60 * 1000L)` and never renewed it. A background sync+process cycle over a
+> large backlog outlives 30 min, so the lock expired *mid-run*; the SoC was then free to
+> suspend, and **both** keep-alives are `Handler.postDelayed` posts (native 0x32 in
+> `OmiBleManager`, and Dart's timer), so both stop firing across suspend. The firmware's
+> 15 s `IDLE_DISCONNECT_TIMEOUT_MS` then dropped the link. Foreground was immune only
+> because `WakelockPlus` holds the screen on, which holds the CPU — hence the observed
+> "backgrounded = more partials" asymmetry. Now renewed on a timer with a 10 min backstop.
+> Two smaller fixes landed alongside: the keep-alive Runnables are keyed by address (a
+> single shared field meant a second paired Omi cancelled the first's keep-alive), and
+> `CONNECTION_PRIORITY_HIGH` is re-asserted per transfer instead of once per link.
+>
+> **Lesson worth keeping:** a wake-lock *timeout* is a leak backstop, not a work budget.
+> Any `Handler`-driven keep-alive is only as reliable as the wake-lock over it, because
+> `postDelayed` runs on `uptimeMillis()`, which does not advance while the SoC is suspended.
+
 #### Open: connection-param tuning during transfer
 Syncs transfer over `CONNECTION_PRIORITY_HIGH` (`OmiBleManager.kt`, ~11.25–15 ms
 interval) — great throughput, RF-fragile. The open experiment is whether
@@ -60,6 +77,10 @@ interval) — great throughput, RF-fragile. The open experiment is whether
   rate outweighs the throughput cost. Wire it behind something measurable and A/B
   throughput vs. drop-rate before committing. Android-only lever; the firmware's
   `update_conn_params` (7.5–22.5 ms) bounds the floor either way.
+- **Re-measure before running this experiment.** The per-transfer `assertHighConnectionPriority`
+  and the wake-lock renewal above both changed the baseline this A/B would be judged against,
+  and the wake-lock expiry was misattributable to RF (it presents as a mid-sync drop). Get a
+  clean post-fix partial-sync rate first, or BALANCED will be credited with someone else's fix.
 
 > **Guardrail (learned while shipping the stuck-notification fix):** don't reduce
 > `CONNECT_SETTLE_MS` (160 s) below Dart's 150 s connect-settle watchdog — it sits just above
