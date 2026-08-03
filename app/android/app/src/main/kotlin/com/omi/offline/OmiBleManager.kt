@@ -348,6 +348,16 @@ class OmiBleManager private constructor(private val application: Application) {
                 .forEach { k -> readCompletions.remove(k)?.invoke(Result.failure(Exception("GATT replaced"))) }
             writeCompletions.keys().toList().filter { k -> k.startsWith(prefix) }
                 .forEach { k -> writeCompletions.remove(k)?.invoke(Result.failure(Exception("GATT replaced"))) }
+            // Release the command pipeline. Its in-flight slot belongs to a command whose
+            // callback close() just swallowed, so completeCommand() will never run and the
+            // flag would stay set — blocking the NEW gatt's discoverServices() and leaving
+            // the link connected-but-undiscovered, the very state this cleanup exists to
+            // prevent. The queue is process-global, so a stuck flag wedges every managed
+            // device; clearing it is the repair, not collateral. Still not the whole of
+            // cleanupPeripheral(): stopRssiKeepAlive/stopStorageKeepAlive take no address,
+            // and stopping a second device's storage keep-alive would let the firmware
+            // idle-disconnect it.
+            resetCommandPipeline()
         }
 
         // Check if device is already connected to the system by another app or previous session
@@ -617,6 +627,22 @@ class OmiBleManager private constructor(private val application: Application) {
     }
     @Synchronized fun completeCommand() { gattQueue.poll(); isProcessingCommand = false; processNextCommand() }
 
+    /**
+     * Drop every queued command and release the in-flight slot, for use when the gatt they
+     * were built against is going away.
+     *
+     * The queue and [isProcessingCommand] are process-global, not per-device, so a command
+     * whose callback never arrives (close() swallows it) leaves the flag set and
+     * [processNextCommand] refuses to run anything for ANY device — including the next
+     * connection's discoverServices(). Clearing rather than draining is deliberate: the
+     * queue holds bare Runnables with no address, and each captures the gatt it was built
+     * for, so running the survivors against a closed handle would just stall again.
+     *
+     * @Synchronized to match [completeCommand]/[enqueueCommand], which lock on the same
+     * monitor. Safe to hold: nothing here blocks or invokes a caller-supplied callback.
+     */
+    @Synchronized fun resetCommandPipeline() { gattQueue.clear(); isProcessingCommand = false }
+
     private fun findCharacteristic(gatt: BluetoothGatt?, serviceUuid: String, characteristicUuid: String): BluetoothGattCharacteristic? =
         gatt?.getService(UUID.fromString(serviceUuid))?.getCharacteristic(UUID.fromString(characteristicUuid))
 
@@ -650,8 +676,7 @@ class OmiBleManager private constructor(private val application: Application) {
         // stale command (referencing the now-dead gatt) to be re-posted on the next
         // enqueue after reconnect. Clear the queue so the next connection starts
         // with a clean command pipeline.
-        gattQueue.clear()
-        isProcessingCommand = false
+        resetCommandPipeline()
         activeDownloads.remove(addr)?.complete(Result.failure(Exception("Stream closed without EOT")))
     }
 
