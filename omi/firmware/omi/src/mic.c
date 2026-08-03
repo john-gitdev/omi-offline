@@ -40,6 +40,18 @@ static const struct device *dmic_dev;
 static volatile mix_handler callback_func = NULL;
 static volatile bool mic_running = false;
 
+/* Whether capture is SUPPOSED to be running, as distinct from whether the dmic is
+ * currently triggered. The two diverge when mic_reset() declines to restart on an
+ * unconfirmed rail: without a separate intent flag, that leaves mic_running false,
+ * and every later mic_reset() then sees "wasn't running" and declines to start it
+ * either — so one partial cycle would silently end capture for the rest of the
+ * session. Six of the seven mic_reset() call sites are bare (only the unmute path
+ * follows with mic_resume()), so nothing else would notice or recover.
+ *
+ * Set by mic_start()/mic_resume(), cleared by mic_pause()/mic_off(). A deliberate
+ * stop clears the intent; a failure to restart does not. */
+static volatile bool mic_capture_intended = false;
+
 /* PDM_EN (board net, P1.4): active-high enable for the T5838 mic + TXS0104
  * level-shifter power rail (schematic: PDM_EN gates the shifter's VCCA/VCCB).
  * It is hardware-default-enabled via a pull-up, so the mic runs without the
@@ -186,6 +198,7 @@ int mic_start()
     }
 
     mic_running = true;
+    mic_capture_intended = true;
     k_thread_start(mic_thread_id);
 
     LOG_INF("Microphone started");
@@ -208,6 +221,9 @@ void mic_pause()
         }
         mic_running = false;
     }
+    /* A deliberate stop also withdraws the intent, so a mic_reset() during a mute
+     * does not helpfully "restore" capture the user asked to be off. */
+    mic_capture_intended = false;
 }
 
 void mic_resume()
@@ -221,11 +237,11 @@ void mic_resume()
         }
         mic_running = true;
     }
+    mic_capture_intended = true;
 }
 
 mic_reset_result_t mic_reset()
 {
-    const bool was_running = mic_running;
     mic_reset_result_t result = MIC_RESET_NOT_CYCLED;
 
     if (mic_running) {
@@ -306,12 +322,21 @@ mic_reset_result_t mic_reset()
      *
      * Leaving mic_running false is the honest state and lets a later
      * mic_start()/mic_reset() retry once the rail has had time to recover. */
-    /* Positive form on purpose: an enum value appended later defaults to "not
+    /* Gate on the INTENT, not on whether the dmic happened to be triggered when we
+     * were called. A previous reset that declined to restart on an unconfirmed rail
+     * leaves mic_running false while capture is still wanted; keying off that would
+     * make this call decline too, and the one after it, so a single partial cycle
+     * would end capture for the rest of the session with nothing to notice — six of
+     * the seven call sites never follow up with mic_resume(). Keying off the intent
+     * means the first reset that confirms the rail restores capture by itself.
+     *
+     * Positive form on purpose: an enum value appended later defaults to "not
      * confirmed", i.e. to leaving capture stopped, which is the safe side. */
     const bool rail_confirmed_up = (result == MIC_RESET_CYCLED || result == MIC_RESET_NOT_CYCLED);
-    if (was_running && !rail_confirmed_up) {
-        LOG_ERR("mic_reset: not restarting capture — rail unconfirmed (result=%d), mic left stopped", (int) result);
-    } else if (was_running) {
+    if (mic_capture_intended && !rail_confirmed_up) {
+        LOG_ERR("mic_reset: not restarting capture — rail unconfirmed (result=%d), will retry on the next reset",
+                (int) result);
+    } else if (mic_capture_intended) {
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
         if (ret < 0) {
             LOG_ERR("mic_reset: START trigger failed: %d", ret);
@@ -331,6 +356,8 @@ bool mic_is_running()
 
 void mic_off()
 {
+    /* Ship mode — capture is not coming back without a reboot. */
+    mic_capture_intended = false;
     if (mic_running) {
         mic_running = false;
         k_thread_abort(mic_thread_id);
