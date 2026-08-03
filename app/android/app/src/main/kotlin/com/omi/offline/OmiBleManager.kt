@@ -319,6 +319,13 @@ class OmiBleManager private constructor(private val application: Application) {
             it.disconnect()
             it.close()
             connectedGatts.remove(addr)
+            // Drop the per-address discovery state along with the object it described.
+            // close() suppresses the STATE_DISCONNECTED callback, so cleanupPeripheral()
+            // never runs on this path and servicesDiscoveredFor would keep the address —
+            // which makes onServicesDiscovered early-return for the NEW gatt as
+            // "already discovered", so the ready event that carries the service table up
+            // to Dart never fires again for this link.
+            cleanupPeripheral(addr)
         }
 
         // Check if device is already connected to the system by another app or previous session
@@ -359,6 +366,15 @@ class OmiBleManager private constructor(private val application: Application) {
         }
         connectedGatts.remove(addr)
     }
+
+    /**
+     * True once onServicesDiscovered has landed for the CURRENT gatt on [address].
+     *
+     * Distinct from [isPeripheralConnected], which reports only the ACL/GATT link state and
+     * so goes true a discovery round-trip early. Anything that hands a service table to Dart
+     * must gate on this one — the link being up says nothing about gatt.services being filled.
+     */
+    fun hasDiscoveredServices(address: String): Boolean = servicesDiscoveredFor.contains(address.uppercase())
 
     fun isPeripheralConnected(address: String): Boolean {
         val addr = address.uppercase()
