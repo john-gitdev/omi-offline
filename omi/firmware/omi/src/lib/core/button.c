@@ -64,6 +64,18 @@ bool mute_apply(bool on)
     if (on == is_muted) {
         return false;
     }
+    /* is_muted and the mic's run state must never disagree, so the write and the
+     * mic call are one atomic unit. Without this the pair is a check-then-act for
+     * anyone else reading is_muted to decide whether to stop capture (main.c does
+     * exactly that at boot): they can observe one value and act after the other has
+     * already been applied, leaving the mic running while muted, or stopped while
+     * unmuted with nothing to resume it.
+     *
+     * Scoped tightly on purpose — released before mute_state_notify() and the
+     * marker writes below, which can block on a saturated SD queue and would stall
+     * every mic transition on every thread. Recursive, so the nested mic calls are
+     * fine. */
+    k_mutex_lock(&mic_state_lock, K_FOREVER);
     is_muted = on;
     if (on) {
         // Force the LED on so the solid-red mute indicator shows even from
@@ -84,6 +96,7 @@ bool mute_apply(bool on)
         mic_reset();
         mic_resume();
     }
+    k_mutex_unlock(&mic_state_lock);
     LOG_INF("Mute toggled: %s", on ? "ON" : "OFF");
     // Push the live state first (fast, non-blocking) before the marker write,
     // which may briefly block on a saturated SD queue.
