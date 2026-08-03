@@ -12,6 +12,7 @@ import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
 import java.util.UUID
@@ -97,10 +98,15 @@ class OmiBleManager private constructor(private val application: Application) {
     @Volatile
     private var isProcessingCommand = false
 
-    private var rssiKeepAliveRunnable: Runnable? = null
+    // Keyed by address, NOT a single field: a phone can be bonded to several Omis, and
+    // with one shared field the second device's start*KeepAlive() overwrote the first's
+    // Runnable reference after its own stop*KeepAlive() had already cancelled the first
+    // device's pending callback — silently leaving device #1 with no keep-alive at all,
+    // so the firmware idle-dropped it 15 s later mid-sync.
+    private val rssiKeepAliveRunnables = ConcurrentHashMap<String, Runnable>()
     private val rssiKeepAliveInterval = 3000L
 
-    private var storageKeepAliveRunnable: Runnable? = null
+    private val storageKeepAliveRunnables = ConcurrentHashMap<String, Runnable>()
     // 5 s, not 15 s: the firmware idle-disconnect is 15 s, so a 15 s cadence left
     // zero margin — one silently-dropped write (Android flow-control backoff) tripped
     // the idle-drop. 5 s fits 2+ attempts inside the 15 s window, so a single missed
@@ -492,20 +498,20 @@ class OmiBleManager private constructor(private val application: Application) {
     }
 
     fun startRssiKeepAlive(address: String) {
-        stopRssiKeepAlive()
+        val addr = address.uppercase()
+        stopRssiKeepAlive(addr)
         val runnable = object : Runnable {
             override fun run() {
-                connectedGatts[address]?.readRemoteRssi()
+                connectedGatts[addr]?.readRemoteRssi()
                 mainHandler.postDelayed(this, rssiKeepAliveInterval)
             }
         }
-        rssiKeepAliveRunnable = runnable
+        rssiKeepAliveRunnables[addr] = runnable
         mainHandler.postDelayed(runnable, rssiKeepAliveInterval)
     }
 
-    fun stopRssiKeepAlive() {
-        rssiKeepAliveRunnable?.let { mainHandler.removeCallbacks(it) }
-        rssiKeepAliveRunnable = null
+    fun stopRssiKeepAlive(address: String) {
+        rssiKeepAliveRunnables.remove(address.uppercase())?.let { mainHandler.removeCallbacks(it) }
     }
 
     // Sends 0x32 (KEEP_ALIVE) to the storage characteristic every 5 s using
@@ -513,20 +519,48 @@ class OmiBleManager private constructor(private val application: Application) {
     // an in-flight file read. Resets the firmware's 15 s idle-disconnect timer
     // (IDLE_DISCONNECT_TIMEOUT_MS) regardless of whether a data stream is active.
     fun startStorageKeepAlive(address: String) {
-        stopStorageKeepAlive()
+        val addr = address.uppercase()
+        stopStorageKeepAlive(addr)
         val runnable = object : Runnable {
             override fun run() {
-                sendStorageKeepAliveNoResponse(address)
+                sendStorageKeepAliveNoResponse(addr)
                 mainHandler.postDelayed(this, storageKeepAliveInterval)
             }
         }
-        storageKeepAliveRunnable = runnable
+        storageKeepAliveRunnables[addr] = runnable
         mainHandler.postDelayed(runnable, storageKeepAliveInterval)
     }
 
-    fun stopStorageKeepAlive() {
-        storageKeepAliveRunnable?.let { mainHandler.removeCallbacks(it) }
-        storageKeepAliveRunnable = null
+    fun stopStorageKeepAlive(address: String) {
+        storageKeepAliveRunnables.remove(address.uppercase())?.let { mainHandler.removeCallbacks(it) }
+    }
+
+    // Last time CONNECTION_PRIORITY_HIGH was asserted, per address — debounces the
+    // re-assert below so a file that fails and retries can't hammer the link with
+    // connection-parameter update procedures.
+    private val lastPriorityAssertMs = ConcurrentHashMap<String, Long>()
+    private val priorityReassertDebounceMs = 30_000L
+
+    /**
+     * Re-assert CONNECTION_PRIORITY_HIGH at the start of a transfer.
+     *
+     * It is requested once per link in onServicesDiscovered, and that is the only place
+     * it was ever set — so across a long multi-file sync the link keeps whatever interval
+     * it drifted to. Re-asserting per transfer is cheap (a no-op at the controller when
+     * the parameters already match) and keeps the throughput we deliberately chose HIGH
+     * for. See IDEAS.md #1 for the open HIGH-vs-BALANCED experiment; this does not
+     * prejudge it, it just makes the setting actually hold for the whole sync.
+     */
+    private fun assertHighConnectionPriority(addr: String) {
+        val now = SystemClock.uptimeMillis()
+        val last = lastPriorityAssertMs[addr] ?: 0L
+        if (last != 0L && now - last < priorityReassertDebounceMs) return
+        lastPriorityAssertMs[addr] = now
+        try {
+            connectedGatts[addr]?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+        } catch (e: Exception) {
+            Log.w(TAG, "requestConnectionPriority failed for $addr: ${e.message}")
+        }
     }
 
     private fun sendStorageKeepAliveNoResponse(address: String) {
@@ -587,8 +621,9 @@ class OmiBleManager private constructor(private val application: Application) {
         val addr = address.uppercase()
         servicesDiscoveredFor.remove(addr)
         discoveryTimeouts.remove(addr)?.let { mainHandler.removeCallbacks(it) }
-        stopRssiKeepAlive()
-        stopStorageKeepAlive()
+        stopRssiKeepAlive(addr)
+        stopStorageKeepAlive(addr)
+        lastPriorityAssertMs.remove(addr)
         val prefix = addr.lowercase()
         readCompletions.keys().toList().filter { it.startsWith(prefix) }.forEach { readCompletions.remove(it)?.invoke(Result.failure(Exception("Disconnected"))) }
         writeCompletions.keys().toList().filter { it.startsWith(prefix) }.forEach { writeCompletions.remove(it)?.invoke(Result.failure(Exception("Disconnected"))) }
@@ -706,6 +741,8 @@ class OmiBleManager private constructor(private val application: Application) {
         // Subscribe to notifications so the binder-thread callback fires.
         // Goes through the GATT queue so it completes before CMD_READ_FILE.
         subscribeCharacteristic(addr, STORAGE_SERVICE_UUID.toString(), STORAGE_CHAR_UUID.toString())
+
+        assertHighConnectionPriority(addr)
 
         // Register session BEFORE enqueuing CMD_READ_FILE so the start-ACK (0x03 0x00)
         // is never missed if the write callback and the notification race.
