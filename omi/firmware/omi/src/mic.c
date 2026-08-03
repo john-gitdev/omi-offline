@@ -234,9 +234,16 @@ int mic_start()
 
     mic_running = true;
     mic_capture_intended = true;
-    k_mutex_unlock(&mic_state_lock);
-
+    /* Inside the lock, like mic_on()'s. mic_off() holds this lock while it calls
+     * k_thread_abort(mic_thread_id), so unlocking first opens a window where a
+     * power-off aborts the thread between here and the start below — and
+     * k_thread_start() on an aborted thread does nothing, so the mic thread would
+     * never run again and no reset or resume could bring capture back. Reachable
+     * because transport_start() and button_init() both run BEFORE mic_start() in
+     * main(), so both power-off routes are already armed; the harm lands when
+     * turnoff_all() bails without the reboot recovery storage.c does. */
     k_thread_start(mic_thread_id);
+    k_mutex_unlock(&mic_state_lock);
 
     LOG_INF("Microphone started");
     return 0;
