@@ -8,6 +8,7 @@
 #include <zephyr/pm/device_runtime.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/poweroff.h>
+#include <zephyr/sys/reboot.h>
 
 #include "haptic.h"
 #include "imu.h"
@@ -48,6 +49,36 @@ static volatile uint32_t mute_since_uptime_ms = 0;
  * overrides back to the pre-mute state. */
 static volatile bool led_state_before_mute = false;
 
+/* Serializes a whole mute transition — the state change, the BLE notify and the
+ * inline stream marker — so two callers cannot emit out of order.
+ *
+ * Be precise about what this does and does not guard, because the obvious reading
+ * is wrong. There are exactly two callers: the button FSM (button.c) and the BLE
+ * mute write (transport.c). Two BUTTON mutes cannot race — the FSM polls at 25 Hz
+ * on one work handler behind a 600 ms multi-tap window, so they are both far apart
+ * and on the same thread. Button-mashing is not the hazard.
+ *
+ * The reachable case is button thread vs BT RX thread, where the button timing
+ * constrains nothing. It needs a BLE mute write to land inside the window between
+ * the button thread releasing mic_state_lock and writing its marker, so in practice
+ * it means the app's mute control and the device button being used at the same
+ * instant: possible, not probable.
+ *
+ * It is guarded anyway because mute_apply() mutates shared state and emits ORDERED
+ * stream markers, and is genuinely called from two threads — making it non-reentrant
+ * is ordinary practice, and the failure mode is silent: 0xFFFFFFF9 landing before
+ * 0xFFFFFFFA gives the app's bracket parser a close before its open, with nothing
+ * in any log to explain the corrupted mute bracket months later.
+ *
+ * mic_state_lock cannot do this job: it is deliberately released before the notify
+ * and the marker write, since those can block on a saturated SD queue and every mic
+ * transition on every thread queues behind that mutex. So the ordering guarantee
+ * gets its own lock, held across the whole body, while mic_state_lock keeps its
+ * narrow scope for the is_muted/mic agreement. Lock order is always
+ * mute_apply_lock → mic_state_lock and never the reverse: nothing in mic.c calls
+ * mute_apply(), and this is the only user of this mutex. */
+static K_MUTEX_DEFINE(mute_apply_lock);
+
 bool mute_apply(bool on)
 {
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
@@ -61,8 +92,32 @@ bool mute_apply(bool on)
         return false;
     }
     if (on == is_muted) {
+        return false; /* fast path — re-checked under the lock below */
+    }
+
+    k_mutex_lock(&mute_apply_lock, K_FOREVER);
+    /* Re-check under the lock. The check above is only a fast path: two threads
+     * (button gesture and BLE mute write) can both observe the old value and both
+     * fall through, and without this they would both apply the change — two mic
+     * transitions and two mute markers bracketing the same stretch of audio, which
+     * the app's bracket parsing reads as a nested mute. */
+    if (on == is_muted) {
+        k_mutex_unlock(&mute_apply_lock);
         return false;
     }
+
+    /* is_muted and the mic's run state must never disagree, so the write and the
+     * mic call are one atomic unit. Without this the pair is a check-then-act for
+     * anyone else reading is_muted to decide whether to stop capture (main.c does
+     * exactly that at boot): they can observe one value and act after the other has
+     * already been applied, leaving the mic running while muted, or stopped while
+     * unmuted with nothing to resume it.
+     *
+     * Scoped tightly on purpose — released before mute_state_notify() and the
+     * marker writes below, which can block on a saturated SD queue and would stall
+     * every mic transition on every thread. Recursive, so the nested mic calls are
+     * fine. */
+    k_mutex_lock(&mic_state_lock, K_FOREVER);
     is_muted = on;
     if (on) {
         // Force the LED on so the solid-red mute indicator shows even from
@@ -74,15 +129,18 @@ bool mute_apply(bool on)
         mic_pause();
     } else {
         is_led_enabled = led_state_before_mute;
-        /* Unmute is the safest recovery point the user hands us: no capture is in
-         * flight, so a full T5838 power-cycle costs nothing but ~40 ms. mic_resume()
-         * alone only re-triggers the nRF PDM peripheral — it never touches PDM_EN —
-         * so a wedged mic (digital-zero PDM output, hw AAD never asserting WAKE)
-         * survives a mute/unmute cycle completely untouched. Reset the part first,
-         * then let mic_resume() start capture on a freshly powered mic. */
+        /* Unmute was chosen as the safest recovery point for a wedged T5838: no
+         * capture is in flight, so a full power-cycle cost nothing but ~40 ms.
+         *
+         * mic_reset() NO LONGER POWER-CYCLES — nothing drives PDM_EN any more (see
+         * IDEAS.md "Mic rail (PDM_EN) is not driven by firmware"), so this pair is
+         * now just a dmic re-trigger and a wedged part survives a mute/unmute
+         * untouched again. The call is kept, not deleted, so restoring the cycle is
+         * one edit here rather than a hunt for the right recovery point. */
         mic_reset();
         mic_resume();
     }
+    k_mutex_unlock(&mic_state_lock);
     LOG_INF("Mute toggled: %s", on ? "ON" : "OFF");
     // Push the live state first (fast, non-blocking) before the marker write,
     // which may briefly block on a saturated SD queue.
@@ -98,11 +156,24 @@ bool mute_apply(bool on)
         write_mute_off_marker_to_storage();
     }
 #endif
+    k_mutex_unlock(&mute_apply_lock);
     return true;
 }
 
 void mute_get_state(uint8_t *muted, uint32_t *since_utc_s, uint32_t *since_uptime_ms)
 {
+    /* Read all three under the same lock mute_apply() writes them under. It sets
+     * is_muted BEFORE the timestamps, so an unsynchronized reader landing between
+     * the two returns muted=1 with the previous session's since_* — or zeros on the
+     * very first mute — and the app renders "Muted since" against a time that never
+     * happened. Both writes are inside mic_state_lock's critical section, so taking
+     * it here makes the trio one atomic snapshot.
+     *
+     * Lock order holds: the only callers are the GATT read handler and
+     * mute_state_notify(), and mute_apply() calls the latter only AFTER releasing
+     * mic_state_lock — so this never runs with that mutex already held, and the
+     * mute_apply_lock → mic_state_lock order is never inverted. */
+    k_mutex_lock(&mic_state_lock, K_FOREVER);
     if (is_muted) {
         *muted = 1;
         *since_utc_s = mute_since_utc_s;
@@ -112,6 +183,7 @@ void mute_get_state(uint8_t *muted, uint32_t *since_utc_s, uint32_t *since_uptim
         *since_utc_s = 0;
         *since_uptime_ms = 0;
     }
+    k_mutex_unlock(&mic_state_lock);
 }
 
 static const struct device *const buttons = DEVICE_DT_GET(DT_ALIAS(buttons));
@@ -242,14 +314,18 @@ static bool record_start(void)
         /* Explicit manual-mode start, persisted so it survives a reboot. */
         marker_flash_color = MARKER_FLASH_GREEN;
         marker_flash_count = 2;
-        /* Same reasoning as the auto-mode priority path below: open capture on a
-         * freshly powered mic. Manual mode is just as exposed to a wedged part —
-         * more so, since it has no other recovery path at all.
+        /* Same reasoning as the auto-mode priority path below: this opened capture
+         * on a freshly powered mic, manual mode being just as exposed to a wedged
+         * part — more so, since it has no other recovery path at all. mic_reset() no
+         * longer power-cycles, so that protection is currently absent (IDEAS.md "Mic
+         * rail (PDM_EN) is not driven by firmware").
          *
          * Only when capture is not already running. in_manual is true for BOTH
          * manual sub-states — 32769 standby and 65535 recording — so a second
          * RECORD_START press while a manual recording is live lands here too, and
-         * an unguarded reset would punch ~40 ms out of that live recording. The
+         * an unguarded reset would drop that live recording's in-flight samples (a
+         * ~40 ms hole while it still power-cycled; the dmic stop/start alone is
+         * shorter, but not free). The
          * repeat is entirely reachable: nothing upstream de-duplicates the action,
          * and pressing again is the natural thing to do when you missed the LED
          * flash and aren't sure the recording started. Re-pressing was a harmless
@@ -280,12 +356,19 @@ static bool record_start(void)
      * and write 0xFFFFFFF8 as the first inline frame of the fresh bin. */
     marker_flash_color = MARKER_FLASH_RED;
     marker_flash_count = 2;
-    /* Start every Priority Recording on a freshly powered mic. This is the one
-     * moment the user has unambiguously asked for audio, so it is worth ~40 ms to
-     * guarantee the part is not wedged — silently returning digital zeros, or
-     * holding WAKE so nothing auto-records once this recording ends. Do it before
-     * entering force-capture and before the rotate + 0xFFFFFFF8 marker below, so
-     * the reset's dead samples land outside the recording rather than at its head. */
+    /* This used to start every Priority Recording on a freshly powered mic — the
+     * one moment the user has unambiguously asked for audio, so worth ~40 ms to
+     * guarantee the part is not wedged.
+     *
+     * It no longer does: mic_reset() does not touch PDM_EN any more (IDEAS.md "Mic
+     * rail (PDM_EN) is not driven by firmware"), so this is a dmic re-trigger that
+     * will NOT rescue a wedged part. Worth knowing, because a Priority Recording
+     * happening to call this is exactly what recovered the 2026-08-02 outage — that
+     * escape hatch is closed while the rail experiment runs.
+     *
+     * Kept here, still before the force-capture entry and the rotate + 0xFFFFFFF8
+     * marker, so restoring the cycle puts the dead samples outside the recording
+     * rather than at its head, as before. */
     mic_reset();
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
     /* Runtime force-capture only — NOT persisted, so a reboot mid-recording
@@ -375,7 +458,7 @@ static void execute_button_action(uint8_t taps, bool is_hold)
             marker_flash_count = 2;
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
             /* Recover a wedged mic here too, but ONLY while idle. Mid-recording a
-             * reset would punch a ~40 ms hole at exactly the instant the marker is
+             * reset drops in-flight samples at exactly the instant the marker is
              * meant to bookmark — the worst possible place. Idle it is free, and it
              * is the case that matters: a marker tapped because "it isn't recording
              * anything" is the user reporting the wedge. In the 2026-07-28 incident
@@ -475,7 +558,18 @@ void check_button_level(struct k_work *work_item)
 
             if (tap_count == 4 && duration_ms >= POWER_OFF_HOLD_TIME) {
                 LOG_INF("Power off triggered via 4-tap-hold");
-                turnoff_all();
+                /* Match CMD_POWER_OFF (storage.c): a bailed teardown has already run
+                 * transport_off() and mic_off(), so limping on leaves the device with
+                 * BLE down, the mic thread aborted by k_thread_abort() and PDM_EN
+                 * driven low — i.e. silently deaf, with mic_on() being the only thing
+                 * that could restore the rail and nothing calling it. A cold reboot
+                 * restores every one of those, PDM_EN included, because a SoC reset
+                 * returns the pin to an input and the board pull-up re-powers it. */
+                if (turnoff_all() == TURNOFF_BAILED) {
+                    LOG_ERR("4-tap-hold power-off: turnoff_all() bailed — rebooting to recover");
+                    k_msleep(100); /* let the error log flush before the cold reboot */
+                    sys_reboot(SYS_REBOOT_COLD);
+                }
                 fsm_state = STATE_WAIT_FOR_RELEASE;
             } else if (tap_count == 5 && duration_ms >= UNPAIR_HOLD_TIME) {
                 LOG_WRN("5-tap + hold: clearing all BLE bonds!");

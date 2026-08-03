@@ -330,4 +330,5 @@ int app_settings_arm_post_dfu_unpair(bool arm, const char *current_fw);
  */
 bool app_settings_consume_post_dfu_unpair(const char *current_fw);
 
+
 #endif // SETTINGS_H

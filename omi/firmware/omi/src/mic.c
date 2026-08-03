@@ -8,7 +8,6 @@
 
 #include <nrfx_pdm.h>
 #include <zephyr/audio/dmic.h>
-#include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
@@ -40,16 +39,41 @@ static const struct device *dmic_dev;
 static volatile mix_handler callback_func = NULL;
 static volatile bool mic_running = false;
 
-/* PDM_EN (board net, P1.4): active-high enable for the T5838 mic + TXS0104
- * level-shifter power rail (schematic: PDM_EN gates the shifter's VCCA/VCCB).
- * It is hardware-default-enabled via a pull-up, so the mic runs without the
- * firmware ever touching it. We drive it low in mic_off() — whose sole caller
- * is turnoff_all() — so the mic + shifter fully power down at ship-mode instead
- * of leaking ~1 mA of the 150 mAh cell through System OFF (GPIO output levels
- * are retained in System OFF). NB: config.h's PDM_PWR_PIN (P1.10) is a misnamed,
- * unused leftover pointing at a different rail — this pdm_en_pin node is the
- * real mic-power net. */
-static const struct gpio_dt_spec pdm_en = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(pdm_en_pin), gpios, {0});
+/* Serializes every transition of mic_running together with the dmic_trigger() calls
+ * that implement it.
+ *
+ * These are reached from at least three threads: the button work handler
+ * (button.c mute_apply / record start-stop), the BT RX thread (transport.c mute
+ * write at :930 and VAD-threshold write at :1247), and main() at boot. Without a
+ * lock, mic_reset()'s STOP-then-START is a check-then-act a mute can land inside,
+ * leaving capture restarted on a device the user just muted. Privacy bug, and the
+ * reason this lock exists.
+ *
+ * It is also what lets mic_reset() key its restart off a plain `was_running`
+ * snapshot: read under the lock, that value cannot go stale before it is used, so
+ * no separate "capture intended" state is needed to carry it.
+ *
+ * Zephyr mutexes are recursive for the owning thread, so mic_start() calling
+ * mic_set_gain() while holding this is safe. Nothing here is reachable from an ISR
+ * (all call sites are work handlers or thread context), so a mutex rather than a
+ * spinlock is the right primitive. */
+K_MUTEX_DEFINE(mic_state_lock);
+
+/* PDM_EN (board net, P1.4) is the active-high enable for the T5838 mic + TXS0104
+ * level-shifter power rail, and this firmware DOES NOT TOUCH IT. The pin is held
+ * high by a board pull-up, so leaving it in its reset state (input, disconnected)
+ * means the mic simply always has power — which is how it worked from the start
+ * until oo-2.6.0, and the mic never froze in that time.
+ *
+ * Every driver of this pin has been removed on purpose: the ship-mode cut in
+ * mic_off(), its restore in mic_on(), and the power cycle in mic_reset(). Driving
+ * it is the prime suspect for the freezing that began afterwards, so it is left
+ * alone to isolate that variable. See IDEAS.md "Mic rail (PDM_EN) is not driven by
+ * firmware" for the evidence, what this costs (~1 mA leak in ship mode), and how to
+ * bring it back if DIAG_VAD_LEVEL shows the mic still dropping without it.
+ *
+ * NB: config.h's PDM_PWR_PIN (P1.10) is a misnamed, unused leftover pointing at a
+ * different rail — pdm_en_pin in the board DTS is the real mic-power net. */
 
 #define MAX_FRAMES (MAX_SAMPLE_RATE / 10)
 static int16_t mono_buffer[MAX_FRAMES];
@@ -169,9 +193,16 @@ int mic_start()
 
     LOG_INF("PCM output rate: %u, channels: %u", cfg.streams[0].pcm_rate, cfg.channel.req_num_chan);
 
+    /* Locked from here: the configure/gain/START sequence and the flag writes must
+     * be one atomic unit. transport_start() runs BEFORE mic_start() in main(), so a
+     * BLE mute write can already arrive and STOP the dmic between the trigger below
+     * and mic_running = true, leaving capture running with the flags saying muted. */
+    k_mutex_lock(&mic_state_lock, K_FOREVER);
+
     ret = dmic_configure(dmic_dev, &cfg);
     if (ret < 0) {
         LOG_ERR("Failed to configure the driver: %d", ret);
+        k_mutex_unlock(&mic_state_lock);
         return ret;
     }
 
@@ -182,11 +213,21 @@ int mic_start()
     ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
     if (ret < 0) {
         LOG_ERR("START trigger failed: %d", ret);
+        k_mutex_unlock(&mic_state_lock);
         return ret;
     }
 
     mic_running = true;
+    /* Inside the lock, like mic_on()'s. mic_off() holds this lock while it calls
+     * k_thread_abort(mic_thread_id), so unlocking first opens a window where a
+     * power-off aborts the thread between here and the start below — and
+     * k_thread_start() on an aborted thread does nothing, so the mic thread would
+     * never run again and no reset or resume could bring capture back. Reachable
+     * because transport_start() and button_init() both run BEFORE mic_start() in
+     * main(), so both power-off routes are already armed; the harm lands when
+     * turnoff_all() bails without the reboot recovery storage.c does. */
     k_thread_start(mic_thread_id);
+    k_mutex_unlock(&mic_state_lock);
 
     LOG_INF("Microphone started");
     return 0;
@@ -200,31 +241,42 @@ void set_mic_callback(mix_handler callback)
 void mic_pause()
 {
     LOG_INF("Pausing microphone");
+    k_mutex_lock(&mic_state_lock, K_FOREVER);
     if (mic_running) {
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_STOP);
         if (ret < 0) {
             LOG_ERR("STOP trigger failed: %d", ret);
+            k_mutex_unlock(&mic_state_lock);
             return;
         }
         mic_running = false;
     }
+    k_mutex_unlock(&mic_state_lock);
 }
 
 void mic_resume()
 {
     LOG_INF("Resuming microphone");
+    k_mutex_lock(&mic_state_lock, K_FOREVER);
     if (!mic_running) {
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
         if (ret < 0) {
             LOG_ERR("START trigger failed: %d", ret);
+            k_mutex_unlock(&mic_state_lock);
             return;
         }
         mic_running = true;
     }
+    k_mutex_unlock(&mic_state_lock);
 }
 
 void mic_reset()
 {
+    /* Held for the whole sequence so the was_running snapshot below cannot go stale
+     * between the STOP and the START: under the lock, what was running when we
+     * entered is still what should be running when we leave. See mic_state_lock. */
+    k_mutex_lock(&mic_state_lock, K_FOREVER);
+
     const bool was_running = mic_running;
 
     if (mic_running) {
@@ -237,37 +289,35 @@ void mic_reset()
              * desync worse than the wedge this is trying to clear. The caller
              * simply doesn't get a reset this time. */
             LOG_ERR("mic_reset: STOP trigger failed: %d — leaving mic untouched", ret);
+            k_mutex_unlock(&mic_state_lock);
             return;
         }
         mic_running = false;
     }
 
-    /* Drop the T5838 + TXS0104 rail long enough for the part to fully de-power,
-     * then bring it back and let it settle before capture resumes. This is the
-     * whole point of the call — a wedged T5838 (digital-zero PDM output, WAKE
-     * never asserting) is only cleared by removing its supply, which neither
-     * mic_pause()/mic_resume() nor a dmic re-trigger does. INACTIVE = physical
-     * low = disabled (pdm_en_pin is GPIO_ACTIVE_HIGH). */
-    if (gpio_is_ready_dt(&pdm_en)) {
-        gpio_pin_configure_dt(&pdm_en, GPIO_OUTPUT_INACTIVE);
-        k_msleep(20);
-        gpio_pin_configure_dt(&pdm_en, GPIO_OUTPUT_ACTIVE);
-        k_msleep(20);
-        LOG_INF("mic_reset: PDM_EN power-cycled");
-    } else {
-        LOG_WRN("mic_reset: PDM_EN gpio not ready — rail NOT cycled");
-    }
+    /* NO PDM_EN CYCLE HERE — deliberately. See IDEAS.md "Mic rail (PDM_EN) is not
+     * driven by firmware". This used to drop and restore the T5838's supply, which
+     * is the only thing that clears a wedged part, and it is gone because driving
+     * that rail at all is the prime suspect for the wedging: the firmware never
+     * touched PDM_EN until oo-2.6.0 (2026-07-17), and the mic had never frozen
+     * before that. Removing it isolates that variable.
+     *
+     * What is left is a dmic re-trigger, which does NOT recover a wedged T5838. The
+     * call sites are kept so the cycle is one small edit away if DIAG_VAD_LEVEL
+     * shows the mic still dropping without it. */
 
     if (was_running) {
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
         if (ret < 0) {
             LOG_ERR("mic_reset: START trigger failed: %d", ret);
+            k_mutex_unlock(&mic_state_lock);
             return;
         }
         mic_running = true;
     }
 
     LOG_INF("Microphone reset (running=%d)", mic_running);
+    k_mutex_unlock(&mic_state_lock);
 }
 
 bool mic_is_running()
@@ -277,6 +327,9 @@ bool mic_is_running()
 
 void mic_off()
 {
+    /* Locked like the rest so an in-flight mic_reset() cannot restart capture after
+     * this stopped it. Irrelevant delay on the power-down path. */
+    k_mutex_lock(&mic_state_lock, K_FOREVER);
     if (mic_running) {
         mic_running = false;
         k_thread_abort(mic_thread_id);
@@ -289,32 +342,24 @@ void mic_off()
         LOG_INF("Microphone stopped");
     }
 
-    /* Cut the mic + TXS0104 shifter power rail. mic_off() runs only on the
-     * power-down path (turnoff_all), so forcing PDM_EN low here overrides its
-     * default-enable pull-up and stops the ~1 mA system-off leak. INACTIVE =
-     * physical low = disabled (pdm_en_pin is GPIO_ACTIVE_HIGH). */
-    if (gpio_is_ready_dt(&pdm_en)) {
-        gpio_pin_configure_dt(&pdm_en, GPIO_OUTPUT_INACTIVE);
-        LOG_INF("PDM_EN low — mic + shifter powered down");
-    }
+    /* The PDM_EN cut that used to be here is gone — see the pdm_en comment at the
+     * top of this file. It saved ~1 mA in ship mode and cost the mic being latched
+     * off whenever turnoff_all() bailed after this point, which is the failure the
+     * firmware never had before oo-2.6.0. The leak is the deliberate price of
+     * isolating that. */
+    k_mutex_unlock(&mic_state_lock);
 }
 
 void mic_on()
 {
+    k_mutex_lock(&mic_state_lock, K_FOREVER);
     if (!mic_running) {
-        /* Restore the mic + TXS0104 rail in case a prior mic_off() drove PDM_EN
-         * low. Normally PDM_EN is already high (default-enable pull-up), so this
-         * is a no-op; it only matters if mic_off() ran without a full power-off
-         * (e.g. a bailed turnoff_all). Re-assert active and let the rail settle
-         * before capture so the first frames aren't garbage. */
-        if (gpio_is_ready_dt(&pdm_en)) {
-            gpio_pin_configure_dt(&pdm_en, GPIO_OUTPUT_ACTIVE);
-            k_msleep(5);
-        }
-
+        /* No PDM_EN restore needed: nothing drives that pin any more, so the rail is
+         * never down to begin with. See the pdm_en comment at the top of this file. */
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
         if (ret < 0) {
             LOG_ERR("START trigger failed: %d", ret);
+            k_mutex_unlock(&mic_state_lock);
             return;
         }
 
@@ -323,6 +368,7 @@ void mic_on()
 
         LOG_INF("Microphone restarted");
     }
+    k_mutex_unlock(&mic_state_lock);
 }
 
 void mic_set_gain(uint8_t gain_level)

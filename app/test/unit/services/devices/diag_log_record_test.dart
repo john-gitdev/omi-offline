@@ -91,6 +91,83 @@ void main() {
       expect(rec(13).label, 'adv_start_fail');
       expect(rec(14).label, 'adv_watchdog_rescue');
       expect(rec(15).label, 'adv_stop_fail');
+      expect(rec(16).label, 'vad_level');
+      expect(rec(17).label, 'mic_power_cycle');
+    });
+
+    test('vad_level unpacks peak, floor and threshold from the packed arg1', () {
+      // arg0 = window peak; arg1 = [floor u16 high][threshold u16 low]. The packing
+      // is the only arithmetic in the decode table, so assert both halves land in
+      // the right place — a swapped shift renders a plausible-looking wrong number.
+      DiagLogRecord rec(int peak, int floor, int threshold) => DiagLogRecord(
+            seq: 1,
+            uptimeMs: 0,
+            code: 16,
+            backend: 0,
+            arg0: peak,
+            arg1: (floor << 16) | threshold,
+          );
+
+      final d = rec(1400, 37, 250).description;
+      expect(d, contains('peak 1400'));
+      expect(d, contains('floor 37'));
+      expect(d, contains('threshold 250'));
+
+      // Full-scale values must survive the 16-bit fields rather than wrapping.
+      final wide = rec(65535, 65535, 65535).description;
+      expect(wide, contains('peak 65535'));
+      expect(wide, contains('floor 65535'));
+      expect(wide, contains('threshold 65535'));
+    });
+
+    test('vad_level calls out a zero peak, and only a zero peak', () {
+      // This is the whole point of the event: a peak pinned at zero is a wedged mic
+      // (digital-zero PDM output), whereas a quiet room always peaks above zero even
+      // when it never reaches the threshold. The two must not read alike.
+      DiagLogRecord rec(int peak, int floor) =>
+          DiagLogRecord(seq: 1, uptimeMs: 0, code: 16, backend: 0, arg0: peak, arg1: (floor << 16) | 250);
+
+      expect(rec(0, 0).description, contains('NO SIGNAL'));
+      // A quiet room: peak well under the 250 threshold but not silent.
+      expect(rec(31, 2).description, isNot(contains('NO SIGNAL')));
+      expect(rec(1, 0).description, isNot(contains('NO SIGNAL')));
+    });
+
+    test('bond_state reports a failed wipe as failed, not as a wipe', () {
+      // The firmware emits the post-DFU / gesture records whether or not bt_unpair()
+      // succeeded, because an attempted-but-failed wipe is exactly the case that
+      // strands the device holding a bond the phone thinks is gone. arg1 is the count
+      // AFTER, so a non-zero remainder must not render as "wiped".
+      DiagLogRecord rec(int cause, int remaining) =>
+          DiagLogRecord(seq: 1, uptimeMs: 0, code: 12, backend: 0, arg0: cause, arg1: remaining);
+
+      expect(rec(1, 0).description, contains('Bonds wiped by post-update unpair'));
+      expect(rec(1, 0).description, isNot(contains('FAILED')));
+      expect(rec(1, 1).description, contains('FAILED'));
+      expect(rec(1, 1).description, contains('1 key(s) still on device'));
+
+      expect(rec(2, 0).description, contains('Bonds wiped by 5-tap gesture'));
+      expect(rec(2, 2).description, contains('FAILED'));
+
+      // Boot-load records are unaffected: zero keys there means an unexplained loss.
+      expect(rec(0, 0).description, contains('UNPAIRED'));
+      expect(rec(0, 1).description, isNot(contains('UNPAIRED')));
+    });
+
+    test('mic_power_cycle never claims a cycle that did not happen', () {
+      // arg0 = 1 only if PDM_EN was actually taken low and restored, which is the
+      // only outcome that clears a wedged T5838. Anything else must read as "not
+      // cycled": a record asserting a power cycle in the one case where the mic
+      // stays wedged is worse than no record at all.
+      DiagLogRecord rec(int result) => DiagLogRecord(seq: 1, uptimeMs: 0, code: 17, backend: 0, arg0: result, arg1: 0);
+
+      expect(rec(1).description, contains('power-cycled'));
+      expect(rec(1).description, isNot(contains('NOT cycled')));
+
+      expect(rec(0).description, contains('NOT cycled'));
+      // Any unexpected value must fall to the safe reading, never to "cycled".
+      expect(rec(2).description, isNot(contains('Mic rail power-cycled')));
+      expect(rec(9).description, isNot(contains('Mic rail power-cycled')));
     });
 
     test('advertising events decode mode and errno, and stay distinguishable', () {

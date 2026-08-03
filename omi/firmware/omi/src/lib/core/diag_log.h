@@ -56,6 +56,20 @@ typedef enum {
                                       * still up, so this is NOT an off-air event -- split from
                                       * code 13 so field diagnosis is not misled. arg0 = mode,
                                       * arg1 = errno magnitude. */
+    DIAG_VAD_LEVEL = 16,             /* AAD input level over a 5 min peak-hold window -- the one
+                                      * reading that separates "the mic is dead" from "the room is
+                                      * quiet", which no counter or bin listing can.
+                                      *   arg0 = window MAX avg-abs-amplitude (int16 units, sat 65535)
+                                      *   arg1 = [window MIN u16 high 16][vad_threshold u16 low 16]
+                                      * Emitted on a silent<->non-silent transition or hourly. A max
+                                      * of 0 is digital silence from the part; a quiet room always
+                                      * peaks above 0 even when nothing reaches the threshold. */
+    DIAG_MIC_POWER_CYCLE = 17,       /* RESERVED, not currently emitted. Was the post-update PDM_EN
+                                      * cycle (arg0 = 1 if the rail really went low and back). The
+                                      * firmware no longer drives PDM_EN at all -- see IDEAS.md
+                                      * "Mic rail (PDM_EN) is not driven by firmware". The code stays
+                                      * reserved (append-only) and the app still decodes it, so
+                                      * re-enabling the cycle needs no protocol change. */
 } diag_event_code_t;
 
 /* arg0 values for DIAG_BOND_STATE. Appended-only, same discipline as the codes. */
@@ -94,6 +108,32 @@ void diag_log_set_enabled(bool on);    /* dev-tools toggle target (0x0064 enable
 bool diag_log_is_enabled(void);
 void diag_log_event(uint8_t code, uint8_t backend, uint16_t arg0, uint32_t arg1);
 
+/* Same enqueue, but bypassing the runtime gate.
+ *
+ * The gate is volatile and starts closed at every boot; the app only opens it once
+ * it has connected, which is seconds later. Any event emitted at boot therefore hits
+ * a closed gate and is discarded — including DIAG_BOND_STATE, the single record that
+ * says whether the device came up with its pairing keys. That made the one piece of
+ * evidence for a post-update bond wipe structurally unreachable: the reboot that
+ * produces the record is the same reboot that closes the gate that would keep it.
+ *
+ * Use this ONLY for events that (a) fire in the boot window and (b) cannot be
+ * reconstructed later. The ring is already allocated, so unconditional records cost
+ * RAM we have paid for. Everything periodic or high-rate must keep using
+ * diag_log_event() so a disabled log stays one predictable branch.
+ *
+ * Note the gate governs CAPTURE, not readback: diag_log_drain() deliberately does
+ * not consult it, so forced records are served to any app that reads 0x0063 even
+ * while the log is disabled. That is the intent — a record nobody can read is the
+ * problem this function was added to solve.
+ *
+ * Because of that, 0x0063/0x0064 are BT_GATT_PERM_*_ENCRYPT. They were plain READ/
+ * WRITE until this function existed, which was fine when a disabled log was empty;
+ * it stopped being fine the moment DIAG_BOND_STATE started landing on every boot
+ * regardless, since transport_bond_count() then leaks pairing state to any peer
+ * that can connect. Keep the encrypted permissions if you add more forced records. */
+void diag_log_event_forced(uint8_t code, uint8_t backend, uint16_t arg0, uint32_t arg1);
+
 /* Snapshot-based, byte-offset-addressable drain for GATT Long Read. The FIRST read
  * (offset 0) snapshots the ring boundary so records don't shift mid-transfer;
  * subsequent offsets serve the same snapshot. Writes up to `max` bytes of the blob
@@ -110,6 +150,13 @@ static inline void diag_log_init(void) {}
 static inline void diag_log_set_enabled(bool on) { (void) on; }
 static inline bool diag_log_is_enabled(void) { return false; }
 static inline void diag_log_event(uint8_t code, uint8_t backend, uint16_t arg0, uint32_t arg1)
+{
+    (void) code;
+    (void) backend;
+    (void) arg0;
+    (void) arg1;
+}
+static inline void diag_log_event_forced(uint8_t code, uint8_t backend, uint16_t arg0, uint32_t arg1)
 {
     (void) code;
     (void) backend;

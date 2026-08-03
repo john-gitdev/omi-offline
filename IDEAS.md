@@ -8,6 +8,9 @@
 ### PENDING
 - [2. Streaming WAV stitch — fix OOM on long-recording merge [small] [Pending]](#2-streaming-wav-stitch--fix-oom-on-long-recording-merge-small-pending)
 - [3. Diagnostic event log — persistent (reboot-surviving) upgrade [small] [Pending — post-LittleFS]](#3-diagnostic-event-log--persistent-reboot-surviving-upgrade-small-pending--post-littlefs)
+- [5. Mic rail (PDM_EN) is not driven by firmware [small] [Pending — awaiting field evidence]](#5-mic-rail-pdm_en-is-not-driven-by-firmware-small-pending--awaiting-field-evidence)
+- [6. Offer a re-pair when an OTA eats the bond [small] [Pending]](#6-offer-a-re-pair-when-an-ota-eats-the-bond-small-pending)
+- [7. An OTA that eats `storage_backend` wipes the SD card [small] [Pending — closes itself with LittleFS removal]](#7-an-ota-that-eats-storage_backend-wipes-the-sd-card-small-pending--closes-itself-with-littlefs-removal)
 
 ### LARGE
 - [4. Device-driven BLE wake (firmware + iOS) [large] [Parked — lost its primary motivation]](#4-device-driven-ble-wake-firmware--ios-large-parked--lost-its-primary-motivation)
@@ -124,11 +127,206 @@ If reboot-survival is later needed, promote the ring to a persistent CRC'd log i
 DFU-proof because DFU never addresses the SD NAND), reusing the ring cursor's torn-write pattern
 (per-sector CRC, highest valid seq wins, discard torn tail on boot; `sd_ring.h:35-42`).
 
+**Also closed by LittleFS removal:** IDEAS entry 7 — an OTA that loses `storage_backend` currently
+reformats the SD card, which one backend makes impossible.
+
 **Why it waits for LittleFS removal:** the reserved sectors exist only on the ring backend, so doing
 it now means backend asymmetry (a persistent log on ring, volatile on LittleFS) plus torn-write
 handling for both. Once LittleFS is gone it's a clean single path. Removing LittleFS also lets
 `SD_WORKER_STACK_SIZE` shrink further with confidence — the ring path's shallow ~2.7 KB peak becomes
 the true ceiling instead of LFS's deep allocator-scan/GC/format paths — freeing RAM for a deeper ring.
+
+---
+
+### 5. Mic rail (PDM_EN) is not driven by firmware [small] [Pending — awaiting field evidence]
+
+**Status: deliberately reverted in `oo-2.8.5`. Revisit only if the mic still drops.**
+
+The firmware no longer touches PDM_EN (P1.4), the enable for the T5838 mic + TXS0104 level-shifter
+rail. The pin is left in its reset state — input, disconnected — and a board pull-up holds it high,
+so the mic simply always has power. That is how it worked for the project's whole life until
+`oo-2.6.0`.
+
+#### Why it was reverted
+
+The mic had **never** frozen. Then:
+
+| Date | Version | Change |
+|---|---|---|
+| 2026-03-13 | 3.0.15 | `mic.c` has no GPIO code at all — PDM_EN untouched |
+| **2026-07-17** | **oo-2.6.0** | `530b23140` cuts PDM_EN in `mic_off()`; `6c84bc5ff` restores it in `mic_on()` — **first time firmware ever drove the pin** |
+| 2026-07-28 | oo-2.8.0 | `aa503aa43` adds `mic_reset()`, power-cycling the rail on button gestures |
+| 2026-07-28 | oo-2.8.0 | first recorded mic freeze (BLE_Research.md, Wedge 4 companion) |
+| 2026-08-02 | oo-2.8.2/4 | ~2 h of lost audio; recovered only when a Priority Recording called `mic_reset()` |
+
+Eleven days between the firmware first driving that rail and the first freeze, on a device that had
+never had one. Nothing else in the mic path changed. `mic_reset()` is **not** implicated in the
+first freeze — it was committed at 20:15 UTC on 07-28, after the log that recorded it.
+
+So the leading hypothesis is that **driving PDM_EN is what made the mic freezable**, which would
+make `mic_reset()`'s power cycle a cure for a disease the same subsystem causes. Removing every
+driver of the pin isolates that variable.
+
+#### What this costs
+
+- **~1 mA leak in ship mode.** `530b23140` cut the rail so the mic + shifter fully power down in
+  System OFF; without it they stay powered off a 150 mAh cell. That is the price of the experiment.
+- **`mic_reset()` can no longer clear a wedged T5838.** It is a dmic re-trigger now, which by its own
+  prior comment does not recover the part. The seven call sites are kept precisely so the cycle is
+  one small edit away.
+- **No post-update rail cycle.** The `oo-2.8.5` fix for the "silent after a flash" case is gone with
+  it, along with `app_settings_firmware_version_changed()` / `..._mark_firmware_version_booted()` and
+  the `last_boot_fw` NVS key. `DIAG_MIC_POWER_CYCLE` (code 17) stays reserved and the app still
+  decodes it, so restoring needs no protocol change.
+
+#### How to tell whether this worked
+
+`DIAG_VAD_LEVEL` (code 16) is the instrument, added in the same release. It reports the AAD input
+level as a 5-minute peak-hold on a silent↔non-silent transition or hourly:
+
+- **peak pinned at 0 across consecutive windows** ⟹ the mic is still wedging without anything driving
+  PDM_EN ⟹ this hypothesis is wrong, and the rail cycle should come back as the only known cure.
+- **no zero-peak windows over a few days of normal use** ⟹ the freezing tracked the firmware driving
+  the rail, and it should stay untouched.
+
+#### If it needs to come back
+
+Restore in this order, smallest first, and re-test between each:
+
+1. `mic_reset()`'s cycle alone (the wedge cure, button-triggered) — `mic.c`, plus `void` → `bool`.
+2. The post-update cycle in `main.c` and the settings version tracking.
+3. `mic_off()`'s ship-mode cut (the ~1 mA saving) — **last**, and only with `turnoff_all()`'s
+   bail paths still rebooting, since that cut is what strands the rail when a shutdown fails.
+
+Also unexplained and worth keeping in view: the 2026-08-02 freeze survived a DFU reset **and** a
+System-OFF wake. A SoC reset returns PDM_EN to an input, so the pull-up should have re-powered the
+rail either way. Either something else is also going on, or that model of the reset behaviour is
+wrong. A scope trace on PDM_EN across a reset would settle it.
+
+**Related, untouched:** `pdm_thsel_pin` (P1.5) is declared in the board DTS and never referenced by
+any code, so the T5838's AAD threshold-select input runs at its default. Deliberately left alone —
+it was never driven, and the whole point here is to stop changing things that were not changed
+before.
+
+#### Relevant files
+
+- `omi/firmware/omi/src/mic.c` — the `pdm_en` comment block records the decision at the point of use
+- `omi/firmware/omi/src/lib/core/mic.h` — `mic_reset()` contract
+- `omi/firmware/omi/src/aad.c` — `DIAG_VAD_LEVEL` emit (`VAD_DIAG_LEVEL_WINDOW_MS`)
+- `omi/firmware/boards/omi/omi_nrf5340_cpuapp.dts` — `pdm_en_pin`, `pdm_thsel_pin`
+- `BLE_Research.md` — "Wedge 4 companion finding" for the first freeze
+
+---
+
+### 6. Offer a re-pair when an OTA eats the bond [small] [Pending]
+
+Roughly **1 OTA in 8** silently drops the BLE pairing — see `BLE_Research.md` §9: the settings NVS
+sits inside the MCUboot primary slot, and overwrite-only-FAST erases one of its eight sectors on
+every update. Whichever key's live copy is in that sector is lost, and bonds are rewritten rarely
+enough to sit still between flashes.
+
+The definitive fix is a partition move, and it **cannot ship over the air**: MCUboot is not
+OTA-updatable here (`SB_CONFIG_MCUBOOT_UPDATEABLE_IMAGES=2` covers the app and net cores only), so
+the installed bootloader keeps writing its trailer at `0x100000` no matter what the new app image
+believes. Wired flash only. Until that happens, the user-facing problem is not the loss — it is
+that the loss is *opaque*: the device connects and drops every few seconds, forever, with nothing
+explaining why. On 2026-08-02 that took ~26 minutes to work out by hand.
+
+#### What does NOT work, and why
+
+**Reading `DIAG_BOND_STATE` from the device.** The obvious idea, and it cannot fire. `0x0063` is
+`BT_GATT_PERM_READ_ENCRYPT` (deliberately — forced boot records put `transport_bond_count()` behind
+it, and unauthenticated peers must not learn pairing state). The failure being detected *is*
+encryption failing, so the characteristic is unreadable exactly when it matters. It only reads
+after a successful re-pair, which is forensics, not a prompt. The drain is also gated on the
+`diagLogEnabled` dev pref and needs a `CONFIG_OMI_DIAG_LOG` build.
+
+**A general stale-bond self-heal.** `OmiBleForegroundService.kt:964-970` already has one, disabled,
+because intercepting status 5 sabotages Android's own security elevation. Widening it to 8/133 is
+worse — those dominate ordinary RF trouble.
+
+#### What does work
+
+Detect the signature app-side, which needs nothing encrypted:
+
+```
+connect succeeds → service discovery completes (15 services)
+→ every encrypted read fails (133 / Rejected) → drop within seconds → repeats
+```
+
+This is specifically **not** the marginal-RF signature: in the 2026-08-02 overnight range episode
+discovery itself failed or took 6–11 s, whereas here discovery completes cleanly and only the reads
+fail. That distinction is what keeps the false-positive rate low enough to act on.
+
+**Scope it to the post-DFU window** rather than running a general detector. The app knows when it
+just flashed; arm a one-shot "watch the next connect" flag on DFU success, and if that connect shows
+the signature, surface *"Pairing may have been lost during the update — re-pair?"* → `removeBond()`
++ reconnect. Bounded window, near-zero false positives, and it targets the 1-in-8 directly.
+
+Keep the destructive action **user-confirmed**. That is the whole difference between this and the
+disabled status-5 self-heal above.
+
+#### Relevant files
+
+- `app/lib/pages/dfuota/firmware_mixin.dart` — DFU success callbacks; where the one-shot arms
+- `app/lib/providers/device_provider.dart` — `_onDeviceConnected` / setup failure path
+- `app/android/.../OmiBleForegroundService.kt:964-970` — the disabled self-heal, and why
+- `BLE_Research.md` §9 — root cause, the wired-flash fix, and the two dead ends
+
+---
+
+### 7. An OTA that eats `storage_backend` wipes the SD card [small] [Pending — closes itself with LittleFS removal]
+
+**Do not build a guard for this. Sync before flashing, and let LittleFS removal delete it.**
+
+Same mechanism as entry 6 and `BLE_Research.md` §9 — one NVS sector erased per OTA, ~1 flash in 8
+for any rarely-rewritten key — but the consequence is data loss rather than a re-pair:
+
+```
+omi/storage_backend lost in the sector erase
+  → app_settings_get_storage_backend() falls back to DEFAULT_STORAGE_BACKEND (LittleFS)
+  → card is actually ring-formatted
+  → lfs_mount() fails (no LFS superblock)
+  → boot mount has allow_format = true
+  → lfs_format()  ← every unsynced recording is gone
+```
+
+`sd_card.c` narrates it: *"LFS mount failed — existing data on SD will be ERASED by format"*.
+Symmetric: a LittleFS card on a device that lost the key while set to ring hits `sd_ring_format()`.
+
+`sd_ring.c` already defends the *other* direction — when a partial tail sector is unreadable it
+refuses to fail the mount precisely because "the caller would fall back to LittleFS and
+lfs_format() the volume, wiping every…". The NVS-loss route into the same place was never
+considered.
+
+#### Why no fix
+
+Removing LittleFS deletes the failure mode outright: no second backend means no
+`storage_backend` key to lose, no `DEFAULT_STORAGE_BACKEND` fallback, and no mismatch path. A
+guard written now is dead code the day that lands.
+
+The interim mitigation is operational and free: **sync before flashing.** Only unsynced audio is
+at risk, and flashing is a deliberate act — a drained card can be reformatted at no cost.
+
+#### The fix, if the gap turns out to be long
+
+Only worth building if LittleFS removal stalls *and* flashes with unsynced audio become routine.
+Make the card authoritative for its own layout and NVS merely advisory: before either branch
+formats, probe the other backend. `sd_ring_mount()` is already a safe read-only probe — one header
+sector, magic + CRC32, `-ENOENT` if it is not a ring. If the other backend mounts, the setting was
+lost rather than the data: adopt it and re-persist `storage_backend`. Costs one sector read on a
+mount that was about to fail anyway, and inverts the trust the right way round — the bytes on the
+card know what they are; a 32 KB NVS partition sitting inside the bootloader's erase path does not.
+
+**Not a candidate: flipping `DEFAULT_STORAGE_BACKEND` to ring.** It only moves the bullet — a
+LittleFS device that lost the key would then hit `sd_ring_format()` instead.
+
+#### Relevant files
+
+- `omi/firmware/omi/src/sd_card.c` — `sd_mount()`, the `ring_active()` branch and the `lfs_format()` fallback
+- `omi/firmware/omi/src/sd_ring.c` — `sd_ring_mount()`, the read-only probe
+- `omi/firmware/omi/src/settings.c` — `DEFAULT_STORAGE_BACKEND`
+- `BLE_Research.md` §9 — the NVS-erase mechanism and why the real fix needs a wired flash
 
 ---
 

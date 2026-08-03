@@ -107,6 +107,7 @@ static uint8_t haptic_config[6] = {0, 0, 0, 0, 0, 0};
  * the DFU in NVS. */
 static char unpair_armed_fw[24] = {0};
 
+
 static int settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
     const char *next;
@@ -381,6 +382,7 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         }
         return rc;
     }
+
 
     return -ENOENT;
 }
@@ -769,6 +771,9 @@ int app_settings_arm_post_dfu_unpair(bool arm, const char *current_fw)
     }
     return 0;
 }
+
+
+
 
 bool app_settings_consume_post_dfu_unpair(const char *current_fw)
 {

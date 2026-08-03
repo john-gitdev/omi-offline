@@ -688,15 +688,23 @@ static struct bt_gatt_attr diagnostics_service_attr[] = {
     /* Diag-log drain + control — appended AFTER the 0x0062 CCC so the notify value
      * attribute stays at index 4 (diagnostics_drops_notify) regardless of this build
      * option. */
+    /* ENCRYPT, unlike the two 0x0061/0x0062 characteristics above, and unlike this
+     * pair before diag_log_event_forced() existed. The log now holds DIAG_BOND_STATE
+     * from every boot whether or not the app ever enables it, so a plain
+     * BT_GATT_PERM_READ here would let any peer that can connect learn how many
+     * pairing keys the device holds — and "0 bonds" is precisely the signal an
+     * attacker wants, per the CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE note in omi.conf.
+     * Matches the 11 other encrypted characteristics in this file. Permission-only
+     * change: no attribute is added or removed, so no handle moves. */
     BT_GATT_CHARACTERISTIC(&diag_log_read_characteristic_uuid.uuid,
                            BT_GATT_CHRC_READ,
-                           BT_GATT_PERM_READ,
+                           BT_GATT_PERM_READ_ENCRYPT,
                            diag_log_read_handler,
                            NULL,
                            NULL),
     BT_GATT_CHARACTERISTIC(&diag_log_control_characteristic_uuid.uuid,
                            BT_GATT_CHRC_WRITE,
-                           BT_GATT_PERM_WRITE,
+                           BT_GATT_PERM_WRITE_ENCRYPT,
                            NULL,
                            diag_log_control_write_handler,
                            NULL),
@@ -1238,8 +1246,9 @@ static ssize_t settings_vad_threshold_write_handler(struct bt_conn *conn,
 
     /* Switching manual -> automatic hands capture back to the hardware wake line,
      * which is exactly where a wedged mic goes unnoticed (nothing auto-records and
-     * no button press is coming to mask it). Start that mode on a freshly powered
-     * part. Only this direction needs it: the manual paths reset the mic on every
+     * no button press is coming to mask it). This started that mode on a freshly
+     * powered part; mic_reset() no longer power-cycles, so it currently does not.
+     * Only this direction needs it: the manual paths reset the mic on every
      * record start/stop themselves, and an auto -> auto sensitivity tweak never
      * changes who is driving capture. */
     if (prev_threshold >= 32769 && new_threshold < 32769) {
@@ -1460,7 +1469,26 @@ void broadcast_battery_level(struct k_work *work_item)
 
         if (battery_millivolt < CONFIG_OMI_BATTERY_CRITICAL_MV) {
             LOG_WRN("Battery critical level reached (%d mV). Initiating shutdown.", battery_millivolt);
-            turnoff_all();
+            /* Deliberately NOT rebooting on TURNOFF_BAILED here, unlike the 4-tap-hold
+             * and CMD_POWER_OFF paths.
+             *
+             * Those two are user-initiated on a device that may have days of charge
+             * left, so a bailed teardown stranding the mic is worth a reboot to clear.
+             * This one is the opposite: it only fires below CONFIG_OMI_BATTERY_CRITICAL_MV,
+             * and whatever makes turnoff_all() bail (a GPIO configure or watchdog
+             * deinit failure) is deterministic — it will bail again on the next boot,
+             * and the one after that. Rebooting would give an unattended device a
+             * cold-reboot loop on a nearly-flat cell, never reaching a stable
+             * power-off and burning what charge is left on repeated boots, each of
+             * which waits on the SD card.
+             *
+             * Letting it limp instead costs the mic until the cell dies, which is
+             * minutes away by definition here — a far smaller loss than the loop, and
+             * bounded by the battery itself rather than unbounded. */
+            if (turnoff_all() == TURNOFF_BAILED) {
+                LOG_ERR("Critical-battery shutdown: turnoff_all() bailed — staying up rather than "
+                        "reboot-looping on a flat cell; mic may be stopped until power is lost");
+            }
         }
     } else {
         LOG_ERR("Failed to read battery level");
@@ -2806,10 +2834,13 @@ int transport_start()
      * unpaired, reconnects forever" outage (BLE_Research.md §9), and nothing else
      * surfaces it: the LOG_INF above goes nowhere without an RTT probe
      * (CONFIG_CONSOLE=n / CONFIG_UART_CONSOLE=n), and the phone can only observe the
-     * downstream symptom. Logged unconditionally — the ring is runtime-gated and this
-     * is one event per boot. */
-    diag_log_event(DIAG_BOND_STATE, 0, DIAG_BOND_CAUSE_BOOT_LOAD,
-                   transport_bond_count());
+     * downstream symptom. Forced past the runtime gate: this fires seconds before the
+     * app connects and opens the gate, so the plain diag_log_event() this used to be
+     * was discarded on every single boot — the reboot that produces the record also
+     * closes the gate that would keep it. One event per boot into an already-allocated
+     * ring. */
+    diag_log_event_forced(DIAG_BOND_STATE, 0, DIAG_BOND_CAUSE_BOOT_LOAD,
+                          transport_bond_count());
 
     /* One-shot post-update bond wipe: if the app armed it before a flash (via
      * CMD_ARM_POST_DFU_UNPAIR, which records the version at arm time), a boot on
@@ -2830,9 +2861,11 @@ int transport_start()
             LOG_INF("post-DFU unpair: firmware changed — wiped BLE bonds");
         }
         /* Distinguishes an intentional post-update wipe from an unexplained loss:
-         * without this, both look identical from the phone's side. */
-        diag_log_event(DIAG_BOND_STATE, 0, DIAG_BOND_CAUSE_POST_DFU,
-                       transport_bond_count());
+         * without this, both look identical from the phone's side. Forced for the
+         * same reason as the boot-load record above — and this is the one that
+         * matters most, since it is the only proof the wipe was ours. */
+        diag_log_event_forced(DIAG_BOND_STATE, 0, DIAG_BOND_CAUSE_POST_DFU,
+                              transport_bond_count());
     }
 
     LOG_INF("Transport bluetooth initialized");

@@ -353,6 +353,18 @@ it was flat zero.** The first bin of the post-power-cycle session reads
 ⟹ The T5838 was returning silence, the power-cycle recovered it, and `oo-2.8.0` predates the
 `mic_reset()` work (PR #361) that recovers this without a reboot.
 
+**Heading correction (2026-08-02): a reboot cannot fix this — it was the power-cycle.** The two
+are not interchangeable for the mic. PDM_EN is held high by a board pull-up and the firmware only
+ever drives it in `mic_reset()` and `mic_off()` (whose sole caller is `turnoff_all()`), so a SoC
+reset — DFU, `sys_reboot`, watchdog, brownout — leaves the T5838 continuously powered and keeps
+whatever state it was stuck in. Only removing the supply clears it, which a 4-tap-hold power-cycle
+does and a restart does not. A second, longer outage on 2026-08-02 confirmed it: the mic went
+silent, survived a DFU reset *and* a System-OFF wake, and came back only when a Priority Recording
+called `mic_reset()`. Telling someone to reboot a silent Omi is telling them to do the one thing
+that provably cannot work. `oo-2.8.5` cycles the rail once on the first boot of a new image for
+this reason; the still-open question is whether the mic also wedges spontaneously mid-session,
+which `DIAG_VAD_LEVEL` was added to answer.
+
 **RETRACTED: an earlier revision of this section claimed the mic "re-wedged within ~90 seconds"
 after the power-cycle. That was wrong** — the operator confirmed recording was working; the short
 recordings were short speech, not a fault.
@@ -1089,6 +1101,52 @@ analysis machine): register `MGMT_EVT_OP_OS_MGMT_RESET` (present in NCS 2.9,
 what the other three paths do — `if (is_sd_on()) app_sd_off();` before letting the reset proceed.
 Use a **bounded** wait: if the SD is already wedged, an unbounded `app_sd_off()` in the callback
 would hang the reset and fail the DFU outright.
+
+### Two dead ends for automatic recovery — do not re-walk these
+
+Both were proposed and implemented on 2026-08-02 while fixing the post-DFU arm gate,
+and both had to be reverted. Recording them because each looks obviously correct
+until you read one specific file.
+
+**First, the framing they were built on was wrong**, and that is worth recording too.
+The arm gate is a real defect but it is **latent**: `_showResetPairingToggle = false`
+since 2026-07-23, so every flash since has sent a *disarm* and neither side can wipe.
+The `Arming post-DFU unpair failed or timed out` line in the 08-02 log is a failed
+disarm — harmless — and was misread as a failed arm, which is how the arm gate got
+blamed for that day's unpairing. The real cause is the partition overlap documented
+above: one NVS sector erased per OTA, bonds landing in it roughly one flash in eight.
+Fix the gate on its own merits, not because it caused an outage.
+
+**Dead end 1 — "just always wipe the phone bond after a successful flash."**
+The appeal: the firmware persists the post-DFU arm to NVS *before* it ACKs, so a lost
+ACK cannot be read as "not armed", and the current gate (`_postDfuArmWriteOk` in
+`firmware_mixin.dart`) therefore produces the very half-applied reset it exists to
+prevent. True — but the reverse mismatch is **also** unrecoverable. `omi.conf:120-131`
+pins `CONFIG_BT_MAX_PAIRED=1` and deliberately leaves
+`CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE` unset, with a note explaining why: Omi has no
+IO capabilities, so allowing a peer presenting the bonded phone's identity to
+overwrite its Just Works LTK would let anyone in range take the pairing while the
+phone is away. So a phone that has dropped its bond **cannot re-pair** over the
+device's surviving one, and recovery is the 5-tap-and-hold gesture *on the device* —
+strictly harder than the phone-side bond deletion the current gate's failure mode
+needs. The conservative gate stays because it fails toward the mismatch the user can
+fix from the phone they are already holding.
+
+**Dead end 2 — "re-enable the status-5 stale-bond self-heal, widened to 8/133."**
+`OmiBleForegroundService.kt:964-970` already has this, commented out, with the reason:
+when a characteristic is `BT_GATT_PERM_READ_ENCRYPT`, Android receives status 5 and
+then **automatically elevates security on its own**. Intercepting it to wipe the bond
+sabotages the OS's native re-encryption. Widening the trigger to 8/133 is worse still:
+those statuses dominate ordinary RF trouble (the entire 2026-08-02 overnight range
+episode was 8s and 147s), so it would wipe bonds on any weak link.
+
+**What is actually left.** Stop inferring device state from a write ACK: either read
+the arm flag back over the still-live pre-flash link, or detect the mismatch after the
+fact and offer a *user-confirmed* one-tap re-pair. The post-flash signature is narrow
+enough to be safe — services discovered, then every encrypted read failing, then a
+drop within seconds, repeating — and it is specifically **not** the range signature,
+where discovery itself is what fails. Keeping the destructive action behind explicit
+user intent is what separates this from dead end 2.
 
 ### Evidence note — button config is not a witness
 

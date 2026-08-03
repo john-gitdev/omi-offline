@@ -109,6 +109,41 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   // half-applied wipe can't strand the pairing. A successful write to older
   // firmware that rejects the command still returns true (the write landed), so
   // the phone-side fallback + re-pair still covers those devices.
+  //
+  // KNOWN HOLE, and do not "fix" it by wiping unconditionally — that was tried on
+  // 2026-08-02 and is worse. The hole: the firmware persists the arm to NVS BEFORE
+  // it ACKs (storage.c CMD_ARM_POST_DFU_UNPAIR → app_settings_arm_post_dfu_unpair,
+  // then `return err ? 1 : 0`), so a lost ACK means "armed, we didn't hear" just as
+  // often as "never armed". When it means the former, this gate produces exactly
+  // the half-applied reset it exists to prevent — device unbonded, phone bonded —
+  // and the link then establishes, fails every encrypted read, and drops, forever.
+  //
+  // LATENT, NOT LIVE, and do not attribute field bond losses to it without
+  // checking that first. `firmware_update.dart:43` has
+  // `_showResetPairingToggle = false`, and :575 forces `wipeBonds` false
+  // regardless of the stored pref, so today every flash sends a *disarm* and
+  // `_wipePhoneBondOnSuccess` returns early — neither side can wipe. A log line
+  // reading "Arming post-DFU unpair failed or timed out" is therefore a failed
+  // DISARM, which is harmless; it was misread as an arm once already. The
+  // 2026-08-02 unpairing has a different and established cause: the settings
+  // partition overlaps the MCUboot primary slot, so one NVS sector is erased per
+  // OTA and bonds land in it roughly one flash in eight (BLE_Research.md §9).
+  //
+  // Why unconditional wiping is NOT the answer: the reverse mismatch is not
+  // recoverable either. omi.conf pins CONFIG_BT_MAX_PAIRED=1 and deliberately
+  // leaves CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE unset (see the note there — Omi has
+  // no IO capabilities, so allowing the overwrite would let anyone in range take
+  // the pairing while the phone is away). A phone that has dropped its bond
+  // therefore cannot re-pair over the device's surviving one; recovery is the
+  // 5-tap-and-hold gesture on the device itself, which is strictly harder than the
+  // phone-side bond deletion this gate's failure mode needs. So the conservative
+  // gate stays: it fails toward the mismatch the user can fix from the phone.
+  //
+  // The real fix is to stop inferring device state from a write ACK at all — either
+  // read the arm flag back before flashing, or detect the mismatch after the fact
+  // and offer a one-tap re-pair. Tracked in BLE_Research.md §9; note that the
+  // status-5 self-heal below it is a dead end (it sabotages Android's own security
+  // elevation, which is why it is already disabled in OmiBleForegroundService).
   bool _postDfuArmWriteOk = false;
 
   /// Process ZIP file and return firmware image list
@@ -207,6 +242,11 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   /// even on older firmware that rejects the command — the write itself
   /// succeeds); false on a transient BLE failure, no connection, or a stall,
   /// which gates off the phone-side wipe so we never half-apply the reset.
+  ///
+  /// Caveat this return value cannot express: the firmware persists the arm
+  /// before it ACKs, so false covers both "never armed" and "armed, ACK lost".
+  /// See [_postDfuArmWriteOk] for why the gate stays anyway.
+  ///
   /// Bounded by a timeout so a stuck write can't hang startDfu before the
   /// installing UI ever appears.
   Future<bool> _armPostDfuUnpair(BtDevice btDevice, bool arm) async {
@@ -222,7 +262,9 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       // so no extra guard is needed here.
       return await doArm().timeout(const Duration(seconds: 8));
     } catch (e) {
-      Logger.debug('Arming post-DFU unpair failed or timed out: $e');
+      // Spelled out because this is the exact ambiguity behind the 2026-08-02
+      // outage: "failed" here does NOT mean the device is unarmed.
+      Logger.debug('Arming post-DFU unpair failed or timed out (may still have landed on the device): $e');
       return false;
     }
   }
@@ -232,8 +274,9 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   /// bond at boot (via the armed flag above), so both sides end clean. Only
   /// called from the success callbacks — a failed flash never reaches here,
   /// leaving the pairing untouched. No-op unless this update requested the wipe
-  /// AND the device-side arm write landed (so we don't drop the phone bond while
-  /// the device stays bonded).
+  /// AND the device-side arm write landed, so we don't drop the phone bond while
+  /// the device stays bonded — see [_postDfuArmWriteOk], including why wiping
+  /// unconditionally is worse rather than better.
   Future<void> _wipePhoneBondOnSuccess(BtDevice btDevice) async {
     if (!_wipeBondsOnUpdate || !_postDfuArmWriteOk) return;
     try {

@@ -89,6 +89,10 @@ class DiagLogRecord {
         return 'adv_watchdog_rescue';
       case 15:
         return 'adv_stop_fail';
+      case 16:
+        return 'vad_level';
+      case 17:
+        return 'mic_power_cycle';
       default:
         return 'code_$code';
     }
@@ -139,10 +143,17 @@ class DiagLogRecord {
           case 0:
             return 'Bonds at boot — $arg1 key(s) loaded'
                 '${arg1 == 0 ? ' (device is UNPAIRED)' : ''}';
+          // The firmware emits these whether or not bt_unpair() actually succeeded —
+          // an attempted-but-failed wipe is itself worth recording, since the device
+          // then keeps a bond the phone believes is gone. arg1 is the count AFTER, so
+          // a non-zero remainder means the wipe did not take; say that rather than
+          // asserting "wiped" over the top of it.
           case 1:
-            return 'Bonds wiped by post-update unpair — $arg1 key(s) remain';
+            return arg1 == 0
+                ? 'Bonds wiped by post-update unpair'
+                : 'Post-update unpair FAILED — $arg1 key(s) still on device';
           case 2:
-            return 'Bonds wiped by 5-tap gesture — $arg1 key(s) remain';
+            return arg1 == 0 ? 'Bonds wiped by 5-tap gesture' : '5-tap unpair FAILED — $arg1 key(s) still on device';
           default:
             return 'Bond state — cause=$arg0, $arg1 key(s)';
         }
@@ -169,6 +180,30 @@ class DiagLogRecord {
         // reconfigured. The previous advertiser is still running — this is NOT an
         // off-air event, which is why it is a separate code from 13.
         return 'Advertising stop failed (${arg0 == 1 ? "slow" : "fast"}) — errno -$arg1, interval unchanged';
+      case 16:
+        // Peak-hold of the AAD input level over a 5-minute window. arg0 = max avg
+        // amplitude seen, arg1 packs min in the high 16 bits and the threshold in
+        // force in the low 16.
+        //
+        // This is the one reading that separates "the mic is dead" from "the room is
+        // quiet" — the ambiguity that made the 2026-08-02 mic outage un-diagnosable
+        // from logs, since a silent room and a wedged part both produce zero
+        // recordings and zero bins. A max pinned at 0 across consecutive windows is a
+        // wedged T5838 (digital-zero PDM output); any real room clears zero within
+        // five minutes even when nothing ever crosses the threshold.
+        final levelMin = (arg1 >> 16) & 0xFFFF;
+        final levelThreshold = arg1 & 0xFFFF;
+        final verdict = arg0 == 0 ? ' — NO SIGNAL (mic may be wedged)' : '';
+        return 'Mic level: peak $arg0, floor $levelMin (threshold $levelThreshold)$verdict';
+      case 17:
+        // First boot of a new firmware version power-cycles PDM_EN, because a warm
+        // reset leaves the T5838 powered through the flash and can strand it emitting
+        // digital zero. arg0 = 1 only if the rail was actually taken low and restored,
+        // which is the only outcome that clears a wedge. Capture starts either way —
+        // a rail that stays down surfaces as a vad_level record with a zero peak.
+        return arg0 == 1
+            ? 'Mic rail power-cycled after firmware update'
+            : 'Mic rail NOT cycled after update — a wedged mic would persist';
       default:
         return 'Event code=$code backend=$backend arg0=$arg0 arg1=$arg1';
     }
