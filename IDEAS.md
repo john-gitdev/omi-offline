@@ -57,9 +57,15 @@ rather than preventing the stall.
 > 15 s `IDLE_DISCONNECT_TIMEOUT_MS` then dropped the link. Foreground was immune only
 > because `WakelockPlus` holds the screen on, which holds the CPU — hence the observed
 > "backgrounded = more partials" asymmetry. Now renewed on a timer with a 10 min backstop.
-> Two smaller fixes landed alongside: the keep-alive Runnables are keyed by address (a
-> single shared field meant a second paired Omi cancelled the first's keep-alive), and
+> Two smaller fixes landed alongside: the Bluetooth-off path now stops the *storage*
+> keep-alive too (it only stopped the RSSI one, so the storage Runnable kept reposting
+> every 5 s against a dead gatt until the next connect replaced it), and
 > `CONNECTION_PRIORITY_HIGH` is re-asserted per transfer instead of once per link.
+>
+> The keep-alive Runnables are deliberately **single fields, not keyed by address** —
+> the app manages exactly one peripheral at a time (one paired device in prefs, one
+> `NativeBleTransport`), so the multi-device cancel-each-other hazard cannot occur.
+> Keying them was tried and reverted as machinery for a product feature that does not exist.
 >
 > **Lesson worth keeping:** a wake-lock *timeout* is a leak backstop, not a work budget.
 > Any `Handler`-driven keep-alive is only as reliable as the wake-lock over it, because
