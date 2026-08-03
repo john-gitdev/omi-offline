@@ -34,19 +34,18 @@ void mic_resume();
  * calling it while paused, since the cycle discards in-flight samples.
  */
 /**
- * @return true only if the PDM_EN rail was actually taken low and restored, which
- *         is the only outcome that clears a wedged T5838. False means the cycle did
- *         not complete — an unready GPIO, a failed gpio_pin_configure_dt(), or an
- *         aborted reset because the dmic STOP failed.
+ * Stop and restart the nRF PDM peripheral, preserving whether capture was running.
  *
- * Reported rather than acted on. Capture is restarted whenever it was running,
- * regardless: gating it on the rail state was tried and removed, because the state
- * machine it required was larger than the problem. A rail that genuinely fails to
- * come back produces silent capture, and DIAG_VAD_LEVEL reports that within one
- * window — so the detector already covers the case the gating was trying to
- * prevent, and there is nothing the firmware could usefully do about it anyway.
+ * NO LONGER POWER-CYCLES THE MIC. It used to drop PDM_EN, which is the only thing
+ * that clears a wedged T5838 — that was removed because driving PDM_EN at all is
+ * the prime suspect for the wedging it was meant to cure (the firmware never
+ * touched that pin before oo-2.6.0, and the mic never froze before then). What
+ * remains is a dmic re-trigger, which does NOT recover a wedged part.
+ *
+ * The call sites are kept so the cycle is one small edit away. See IDEAS.md
+ * "Mic rail (PDM_EN) is not driven by firmware".
  */
-bool mic_reset();
+void mic_reset();
 bool mic_is_running();
 void mic_set_gain(uint8_t gain_level);
 #endif
