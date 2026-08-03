@@ -76,6 +76,15 @@ bool mute_apply(bool on)
      * every mic transition on every thread. Recursive, so the nested mic calls are
      * fine. */
     k_mutex_lock(&mic_state_lock, K_FOREVER);
+    /* Re-check under the lock. The early return above is only a fast path: two
+     * threads (button gesture and BLE mute write) can both observe the old value
+     * and both fall through, and without this they would both apply the change —
+     * two mic transitions and, worse, two mute-on/off markers bracketing the same
+     * stretch of audio, which the app's bracket parsing reads as a nested mute. */
+    if (on == is_muted) {
+        k_mutex_unlock(&mic_state_lock);
+        return false;
+    }
     is_muted = on;
     if (on) {
         // Force the LED on so the solid-red mute indicator shows even from
@@ -87,12 +96,14 @@ bool mute_apply(bool on)
         mic_pause();
     } else {
         is_led_enabled = led_state_before_mute;
-        /* Unmute is the safest recovery point the user hands us: no capture is in
-         * flight, so a full T5838 power-cycle costs nothing but ~40 ms. mic_resume()
-         * alone only re-triggers the nRF PDM peripheral — it never touches PDM_EN —
-         * so a wedged mic (digital-zero PDM output, hw AAD never asserting WAKE)
-         * survives a mute/unmute cycle completely untouched. Reset the part first,
-         * then let mic_resume() start capture on a freshly powered mic. */
+        /* Unmute was chosen as the safest recovery point for a wedged T5838: no
+         * capture is in flight, so a full power-cycle cost nothing but ~40 ms.
+         *
+         * mic_reset() NO LONGER POWER-CYCLES — nothing drives PDM_EN any more (see
+         * IDEAS.md "Mic rail (PDM_EN) is not driven by firmware"), so this pair is
+         * now just a dmic re-trigger and a wedged part survives a mute/unmute
+         * untouched again. The call is kept, not deleted, so restoring the cycle is
+         * one edit here rather than a hunt for the right recovery point. */
         mic_reset();
         mic_resume();
     }
@@ -256,14 +267,18 @@ static bool record_start(void)
         /* Explicit manual-mode start, persisted so it survives a reboot. */
         marker_flash_color = MARKER_FLASH_GREEN;
         marker_flash_count = 2;
-        /* Same reasoning as the auto-mode priority path below: open capture on a
-         * freshly powered mic. Manual mode is just as exposed to a wedged part —
-         * more so, since it has no other recovery path at all.
+        /* Same reasoning as the auto-mode priority path below: this opened capture
+         * on a freshly powered mic, manual mode being just as exposed to a wedged
+         * part — more so, since it has no other recovery path at all. mic_reset() no
+         * longer power-cycles, so that protection is currently absent (IDEAS.md "Mic
+         * rail (PDM_EN) is not driven by firmware").
          *
          * Only when capture is not already running. in_manual is true for BOTH
          * manual sub-states — 32769 standby and 65535 recording — so a second
          * RECORD_START press while a manual recording is live lands here too, and
-         * an unguarded reset would punch ~40 ms out of that live recording. The
+         * an unguarded reset would drop that live recording's in-flight samples (a
+         * ~40 ms hole while it still power-cycled; the dmic stop/start alone is
+         * shorter, but not free). The
          * repeat is entirely reachable: nothing upstream de-duplicates the action,
          * and pressing again is the natural thing to do when you missed the LED
          * flash and aren't sure the recording started. Re-pressing was a harmless
@@ -294,12 +309,19 @@ static bool record_start(void)
      * and write 0xFFFFFFF8 as the first inline frame of the fresh bin. */
     marker_flash_color = MARKER_FLASH_RED;
     marker_flash_count = 2;
-    /* Start every Priority Recording on a freshly powered mic. This is the one
-     * moment the user has unambiguously asked for audio, so it is worth ~40 ms to
-     * guarantee the part is not wedged — silently returning digital zeros, or
-     * holding WAKE so nothing auto-records once this recording ends. Do it before
-     * entering force-capture and before the rotate + 0xFFFFFFF8 marker below, so
-     * the reset's dead samples land outside the recording rather than at its head. */
+    /* This used to start every Priority Recording on a freshly powered mic — the
+     * one moment the user has unambiguously asked for audio, so worth ~40 ms to
+     * guarantee the part is not wedged.
+     *
+     * It no longer does: mic_reset() does not touch PDM_EN any more (IDEAS.md "Mic
+     * rail (PDM_EN) is not driven by firmware"), so this is a dmic re-trigger that
+     * will NOT rescue a wedged part. Worth knowing, because a Priority Recording
+     * happening to call this is exactly what recovered the 2026-08-02 outage — that
+     * escape hatch is closed while the rail experiment runs.
+     *
+     * Kept here, still before the force-capture entry and the rotate + 0xFFFFFFF8
+     * marker, so restoring the cycle puts the dead samples outside the recording
+     * rather than at its head, as before. */
     mic_reset();
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
     /* Runtime force-capture only — NOT persisted, so a reboot mid-recording
@@ -389,7 +411,7 @@ static void execute_button_action(uint8_t taps, bool is_hold)
             marker_flash_count = 2;
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
             /* Recover a wedged mic here too, but ONLY while idle. Mid-recording a
-             * reset would punch a ~40 ms hole at exactly the instant the marker is
+             * reset drops in-flight samples at exactly the instant the marker is
              * meant to bookmark — the worst possible place. Idle it is free, and it
              * is the case that matters: a marker tapped because "it isn't recording
              * anything" is the user reporting the wedge. In the 2026-07-28 incident
