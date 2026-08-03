@@ -17,7 +17,6 @@
 #include <zephyr/random/random.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/sys/atomic.h>
-#include <zephyr/sys/reboot.h>
 #include <zephyr/sys/ring_buffer.h>
 
 #include "accel.h"
@@ -1461,22 +1460,25 @@ void broadcast_battery_level(struct k_work *work_item)
 
         if (battery_millivolt < CONFIG_OMI_BATTERY_CRITICAL_MV) {
             LOG_WRN("Battery critical level reached (%d mV). Initiating shutdown.", battery_millivolt);
-            /* Match CMD_POWER_OFF (storage.c): a bailed teardown has already run
-             * transport_off() and mic_off(), leaving BLE down, the mic thread aborted
-             * by k_thread_abort() and PDM_EN driven low — the device stays awake and
-             * deaf, and nothing calls mic_on() to restore the rail. Cold-reboot
-             * instead; a SoC reset returns PDM_EN to an input and the board pull-up
-             * re-powers the mic.
+            /* Deliberately NOT rebooting on TURNOFF_BAILED here, unlike the 4-tap-hold
+             * and CMD_POWER_OFF paths.
              *
-             * This path matters most of the three: it fires unattended on a failing
-             * cell, which is exactly when hardware teardown is likeliest to misbehave
-             * and when nobody is watching to notice the mic went quiet. If the
-             * battery really is critical the reboot simply re-enters this check and
-             * shuts down properly. */
+             * Those two are user-initiated on a device that may have days of charge
+             * left, so a bailed teardown stranding the mic is worth a reboot to clear.
+             * This one is the opposite: it only fires below CONFIG_OMI_BATTERY_CRITICAL_MV,
+             * and whatever makes turnoff_all() bail (a GPIO configure or watchdog
+             * deinit failure) is deterministic — it will bail again on the next boot,
+             * and the one after that. Rebooting would give an unattended device a
+             * cold-reboot loop on a nearly-flat cell, never reaching a stable
+             * power-off and burning what charge is left on repeated boots, each of
+             * which waits on the SD card.
+             *
+             * Letting it limp instead costs the mic until the cell dies, which is
+             * minutes away by definition here — a far smaller loss than the loop, and
+             * bounded by the battery itself rather than unbounded. */
             if (turnoff_all() == TURNOFF_BAILED) {
-                LOG_ERR("Critical-battery shutdown: turnoff_all() bailed — rebooting to recover");
-                k_msleep(100); /* let the error log flush before the cold reboot */
-                sys_reboot(SYS_REBOOT_COLD);
+                LOG_ERR("Critical-battery shutdown: turnoff_all() bailed — staying up rather than "
+                        "reboot-looping on a flat cell; mic may be stopped until power is lost");
             }
         }
     } else {
