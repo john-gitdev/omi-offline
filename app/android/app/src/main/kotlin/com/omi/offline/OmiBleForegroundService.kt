@@ -583,7 +583,20 @@ class OmiBleForegroundService : Service() {
             return
         }
         if (existing != null && bleManager.isPeripheralConnected(addr)) {
+            // Link up, discovery still in flight. Return rather than falling through: the
+            // reconnect logic below only holds off while currentGattHash/pendingReconnect are
+            // set, and currentGattHash is set by onGattConnected — which runs on the binder
+            // thread AFTER OmiBleManager records the gatt, so a manageDevice landing between
+            // the two would read a null hash and tear down a link that is coming up fine.
+            // Nothing to do here anyway: onServicesDiscovered fires the ready on its own, and
+            // if discovery never lands, DISCOVERY_TIMEOUT_MS (15 s, inside Dart's 30 s ready
+            // timeout) drops the link into the normal disconnect/retry path.
+            // Unlike the already-discovered branch above, the bond flag is still live here:
+            // onGattServicesDiscovered reads it when discovery lands, so a caller asking for
+            // a bond must not lose that by arriving a few milliseconds early.
+            synchronized(syncLock) { if (bond && !existing.requiresBond) existing.requiresBond = true }
             Log.i(TAG, "manageDevice($addr): link up but discovery still pending — waiting for onServicesDiscovered")
+            return
         }
 
         if (existing != null) {
