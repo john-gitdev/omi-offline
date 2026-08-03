@@ -8,6 +8,7 @@
 #include <zephyr/pm/device_runtime.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/poweroff.h>
+#include <zephyr/sys/reboot.h>
 
 #include "haptic.h"
 #include "imu.h"
@@ -475,7 +476,18 @@ void check_button_level(struct k_work *work_item)
 
             if (tap_count == 4 && duration_ms >= POWER_OFF_HOLD_TIME) {
                 LOG_INF("Power off triggered via 4-tap-hold");
-                turnoff_all();
+                /* Match CMD_POWER_OFF (storage.c): a bailed teardown has already run
+                 * transport_off() and mic_off(), so limping on leaves the device with
+                 * BLE down, the mic thread aborted by k_thread_abort() and PDM_EN
+                 * driven low — i.e. silently deaf, with mic_on() being the only thing
+                 * that could restore the rail and nothing calling it. A cold reboot
+                 * restores every one of those, PDM_EN included, because a SoC reset
+                 * returns the pin to an input and the board pull-up re-powers it. */
+                if (turnoff_all() == TURNOFF_BAILED) {
+                    LOG_ERR("4-tap-hold power-off: turnoff_all() bailed — rebooting to recover");
+                    k_msleep(100); /* let the error log flush before the cold reboot */
+                    sys_reboot(SYS_REBOOT_COLD);
+                }
                 fsm_state = STATE_WAIT_FOR_RELEASE;
             } else if (tap_count == 5 && duration_ms >= UNPAIR_HOLD_TIME) {
                 LOG_WRN("5-tap + hold: clearing all BLE bonds!");
