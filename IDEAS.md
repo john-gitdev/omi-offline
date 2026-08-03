@@ -8,6 +8,7 @@
 ### PENDING
 - [2. Streaming WAV stitch — fix OOM on long-recording merge [small] [Pending]](#2-streaming-wav-stitch--fix-oom-on-long-recording-merge-small-pending)
 - [3. Diagnostic event log — persistent (reboot-surviving) upgrade [small] [Pending — post-LittleFS]](#3-diagnostic-event-log--persistent-reboot-surviving-upgrade-small-pending--post-littlefs)
+- [5. Mic rail (PDM_EN) is not driven by firmware [small] [Pending — awaiting field evidence]](#5-mic-rail-pdm_en-is-not-driven-by-firmware-small-pending--awaiting-field-evidence)
 
 ### LARGE
 - [4. Device-driven BLE wake (firmware + iOS) [large] [Parked — lost its primary motivation]](#4-device-driven-ble-wake-firmware--ios-large-parked--lost-its-primary-motivation)
@@ -129,6 +130,86 @@ it now means backend asymmetry (a persistent log on ring, volatile on LittleFS) 
 handling for both. Once LittleFS is gone it's a clean single path. Removing LittleFS also lets
 `SD_WORKER_STACK_SIZE` shrink further with confidence — the ring path's shallow ~2.7 KB peak becomes
 the true ceiling instead of LFS's deep allocator-scan/GC/format paths — freeing RAM for a deeper ring.
+
+---
+
+### 5. Mic rail (PDM_EN) is not driven by firmware [small] [Pending — awaiting field evidence]
+
+**Status: deliberately reverted in `oo-2.8.5`. Revisit only if the mic still drops.**
+
+The firmware no longer touches PDM_EN (P1.4), the enable for the T5838 mic + TXS0104 level-shifter
+rail. The pin is left in its reset state — input, disconnected — and a board pull-up holds it high,
+so the mic simply always has power. That is how it worked for the project's whole life until
+`oo-2.6.0`.
+
+#### Why it was reverted
+
+The mic had **never** frozen. Then:
+
+| Date | Version | Change |
+|---|---|---|
+| 2026-03-13 | 3.0.15 | `mic.c` has no GPIO code at all — PDM_EN untouched |
+| **2026-07-17** | **oo-2.6.0** | `530b23140` cuts PDM_EN in `mic_off()`; `6c84bc5ff` restores it in `mic_on()` — **first time firmware ever drove the pin** |
+| 2026-07-28 | oo-2.8.0 | `aa503aa43` adds `mic_reset()`, power-cycling the rail on button gestures |
+| 2026-07-28 | oo-2.8.0 | first recorded mic freeze (BLE_Research.md, Wedge 4 companion) |
+| 2026-08-02 | oo-2.8.2/4 | ~2 h of lost audio; recovered only when a Priority Recording called `mic_reset()` |
+
+Eleven days between the firmware first driving that rail and the first freeze, on a device that had
+never had one. Nothing else in the mic path changed. `mic_reset()` is **not** implicated in the
+first freeze — it was committed at 20:15 UTC on 07-28, after the log that recorded it.
+
+So the leading hypothesis is that **driving PDM_EN is what made the mic freezable**, which would
+make `mic_reset()`'s power cycle a cure for a disease the same subsystem causes. Removing every
+driver of the pin isolates that variable.
+
+#### What this costs
+
+- **~1 mA leak in ship mode.** `530b23140` cut the rail so the mic + shifter fully power down in
+  System OFF; without it they stay powered off a 150 mAh cell. That is the price of the experiment.
+- **`mic_reset()` can no longer clear a wedged T5838.** It is a dmic re-trigger now, which by its own
+  prior comment does not recover the part. The seven call sites are kept precisely so the cycle is
+  one small edit away.
+- **No post-update rail cycle.** The `oo-2.8.5` fix for the "silent after a flash" case is gone with
+  it, along with `app_settings_firmware_version_changed()` / `..._mark_firmware_version_booted()` and
+  the `last_boot_fw` NVS key. `DIAG_MIC_POWER_CYCLE` (code 17) stays reserved and the app still
+  decodes it, so restoring needs no protocol change.
+
+#### How to tell whether this worked
+
+`DIAG_VAD_LEVEL` (code 16) is the instrument, added in the same release. It reports the AAD input
+level as a 5-minute peak-hold on a silent↔non-silent transition or hourly:
+
+- **peak pinned at 0 across consecutive windows** ⟹ the mic is still wedging without anything driving
+  PDM_EN ⟹ this hypothesis is wrong, and the rail cycle should come back as the only known cure.
+- **no zero-peak windows over a few days of normal use** ⟹ the freezing tracked the firmware driving
+  the rail, and it should stay untouched.
+
+#### If it needs to come back
+
+Restore in this order, smallest first, and re-test between each:
+
+1. `mic_reset()`'s cycle alone (the wedge cure, button-triggered) — `mic.c`, plus `void` → `bool`.
+2. The post-update cycle in `main.c` and the settings version tracking.
+3. `mic_off()`'s ship-mode cut (the ~1 mA saving) — **last**, and only with `turnoff_all()`'s
+   bail paths still rebooting, since that cut is what strands the rail when a shutdown fails.
+
+Also unexplained and worth keeping in view: the 2026-08-02 freeze survived a DFU reset **and** a
+System-OFF wake. A SoC reset returns PDM_EN to an input, so the pull-up should have re-powered the
+rail either way. Either something else is also going on, or that model of the reset behaviour is
+wrong. A scope trace on PDM_EN across a reset would settle it.
+
+**Related, untouched:** `pdm_thsel_pin` (P1.5) is declared in the board DTS and never referenced by
+any code, so the T5838's AAD threshold-select input runs at its default. Deliberately left alone —
+it was never driven, and the whole point here is to stop changing things that were not changed
+before.
+
+#### Relevant files
+
+- `omi/firmware/omi/src/mic.c` — the `pdm_en` comment block records the decision at the point of use
+- `omi/firmware/omi/src/lib/core/mic.h` — `mic_reset()` contract
+- `omi/firmware/omi/src/aad.c` — `DIAG_VAD_LEVEL` emit (`VAD_DIAG_LEVEL_WINDOW_MS`)
+- `omi/firmware/boards/omi/omi_nrf5340_cpuapp.dts` — `pdm_en_pin`, `pdm_thsel_pin`
+- `BLE_Research.md` — "Wedge 4 companion finding" for the first freeze
 
 ---
 
