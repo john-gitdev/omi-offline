@@ -50,19 +50,33 @@ static volatile uint32_t mute_since_uptime_ms = 0;
 static volatile bool led_state_before_mute = false;
 
 /* Serializes a whole mute transition — the state change, the BLE notify and the
- * inline stream marker — so concurrent opposite requests cannot emit out of order.
+ * inline stream marker — so two callers cannot emit out of order.
+ *
+ * Be precise about what this does and does not guard, because the obvious reading
+ * is wrong. There are exactly two callers: the button FSM (button.c) and the BLE
+ * mute write (transport.c). Two BUTTON mutes cannot race — the FSM polls at 25 Hz
+ * on one work handler behind a 600 ms multi-tap window, so they are both far apart
+ * and on the same thread. Button-mashing is not the hazard.
+ *
+ * The reachable case is button thread vs BT RX thread, where the button timing
+ * constrains nothing. It needs a BLE mute write to land inside the window between
+ * the button thread releasing mic_state_lock and writing its marker, so in practice
+ * it means the app's mute control and the device button being used at the same
+ * instant: possible, not probable.
+ *
+ * It is guarded anyway because mute_apply() mutates shared state and emits ORDERED
+ * stream markers, and is genuinely called from two threads — making it non-reentrant
+ * is ordinary practice, and the failure mode is silent: 0xFFFFFFF9 landing before
+ * 0xFFFFFFFA gives the app's bracket parser a close before its open, with nothing
+ * in any log to explain the corrupted mute bracket months later.
  *
  * mic_state_lock cannot do this job: it is deliberately released before the notify
- * and the marker write, because those can block on a saturated SD queue and every
- * mic transition on every thread queues behind that mutex. But releasing it early
- * left a window where a later unmute could overtake an in-flight mute and write
- * 0xFFFFFFF9 to the stream before the earlier 0xFFFFFFFA, leaving the app's bracket
- * parser with a close before its open, and the BLE state notifications inverted.
- *
- * So the ordering guarantee gets its own lock, held across the whole body, while
- * mic_state_lock keeps its narrow scope for the is_muted/mic agreement. Lock order
- * is always mute_apply_lock → mic_state_lock and never the reverse: nothing in
- * mic.c calls mute_apply(), and this is the only user of this mutex. */
+ * and the marker write, since those can block on a saturated SD queue and every mic
+ * transition on every thread queues behind that mutex. So the ordering guarantee
+ * gets its own lock, held across the whole body, while mic_state_lock keeps its
+ * narrow scope for the is_muted/mic agreement. Lock order is always
+ * mute_apply_lock → mic_state_lock and never the reverse: nothing in mic.c calls
+ * mute_apply(), and this is the only user of this mutex. */
 static K_MUTEX_DEFINE(mute_apply_lock);
 
 bool mute_apply(bool on)
