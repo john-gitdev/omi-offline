@@ -107,12 +107,6 @@ static uint8_t haptic_config[6] = {0, 0, 0, 0, 0, 0};
  * the DFU in NVS. */
 static char unpair_armed_fw[24] = {0};
 
-/* Last firmware version that completed a boot. Distinct from unpair_armed_fw, which
- * only exists when the user opted into a pairing reset and is consumed by it — this
- * one is unconditional, so "first boot of a new image" is knowable on every update.
- * Empty on a device that predates this key; the first boot after upgrading therefore
- * reads as a version change, which is exactly right. */
-static char last_boot_fw[24] = {0};
 
 static int settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
@@ -389,19 +383,6 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         return rc;
     }
 
-    if (settings_name_steq(name, "last_boot_fw", &next) && !next) {
-        if (len > sizeof(last_boot_fw)) {
-            return -EINVAL;
-        }
-        memset(last_boot_fw, 0, sizeof(last_boot_fw));
-        rc = read_cb(cb_arg, last_boot_fw, len);
-        if (rc >= 0) {
-            last_boot_fw[sizeof(last_boot_fw) - 1] = '\0';
-            LOG_INF("Loaded last_boot_fw: '%s'", last_boot_fw);
-            return 0;
-        }
-        return rc;
-    }
 
     return -ENOENT;
 }
@@ -791,53 +772,8 @@ int app_settings_arm_post_dfu_unpair(bool arm, const char *current_fw)
     return 0;
 }
 
-/* Truncate [src] into the fixed-width, always-NUL-terminated form that is both
- * persisted and compared. Doing this in one place is what keeps the two consistent:
- * comparing a caller's full string against a truncated stored one made every boot
- * look like a version change once the string reached the buffer width. */
-static void fw_version_to_slot(const char *src, char *out, size_t out_size)
-{
-    memset(out, 0, out_size);
-    strncpy(out, src, out_size - 1);
-}
 
-bool app_settings_firmware_version_changed(const char *current_fw)
-{
-    if (current_fw == NULL || current_fw[0] == '\0') {
-        /* No version to compare against — report "unchanged" so callers take the
-         * cheap path rather than power-cycling hardware on every single boot. */
-        return false;
-    }
 
-    /* Compare the STORED form against the form this version would store, not against
-     * the raw argument: a version string at or past sizeof(last_boot_fw) loses its
-     * tail on the way to flash, so comparing the raw string would differ forever and
-     * re-run the caller's one-shot on every boot. */
-    char slot[sizeof(last_boot_fw)];
-    fw_version_to_slot(current_fw, slot, sizeof(slot));
-    return memcmp(last_boot_fw, slot, sizeof(last_boot_fw)) != 0;
-}
-
-int app_settings_mark_firmware_version_booted(const char *current_fw)
-{
-    if (current_fw == NULL || current_fw[0] == '\0') {
-        return -EINVAL;
-    }
-
-    char slot[sizeof(last_boot_fw)];
-    fw_version_to_slot(current_fw, slot, sizeof(slot));
-
-    int err = settings_save_one("omi/last_boot_fw", slot, sizeof(slot));
-    if (err) {
-        /* Leave the cached value alone so the caller's next boot retries. Reported
-         * rather than swallowed — the caller decides whether a repeat is cheap. */
-        LOG_ERR("Failed to save last_boot_fw (err %d)", err);
-        return err;
-    }
-    memcpy(last_boot_fw, slot, sizeof(last_boot_fw));
-    LOG_INF("Recorded boot of firmware '%s'", last_boot_fw);
-    return 0;
-}
 
 bool app_settings_consume_post_dfu_unpair(const char *current_fw)
 {
