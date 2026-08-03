@@ -319,13 +319,25 @@ class OmiBleManager private constructor(private val application: Application) {
             it.disconnect()
             it.close()
             connectedGatts.remove(addr)
-            // Drop the per-address discovery state along with the object it described.
-            // close() suppresses the STATE_DISCONNECTED callback, so cleanupPeripheral()
-            // never runs on this path and servicesDiscoveredFor would keep the address —
-            // which makes onServicesDiscovered early-return for the NEW gatt as
-            // "already discovered", so the ready event that carries the service table up
-            // to Dart never fires again for this link.
-            cleanupPeripheral(addr)
+            // Drop the state that described the object we just discarded. close()
+            // suppresses the STATE_DISCONNECTED callback, so cleanupPeripheral() never runs
+            // on this path and servicesDiscoveredFor would keep the address — which makes
+            // onServicesDiscovered early-return for the NEW gatt as "already discovered",
+            // so the ready event that carries the service table up to Dart never fires
+            // again for this link.
+            //
+            // Deliberately NOT a cleanupPeripheral() call, which is the disconnect-path
+            // hook: its other half (gattQueue.clear/isProcessingCommand, stopRssiKeepAlive,
+            // stopStorageKeepAlive) is process-global rather than per-address, so running it
+            // here would clear a second managed device's queued commands and silently stop
+            // its keep-alives — and its keep-alive only restarts on ITS next onGattConnected,
+            // which may be hours away, by which point the firmware has idle-disconnected it.
+            servicesDiscoveredFor.remove(addr)
+            discoveryTimeouts.remove(addr)?.let { t -> mainHandler.removeCallbacks(t) }
+            // The link this download was streaming over is gone. Without this the session
+            // is orphaned: its callback never fires and the next download overwrites the
+            // map entry, so the Dart side waits on a future nothing will ever complete.
+            activeDownloads.remove(addr)?.complete(Result.failure(Exception("GATT replaced")))
         }
 
         // Check if device is already connected to the system by another app or previous session
