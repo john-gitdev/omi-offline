@@ -406,57 +406,6 @@ int main(void)
     boot_warming_sequence();
 
     set_mic_callback(mic_handler);
-
-    /* First boot of a new image: power-cycle the mic rail before starting capture.
-     *
-     * A firmware update is a WARM reset. PDM_EN is held high by a board pull-up and
-     * the firmware only ever drives it in mic_reset()/mic_off(), so the T5838 keeps
-     * its supply — and therefore its internal state — straight through MCUboot and
-     * into the new image. The PDM clock, meanwhile, stops dead mid-stream at the
-     * reset and restarts when the new image configures the peripheral. A part that
-     * comes out of that inconsistent is invisible: it emits digital zero, the
-     * hardware AAD never asserts WAKE, nothing auto-records, and no reboot can clear
-     * it because no reboot removes the supply. Exactly one such outage is on record
-     * (2026-08-02, ~2 h of lost audio ending only when a Priority Recording happened
-     * to call mic_reset()).
-     *
-     * Cycling here costs ~40 ms once per update and starts every new image from a
-     * known-good part. This is NOT a periodic wedge watchdog — it fixes the one
-     * transition we can point at. DIAG_VAD_LEVEL is what will tell us whether the
-     * mic also wedges spontaneously mid-session; if it does, that gets diagnosed on
-     * its own evidence rather than papered over here.
-     *
-     * Runs before mic_start(), so mic_running is false and mic_reset() does only the
-     * rail cycle — no dmic trigger against an unconfigured device.
-     *
-     * Cycle FIRST, record the version AFTER. A reset in that window costs a repeat
-     * of a 40 ms rail cycle on the next boot; the other ordering costs the cycle
-     * entirely, for every remaining boot of that image — which is the wedge this
-     * exists to clear. Same reason the version is only recorded when the rail
-     * genuinely went down: mic_reset() degrades to a dmic re-trigger if the GPIO
-     * is unusable, and that clears nothing, so it must not close out the update.
-     *
-     * Known limit: this keys off CONFIG_BT_DIS_FW_REV_STR, which is edited by hand.
-     * A DFU that ships an unchanged version string will not cycle. Every release
-     * bumps it (see the RELEASE flow in CLAUDE.md), so this only affects
-     * same-version dev rebuilds, where the mic can be reset with a button gesture. */
-    if (app_settings_firmware_version_changed(CONFIG_BT_DIS_FW_REV_STR)) {
-        LOG_INF("First boot of %s — power-cycling the mic rail", CONFIG_BT_DIS_FW_REV_STR);
-        bool cycled = mic_reset();
-        diag_log_event_forced(DIAG_MIC_POWER_CYCLE, 0, cycled ? 1 : 0, 0);
-        if (cycled) {
-            app_settings_mark_firmware_version_booted(CONFIG_BT_DIS_FW_REV_STR);
-        } else {
-            LOG_WRN("Mic rail not cycled — version left unrecorded so the next boot retries");
-        }
-    }
-
-    /* Started unconditionally, including after a rail cycle that reported failure.
-     * An earlier revision skipped mic_start() on a known-dead rail; it was removed
-     * because DIAG_VAD_LEVEL already reports silent capture within one window, so
-     * the gating duplicated a detector we now have — and unlike the detector, it
-     * could turn a transient into a whole session with no audio and nothing to
-     * retry it. Starting and being told it is silent beats refusing to start. */
     ret = mic_start();
     if (ret) {
         LOG_ERR("Mic failed %d", ret);
