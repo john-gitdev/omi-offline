@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:omi/gen/pigeon_communicator.g.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/vad_audio_processor.dart';
@@ -236,13 +237,35 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   /// stays enabled while any reason is held (or "Keep Screen On" is pinned), so
   /// the sync pipeline and uploads never drop each other's hold.
   void _acquireWake(String reason) {
+    final wasEmpty = _wakeReasons.isEmpty;
     _wakeReasons.add(reason);
     WakelockPlus.enable();
+    // WakelockPlus alone is a SCREEN flag (FLAG_KEEP_SCREEN_ON), so it stops
+    // applying the moment the app is backgrounded — and then nothing holds the
+    // CPU. Both keep-alives (native 0x32 and Dart's timer) are Handler/Timer
+    // posts on uptimeMillis, which does not advance across SoC suspend, so they
+    // stall and the firmware's 15 s idle-disconnect drops the link mid-transfer.
+    // That is the "started a sync, pocketed the phone, got a partial" path. Take
+    // the CPU wakelock too (it is reference-counted natively, and released below
+    // when the last reason goes away).
+    if (wasEmpty && (Platform.isAndroid || Platform.isIOS)) BleHostApi().acquireProcessingWakeLock();
   }
 
   void _releaseWake(String reason) {
-    _wakeReasons.remove(reason);
-    if (_wakeReasons.isEmpty && !_prefs.keepScreenOn) WakelockPlus.disable();
+    if (!_wakeReasons.remove(reason)) return;
+    if (_wakeReasons.isNotEmpty) return;
+    if (!_prefs.keepScreenOn) WakelockPlus.disable();
+    if (Platform.isAndroid || Platform.isIOS) BleHostApi().releaseProcessingWakeLock();
+  }
+
+  /// Drop every hold at once. Only for [dispose]: the native CPU wakelock is
+  /// reference-counted across owners, so a controller torn down mid-pipeline would
+  /// otherwise leave its single acquire outstanding for the life of the process.
+  void _releaseAllWake() {
+    if (_wakeReasons.isEmpty) return;
+    _wakeReasons.clear();
+    if (!_prefs.keepScreenOn) WakelockPlus.disable();
+    if (Platform.isAndroid || Platform.isIOS) BleHostApi().releaseProcessingWakeLock();
   }
 
   /// Releases the sync pipeline's wakelock hold. Kept under its original name for
@@ -285,6 +308,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   @override
   void dispose() {
     _isDisposed = true;
+    _releaseAllWake();
     _pollTimer?.cancel();
     _forceSyncCooldownTimer?.cancel();
     _connectivitySub?.cancel();
