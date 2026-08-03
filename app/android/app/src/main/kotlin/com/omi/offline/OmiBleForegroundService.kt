@@ -1336,7 +1336,8 @@ class OmiBleForegroundService : Service() {
                         managed.pendingReconnect = null
                         managed.stabilityTimerRunnable?.let { handler.removeCallbacks(it) }
                         managed.stabilityTimerRunnable = null
-                        bleManager.stopRssiKeepAlive()
+                        bleManager.stopRssiKeepAlive(addr)
+                        bleManager.stopStorageKeepAlive(addr)
                         bleManager.disconnectGatt(addr)
                         bleManager.closeGatt(addr)
                         managed.currentGattHash = null
