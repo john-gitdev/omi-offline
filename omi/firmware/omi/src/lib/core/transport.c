@@ -1246,8 +1246,9 @@ static ssize_t settings_vad_threshold_write_handler(struct bt_conn *conn,
 
     /* Switching manual -> automatic hands capture back to the hardware wake line,
      * which is exactly where a wedged mic goes unnoticed (nothing auto-records and
-     * no button press is coming to mask it). Start that mode on a freshly powered
-     * part. Only this direction needs it: the manual paths reset the mic on every
+     * no button press is coming to mask it). This started that mode on a freshly
+     * powered part; mic_reset() no longer power-cycles, so it currently does not.
+     * Only this direction needs it: the manual paths reset the mic on every
      * record start/stop themselves, and an auto -> auto sensitivity tweak never
      * changes who is driving capture. */
     if (prev_threshold >= 32769 && new_threshold < 32769) {
