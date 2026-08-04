@@ -298,7 +298,6 @@ static inline void priority_record_stop(void) {}
  * it acted (false = auto priority recording already running). */
 static bool record_start(void)
 {
-#ifdef CONFIG_OMI_ENABLE_T5838_AAD
     /* Mode is read from the PERSISTED threshold, not the runtime one: an
      * auto-mode priority recording sets runtime 65535 without persisting it, so
      * the persisted value still reflects the real mode (32769/65535 manual,
@@ -306,10 +305,6 @@ static bool record_start(void)
     uint16_t resting = app_settings_get_vad_threshold();
     bool in_manual = (resting == 32769 || resting == 65535);
     bool already_recording = (aad_get_threshold() == 65535);
-#else
-    bool in_manual = false;
-    bool already_recording = false;
-#endif
     if (in_manual) {
         /* Explicit manual-mode start, persisted so it survives a reboot. */
         marker_flash_color = MARKER_FLASH_GREEN;
