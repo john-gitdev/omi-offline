@@ -133,8 +133,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       final processing = RecordingsManager.isProcessingAny;
       if (processing != _isProcessing) setState(() => _isProcessing = processing);
     });
-    // Diagnostics poll only runs when the user opts in via the Show Diagnostics
-    // toggle. Logs poll only runs when Save Diagnostic Logs is on.
+    // Diagnostics poll only runs when the user opts in via the Diagnostics switch
+    // (which also gates the on-device event log — see _setDiagnosticsEnabled). Logs
+    // poll only runs when Save Debug Logs is on.
     if (SharedPreferencesUtil().showSdWriteDrops) _startDropPolling();
     if (SharedPreferencesUtil().devLogsToFileEnabled) _startLogPolling();
     // Refresh the Adjustment Mode bin count whenever the Debug menu is opened.
@@ -183,11 +184,40 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (ref != null && _dropClock.elapsed - ref > _dropReadFallbackAfter) {
       await _readDropStatsFallback();
     }
+    await _reconcileDiagLogGate();
+    if (!mounted) return;
     // Rebuild every tick even when no new data arrived, so the freshness pill ages
     // honestly. Without this a link that goes silent leaves the card showing frozen
     // counters under a stale "live" badge — the exact failure the pill exists to
     // expose. Cheap: this page is a debug screen and the tick is 2 s.
-    if (mounted && _dropPollTimer != null) setState(() {});
+    if (_dropPollTimer != null) setState(() {});
+  }
+
+  /// Bring the firmware's event-log gate in line with the merged Diagnostics switch.
+  ///
+  /// The switch writes `diagLogEnabled` when it is flipped, but that alone leaves two
+  /// ways for it to sit "on" while half of what it claims to control is off:
+  ///   * the capability is unknown until a device connects, so flipping the switch
+  ///     while disconnected skips the event-log half entirely — and the connect path
+  ///     then pushes the stale `false` it finds; and
+  ///   * anyone who had counter polling on from before the two were merged already
+  ///     has `showSdWriteDrops` true with `diagLogEnabled` false, and never flips the
+  ///     switch again to correct it.
+  /// Running from the poll tick means it self-heals on the first idle connect, and is
+  /// a cheap no-op on every tick after the two agree.
+  Future<void> _reconcileDiagLogGate() async {
+    final prefs = SharedPreferencesUtil();
+    if (!prefs.showSdWriteDrops || prefs.diagLogEnabled) return;
+    if (_diagLogBusy || !mounted) return;
+    final devProvider = context.read<DeviceProvider>();
+    if (!devProvider.diagLogSupported) return;
+    prefs.diagLogEnabled = true;
+    await _runDiagLogAction(() async {
+      // A failed push (a sync holds the storage lock) leaves the pref set, which is
+      // the same contract the switch has: DeviceProvider re-pushes it on the next
+      // connect.
+      if (await devProvider.pushDiagLogEnabled()) await devProvider.pullDiagLog();
+    });
   }
 
   /// Direct READ of the drop counters (0x0062), the MTU-agnostic fallback when the
@@ -1323,13 +1353,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final enabledAtLabel =
         enabledAtMs > 0 ? DateFormat('MMM d, h:mm a').format(DateTime.fromMillisecondsSinceEpoch(enabledAtMs)) : '—';
 
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1A1A1C),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF2C2C2E)),
-      ),
+    // Styled as an option card, not a readout panel: since the toggles were grouped
+    // it sits beside Keep Screen On / Save Debug Logs, and the panel styling made it
+    // read as a different kind of control.
+    return _optionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1653,6 +1680,34 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final noDropSinceBaseline = baseline != null && blocks == 0;
     final lastDropLabel = (sinceMs == null || noDropSinceBaseline) ? 'never' : '${_formatDuration(sinceMs)} ago';
 
+    // Per-group flags, in the terse form the collapsed header shows. Each list drives
+    // both whether its group is clear (empty) and what it says when collapsed while
+    // NOT clear — deriving both from one list is what stops a hand-collapsed group
+    // advertising "no drops" over a live fault.
+    final sdFlags = <String>[
+      if (blocks > 0) '$blocks blocks',
+      if (frames > 0) '$frames frames',
+      if (codec > 0) '$codec codec',
+      if (boot > 0) '$boot boot',
+      if (peakHot) 'queue $peak/${stats.sdQueueMax}',
+      if (isRing && ringErrs > 0) '$ringErrs IO errors',
+      if (isRing && ringSlow) '${stats.ringMaxIoMs} ms op',
+    ];
+    final markerFlags = <String>[
+      if (markerDrops > 0) '$markerDrops marker drops',
+      if (emptyRot > 0) '$emptyRot empty rotations',
+      if (prioStarts > prioStops) 'left open',
+      if (prioStops > 0 && seEmits == 0) 'no session-end',
+    ];
+    final memoryFlags = <String>[
+      if (sdStackHot) 'SD worker stack high',
+      if (codecStackHot) 'codec stack high',
+    ];
+    final bleFlags = <String>[
+      if (connFails > 0) '$connFails connect fail${connFails == 1 ? '' : 's'}',
+      if (estabFails > 0) '$estabFails at establishment',
+    ];
+
     // The verdict. Twenty rows of mostly-zero used to leave "is anything wrong?" as
     // an exercise for the reader; problems are faults that lost audio or a link,
     // watches are things that are merely worth an eye.
@@ -1748,14 +1803,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         ),
         const SizedBox(height: 4),
         DiagGroup(
+          key: const ValueKey('diag-sd'),
           title: 'SD write path',
-          allClear: blocks == 0 &&
-              frames == 0 &&
-              codec == 0 &&
-              boot == 0 &&
-              !peakHot &&
-              !(isRing && (ringErrs > 0 || ringSlow)),
+          allClear: sdFlags.isEmpty,
           clearSummary: 'no drops · queue $peak/${stats.sdQueueMax}',
+          alertSummary: sdFlags.join(' · '),
           rows: [
             DiagStatRow('440 B blocks dropped', '$blocks', level: blocks > 0 ? DiagLevel.bad : DiagLevel.info),
             DiagStatRow('Audio frames dropped (SD queue)', '$frames',
@@ -1781,10 +1833,12 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           ],
         ),
         DiagGroup(
+          key: const ValueKey('diag-markers'),
           title: 'Recording markers',
-          allClear: markerDrops == 0 && emptyRot == 0 && prioStarts <= prioStops && !(prioStops > 0 && seEmits == 0),
+          allClear: markerFlags.isEmpty,
           clearSummary:
               (prioStarts == 0 && prioStops == 0) ? 'no activity' : '$prioStarts started · $prioStops stopped',
+          alertSummary: markerFlags.join(' · '),
           rows: [
             DiagStatRow('Priority recordings started', '$prioStarts'),
             DiagStatRow('Priority recordings stopped', '$prioStops',
@@ -1802,9 +1856,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           ],
         ),
         DiagGroup(
+          key: const ValueKey('diag-memory'),
           title: 'Memory',
-          allClear: !sdStackHot && !codecStackHot,
+          allClear: memoryFlags.isEmpty,
           clearSummary: stats.sdWorkerStackUsed == 0 ? 'not reported' : 'headroom ok',
+          alertSummary: memoryFlags.join(' · '),
           rows: [
             // Read after a heavy session (an allocator scan is the SD worker's deepest
             // path; busy encoding is the codec's) so the high-water reflects the worst
@@ -1827,9 +1883,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           ],
         ),
         DiagGroup(
+          key: const ValueKey('diag-ble'),
           title: 'BLE link',
-          allClear: connFails == 0 && estabFails == 0,
+          allClear: bleFlags.isEmpty,
           clearSummary: 'no failures',
+          alertSummary: bleFlags.join(' · '),
           rows: [
             // "Died at establishment" is the one that identifies a "visible but
             // unconnectable" outage — if the phone logs 0x3e while this stays 0, the
