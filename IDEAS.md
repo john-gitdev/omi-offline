@@ -11,6 +11,7 @@
 - [5. Mic rail (PDM_EN) is not driven by firmware [small] [Pending — awaiting field evidence]](#5-mic-rail-pdm_en-is-not-driven-by-firmware-small-pending--awaiting-field-evidence)
 - [6. Offer a re-pair when an OTA eats the bond [small] [Pending]](#6-offer-a-re-pair-when-an-ota-eats-the-bond-small-pending)
 - [7. An OTA that eats `storage_backend` wipes the SD card [small] [Pending — closes itself with LittleFS removal]](#7-an-ota-that-eats-storage_backend-wipes-the-sd-card-small-pending--closes-itself-with-littlefs-removal)
+- [8. Half-connected first launch after an APK update — confirm the fix [small] [Pending — monitoring]](#8-half-connected-first-launch-after-an-apk-update--confirm-the-fix-small-pending--monitoring)
 
 ### LARGE
 - [4. Device-driven BLE wake (firmware + iOS) [large] [Parked — lost its primary motivation]](#4-device-driven-ble-wake-firmware--ios-large-parked--lost-its-primary-motivation)
@@ -367,6 +368,90 @@ LittleFS device that lost the key would then hit `sd_ring_format()` instead.
 - `omi/firmware/omi/src/sd_ring.c` — `sd_ring_mount()`, the read-only probe
 - `omi/firmware/omi/src/settings.c` — `DEFAULT_STORAGE_BACKEND`
 - `BLE_Research.md` §9 — the NVS-erase mechanism and why the real fix needs a wired flash
+
+---
+
+### 8. Half-connected first launch after an APK update — confirm the fix [small] [Pending — monitoring]
+
+Shipped in 0.32.1 (PR #368). **One clean launch observed 2026-08-03; not yet confirmed.**
+It's a race, so a single good install isn't evidence — reinstall a few times before
+calling it.
+
+#### The symptom, and what it identifies
+
+The launch immediately after an APK install showed the Omi connected but inert: no files
+synced, and Device Settings → Customization listed only "Button Configuration". Force-close
+and reopen fixed it every time.
+
+That last detail is the diagnostic. Every other row in that section is gated on a capability
+bit and Button Configuration is the one unconditional row (`device_settings.dart:1120-1192`),
+so a collapsed list means the capability read returned `0`.
+
+#### What shipped
+
+The install kills the app while the foreground service comes back on its own, so Dart's
+`manageDevice` could take the "native kept the link alive" shortcut in the window between
+`STATE_CONNECTED` and `onServicesDiscovered` — handing Dart an empty `gatt.services`. Dart
+latched that as connected, and since `readCharacteristic` short-circuits to `[]` when the
+characteristic isn't in its table, every read returned nothing and every storage write threw.
+`connect()` early-returns while connected, so nothing re-drove it.
+
+- `OmiBleForegroundService.kt` — the shortcut gates on `hasDiscoveredServices()`, not link state
+- `OmiBleManager.kt` — `connectGatt()` runs `cleanupPeripheral(addr)` when it replaces a GATT
+- `native_ble_transport.dart` — an empty service table is ignored, completer left pending
+
+#### The open question: a second cause with identical symptoms
+
+`performGetFeatures` returns `0` on a read timeout as well as on an empty table, so a
+**wedged-but-live GATT** — link up, GATT ops dead — produces the same collapsed list, the same
+dead sync, and the same force-close cure. Nothing in 0.32.1 addresses it.
+
+The build is self-diagnosing. If it recurs, the log says which:
+
+| Log line | Cause |
+|---|---|
+| `device-ready carried 0 services — ignoring` | this bug; check whether it recovered a second later |
+| `readCharacteristic … TIMED OUT … likely a wedged GATT` | the other one, untouched |
+
+Weaker signal without logs: with an empty table the battery notify subscription never
+registers and the read returns `-1`, which `DeviceProvider.updateBatteryLevel` discards — so
+the percentage sits **frozen** at its pre-update value (seeded from prefs, so it still looks
+plausible). A battery that visibly updates while nothing else works points at the wedged GATT.
+
+#### Deliberately not fixed: two pre-existing command-queue hazards
+
+Both live on the disconnect path, predate this work, and were left alone because 0.32.1
+neither creates nor widens them. Raised by review; recorded so they aren't re-derived.
+
+1. **Stale posted runnable.** `processNextCommand()` *peeks* and posts, so `cleanupPeripheral`'s
+   `gattQueue.clear()` doesn't unpost a command already sitting in the main looper.
+2. **`completeCommand()` has no caller identity.** It polls the head unconditionally, so a
+   zombie completion — a command whose queue was cleared out from under it, or a
+   double-fired callback — polls off the *next* connection's command. That entry was already
+   posted so it still runs, but its own callback then polls a third, and the accounting stays
+   off by one: commands get posted while another is in flight, breaking the one-op-at-a-time
+   serialization (overlapping GATT ops are the Error 133 link drop).
+
+(1) is a one-liner (`gattQueue.peek()?.let { mainHandler.removeCallbacks(it) }`). (2) is the
+real fix and needs the gatt threaded into `completeCommand()` at ~17 call sites across both
+files, all inside GATT callbacks — worth doing only as its own change, with the queue's
+serialization contract as the stated goal rather than as a patch to a connect race.
+
+#### Landmine worth remembering
+
+`activeDownloads` must fail with a message containing **`Stream closed without EOT`**. It is a
+wire contract, not a label: it travels verbatim through Pigeon into `definiteTransportError`
+(`sdcard_wal_sync.dart:1339`), which is what keeps a mid-transfer link failure off the file's
+poison budget. Fail a download with any other string and a dropped link reads as an unreadable
+file — enough strikes and the poison-drop deletes a good recording off the device. A refactor
+during review parameterised that string and nearly shipped exactly that.
+
+#### Relevant files
+
+- `app/android/app/src/main/kotlin/com/omi/offline/OmiBleManager.kt` — `connectGatt()`, `cleanupPeripheral()`, `hasDiscoveredServices()`, the command queue
+- `app/android/app/src/main/kotlin/com/omi/offline/OmiBleForegroundService.kt` — `manageDevice()` shortcut
+- `app/lib/services/devices/transports/native_ble_transport.dart` — `_handleDeviceReady()`, `_hasCharacteristic()`
+- `app/lib/services/wals/sdcard_wal_sync.dart:1339` — the `definiteTransportError` match
 
 ---
 
