@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
@@ -9,7 +10,6 @@ import 'package:provider/provider.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/device_drop_stats.dart';
-import 'package:omi/services/devices/diag_log_record.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/services/wals.dart';
@@ -19,6 +19,7 @@ import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/pages/settings/widgets/debug_button.dart';
 import 'package:omi/pages/settings/widgets/diagnostic_log_row.dart';
+import 'package:omi/pages/settings/widgets/diagnostics_widgets.dart';
 import 'package:omi/widgets/dialog.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -94,6 +95,13 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   DeviceDropStats? _dropBaseline;
   // True once we've attempted to restore the persisted baseline this polling session.
   bool _baselineRestored = false;
+  // View selector for the counter rows once a baseline exists. Taking a baseline
+  // used to be a one-way door — the persisted snapshot was re-restored on every
+  // entry, so the device's lifetime totals became permanently unreachable in the
+  // UI. This flips the view without touching the stored baseline.
+  bool _showLifetime = false;
+  // Active event-log category filter; null = show all.
+  DiagEventCategory? _eventFilter;
 
   // Full boot-relative baseline snapshot (all counters that reset to 0 on device
   // reboot), stored as JSON so a "reset diagnostics" tap survives an app restart.
@@ -175,6 +183,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (ref != null && _dropClock.elapsed - ref > _dropReadFallbackAfter) {
       await _readDropStatsFallback();
     }
+    // Rebuild every tick even when no new data arrived, so the freshness pill ages
+    // honestly. Without this a link that goes silent leaves the card showing frozen
+    // counters under a stale "live" badge — the exact failure the pill exists to
+    // expose. Cheap: this page is a debug screen and the tick is 2 s.
+    if (mounted && _dropPollTimer != null) setState(() {});
   }
 
   /// Direct READ of the drop counters (0x0062), the MTU-agnostic fallback when the
@@ -799,6 +812,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   /// firmware keeps its own running totals; this only moves the app's subtraction
   /// baseline. Device uptime is intentionally left live.
   void _resetAllDiagnostics() {
+    // Marking a baseline implies you want to watch what happens next, so switch the
+    // view to the delta. The lifetime totals stay one tap away.
+    _showLifetime = false;
     _snapshotDropBaseline();
     _snapshotConnFailBaseline();
     // SD-queue peak depth is intentionally not reset: it's the firmware's monotonic
@@ -916,6 +932,45 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
   }
 
+  /// The single Diagnostics switch. It drives BOTH halves of what used to be two
+  /// separate, independently-toggled sections:
+  ///   * app-side counter polling (`showSdWriteDrops`), and
+  ///   * the firmware's on-device event-log capture gate (`diagLogEnabled`, 0x0064).
+  ///
+  /// They were always used together — the counters total the same health events the
+  /// event log timestamps — and splitting them meant a bench session routinely ran
+  /// with half the instrumentation on. The two prefs stay separate underneath
+  /// because they drive different mechanisms (a Dart timer vs a firmware write) and
+  /// `diagLogEnabled` is re-pushed from the connect path in DeviceProvider.
+  ///
+  /// The event-log half is skipped on firmware without the capability bit, where the
+  /// gate write is swallowed anyway.
+  Future<void> _setDiagnosticsEnabled(bool val) async {
+    final prefs = SharedPreferencesUtil();
+    prefs.showSdWriteDrops = val;
+    if (val) {
+      _startDropPolling();
+    } else {
+      _stopDropPolling();
+    }
+    setState(() {});
+
+    final devProvider = context.read<DeviceProvider>();
+    if (!devProvider.diagLogSupported) return;
+    prefs.diagLogEnabled = val;
+    await _runDiagLogAction(() async {
+      final reached = await devProvider.pushDiagLogEnabled();
+      if (!reached) {
+        // The pref is kept and re-pushed on the next connect, but say so rather than
+        // implying on-device capture already flipped.
+        _reportDiagLogResult('Counters are on. The device is busy syncing — event capture applies on next connect.');
+        return;
+      }
+      // Pull immediately on enable so a bench session starts from a known state.
+      if (val) await devProvider.pullDiagLog();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -947,312 +1002,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 style: const TextStyle(color: Colors.white, fontSize: 16),
               ),
               const SizedBox(height: 24),
-              // Companion Device Pairing (Android) — default ON. A troubleshooting toggle
-              // for the rare OEM where registering as a system companion makes Bluetooth
-              // reconnection worse; lives here in Debug Tools so it stays reachable when the
-              // device won't connect. Applies immediately via _setCompanionDevicePairing
-              // (reconnect on off, system chooser on on).
-              if (Platform.isAndroid) ...[
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1C1C1E),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Companion Device Pairing',
-                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-                    subtitle: Text(
-                      SharedPreferencesUtil().companionDeviceEnabled
-                          ? 'On (recommended) — lets the app fix a stuck Bluetooth connection on its own, instead of you having to toggle phone Bluetooth. Turn off only if reconnecting gets worse with this on.'
-                          : "Off — the app connects without registering as a system companion. Turn on (recommended) to help it recover from stuck Bluetooth connections; it'll reconnect and show a pairing dialog.",
-                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                    ),
-                    value: SharedPreferencesUtil().companionDeviceEnabled,
-                    onChanged: (value) => _setCompanionDevicePairing(value),
-                    activeThumbColor: Colors.deepPurpleAccent,
-                  ),
-                ),
-                const SizedBox(height: 16),
-              ],
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1C1C1E),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: SwitchListTile(
-                  title: const Text('Keep Screen On',
-                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-                  subtitle: Text('Holds a wakelock while the app is open so the screen never sleeps.',
-                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
-                  value: SharedPreferencesUtil().keepScreenOn,
-                  onChanged: (val) async {
-                    SharedPreferencesUtil().keepScreenOn = val;
-                    await WakelockPlus.toggle(enable: val);
-                    setState(() {});
-                  },
-                  activeThumbColor: Colors.deepPurpleAccent,
-                  contentPadding: EdgeInsets.zero,
-                ),
-              ),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1C1C1E),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: SwitchListTile(
-                  title: const Text('Save Debug Logs to File',
-                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-                  subtitle: Text(
-                      'Persists info/debug logs to a file on your device. '
-                      'Leave on to capture BLE connection outages automatically, as they happen.',
-                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
-                  value: SharedPreferencesUtil().devLogsToFileEnabled,
-                  onChanged: (val) async {
-                    if (val) {
-                      await DebugLogManager.setEnabled(true);
-                      _startLogPolling();
-                    } else {
-                      // Stop the 2 s poll before deleting so getRecentLogs can't
-                      // recreate the file we're removing.
-                      _stopLogPolling();
-                      await DebugLogManager.setEnabled(false);
-                    }
-                    setState(() {});
-                  },
-                  activeThumbColor: Colors.deepPurpleAccent,
-                  contentPadding: EdgeInsets.zero,
-                ),
-              ),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1C1C1E),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Storage Backend',
-                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Switch how the Omi stores audio on its SD card. Ring is experimental: an '
-                      'append-only circular log that avoids the LittleFS allocator scan that drops '
-                      'audio on a near-full card. Switching REFORMATS the SD and reboots — sync first, '
-                      'un-synced recordings are lost.',
-                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                    ),
-                    const SizedBox(height: 12),
-                    ElevatedButton(
-                      onPressed: () async {
-                        final dev = context.read<DeviceProvider>().connectedDevice;
-                        if (dev == null) {
-                          setState(() => _statusMessage = 'Connect a device first');
-                          return;
-                        }
-                        // 0 = LittleFS, 1 = Ring, null = not read yet (Show Diagnostics off).
-                        // Only offer the backend(s) that aren't already active: re-selecting the
-                        // current one is a firmware no-op (no wipe, no reboot), so presenting it
-                        // would be a dead end. When unknown, offer both and let the firmware's
-                        // same-backend guard handle a no-op safely.
-                        final current = _storageBackend;
-                        final choice = await showDialog<int>(
-                          context: context,
-                          builder: (ctx) => AlertDialog(
-                            backgroundColor: const Color(0xFF1C1C1E),
-                            title: const Text('Switch storage backend', style: TextStyle(color: Colors.white)),
-                            content: Text(
-                              '${current != null ? 'Currently on ${current == 1 ? 'Ring' : 'LittleFS'}. ' : ''}'
-                              'Switching WIPES the SD card — it reformats fresh to '
-                              '${current != null ? 'the other' : 'the selected'} backend and reboots the Omi. '
-                              'Sync everything first: any recordings still on the device are '
-                              'permanently lost.\n\nLittleFS is the safe default. Ring is experimental.',
-                              style: const TextStyle(color: Colors.white70),
-                            ),
-                            actions: [
-                              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-                              if (current != 0)
-                                TextButton(
-                                    onPressed: () => Navigator.pop(ctx, 0), child: const Text('Switch to LittleFS')),
-                              if (current != 1)
-                                TextButton(onPressed: () => Navigator.pop(ctx, 1), child: const Text('Switch to Ring')),
-                            ],
-                          ),
-                        );
-                        if (choice == null || !mounted) return;
-                        // The switch reformats the SD and cold-reboots. Doing that while a
-                        // sync owns the storage stream would corrupt/lose the in-flight
-                        // transfer, so refuse while syncing.
-                        if (ServiceManager.instance().wal.getSyncs().isSyncing) {
-                          setState(() => _statusMessage =
-                              'A sync is in progress — cancel or let it finish before switching backends.');
-                          return;
-                        }
-                        final conn = await ServiceManager.instance().device.ensureConnection(dev.id);
-                        if (!mounted) return;
-                        if (conn == null) {
-                          setState(() => _statusMessage = 'Not connected');
-                          return;
-                        }
-                        // Serialize with the storage lock and re-check under it, so a sync
-                        // starting between the check above and the command can't be mid-
-                        // transfer when the device reformats + reboots.
-                        try {
-                          await conn.acquireStorageLock('backendSwitch');
-                        } catch (_) {
-                          // Acquire timed out / failed — another op holds the lock. Do NOT
-                          // release here (that would drop THEIR lock); just bail.
-                          if (mounted) {
-                            setState(() => _statusMessage = 'Storage is busy — try switching again in a moment.');
-                          }
-                          return;
-                        }
-                        try {
-                          if (ServiceManager.instance().wal.getSyncs().isSyncing) {
-                            if (mounted) {
-                              setState(
-                                  () => _statusMessage = 'A sync just started — try switching again once it finishes.');
-                            }
-                            return;
-                          }
-                          await conn.sendSetStorageBackendCommand(choice);
-                        } finally {
-                          conn.releaseStorageLock();
-                        }
-                        if (!mounted) return;
-                        setState(() {
-                          // The device cold-reboots to apply the switch, so the cached
-                          // backend is stale — clear it so the Diagnostics row re-reads
-                          // the REAL applied backend on reconnect. Deliberately neutral:
-                          // the reboot routinely drops the write before it acks, so a
-                          // thrown/failed write is NOT a failed switch — the re-read row
-                          // is the source of truth, not the write result.
-                          _storageBackend = null;
-                          _statusMessage = 'Backend switch requested (${choice == 1 ? 'Ring' : 'LittleFS'}) — '
-                              'Omi is rebooting to apply. Turn on Show Diagnostics after it reconnects to confirm '
-                              'the active backend.';
-                        });
-                      },
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.blueGrey.shade800),
-                      child: const Text('Switch backend…', style: TextStyle(color: Colors.white)),
-                    ),
-                  ],
-                ),
-              ),
-              if (SharedPreferencesUtil().devLogsToFileEnabled) ...[
-                const SizedBox(height: 12),
-                _buildLogWindow(),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(
-                      child: ElevatedButton(
-                        onPressed: () async {
-                          final files = await DebugLogManager.listLogFiles();
-                          if (files.isEmpty) {
-                            setState(() => _statusMessage = 'No log files available to share');
-                            return;
-                          }
-                          // Name the shared file `omi_offline_debug_<date>.log` — lowercase,
-                          // underscored, no spaces/apostrophes, so it's easy to work with on
-                          // upload/save targets. Derived from the on-disk basename
-                          // (`omi_debug_YYYYMMDD.log`) so the date matches exactly.
-                          final logName = files.first.uri.pathSegments.last;
-
-                          String appVersion = 'unknown';
-                          try {
-                            final packageInfo = await PackageInfo.fromPlatform();
-                            appVersion = packageInfo.version;
-                          } catch (_) {}
-
-                          final fwVersion =
-                              context.read<DeviceProvider>().connectedDevice?.firmwareRevision ?? 'unknown';
-                          final os = Platform.operatingSystem;
-
-                          final datePart = logName.replaceFirst('omi_debug_', '');
-                          final shareName = '${os}_${appVersion}_${fwVersion}_omi_offline_debug_$datePart';
-                          // Name the XFile (not just the share `subject`) so the name lands on
-                          // targets that use the file's own name, not the title.
-                          final xFile = XFile(files.first.path, name: shareName);
-                          // Use `subject` (share-sheet/email title metadata), not `text`:
-                          // a `text` argument is shared as a SEPARATE item alongside the
-                          // file, so iOS upload/save targets materialize a second phantom
-                          // file containing the label string.
-                          await SharePlus.instance.share(ShareParams(files: [xFile], subject: shareName));
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.amber,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                        ),
-                        child: const Text('Share Logs',
-                            style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: () async {
-                          await DebugLogManager.clear();
-                          await _refreshLogs();
-                          if (mounted) setState(() => _statusMessage = 'Diagnostic logs cleared');
-                        },
-                        style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: Colors.amber, width: 1),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                        ),
-                        child: const Text('Clear Logs',
-                            style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1C1C1E),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: SwitchListTile(
-                  title: const Text('Show Diagnostics',
-                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-                  subtitle: Text('Polls the device every 2 s for SD-card, codec and BLE drop counters. Off by default.',
-                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
-                  value: SharedPreferencesUtil().showSdWriteDrops,
-                  onChanged: (val) {
-                    SharedPreferencesUtil().showSdWriteDrops = val;
-                    if (val) {
-                      _startDropPolling();
-                    } else {
-                      _stopDropPolling();
-                    }
-                    setState(() {});
-                  },
-                  activeThumbColor: Colors.deepPurpleAccent,
-                  contentPadding: EdgeInsets.zero,
-                ),
-              ),
-              if (SharedPreferencesUtil().showSdWriteDrops) ...[
-                const SizedBox(height: 16),
-                _buildDropStatsSection(),
-              ],
-              // On-device diagnostic event log (dev tool). Self-hides unless the
-              // connected firmware advertises the capability (bit 12).
-              _buildDiagLogSection(),
-              const SizedBox(height: 16),
-              _buildAdjustmentModeSection(),
-              const SizedBox(height: 24),
-              const Divider(color: Color(0xFF2C2C2E), height: 1),
-              const SizedBox(height: 24),
+              _buildDiagnosticsCard(),
+              const SizedBox(height: 28),
+              const DebugSectionHeader('Actions'),
               if (_isProcessing) ...[
                 const Text('Processing recordings...', style: TextStyle(color: Colors.white70, fontSize: 14)),
                 const SizedBox(height: 16),
@@ -1366,11 +1118,177 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   onTap: _deleteAllConversations,
                 ),
               ],
+              const SizedBox(height: 28),
+              const DebugSectionHeader('Options'),
+              ..._buildOptionRows(),
             ],
           ),
         ),
       ),
     );
+  }
+
+  /// The page's persistent switches, grouped at the bottom. They used to be
+  /// interleaved with the readouts and the destructive actions, which put a
+  /// wakelock toggle and a "delete everything" button in the same visual rhythm.
+  /// Each one owns whatever expands beneath it (the log window, the adjustment
+  /// archive controls).
+  List<Widget> _buildOptionRows() {
+    return [
+      // Companion Device Pairing (Android) — default ON. A troubleshooting toggle
+      // for the rare OEM where registering as a system companion makes Bluetooth
+      // reconnection worse; lives here in Debug Tools so it stays reachable when the
+      // device won't connect. Applies immediately via _setCompanionDevicePairing
+      // (reconnect on off, system chooser on on).
+      if (Platform.isAndroid) ...[
+        _optionCard(
+          child: SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Companion Device Pairing',
+                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+            subtitle: Text(
+              SharedPreferencesUtil().companionDeviceEnabled
+                  ? 'On (recommended) — lets the app fix a stuck Bluetooth connection on its own, instead of you having to toggle phone Bluetooth. Turn off only if reconnecting gets worse with this on.'
+                  : "Off — the app connects without registering as a system companion. Turn on (recommended) to help it recover from stuck Bluetooth connections; it'll reconnect and show a pairing dialog.",
+              style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+            ),
+            value: SharedPreferencesUtil().companionDeviceEnabled,
+            onChanged: (value) => _setCompanionDevicePairing(value),
+            activeThumbColor: Colors.deepPurpleAccent,
+          ),
+        ),
+        const SizedBox(height: 12),
+      ],
+      _optionCard(
+        child: SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Keep Screen On',
+              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+          subtitle: Text('Holds a wakelock while the app is open so the screen never sleeps.',
+              style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
+          value: SharedPreferencesUtil().keepScreenOn,
+          onChanged: (val) async {
+            SharedPreferencesUtil().keepScreenOn = val;
+            await WakelockPlus.toggle(enable: val);
+            setState(() {});
+          },
+          activeThumbColor: Colors.deepPurpleAccent,
+        ),
+      ),
+      const SizedBox(height: 12),
+      _optionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Save Debug Logs to File',
+                  style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+              subtitle: Text(
+                  'Persists info/debug logs to a file on your device. '
+                  'Leave on to capture BLE connection outages automatically, as they happen.',
+                  style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
+              value: SharedPreferencesUtil().devLogsToFileEnabled,
+              onChanged: (val) async {
+                if (val) {
+                  await DebugLogManager.setEnabled(true);
+                  _startLogPolling();
+                } else {
+                  // Stop the 2 s poll before deleting so getRecentLogs can't
+                  // recreate the file we're removing.
+                  _stopLogPolling();
+                  await DebugLogManager.setEnabled(false);
+                }
+                setState(() {});
+              },
+              activeThumbColor: Colors.deepPurpleAccent,
+            ),
+            if (SharedPreferencesUtil().devLogsToFileEnabled) ...[
+              const SizedBox(height: 12),
+              _buildLogWindow(),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: _shareDebugLogs,
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: Colors.deepPurpleAccent, width: 1),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      child: const Text('Share Logs',
+                          style: TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () async {
+                        await DebugLogManager.clear();
+                        await _refreshLogs();
+                        if (mounted) setState(() => _statusMessage = 'Diagnostic logs cleared');
+                      },
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: Colors.white24, width: 1),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      child: const Text('Clear Logs',
+                          style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+      const SizedBox(height: 12),
+      _buildAdjustmentModeSection(),
+    ];
+  }
+
+  Widget _optionCard({required Widget child}) => Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1C1C1E),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: child,
+      );
+
+  Future<void> _shareDebugLogs() async {
+    final files = await DebugLogManager.listLogFiles();
+    if (files.isEmpty) {
+      if (mounted) setState(() => _statusMessage = 'No log files available to share');
+      return;
+    }
+    // Name the shared file `omi_offline_debug_<date>.log` — lowercase, underscored,
+    // no spaces/apostrophes, so it's easy to work with on upload/save targets.
+    // Derived from the on-disk basename (`omi_debug_YYYYMMDD.log`) so the date
+    // matches exactly.
+    final logName = files.first.uri.pathSegments.last;
+
+    String appVersion = 'unknown';
+    try {
+      final packageInfo = await PackageInfo.fromPlatform();
+      appVersion = packageInfo.version;
+    } catch (_) {}
+
+    if (!mounted) return;
+    final fwVersion = context.read<DeviceProvider>().connectedDevice?.firmwareRevision ?? 'unknown';
+    final os = Platform.operatingSystem;
+
+    final datePart = logName.replaceFirst('omi_debug_', '');
+    final shareName = '${os}_${appVersion}_${fwVersion}_omi_offline_debug_$datePart';
+    // Name the XFile (not just the share `subject`) so the name lands on targets
+    // that use the file's own name, not the title.
+    final xFile = XFile(files.first.path, name: shareName);
+    // Use `subject` (share-sheet/email title metadata), not `text`: a `text`
+    // argument is shared as a SEPARATE item alongside the file, so iOS upload/save
+    // targets materialize a second phantom file containing the label string.
+    await SharePlus.instance.share(ShareParams(files: [xFile], subject: shareName));
   }
 
   Widget _buildLogWindow() {
@@ -1427,8 +1345,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           ),
           if (on) ...[
             const SizedBox(height: 4),
-            _dropStatRow('Enabled at', enabledAtLabel, false),
-            _dropStatRow('Bins in adjustment folder', _adjustmentBinCount.toString(), false),
+            DiagStatRow('Enabled at', enabledAtLabel),
+            DiagStatRow('Bins in adjustment folder', _adjustmentBinCount.toString()),
             const SizedBox(height: 10),
             OutlinedButton(
               onPressed: _copyAdjustmentBinsForReprocessing,
@@ -1606,34 +1524,83 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     );
   }
 
-  Widget _buildDropStatsSection() {
+  /// The merged Diagnostics card: firmware counters and the on-device event log in
+  /// one place, behind one switch. Every state (off, no device, reading, populated)
+  /// renders inside the same [DiagCard] shell, so the page no longer jumps several
+  /// hundred pixels the moment counters arrive.
+  Widget _buildDiagnosticsCard() {
+    final enabled = SharedPreferencesUtil().showSdWriteDrops;
+    return DiagCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildDiagnosticsHeader(enabled),
+          if (enabled) ...[
+            const SizedBox(height: 12),
+            _buildDiagnosticsBody(),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDiagnosticsHeader(bool enabled) {
+    return Row(
+      children: [
+        const FaIcon(FontAwesomeIcons.waveSquare, size: 14, color: Colors.white70),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Diagnostics',
+                  style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 2),
+              Text(
+                enabled
+                    ? 'Device counters polled every 2 s, plus the on-device event log.'
+                    : 'Off — nothing is polled, and the device records no events.',
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+        Switch(
+          value: enabled,
+          onChanged: _setDiagnosticsEnabled,
+          activeThumbColor: Colors.deepPurpleAccent,
+        ),
+      ],
+    );
+  }
+
+  Widget _diagPlaceholder(String message) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(
+          children: [
+            const FaIcon(FontAwesomeIcons.circleNotch, size: 12, color: Colors.white38),
+            const SizedBox(width: 8),
+            Text(message, style: const TextStyle(color: Colors.white38, fontSize: 12)),
+          ],
+        ),
+      );
+
+  Widget _buildDiagnosticsBody() {
     final devProvider = Provider.of<DeviceProvider>(context);
     if (!devProvider.isConnected || devProvider.connectedDevice == null) {
-      return const Row(
-        children: [
-          FaIcon(FontAwesomeIcons.circleNotch, size: 13, color: Colors.white38),
-          SizedBox(width: 8),
-          Text('Waiting for device connection…', style: TextStyle(color: Colors.white38, fontSize: 12)),
-        ],
-      );
+      return _diagPlaceholder('Waiting for device connection…');
     }
-
     final stats = _dropStats;
-    if (stats == null) {
-      return const Row(
-        children: [
-          FaIcon(FontAwesomeIcons.circleNotch, size: 13, color: Colors.white38),
-          SizedBox(width: 8),
-          Text('Reading drop counters…', style: TextStyle(color: Colors.white38, fontSize: 12)),
-        ],
-      );
-    }
+    if (stats == null) return _diagPlaceholder('Reading counters…');
 
-    // Every firmware counter here resets to 0 on device reboot, so "Reset all
-    // diagnostics" baselines them uniformly: show the value since the last reset,
-    // clamped at 0 so a stale baseline never renders a negative. (The connect-fail
-    // counters survive reboot and carry their own int baselines below.)
-    final baseline = _dropBaseline;
+    // Every firmware counter here resets to 0 on device reboot, so "Mark baseline"
+    // baselines them uniformly: show the value since the last mark, clamped at 0 so a
+    // stale baseline never renders a negative. The Lifetime segment bypasses the
+    // baseline without discarding it. (The connect-fail counters survive reboot and
+    // carry their own int baselines.)
+    final baseline = _showLifetime ? null : _dropBaseline;
+    final connBaseline = _showLifetime ? null : _connFailBaseline;
+    final estabBaseline = _showLifetime ? null : _estabFailBaseline;
     int rel(int current, int Function(DeviceDropStats b) pick) =>
         baseline == null ? current : (current - pick(baseline)).clamp(0, current);
 
@@ -1641,10 +1608,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final frames = rel(stats.streamFrameDrops, (b) => b.streamFrameDrops);
     final codec = rel(stats.codecFrameDrops, (b) => b.codecFrameDrops);
     final boot = rel(stats.bootFrameDrops, (b) => b.bootFrameDrops);
-    // Peak depth is the firmware's monotonic since-boot high-water mark, not an
-    // incremental counter, so it can't be delta-subtracted or meaningfully reset
-    // (a reset snaps straight back on the next reading). Shown raw, as-is.
-    final peak = stats.msgqPeakDepth;
     final writeFair = rel(stats.writeFairActivations, (b) => b.writeFairActivations);
     final prioStarts = rel(stats.priorityRecordStarts, (b) => b.priorityRecordStarts);
     final prioStops = rel(stats.priorityRecordStops, (b) => b.priorityRecordStops);
@@ -1652,156 +1615,326 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final emptyRot = rel(stats.emptyBinRotations, (b) => b.emptyBinRotations);
     final seEmits = rel(stats.sessionEndMarkerEmits, (b) => b.sessionEndMarkerEmits);
     final pauseSaves = rel(stats.markerPauseGateSaves, (b) => b.markerPauseGateSaves);
+    final connFails = connBaseline == null ? stats.failedConnCount : (stats.failedConnCount - connBaseline);
+    final estabFails = estabBaseline == null ? stats.estabFailCount : (stats.estabFailCount - estabBaseline);
+
+    // Peak depth is the firmware's monotonic since-boot high-water mark, not an
+    // incremental counter, so it is never delta-subtracted and never baselined (a
+    // reset would snap straight back on the next reading).
+    final peak = stats.msgqPeakDepth;
+    final peakHot = peak >= (stats.sdQueueMax * 0.8).round();
+
     // Peak thread stack usage vs the configured stack sizes (firmware constants,
-    // oo-2.7.2+: SD_WORKER_STACK_SIZE=12288, codec_stack=23096 — the rebalance moved
-    // 4 KB from the over-provisioned SD worker to the codec thread). Gauges, shown
-    // raw. Keep in sync with the firmware or the percentage/hot-threshold is wrong.
-    // Highlighted only when usage is close to the ceiling (>85% = overflow risk).
+    // oo-2.7.2+: SD_WORKER_STACK_SIZE=12288, codec_stack=23096). Gauges, shown raw.
+    // Keep in sync with the firmware or the fill fraction is wrong.
     const int sdWorkerStackSize = 12288;
     const int codecStackSize = 23096;
     String stackLabel(int used, int size) =>
         used == 0 ? '—' : '${(used / 1024).toStringAsFixed(1)} / ${(size / 1024).toStringAsFixed(1)} KB';
     final sdStackHot = stats.sdWorkerStackUsed > sdWorkerStackSize * 0.85;
     final codecStackHot = stats.codecStackUsed > codecStackSize * 0.85;
-    final hasFreshDrops = blocks > 0 || frames > 0 || codec > 0;
-    final connFails = _connFailBaseline == null ? stats.failedConnCount : (stats.failedConnCount - _connFailBaseline!);
-    final estabFails = _estabFailBaseline == null ? stats.estabFailCount : (stats.estabFailCount - _estabFailBaseline!);
 
-    final color = hasFreshDrops ? Colors.amber : Colors.white70;
+    // Ring-backend SD health. Parsed and written to the debug log since the ring
+    // backend landed, but never shown here: on the ring these are the two readings
+    // that separate "the NAND stalled" from "the NAND rejected the write". Reported
+    // by the firmware as since-boot and absent from the baseline snapshot, so they
+    // are shown raw in both views.
+    final isRing = _storageBackend == 1;
+    final ringSlow = stats.ringMaxIoMs >= 500;
+    final ringErrs = stats.ringIoErrors;
 
-    String lastDropLabel;
+    // "Since baseline" is derived from the block-drop count rising, not from the
+    // drop's uptime: a reboot that a zero-counter baseline can't flag resets the
+    // device uptime below the captured value, which an uptime comparison would
+    // misread as "before the baseline" — hiding a genuine post-baseline drop as
+    // "never" while the count row shows it. Keying off the same delta keeps the two
+    // rows consistent.
     final sinceMs = stats.msSinceLastBlockDrop;
-    // "Since reset" is derived from the block-drop count rising (blocks > 0), not
-    // the drop's uptime: a reboot that a zero-counter baseline can't flag (see
-    // looksRebootedFrom) resets the device uptime below the captured value, which
-    // an uptime comparison would misread as "before reset" — hiding a genuine
-    // post-reset drop as "never" while the count row shows it. Keying off the same
-    // delta keeps the two rows consistent.
-    final noDropSinceReset = baseline != null && blocks == 0;
-    if (sinceMs == null || noDropSinceReset) {
-      lastDropLabel = 'never';
+    final noDropSinceBaseline = baseline != null && blocks == 0;
+    final lastDropLabel = (sinceMs == null || noDropSinceBaseline) ? 'never' : '${_formatDuration(sinceMs)} ago';
+
+    // The verdict. Twenty rows of mostly-zero used to leave "is anything wrong?" as
+    // an exercise for the reader; problems are faults that lost audio or a link,
+    // watches are things that are merely worth an eye.
+    final problems = <String>[];
+    if (blocks > 0) problems.add('$blocks block drop${blocks == 1 ? '' : 's'}');
+    if (frames > 0) problems.add('$frames frame drop${frames == 1 ? '' : 's'}');
+    if (codec > 0) problems.add('$codec codec drop${codec == 1 ? '' : 's'}');
+    if (markerDrops > 0) problems.add('$markerDrops marker write drop${markerDrops == 1 ? '' : 's'}');
+    if (isRing && ringErrs > 0) problems.add('$ringErrs NAND IO error${ringErrs == 1 ? '' : 's'}');
+    if (connFails > 0 || estabFails > 0) {
+      final n = connFails + estabFails;
+      problems.add('$n BLE connect failure${n == 1 ? '' : 's'}');
+    }
+    final watches = <String>[];
+    if (boot > 0) watches.add('$boot boot-window drop${boot == 1 ? '' : 's'}');
+    if (emptyRot > 0) watches.add('$emptyRot empty bin rotation${emptyRot == 1 ? '' : 's'}');
+    if (prioStarts > prioStops) watches.add('priority recording left open');
+    if (prioStops > 0 && seEmits == 0) watches.add('stop with no session-end marker');
+    if (peakHot) watches.add('SD queue near its limit');
+    if (sdStackHot || codecStackHot) watches.add('thread stack near ceiling');
+    if (isRing && ringSlow) watches.add('slow SD op (${stats.ringMaxIoMs} ms)');
+
+    final uptime = _formatDuration(stats.currentUptimeMs);
+    final DiagLevel verdict =
+        problems.isNotEmpty ? DiagLevel.bad : (watches.isNotEmpty ? DiagLevel.warn : DiagLevel.ok);
+    final String headline;
+    final String detail;
+    if (problems.isNotEmpty) {
+      headline = '${problems.length} issue${problems.length == 1 ? '' : 's'} · up $uptime';
+      detail = problems.join(' · ');
+    } else if (watches.isNotEmpty) {
+      headline = '${watches.length} to watch · up $uptime';
+      detail = watches.join(' · ');
     } else {
-      lastDropLabel = '${_formatDuration(sinceMs)} ago';
+      headline = 'All clear · up $uptime';
+      detail = 'No drops, no marker loss, no BLE failures.';
     }
 
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1A1A1C),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF2C2C2E)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              FaIcon(FontAwesomeIcons.solidHardDrive, size: 13, color: color),
-              const SizedBox(width: 8),
-              Text(
-                (baseline == null && _connFailBaseline == null) ? 'Diagnostics' : 'Diagnostics (since reset)',
-                style: TextStyle(color: color, fontSize: 14, fontWeight: FontWeight.w600),
+    // Freshness. The notify subscription, the READ fallback and the staleness
+    // watchdog were all invisible: a link that went quiet left the card showing
+    // frozen numbers with nothing to say so. This reports which path is feeding the
+    // card and how old its data is.
+    final lastNotify = _lastDropNotifyElapsed;
+    final dataAge = DateTime.now().difference(stats.readAt);
+    final String freshLabel;
+    final DiagLevel freshLevel;
+    if (lastNotify != null && _dropClock.elapsed - lastNotify < _dropSilenceTimeout) {
+      freshLabel = 'live';
+      freshLevel = DiagLevel.ok;
+    } else if (dataAge < _dropSilenceTimeout) {
+      freshLabel = 'polling';
+      freshLevel = DiagLevel.info;
+    } else {
+      freshLabel = 'stale ${_formatDuration(dataAge.inMilliseconds)}';
+      freshLevel = DiagLevel.warn;
+    }
+
+    final hasBaseline = _dropBaseline != null || _connFailBaseline != null;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        DiagStatusBanner(
+          level: verdict,
+          headline: headline,
+          detail: detail,
+          freshness: freshLabel,
+          freshnessLevel: freshLevel,
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            // Which audio backend the firmware mounted this boot. "—" when unknown
+            // (firmware predates the status_flags byte, or it hasn't been read yet).
+            DiagPill(text: isRing ? 'Ring' : (_storageBackend == 0 ? 'LittleFS' : 'backend —')),
+            const Spacer(),
+            // Taking a baseline is reversible now: the stored snapshot is untouched,
+            // these only choose which view the rows render.
+            if (hasBaseline) ...[
+              DiagPill(
+                text: 'Since baseline',
+                selected: !_showLifetime,
+                onTap: () => setState(() => _showLifetime = false),
+              ),
+              const SizedBox(width: 6),
+              DiagPill(
+                text: 'Lifetime',
+                selected: _showLifetime,
+                onTap: () => setState(() => _showLifetime = true),
               ),
             ],
-          ),
-          const SizedBox(height: 10),
-          // Which audio backend the firmware mounted this boot. "Ring" = the raw
-          // circular-log backend (no LittleFS allocator scan); "LittleFS" = the
-          // default. "—" when unknown (firmware predates the status_flags byte, or
-          // not yet read).
-          _dropStatRow(
-              'Storage backend', _storageBackend == 1 ? 'Ring' : (_storageBackend == 0 ? 'LittleFS' : '—'), false),
-          _dropStatRow('440 B blocks dropped', blocks.toString(), hasFreshDrops),
-          _dropStatRow('Audio frames dropped (SD queue)', frames.toString(), hasFreshDrops),
-          _dropStatRow('Audio dropped pre-encode (codec)', codec.toString(), codec > 0),
-          _dropStatRow('Boot-window frame drops', boot.toString(), false),
-          _dropStatRow('Last block drop', lastDropLabel, hasFreshDrops),
-          _dropStatRow('Device uptime', _formatDuration(stats.currentUptimeMs), false),
-          // Write-path headroom. Peak depth is the firmware's since-boot high-water mark
-          // out of the queue limit (stats.sdQueueMax — 120 on oo-2.6.2+, 100 on older
-          // firmware); near the limit means the write path is riding the drop edge. It's
-          // monotonic on-device, so it's shown since boot and excluded from "Zero all
-          // counters". Fairness activations just show the read-vs-write arbiter engaging
-          // — not a fault.
-          _dropStatRow('SD queue peak depth (since boot)', '$peak / ${stats.sdQueueMax}',
-              peak >= (stats.sdQueueMax * 0.8).round()),
-          _dropStatRow('Write-fairness activations', writeFair.toString(), false),
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 6),
-            child: Divider(color: Color(0xFF2C2C2E), height: 1),
-          ),
-          // Priority Recording lifecycle (0x0062, since reset). starts > stops means
-          // a recording was left open; marker-write drops and empty-bin rotations are
-          // the on-device fingerprint of a lost Priority Recording (0xFFFFFFF8 marker
-          // + audio dropped at the rotate). Amber when a start has no matching stop or
-          // either loss counter is nonzero.
-          _dropStatRow('Priority recordings started', prioStarts.toString(), false),
-          _dropStatRow('Priority recordings stopped', prioStops.toString(), prioStarts > prioStops),
-          _dropStatRow('Marker writes dropped', markerDrops.toString(), markerDrops > 0),
-          _dropStatRow('Empty bin rotations', emptyRot.toString(), emptyRot > 0),
-          // Confirms the stop marker (0xFFFFFFFC) is written, not lost: "Session-end
-          // marker emits" is how many times the firmware finalize path fired; "Markers
-          // kept at SD pause gate" is how many marker blocks were written through a
-          // pause instead of dropped (before oo-2.5.9 these were the silent loss). Both
-          // moving with recordings finalizing = the fix working; emits flat means the
-          // finalize path never fired. Kept is a rescue, so it is not highlighted.
-          // Amber when a priority stop happened but no session-end marker was emitted
-          // (stops > 0, emits == 0) — that's the finalize path never firing, the exact
-          // failure these counters exist to catch.
-          _dropStatRow('Session-end marker emits', seEmits.toString(), prioStops > 0 && seEmits == 0),
-          _dropStatRow('Markers kept at SD pause gate', pauseSaves.toString(), false),
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 6),
-            child: Divider(color: Color(0xFF2C2C2E), height: 1),
-          ),
-          // Peak thread stack usage (0x0062). Read after a heavy session (an allocator
-          // scan is the SD worker's deepest path; busy encoding is the codec's) so the
-          // high-water reflects the worst case. Big gap below the configured size means
-          // reclaimable RAM; amber = riding the ceiling (overflow risk, do NOT trim).
-          _dropStatRow('SD worker stack', stackLabel(stats.sdWorkerStackUsed, sdWorkerStackSize), sdStackHot),
-          _dropStatRow('Codec stack', stackLabel(stats.codecStackUsed, codecStackSize), codecStackHot),
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 6),
-            child: Divider(color: Color(0xFF2C2C2E), height: 1),
-          ),
-          // BLE connect failures. The firmware counters are persisted across
-          // reboots; these baselines are too, unlike the SD-drop baseline.
-          // "Died at establishment" is the one that identifies a "visible but
-          // unconnectable" outage — if the phone logs 0x3e while this stays 0,
-          // the Omi never heard the connect requests and the phone is at fault.
-          // See NOTES.md "BLE: advertising but won't connect".
-          _dropStatRow('BLE connect failures', connFails.toString(), connFails > 0),
-          _dropStatRow('Died at establishment (0x3e)', estabFails.toString(), estabFails > 0),
-          // Gated on the since-reset deltas, not the lifetime totals: the adv mode
-          // describes whichever failure the two rows above are reporting. Keying it on
-          // the totals kept the row visible (and red) after a reset that zeroed both.
-          if (connFails > 0 || estabFails > 0)
-            _dropStatRow('Last fail adv mode', stats.lastFailedConnDuringSlowAdv ? 'slow (1s)' : 'fast', true),
-          const SizedBox(height: 10),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton(
-              onPressed: _resetAllDiagnostics,
-              style: OutlinedButton.styleFrom(
-                side: const BorderSide(color: Colors.amber, width: 1),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                padding: const EdgeInsets.symmetric(vertical: 12),
+          ],
+        ),
+        const SizedBox(height: 4),
+        DiagGroup(
+          title: 'SD write path',
+          allClear: blocks == 0 &&
+              frames == 0 &&
+              codec == 0 &&
+              boot == 0 &&
+              !peakHot &&
+              !(isRing && (ringErrs > 0 || ringSlow)),
+          clearSummary: 'no drops · queue $peak/${stats.sdQueueMax}',
+          rows: [
+            DiagStatRow('440 B blocks dropped', '$blocks', level: blocks > 0 ? DiagLevel.bad : DiagLevel.info),
+            DiagStatRow('Audio frames dropped (SD queue)', '$frames',
+                level: frames > 0 ? DiagLevel.bad : DiagLevel.info),
+            DiagStatRow('Audio dropped pre-encode (codec)', '$codec',
+                level: codec > 0 ? DiagLevel.bad : DiagLevel.info),
+            DiagStatRow('Boot-window frame drops', '$boot', level: boot > 0 ? DiagLevel.warn : DiagLevel.info),
+            DiagStatRow('Last block drop', lastDropLabel, level: blocks > 0 ? DiagLevel.warn : DiagLevel.info),
+            DiagGaugeRow(
+              label: 'SD queue peak (since boot)',
+              used: peak,
+              total: stats.sdQueueMax,
+              valueLabel: '$peak / ${stats.sdQueueMax}',
+              level: peakHot ? DiagLevel.warn : DiagLevel.info,
+            ),
+            // The read-vs-write arbiter engaging, not a fault.
+            DiagStatRow('Write-fairness activations', '$writeFair'),
+            if (isRing)
+              DiagStatRow('Slowest SD op (since boot)', '${stats.ringMaxIoMs} ms (${stats.ringMaxIoOp})',
+                  level: ringSlow ? DiagLevel.warn : DiagLevel.info),
+            if (isRing)
+              DiagStatRow('NAND IO errors', '$ringErrs', level: ringErrs > 0 ? DiagLevel.bad : DiagLevel.info),
+          ],
+        ),
+        DiagGroup(
+          title: 'Recording markers',
+          allClear: markerDrops == 0 && emptyRot == 0 && prioStarts <= prioStops && !(prioStops > 0 && seEmits == 0),
+          clearSummary:
+              (prioStarts == 0 && prioStops == 0) ? 'no activity' : '$prioStarts started · $prioStops stopped',
+          rows: [
+            DiagStatRow('Priority recordings started', '$prioStarts'),
+            DiagStatRow('Priority recordings stopped', '$prioStops',
+                level: prioStarts > prioStops ? DiagLevel.warn : DiagLevel.info),
+            DiagStatRow('Marker writes dropped', '$markerDrops',
+                level: markerDrops > 0 ? DiagLevel.bad : DiagLevel.info),
+            DiagStatRow('Empty bin rotations', '$emptyRot', level: emptyRot > 0 ? DiagLevel.warn : DiagLevel.info),
+            // Flagged when a priority stop happened but no session-end marker was
+            // emitted — the finalize path never firing, the exact failure these
+            // counters exist to catch. "Kept at the pause gate" is a rescue, not a
+            // loss, so it is never highlighted.
+            DiagStatRow('Session-end marker emits', '$seEmits',
+                level: prioStops > 0 && seEmits == 0 ? DiagLevel.warn : DiagLevel.info),
+            DiagStatRow('Markers kept at SD pause gate', '$pauseSaves'),
+          ],
+        ),
+        DiagGroup(
+          title: 'Memory',
+          allClear: !sdStackHot && !codecStackHot,
+          clearSummary: stats.sdWorkerStackUsed == 0 ? 'not reported' : 'headroom ok',
+          rows: [
+            // Read after a heavy session (an allocator scan is the SD worker's deepest
+            // path; busy encoding is the codec's) so the high-water reflects the worst
+            // case. A big gap below the configured size means reclaimable RAM; a full
+            // bar means overflow risk — do NOT trim.
+            DiagGaugeRow(
+              label: 'SD worker stack',
+              used: stats.sdWorkerStackUsed,
+              total: sdWorkerStackSize,
+              valueLabel: stackLabel(stats.sdWorkerStackUsed, sdWorkerStackSize),
+              level: sdStackHot ? DiagLevel.warn : DiagLevel.info,
+            ),
+            DiagGaugeRow(
+              label: 'Codec stack',
+              used: stats.codecStackUsed,
+              total: codecStackSize,
+              valueLabel: stackLabel(stats.codecStackUsed, codecStackSize),
+              level: codecStackHot ? DiagLevel.warn : DiagLevel.info,
+            ),
+          ],
+        ),
+        DiagGroup(
+          title: 'BLE link',
+          allClear: connFails == 0 && estabFails == 0,
+          clearSummary: 'no failures',
+          rows: [
+            // "Died at establishment" is the one that identifies a "visible but
+            // unconnectable" outage — if the phone logs 0x3e while this stays 0, the
+            // Omi never heard the connect requests and the phone is at fault. See
+            // NOTES.md "BLE: advertising but won't connect".
+            DiagStatRow('Connect failures', '$connFails', level: connFails > 0 ? DiagLevel.bad : DiagLevel.info),
+            DiagStatRow('Died at establishment (0x3e)', '$estabFails',
+                level: estabFails > 0 ? DiagLevel.bad : DiagLevel.info),
+            // Contextual, not a fault of its own: it describes whichever failure the
+            // rows above are reporting, so it only appears alongside one — and it is
+            // gated on the displayed deltas, so a baseline that zeroed both hides it.
+            if (connFails > 0 || estabFails > 0)
+              DiagStatRow('Last fail adv mode', stats.lastFailedConnDuringSlowAdv ? 'slow (1 s)' : 'fast'),
+          ],
+        ),
+        if (devProvider.diagLogSupported) _buildEventsGroup(devProvider, stats),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton(
+                onPressed: _resetAllDiagnostics,
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Colors.white24, width: 1),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+                child:
+                    const Text('Mark baseline', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold)),
               ),
-              child: const Text('Zero all counters (display only)',
-                  style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
             ),
-          ),
-          const Padding(
-            padding: EdgeInsets.only(top: 6),
-            child: Text(
-              'Snapshots the current values as a baseline so the drop and failure counters above read 0 '
-              'from now. Since-boot gauges (peak depth, stacks, uptime) are left live. Nothing is cleared '
-              'on the device — it keeps its own totals until it reboots.',
-              style: TextStyle(color: Colors.white38, fontSize: 11, height: 1.3),
+            const SizedBox(width: 10),
+            Expanded(
+              child: OutlinedButton(
+                onPressed: _copyDiagnosticsSnapshot,
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Colors.deepPurpleAccent, width: 1),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+                child: const Text('Copy snapshot',
+                    style: TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold)),
+              ),
             ),
+          ],
+        ),
+        Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Text(
+            hasBaseline
+                ? 'Counters read as a delta from the marked baseline. Nothing was cleared on the device — switch to '
+                    'Lifetime for its own totals. Since-boot gauges (queue peak, stacks, uptime) stay live in both views.'
+                : 'Mark baseline snapshots the current values so the drop and failure counters read 0 from now on. '
+                    'Display only — the device keeps its own totals until it reboots.',
+            style: const TextStyle(color: Colors.white38, fontSize: 11, height: 1.3),
           ),
-        ],
-      ),
+        ),
+      ],
+    );
+  }
+
+  /// Copies a plain-text diagnostics snapshot to the clipboard. Reporting a problem
+  /// used to mean screenshotting twenty rows; this is the same key=value shape the
+  /// debug log already records, so a pasted snapshot and a shared log line up.
+  ///
+  /// Deliberately reports the device's LIFETIME values, not the baseline-relative
+  /// view — a bug report wants what the firmware actually counted.
+  Future<void> _copyDiagnosticsSnapshot() async {
+    final stats = _dropStats;
+    if (stats == null) return;
+    String appVersion = 'unknown';
+    try {
+      appVersion = (await PackageInfo.fromPlatform()).version;
+    } catch (_) {}
+    if (!mounted) return;
+    final devProvider = context.read<DeviceProvider>();
+    final fw = devProvider.connectedDevice?.firmwareRevision ?? 'unknown';
+    final backend = _storageBackend == 1 ? 'ring' : (_storageBackend == 0 ? 'littlefs' : 'unknown');
+
+    final b = StringBuffer()
+      ..writeln('omi diagnostics — app $appVersion / fw $fw / backend $backend')
+      ..writeln('captured ${DateTime.now().toIso8601String()} · device up ${_formatDuration(stats.currentUptimeMs)}')
+      ..writeln('sd: blocks=${stats.blockDrops} frames=${stats.streamFrameDrops} '
+          'codec=${stats.codecFrameDrops} boot=${stats.bootFrameDrops}')
+      ..writeln('queue: peak=${stats.msgqPeakDepth}/${stats.sdQueueMax} writeFair=${stats.writeFairActivations}')
+      ..writeln('markers: starts=${stats.priorityRecordStarts} stops=${stats.priorityRecordStops} '
+          'drops=${stats.markerWriteDrops} emptyRot=${stats.emptyBinRotations} '
+          'seEmits=${stats.sessionEndMarkerEmits} pauseSaves=${stats.markerPauseGateSaves}')
+      ..writeln('stacks: sdWorker=${stats.sdWorkerStackUsed}B codec=${stats.codecStackUsed}B')
+      ..writeln('ring: maxIo=${stats.ringMaxIoMs}ms(${stats.ringMaxIoOp}) ioErrors=${stats.ringIoErrors}')
+      ..writeln('ble: connFail=${stats.failedConnCount} estab0x3e=${stats.estabFailCount} '
+          'lastAdv=${stats.lastFailedConnDuringSlowAdv ? 'slow' : 'fast'}');
+
+    final records = devProvider.diagLogRecords;
+    if (records.isNotEmpty) {
+      b.writeln('events (${records.length}, oldest first, ${devProvider.diagLogDroppedCount} dropped):');
+      for (final r in records) {
+        b.writeln('  $r');
+      }
+    }
+
+    await Clipboard.setData(ClipboardData(text: b.toString()));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Diagnostics snapshot copied to clipboard')),
     );
   }
 
@@ -1826,180 +1959,126 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     );
   }
 
-  // On-device diagnostic event log viewer (dev tool). Self-hides unless the
-  // connected firmware advertises the capability (OMI_FEATURE_DIAG_LOG, bit 12).
-  // The log is drained + acked on connect (when enabled); this surfaces the latest
-  // batch and lets a developer toggle capture, pull on demand, and clear.
-  Widget _buildDiagLogSection() {
-    final devProvider = Provider.of<DeviceProvider>(context);
-    if (!devProvider.isConnected || devProvider.connectedDevice == null || !devProvider.diagLogSupported) {
-      return const SizedBox.shrink();
-    }
-
-    final enabled = SharedPreferencesUtil().diagLogEnabled;
+  /// The on-device diagnostic event log, folded into the Diagnostics card as one
+  /// more group. It timestamps and contextualises the same health events the
+  /// counters above only total, so reading the two side by side is the whole point —
+  /// they used to be separate cards behind separate switches, which meant a bench
+  /// session routinely ran with half the instrumentation off.
+  ///
+  /// Self-hides unless the connected firmware advertises the capability
+  /// (OMI_FEATURE_DIAG_LOG, bit 12). The log is drained + acked on connect when
+  /// enabled; this surfaces the latest batch and allows an on-demand pull or clear.
+  Widget _buildEventsGroup(DeviceProvider devProvider, DeviceDropStats stats) {
     final records = devProvider.diagLogRecords;
     final dropped = devProvider.diagLogDroppedCount;
-    // Newest first for display.
-    final display = records.reversed.take(200).toList();
 
-    return Padding(
-      padding: const EdgeInsets.only(top: 16),
-      child: Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1A1A1C),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: const Color(0xFF2C2C2E)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+    // Only offer filters for categories actually present, so there are no dead chips.
+    final categories = records.map(diagEventCategory).toSet().toList()..sort((a, b) => a.index.compareTo(b.index));
+    // Resolved locally rather than by mutating _eventFilter: a drain can empty the
+    // category the filter points at, and rewriting state during build is a trap.
+    final activeFilter = (_eventFilter != null && categories.contains(_eventFilter)) ? _eventFilter : null;
+    final filtered = activeFilter == null ? records : records.where((r) => diagEventCategory(r) == activeFilter);
+    // Newest first, capped — the device ring holds 128 but a drain concatenates batches.
+    final display = filtered.toList().reversed.take(200).toList();
+    final worst = diagWorst(records.map(diagEventLevel));
+
+    final meta = StringBuffer('${records.length} held');
+    if (dropped > 0) meta.write(' · $dropped dropped');
+    final pulledAt = devProvider.diagLogLastPulledAt;
+    if (pulledAt != null) meta.write(' · pulled ${_hhmm(pulledAt)}');
+
+    return DiagGroup(
+      title: 'Events (${records.length})',
+      allClear: records.isEmpty && dropped == 0,
+      clearSummary: 'nothing captured',
+      trailing: categories.length > 1
+          ? Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                DiagPill(text: 'All', selected: activeFilter == null, onTap: () => setState(() => _eventFilter = null)),
+                for (final c in categories)
+                  DiagPill(
+                    text: c.label,
+                    selected: activeFilter == c,
+                    onTap: () => setState(() => _eventFilter = c),
+                  ),
+              ],
+            )
+          : null,
+      rows: [
+        Row(
           children: [
-            const Row(
-              children: [
-                FaIcon(FontAwesomeIcons.listUl, size: 13, color: Colors.white70),
-                SizedBox(width: 8),
-                Text('Event log (dev)',
-                    style: TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.w600)),
-              ],
-            ),
-            SwitchListTile(
-              title: const Text('On-device event log',
-                  style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600)),
-              subtitle: Text(
-                  'Records per-event timing/context for the health events the counters only total. '
-                  'Off by default; not persisted on the device.',
-                  style: TextStyle(color: Colors.grey.shade400, fontSize: 12)),
-              value: enabled,
-              onChanged: _diagLogBusy
-                  ? null
-                  : (val) {
-                      SharedPreferencesUtil().diagLogEnabled = val;
-                      setState(() {});
-                      _runDiagLogAction(() async {
-                        final reached = await devProvider.pushDiagLogEnabled();
-                        if (!reached) {
-                          // The device write was skipped (a sync holds the storage
-                          // lock) or failed. The pref is kept and re-pushed on the
-                          // next connect, but say so instead of implying it applied.
-                          _reportDiagLogResult(
-                              'Saved, but the device is busy syncing — it will apply on the next connect.');
-                          return;
-                        }
-                        // Pull immediately on enable so a bench session starts clean.
-                        if (val) await devProvider.pullDiagLog();
-                      });
-                    },
-              activeThumbColor: Colors.deepPurpleAccent,
-              contentPadding: EdgeInsets.zero,
-            ),
-            _dropStatRow('Records held', records.length.toString(), false),
-            _dropStatRow('Dropped (ring overflow)', dropped.toString(), dropped > 0),
-            if (devProvider.diagLogLastPulledAt != null)
-              _dropStatRow('Last pulled', _shortClock(devProvider.diagLogLastPulledAt!), false),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: _diagLogBusy ? null : () => _runDiagLogAction(() => devProvider.pullDiagLog()),
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Colors.deepPurpleAccent, width: 1),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                    child: Text(_diagLogBusy ? 'Working…' : 'Pull now',
-                        style: const TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold)),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: _diagLogBusy ? null : () => _runDiagLogAction(() => devProvider.clearDiagLog()),
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Colors.white24, width: 1),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                    child: const Text('Clear', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold)),
-                  ),
-                ),
-              ],
-            ),
-            if (display.isNotEmpty) ...[
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 8),
-                child: Divider(color: Color(0xFF2C2C2E), height: 1),
-              ),
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 260),
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  padding: EdgeInsets.zero,
-                  itemCount: display.length,
-                  itemBuilder: (context, i) => _diagLogRow(display[i]),
-                ),
-              ),
-            ] else
-              const Padding(
-                padding: EdgeInsets.only(top: 8),
-                child: Text('No events captured yet.', style: TextStyle(color: Colors.white38, fontSize: 12)),
-              ),
+            Expanded(child: Text(meta.toString(), style: const TextStyle(color: Colors.white38, fontSize: 11))),
+            // Overflow means events happened while the phone was away and were never
+            // captured — worth knowing before drawing conclusions from what's here.
+            if (dropped > 0)
+              const DiagPill(text: 'ring overflow', level: DiagLevel.warn)
+            else if (worst == DiagLevel.bad || worst == DiagLevel.warn)
+              DiagPill(text: worst == DiagLevel.bad ? 'faults' : 'warnings', level: worst),
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _diagLogRow(DiagLogRecord r) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text('#${r.seq}  ${r.label}',
-                    style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
-              ),
-              Text('@${_formatDuration(r.uptimeMs)}',
-                  style: const TextStyle(
-                    color: Colors.white54,
-                    fontSize: 11,
-                    fontFeatures: [FontFeature.tabularFigures()],
-                  )),
-            ],
-          ),
-          Text(r.description, style: const TextStyle(color: Colors.white54, fontSize: 11, height: 1.3)),
-        ],
-      ),
-    );
-  }
-
-  static String _shortClock(DateTime t) =>
-      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}:${t.second.toString().padLeft(2, '0')}';
-
-  Widget _dropStatRow(String label, String value, bool emphasize) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(label, style: const TextStyle(color: Colors.white70, fontSize: 12)),
-          ),
-          Text(
-            value,
-            style: TextStyle(
-              color: emphasize ? Colors.amber : Colors.white,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              fontFeatures: const [FontFeature.tabularFigures()],
+        const SizedBox(height: 8),
+        if (display.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 6),
+            child: Text('No events match this filter.', style: TextStyle(color: Colors.white38, fontSize: 12)),
+          )
+        else
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 280),
+            child: ListView.builder(
+              shrinkWrap: true,
+              padding: EdgeInsets.zero,
+              itemCount: display.length,
+              itemBuilder: (context, i) {
+                final r = display[i];
+                // Anchor the device's uptime clock to phone time using the same read
+                // that produced the counters, so an event can be lined up against the
+                // app-side debug log above. Skipped when the record post-dates the
+                // read (a notification can land between batches), which would
+                // otherwise render a wall clock in the future.
+                final wall = stats.currentUptimeMs >= r.uptimeMs
+                    ? stats.readAt.subtract(Duration(milliseconds: stats.currentUptimeMs - r.uptimeMs))
+                    : null;
+                return DiagEventRow(record: r, uptimeLabel: '@${_formatDuration(r.uptimeMs)}', wallClock: wall);
+              },
             ),
           ),
-        ],
-      ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton(
+                onPressed: _diagLogBusy ? null : () => _runDiagLogAction(() => devProvider.pullDiagLog()),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Colors.deepPurpleAccent, width: 1),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                ),
+                child: Text(_diagLogBusy ? 'Working…' : 'Pull now',
+                    style: const TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold)),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: OutlinedButton(
+                onPressed: _diagLogBusy ? null : () => _runDiagLogAction(() => devProvider.clearDiagLog()),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Colors.white24, width: 1),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                ),
+                child: const Text('Clear', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold)),
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
+
+  static String _hhmm(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 
   static String _formatDuration(int ms) {
     if (ms < 1000) return '${ms}ms';
