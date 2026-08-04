@@ -33,8 +33,8 @@
  *   sectors 256..END  audio ring      (append-only circular byte log)
  *
  * DURABILITY INVARIANT (never claim un-synced audio):
- *   sd_ring_append() stages bytes and writes full sectors as they fill.
- *   sd_ring_sync() writes the partial tail sector, CTRL_SYNCs the disk, and
+ *   sd_ring_append() stages bytes in RAM and flushes complete sectors once the
+ *   stage fills. sd_ring_sync() writes everything still staged, CTRL_SYNCs, and
  *   ONLY THEN writes a fresh cursor record (advanced head_abs) to the next
  *   cursor-log slot. If power dies before the cursor write, the cursor still
  *   points at the old head, so those bytes simply aren't claimed — the safe
@@ -76,6 +76,60 @@
 /* segment.flags bits */
 #define RING_SEG_FLAG_ACKED   (1u << 0) /* phone synced + deleted; tail may advance past it */
 #define RING_SEG_FLAG_OPEN    (1u << 1) /* currently-recording segment; excluded from the sync list */
+
+/* ------------------------------------------------------------------ */
+/* Host-provided RAM and wiring (see sd_ring_init)                    */
+/* ------------------------------------------------------------------ */
+/* Audio is staged in RAM and flushed to the NAND in large, page-aligned batches
+ * instead of one 512 B sector at a time. A sub-page (512 B) write forces the NAND
+ * FTL to read-modify-write the whole page — on-device that showed ~300 ms write
+ * stalls and no throughput headroom, so audio dropped the moment anything else
+ * loaded the card. Batching to a page multiple removes the amplification.
+ *
+ * SIZE (80 sectors = 40 KB ≈ 8 s of audio at the measured ~5 KB/s ingest) is set
+ * to match the LittleFS path's 44,000 B write_batch_buffer (~8.6 s), and that is
+ * the whole point: the flush cadence sets how often the SPI bus and NAND are
+ * powered up, which was the dominant idle-current difference between the two
+ * backends. At the previous 4 KB the ring woke the bus ~10x more often than
+ * LittleFS for the same audio. The stage is NOT owned here — sd_card.c passes in
+ * scratch it shares with the LittleFS batch buffer (exactly one backend is live
+ * per boot), so matching LittleFS's power profile costs zero additional RAM.
+ *
+ * Growing the stage does NOT widen the crash-loss window: that is bounded by
+ * RING_SYNC_BYTES (256 KB) and the 60 s fsync backstop in sd_card.c, both far
+ * larger, and sd_ring_sync() flushes the stage before committing the cursor.
+ *
+ *   Invariant: the bytes [head_abs - stage_fill, head_abs) live in
+ *   stage[0 .. stage_fill) and are NOT yet on disk; everything before that IS.
+ *   The on-disk "written head" (head_abs - stage_fill) only ever advances by
+ *   whole sectors, so it stays sector-aligned — which write_run() and
+ *   flush_full_sectors() depend on. */
+#define RING_STAGE_SECTORS 80u
+#define RING_STAGE_BYTES   (RING_STAGE_SECTORS * RING_SECTOR_SIZE)
+
+/* One NAND page per disk op. A full-stage flush is issued as a run of these
+ * rather than one 40 KB write, so the sd_worker never sits inside a single long
+ * disk op — mirroring flush_batch_buffer_chunked() on the LittleFS path, which
+ * chunks at 4 KB for exactly this reason. */
+#define RING_FLUSH_CHUNK_SECTORS 8u
+
+/* Wiring supplied by sd_card.c before the first mount/format. Fields are copied,
+ * so the struct itself may be a temporary. */
+typedef struct {
+    /* Scratch for the append stage; at least RING_STAGE_BYTES, 4-byte aligned. */
+    uint8_t *stage;
+    size_t   stage_bytes;
+    /* Called immediately before any disk access, so the caller can leave the SPI
+     * bus suspended until the ring genuinely touches the NAND (most appends only
+     * memcpy into the stage). MUST be cheap and idempotent — it runs per disk op.
+     * Optional; NULL means the caller keeps the bus awake itself. */
+    void (*io_wake)(void);
+    /* True when a higher-priority request (a BLE read) is waiting. A multi-chunk
+     * flush checks this between chunks and returns early, leaving the remainder
+     * staged — which is the ring's normal not-yet-durable state, so it costs
+     * nothing. Optional; NULL means never yield. */
+    bool (*io_busy)(void);
+} sd_ring_host_t;
 
 /* ------------------------------------------------------------------ */
 /* On-SD structures (packed; byte layout is the on-flash contract)     */
@@ -127,6 +181,16 @@ typedef struct __packed {
 /* ------------------------------------------------------------------ */
 /* API — all calls run on the sd_worker thread only                    */
 /* ------------------------------------------------------------------ */
+
+/**
+ * @brief Install the host's scratch buffer and I/O hooks.
+ *
+ * Must succeed before sd_ring_mount() / sd_ring_format(); both fail with
+ * -EINVAL until it has. Safe to call again (a re-mount re-installs).
+ *
+ * @return 0 on success, -EINVAL if @p host or its stage is missing/too small.
+ */
+int sd_ring_init(const sd_ring_host_t *host);
 
 /**
  * @brief Detect an existing ring on the mounted disk and load its state.
