@@ -80,6 +80,13 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   // Serializes subscribe vs teardown so an async teardown's BLE unsubscribe can't
   // land on a freshly re-subscribed stream (fast Show-Diagnostics off/on).
   final Mutex _dropMutex = Mutex();
+  // Serializes event-log gate writes so a flip is never dropped (see _pushDiagLogGate).
+  final Mutex _diagGateMutex = Mutex();
+  // _dropClock.elapsed when _dropStats was last replaced, by either the notify or the
+  // READ path. Drives the freshness pill. Monotonic for the same reason the
+  // subscription watchdog is: a backward wall-clock adjustment (NTP/DST/manual) would
+  // otherwise make stale data read as fresh — the one thing the pill exists to catch.
+  Duration? _lastStatsElapsed;
   // Bumped whenever the subscription intent is invalidated (teardown / stop) so an
   // in-flight subscribe or a stale onClosed can't act on a superseded generation.
   int _dropSubGen = 0;
@@ -163,6 +170,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     _dropPollTimer = null;
     unawaited(_teardownDropSubscription());
     _dropStats = null;
+    _lastStatsElapsed = null;
     _dropBaseline = null;
     _dropPollStartElapsed = null;
     _connFailBaseline = null;
@@ -208,16 +216,17 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   Future<void> _reconcileDiagLogGate() async {
     final prefs = SharedPreferencesUtil();
     if (!prefs.showSdWriteDrops || prefs.diagLogEnabled) return;
-    if (_diagLogBusy || !mounted) return;
+    if (!mounted) return;
     final devProvider = context.read<DeviceProvider>();
     if (!devProvider.diagLogSupported) return;
+    // Set before awaiting so the next 2 s tick sees the pref and skips — the guard
+    // above is what keeps this a one-shot rather than a repeating push.
     prefs.diagLogEnabled = true;
-    await _runDiagLogAction(() async {
-      // A failed push (a sync holds the storage lock) leaves the pref set, which is
-      // the same contract the switch has: DeviceProvider re-pushes it on the next
-      // connect.
-      if (await devProvider.pushDiagLogEnabled()) await devProvider.pullDiagLog();
-    });
+    // A failed push (a sync holds the storage lock) leaves the pref set, which is the
+    // same contract the switch has: DeviceProvider re-pushes it on the next connect.
+    if (await _pushDiagLogGate() && mounted) {
+      await _runDiagLogAction(() => devProvider.pullDiagLog());
+    }
   }
 
   /// Direct READ of the drop counters (0x0062), the MTU-agnostic fallback when the
@@ -240,6 +249,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
     final s = stats;
     if (s == null || !mounted || gen != _dropSubGen) return;
+    _lastStatsElapsed = _dropClock.elapsed;
     setState(() => _dropStats = s);
     _tryRestoreBaseline(s);
   }
@@ -725,6 +735,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         onDropStats: (stats) {
           if (!mounted || gen != _dropSubGen) return;
           _lastDropNotifyElapsed = _dropClock.elapsed;
+          _lastStatsElapsed = _dropClock.elapsed;
           setState(() => _dropStats = stats);
           _tryRestoreBaseline(stats);
         },
@@ -859,6 +870,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (!mounted) return;
     setState(() {
       _dropStats = null;
+      _lastStatsElapsed = null;
       _storageBackend = null;
       _dropBaseline = null;
       _connFailBaseline = null;
@@ -988,17 +1000,35 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final devProvider = context.read<DeviceProvider>();
     if (!devProvider.diagLogSupported) return;
     prefs.diagLogEnabled = val;
-    await _runDiagLogAction(() async {
-      final reached = await devProvider.pushDiagLogEnabled();
-      if (!reached) {
-        // The pref is kept and re-pushed on the next connect, but say so rather than
-        // implying on-device capture already flipped.
-        _reportDiagLogResult('Counters are on. The device is busy syncing — event capture applies on next connect.');
-        return;
-      }
-      // Pull immediately on enable so a bench session starts from a known state.
-      if (val) await devProvider.pullDiagLog();
-    });
+    final reached = await _pushDiagLogGate();
+    if (!reached) {
+      // The pref is kept and re-pushed on the next connect, but say so rather than
+      // implying on-device capture already flipped.
+      _reportDiagLogResult('Counters are on. The device is busy syncing — event capture applies on next connect.');
+      return;
+    }
+    // Pull immediately on enable so a bench session starts from a known state.
+    if (val && mounted) await _runDiagLogAction(() => devProvider.pullDiagLog());
+  }
+
+  /// Serializes the event-log gate write (0x0064) so a flip can never be lost.
+  ///
+  /// Deliberately NOT routed through [_runDiagLogAction]: that drops an action while
+  /// another is in flight, which is right for the Pull/Clear buttons (swallowing a
+  /// double tap) but wrong for a state change. Switching Diagnostics off during the
+  /// reconcile's push would have had the "off" silently discarded, leaving the device
+  /// capturing until the next connect. Because [DeviceProvider.pushDiagLogEnabled]
+  /// reads the pref at call time, serializing also makes the last flip win.
+  Future<bool> _pushDiagLogGate() async {
+    await _diagGateMutex.acquire();
+    try {
+      if (!mounted) return false;
+      return await context.read<DeviceProvider>().pushDiagLogEnabled();
+    } catch (_) {
+      return false;
+    } finally {
+      _diagGateMutex.release();
+    }
   }
 
   @override
@@ -1618,7 +1648,20 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       return _diagPlaceholder('Waiting for device connection…');
     }
     final stats = _dropStats;
-    if (stats == null) return _diagPlaceholder('Reading counters…');
+    if (stats == null) {
+      // The event log is a separate characteristic on a separate read path, so it
+      // must not be hostage to the counter read: on a link where the counters are
+      // slow (or a sync owns the storage lock) the events are often the only thing
+      // available, and hiding them behind "Reading counters…" made the whole card
+      // look dead.
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _diagPlaceholder('Reading counters…'),
+          if (devProvider.diagLogSupported) _buildEventsGroup(devProvider, null),
+        ],
+      );
+    }
 
     // Every firmware counter here resets to 0 on device reboot, so "Mark baseline"
     // baselines them uniformly: show the value since the last mark, clamped at 0 so a
@@ -1751,17 +1794,20 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // frozen numbers with nothing to say so. This reports which path is feeding the
     // card and how old its data is.
     final lastNotify = _lastDropNotifyElapsed;
-    final dataAge = DateTime.now().difference(stats.readAt);
+    // Monotonic, not DateTime.now() - stats.readAt: a backward wall-clock adjustment
+    // would make frozen data read as fresh, which is precisely what this is here to
+    // catch. Same reasoning as the subscription watchdog above.
+    final dataAge = _lastStatsElapsed == null ? null : _dropClock.elapsed - _lastStatsElapsed!;
     final String freshLabel;
     final DiagLevel freshLevel;
     if (lastNotify != null && _dropClock.elapsed - lastNotify < _dropSilenceTimeout) {
       freshLabel = 'live';
       freshLevel = DiagLevel.ok;
-    } else if (dataAge < _dropSilenceTimeout) {
+    } else if (dataAge != null && dataAge < _dropSilenceTimeout) {
       freshLabel = 'polling';
       freshLevel = DiagLevel.info;
     } else {
-      freshLabel = 'stale ${_formatDuration(dataAge.inMilliseconds)}';
+      freshLabel = dataAge == null ? 'stale' : 'stale ${_formatDuration(dataAge.inMilliseconds)}';
       freshLevel = DiagLevel.warn;
     }
 
@@ -2026,7 +2072,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   /// Self-hides unless the connected firmware advertises the capability
   /// (OMI_FEATURE_DIAG_LOG, bit 12). The log is drained + acked on connect when
   /// enabled; this surfaces the latest batch and allows an on-demand pull or clear.
-  Widget _buildEventsGroup(DeviceProvider devProvider, DeviceDropStats stats) {
+  Widget _buildEventsGroup(DeviceProvider devProvider, DeviceDropStats? stats) {
     final records = devProvider.diagLogRecords;
     final dropped = devProvider.diagLogDroppedCount;
 
@@ -2096,7 +2142,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 // app-side debug log above. Skipped when the record post-dates the
                 // read (a notification can land between batches), which would
                 // otherwise render a wall clock in the future.
-                final wall = stats.currentUptimeMs >= r.uptimeMs
+                final wall = stats != null && stats.currentUptimeMs >= r.uptimeMs
                     ? stats.readAt.subtract(Duration(milliseconds: stats.currentUptimeMs - r.uptimeMs))
                     : null;
                 return DiagEventRow(record: r, uptimeLabel: '@${_formatDuration(r.uptimeMs)}', wallClock: wall);
