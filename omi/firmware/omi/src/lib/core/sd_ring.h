@@ -260,6 +260,22 @@ int sd_ring_sync(void);
  * reach the NAND first. Callers therefore do NOT need their own sync beforehand,
  * and a sync failure fails this call with nothing closed.
  *
+ * DURABILITY OF THE TABLE ITSELF: the write_segtable() this ends with is NOT
+ * CTRL_SYNCed here, so the new/closed entry becomes durable only on the caller's
+ * next sd_ring_sync() — which ring_create_segment() issues a few microseconds
+ * later, after appending the segment's 0xFFFFFFFB header. That is deliberate, and
+ * the asymmetry with sd_ring_ack_segment() (which does sync here) is principled:
+ * ack commits a cursor carrying an advanced tail, so a stale table paired with a
+ * newer tail would leave segments listed-but-unreadable. This function commits no
+ * cursor, so no such pairing exists, and a CTRL_SYNC would add the expensive NAND
+ * op — it can force an erase — to every rotation.
+ * A power cut in that window simply loses the table write: the previous segment
+ * stays OPEN, which excludes it from the sync list rather than exposing it, and
+ * the next boot's first write re-closes it at the recovered cursor head. The
+ * failure direction is a lost rotation boundary (two recordings merge), never an
+ * over-claimed length. A future caller that does not sync promptly afterwards
+ * must do so before relying on the boundary across power loss.
+ *
  * @return 0 on success, negative errno otherwise.
  */
 int sd_ring_begin_segment(uint32_t timestamp, uint32_t session_id);
