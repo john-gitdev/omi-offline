@@ -249,6 +249,11 @@ int sd_ring_sync(void);
  * entry to the segment table keyed by @p timestamp / @p session_id. Persists
  * the table (double-buffered) so the new segment survives a crash.
  *
+ * Closing a segment implies a sd_ring_sync(): the published length covers staged
+ * bytes, and the table write that records it is durable, so those bytes must
+ * reach the NAND first. Callers therefore do NOT need their own sync beforehand,
+ * and a sync failure fails this call with nothing closed.
+ *
  * @return 0 on success, negative errno otherwise.
  */
 int sd_ring_begin_segment(uint32_t timestamp, uint32_t session_id);
