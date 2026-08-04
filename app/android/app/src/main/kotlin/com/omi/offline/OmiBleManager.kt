@@ -319,18 +319,19 @@ class OmiBleManager private constructor(private val application: Application) {
             it.disconnect()
             it.close()
             connectedGatts.remove(addr)
-            // Retire the state that described the object we just discarded. close()
-            // suppresses the STATE_DISCONNECTED callback, so cleanupPeripheral() never runs
-            // on this path — and without this, servicesDiscoveredFor would keep the address,
-            // making onServicesDiscovered early-return for the NEW gatt as "already
-            // discovered", so the ready event that carries the service table up to Dart
+            // Run the same teardown a disconnect would. close() suppresses the
+            // STATE_DISCONNECTED callback, so this is the one path where it doesn't happen
+            // by itself — and skipping it leaves servicesDiscoveredFor holding the address,
+            // which makes onServicesDiscovered early-return for the NEW gatt as "already
+            // discovered". The ready event that carries the service table up to Dart then
             // never fires again for this link.
             //
-            // Deliberately the per-address half only, not the whole of cleanupPeripheral():
-            // its keep-alive stops take no address, and stopping a second managed device's
-            // storage keep-alive would let the firmware idle-disconnect it (that keep-alive
-            // only restarts on ITS next onGattConnected, possibly hours away).
-            failPerAddressIo(addr, "GATT replaced")
+            // Reusing the disconnect hook rather than a bespoke subset: this IS a link
+            // teardown, and every piece of it applies (the stale completions, the download
+            // streaming over a dead link, the command queue whose in-flight slot belongs to
+            // a callback close() just ate). The keep-alives it stops are single-slot and
+            // restart on the new link's onGattConnected moments later.
+            cleanupPeripheral(addr)
         }
 
         // Check if device is already connected to the system by another app or previous session
@@ -598,56 +599,7 @@ class OmiBleManager private constructor(private val application: Application) {
         isProcessingCommand = true
         mainHandler.post(cmd)
     }
-    @Synchronized fun completeCommand() {
-        // Ignore a completion arriving with nothing in flight. The flag is false only when
-        // no command is outstanding, so this can never reject a real completion — it only
-        // rejects a zombie: a command whose pipeline was reset out from under it (a gatt
-        // replaced, a disconnect) and whose callback landed anyway, or a callback that
-        // fired twice. Unguarded, such a call polls whatever is at the head NOW, which is
-        // the next connection's command; that entry was already posted so it still runs,
-        // but its own callback then polls a third, and the accounting is off by one from
-        // there — commands get posted while another is in flight, breaking the
-        // one-op-at-a-time serialization this queue exists to enforce.
-        //
-        // Narrows the zombie window rather than closing it: a completion landing after the
-        // next command has been posted still finds the flag set. Closing it fully means
-        // telling completeCommand() WHICH command completed (gatt identity, ~17 call sites
-        // across both files), which is its own change.
-        if (!isProcessingCommand) return
-        gattQueue.poll()
-        isProcessingCommand = false
-        processNextCommand()
-    }
-
-    /**
-     * Drop every queued command and release the in-flight slot, for use when the gatt they
-     * were built against is going away.
-     *
-     * The queue and [isProcessingCommand] are process-global, not per-device, so a command
-     * whose callback never arrives (close() swallows it) leaves the flag set and
-     * [processNextCommand] refuses to run anything for ANY device — including the next
-     * connection's discoverServices(). Clearing rather than draining is deliberate: the
-     * queue holds bare Runnables with no address, and each captures the gatt it was built
-     * for, so running the survivors against a closed handle would just stall again.
-     *
-     * @Synchronized to match [completeCommand]/[enqueueCommand], which lock on the same
-     * monitor. Safe to hold: nothing here blocks or invokes a caller-supplied callback.
-     */
-    @Synchronized fun resetCommandPipeline() {
-        // Unpost the in-flight command before dropping the queue. [processNextCommand] PEEKS
-        // rather than polls, so the posted runnable is still the head here — which is the
-        // only reference to it there is, and the only entry ever posted (one at a time).
-        // Left posted, it can run after the reset, fail against the closed gatt, and call
-        // completeCommand() on its way out — which polls the NEW gatt's command off the
-        // head. That entry was already posted so it still runs, but its own callback then
-        // polls a third entry, and from there the accounting is permanently off by one:
-        // commands get posted while another is in flight, breaking the one-op-at-a-time
-        // serialization this queue exists to enforce (overlapping GATT ops drop the link
-        // with Error 133 on Android).
-        gattQueue.peek()?.let { mainHandler.removeCallbacks(it) }
-        gattQueue.clear()
-        isProcessingCommand = false
-    }
+    @Synchronized fun completeCommand() { gattQueue.poll(); isProcessingCommand = false; processNextCommand() }
 
     private fun findCharacteristic(gatt: BluetoothGatt?, serviceUuid: String, characteristicUuid: String): BluetoothGattCharacteristic? =
         gatt?.getService(UUID.fromString(serviceUuid))?.getCharacteristic(UUID.fromString(characteristicUuid))
@@ -668,50 +620,23 @@ class OmiBleManager private constructor(private val application: Application) {
 
     fun cleanupPeripheral(address: String) {
         val addr = address.uppercase()
-        // Addressless, so this is the disconnect path's alone — see failPerAddressIo.
-        stopRssiKeepAlive()
-        stopStorageKeepAlive()
-        failPerAddressIo(addr, "Disconnected")
-    }
-
-    /**
-     * Retire everything tracked for [address] because the gatt it described is gone: the
-     * discovery flag and its timeout, the in-flight characteristic ops, the streaming
-     * download, and the shared command pipeline.
-     *
-     * Shared by the two paths that retire a gatt — [cleanupPeripheral] on disconnect and
-     * [connectGatt] when it replaces one — so a new per-address map, or a change to the
-     * "<addr>:<service>:<char>" completion key format, cannot be added to one and silently
-     * missed by the other. [reason] is what the failed callbacks report, and is the only
-     * thing that differs between the two.
-     *
-     * [reason] does NOT apply to the download failure, which must always lead with
-     * "Stream closed without EOT". That string is a wire contract, not a message: it travels
-     * verbatim through Pigeon into SDCardWalSync's `definiteTransportError` check, which is
-     * what stops a mid-transfer link failure from being charged against the file's poison
-     * budget. Fail a download with anything else and a dropped link reads as an unreadable
-     * file — and enough of those delete a perfectly good recording off the device. The
-     * reason is appended for the logs; the Dart side matches with contains().
-     *
-     * Deliberately does NOT stop the RSSI/storage keep-alives: those take no address, so
-     * they belong only to the disconnect path, which knows the whole link is going away.
-     *
-     * The pipeline reset is not optional here. A with-response write on a dying link never
-     * gets its onCharacteristicWrite, so completeCommand() never runs and the in-flight
-     * command sits at the head of gattQueue with isProcessingCommand stuck true — which
-     * blocks the NEXT connection's discoverServices() and leaves it connected-but-
-     * undiscovered, the very state this cleanup exists to prevent. The queue is
-     * process-global, so a stuck flag wedges every managed device: clearing is the repair,
-     * not collateral.
-     */
-    private fun failPerAddressIo(addr: String, reason: String) {
         servicesDiscoveredFor.remove(addr)
         discoveryTimeouts.remove(addr)?.let { mainHandler.removeCallbacks(it) }
+        stopRssiKeepAlive()
+        stopStorageKeepAlive()
         val prefix = addr.lowercase()
-        readCompletions.keys().toList().filter { it.startsWith(prefix) }.forEach { readCompletions.remove(it)?.invoke(Result.failure(Exception(reason))) }
-        writeCompletions.keys().toList().filter { it.startsWith(prefix) }.forEach { writeCompletions.remove(it)?.invoke(Result.failure(Exception(reason))) }
-        resetCommandPipeline()
-        activeDownloads.remove(addr)?.complete(Result.failure(Exception("Stream closed without EOT ($reason)")))
+        readCompletions.keys().toList().filter { it.startsWith(prefix) }.forEach { readCompletions.remove(it)?.invoke(Result.failure(Exception("Disconnected"))) }
+        writeCompletions.keys().toList().filter { it.startsWith(prefix) }.forEach { writeCompletions.remove(it)?.invoke(Result.failure(Exception("Disconnected"))) }
+        // Drop any queued (and the in-flight) GATT command. A with-response write
+        // on a wedged link never gets onCharacteristicWrite, so completeCommand()
+        // never runs and the in-flight command stays at the head of gattQueue with
+        // isProcessingCommand stuck true. Resetting only the flag would leave that
+        // stale command (referencing the now-dead gatt) to be re-posted on the next
+        // enqueue after reconnect. Clear the queue so the next connection starts
+        // with a clean command pipeline.
+        gattQueue.clear()
+        isProcessingCommand = false
+        activeDownloads.remove(addr)?.complete(Result.failure(Exception("Stream closed without EOT")))
     }
 
     private fun createGattCallback() = object : BluetoothGattCallback() {
