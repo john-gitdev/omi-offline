@@ -34,8 +34,27 @@
 #include <zephyr/mgmt/mcumgr/mgmt/callbacks.h>
 #include <zephyr/mgmt/mcumgr/grp/img_mgmt/img_mgmt_callbacks.h>
 
-#ifdef CONFIG_OMI_ENABLE_T5838_AAD
 #include "aad.h"
+
+/* AAD is not optional in this fork — it is the whole capture policy, not the
+ * ultra-low-power add-on its Kconfig help describes. aad.c owns the software VAD
+ * gate as well as the hardware wake line (CONFIG_OMI_ENABLE_VAD_GATE is referenced
+ * by no source file; only aad.c consumes its OMI_VAD_* tunables), so building
+ * without it means:
+ *   - no VAD at all — mic_handler() below feeds every frame to the codec, so the
+ *     device records continuously into a 480 MB card off a 150 mAh cell;
+ *   - no manual mode, which is the app's DEFAULT mode and is driven entirely by
+ *     the 65535/32769 threshold writes that land in aad_set_threshold();
+ *   - no 0xFFFFFFFC session-end markers (emitted from that same finalize path),
+ *     so the app cannot finalize a recording without Force Process;
+ *   - no Priority Recording.
+ * That is a broken device, not a reduced one. It has also not compiled since the
+ * unguarded aad_is_recording() / aad_set_threshold() calls appeared, so the
+ * configuration is provably untested. Fail the build instead of shipping it.
+ * Compare button.c, which forbids the AAD-without-offline-storage combination for
+ * the same reason. */
+#ifndef CONFIG_OMI_ENABLE_T5838_AAD
+#error "CONFIG_OMI_ENABLE_T5838_AAD is required — see the comment above (set it in omi.conf)"
 #endif
 
 LOG_MODULE_REGISTER(main, CONFIG_LOG_DEFAULT_LEVEL);
@@ -79,11 +98,12 @@ static bool blink_toggle = false;
 
 static void mic_handler(int16_t *buffer)
 {
-#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    /* The VAD gate. Returning false means AAD is asleep (silence) and the frame is
+     * held in pre-roll instead — this is what keeps the codec and the SD write path
+     * idle for most of the day. */
     if (!aad_process_audio(buffer, MIC_BUFFER_SAMPLES)) {
         return;
     }
-#endif
 
     int err = codec_receive_pcm(buffer, MIC_BUFFER_SAMPLES);
     if (err) {
@@ -189,13 +209,8 @@ void set_led_state()
     // Base Color Determination (Priority: Mute > Low Bat > Connect > Active)
     bool r = false, g = false, b = false;
 
-    #ifdef CONFIG_OMI_ENABLE_T5838_AAD
     uint16_t thr = aad_get_threshold();
     bool in_manual = (thr == 32769 || thr == 65535);
-    #else
-    bool in_manual = false;
-    uint16_t thr = 0;
-    #endif
 
     if (is_muted) {
         r = true; // Solid Red
