@@ -168,6 +168,7 @@ Record the sub-class in the "Recovery trigger" column below.
 | 5b | 2026-07-31 16:10→18:19 | 2h 06m | SILENT ×5 | **device power-cycle** (toggle tried twice, both failed) | **Yes — ineffective** | *(not captured)* | — | 147 |
 | 6a | 2026-08-02 09:22→10:07 | 44m 52s | SILENT, then **ADVERTISING @ −103 dBm** | **NOT A WEDGE — out of range** (overnight, user-confirmed) | **No** | *(not in excerpt)* | — | **8** |
 | 6b | 2026-08-02 10:45→15:23 | 4h 37m 30s | SILENT ×10, then **ADVERTISING @ −91 dBm** | **NOT A WEDGE — out of range**; cleared when the user woke up | **No** | *(not in excerpt)* | — | 147 |
+| 7 | 2026-08-04 03:07→03:08 | 1m 38s | *(none — sub-threshold)* | **BT toggle** (`error=bluetooth_off` → reconnect in 2.5 s) | **Yes** | +0 (flat at 19) | fast | *none — all `-1`* |
 
 **Wedge 5 is SOLVED** — see the resolution block below. Root cause: the post-disconnect
 `bt_le_adv_start()` in `transport.c` was fire-and-forget, so a single failure left the device
@@ -186,6 +187,13 @@ failure was `gatt_status_-1`** (pure connect-timeout, Android never delivered a 
 vs. the 147/8 the self-clearing wedges carried), **`estab_fail_count` flat**, and it cleared
 **only** when the adapter cycled. That matches the §7 hypothesis: flat-estab + all-timeout(`-1`)
 = central-side initiator wedge = a toggle (which resets the phone's own controller) is what fixes it.
+
+**Wedge 7 reproduces Wedge 3 exactly** — all-`-1`, flat estab, sub-threshold, cured by an adapter
+cycle — which takes the toggle-required class from n=1 to **n=2 with an identical signature**. It
+also carries the firmware exoneration Wedge 3 could not: its build runs the post-2.8.4 advertising
+watchdog *and* the event log, and neither `DIAG_ADV_START_FAIL` nor `DIAG_ADV_WATCHDOG_RESCUE`
+appears anywhere in the outage window. So for this episode the Wedge 5 root cause is affirmatively
+ruled out on device evidence rather than inferred, and the fault sits on the central.
 
 Wedge 5 is the first **unresolved** episode on record — it is still failing when the log ends —
 and the first where `screen_interactive=true` for the entire outage, which removes screen-wake
@@ -741,6 +749,78 @@ actually completed" test (14 segments, 23 KB/s).
 
 ---
 
+### Detail — Wedge 7 (2026-08-04, ~1.6 min) — second toggle-required; firmware affirmatively cleared
+
+- Log source: app 0.32.1, device `C3:94:71:EA:A8:D5`, `live_uptime_ms` 65817573 (18h 16m).
+  Firmware clean throughout: `block_drops=0`, `codec_frame_drops=0`, `ring_io_errors=0`,
+  `msgq_peak_depth=22`, `failed_conn_count=0`, `estab_fail_count` **flat at 19**.
+- **No formal `ble_wedge` / `scan_probe` / `ble_wedge_recovered`** — cleared at failure **2**,
+  well below `WEDGE_NOTIFY_AFTER=6`. Same blind spot Wedge 3 hit; see the threshold note below,
+  which explains why the obvious fix (lower the threshold) is wrong.
+- Preceded by: a clean session. Background sync completed and disconnected @ 03:03:43. The four
+  prior cycles (01:31 / 02:01 / 02:31 / 03:01) all reached device-ready in **0.7–1.2 s**. Nothing
+  led in — no mid-transfer failure, no bond event, no reboot.
+- Two connect attempts, both ending in our own **40 s** `DIRECT_CONNECT_TIMEOUT_MS` backstop with
+  **zero GATT callbacks from Android**:
+  - attempt 1: `manageDevice` @ 03:07:01.10 → `gatt_status_-1` @ 03:07:41.12 (**40.02 s** — the
+    backstop to the millisecond).
+  - attempt 2: native retry @ ~03:07:42.6 (backoff 1.5 s) → `gatt_status_-1` @ 03:08:22.65,
+    logged as `ignoring transient GATT error during connect (native will retry)`.
+  - attempt 3 started @ ~03:08:25.6 (backoff 3 s) and was still running when the adapter went off.
+- **Reading trap — the Dart log overstates the attempt count.** `_scanConnectDevice` budgets 30 s
+  while native's direct-connect backstop is 40 s, so Dart declares failure 10 s early (03:07:31,
+  03:08:30) on attempts native had not yet abandoned. The Dart-side re-connect @ 03:08:00 was then
+  **swallowed by `manageDevice`'s `pendingReconnect != null` guard** and never touched the radio.
+  Four Dart-visible attempts, two real ones. Count native's `-1`s, not Dart's timeouts.
+- scan_probe: **not run** (sub-threshold). But the peripheral is placed on the air indirectly and
+  more strongly than in Wedge 3 — see the next two points.
+- **Firmware exoneration (new for this class).** The build emits `DIAG_VAD_LEVEL` (code 16), so it
+  necessarily carries codes 13/14 (`DIAG_ADV_START_FAIL` / `DIAG_ADV_WATCHDOG_RESCUE`) — i.e. the
+  post-2.8.4 advertising watchdog is present and armed. Diag sequence numbers are **contiguous
+  19→23 across the outage** (no drops), and the only record inside the window is the user's own
+  `priority_record_start`. **No advertising failure and no watchdog rescue was logged**, and device
+  uptime is continuous (59 770 114 → 66 220 280 ms, no reboot). This does not prove photons were on
+  the air, but it rules out the Wedge 5 root cause on device evidence rather than by inference.
+- **The device was demonstrably awake and running its FSM mid-outage.** Button marker
+  (`0xFFFFFFFE`) @ 03:06:52.788, Priority Recording start (`0xFFFFFFF8`) @ 03:08:17.003, stop
+  (`0xFFFFFFFC`) @ ~03:09:10.5 — all written to SD and synced intact afterwards
+  (`priority_starts=1, stops=1, sessionEndMarkerEmits=1, markerWriteDrops=0`). The user was
+  pressing buttons on a device the phone could not reach, and the device recorded every one.
+- **Bluetooth toggle in window? YES** — @ 03:08:34.18 `error=bluetooth_off`. Adapter back @
+  ~03:08:36.79, `connected` @ 03:08:39.03, `device ready after 2544ms`, 15 services, sync drained
+  immediately. Total outage **1 m 38 s**.
+- **A ~2.6 s toggle was sufficient.** The adapter was off→on inside ~2.6 s of the `TURNING_OFF`
+  notice and it cured the wedge outright. This bears directly on the §7 question *"does a proper
+  (60 s) toggle cure 5b-class wedges?"* — **toggle duration is not the discriminator**, since a
+  brief cycle cures a toggle-required wedge here. 5b resisted for some other reason.
+- estab context: `last_failure_adv_mode=fast`; `estab_fail_count` **19 @ 01:27:54 (before) → 19 @
+  03:08:40 (immediately after recovery) → 19 @ 03:13:22 → 19 @ 03:15:23**, `failed_conn_count=0`
+  throughout ⟹ **+0 ⟹ the Omi never heard the CONNECT_INDs ⟹ central (phone) side.** This is the
+  cleanest before/after pair in the corpus: baseline and post-recovery readings both present, taken
+  either side of the outage, on a device that never rebooted.
+- **Do not lean on the all-`-1` signature by itself.** NOTES.md §"BLE: advertising but won't
+  connect" is right that `-1` alone is a red herring — the 2026-07-08 adb capture showed ACLs
+  forming and dying at `0x3e` *behind* a wall of `-1`, because those links die at the BTA layer
+  before a Java `onConnectionStateChange` materializes. What makes the reading here safe is the
+  **flat estab delta**, which did not exist as working instrumentation in July. `-1` + flat estab is
+  the signature; `-1` on its own is not.
+- **Bucket: toggle-required.** No self-clearing mechanism had a chance — the user intervened at
+  93 s, inside native's own fast-retry phase.
+
+**Threshold note — why "just lower `WEDGE_NOTIFY_AFTER`" is wrong.** Wedge 3 suggested lowering the
+snapshot threshold. Do not: the constant is triple-loaded, and two of the three couplings break.
+(1) The probe is an 8 s `SCAN_MODE_LOW_LATENCY` scan and the backoff is
+`1500 << min(retryCount-1, 5)` capped at 30 s — 1.5 / 3 / 6 / 12 / 24 / **30** s. Failure 6 is the
+first point the inter-retry gap can *contain* the scan; at failure 2 the probe would run
+03:08:22.6→03:08:30.6 on top of a connect attempt starting 03:08:25.6, putting a full-duty scan
+across a live establishment. That is exactly the feedback loop deleted from `_scanConnectDevice`
+(the `unawaited(discover())` removal). (2) `AUTONOMOUS_RETRY_STOP_AFTER = WEDGE_NOTIFY_AFTER`, so
+lowering it also makes native hand off to the sync schedule that many failures sooner. (3) It would
+fire the alert on any 90-second absence — walking out of range — where "toggle Bluetooth" is wrong
+advice. **Any earlier capture must be a separate trigger, not a lower threshold** — see §6 #10.
+
+---
+
 ## 5. What we understand about how they clear
 
 - **Self-clearing recovery is already partly built and it works.** The backed-off recovery
@@ -847,9 +927,27 @@ Not yet implemented:
    *before* any transfer is attempted. Emitting it as a field on the connect event gives a cheap
    link-health proxy and a ready-made trigger for #8.
 
+10. **Snapshot the environment on `bluetooth_off` during an open reconnect loop** (diagnostic, from
+    Wedges 3 and 7). Both toggle-required wedges cleared *below* the 6-failure threshold, so the
+    class that most needs an env snapshot is the one that never gets one — we have no
+    `omi_in_gatt_list`, no `contending_le_links`, no probe verdict for either. The fix is **not** a
+    lower `WEDGE_NOTIFY_AFTER` (see the threshold note under Wedge 7 — it would put an 8 s full-duty
+    scan on a live connect, and it also moves `AUTONOMOUS_RETRY_STOP_AFTER`). Instead fire
+    `environmentSnapshot` alone — no scan, no notification, no new radio load — from the
+    `STATE_TURNING_OFF` branch when a managed device has a non-zero failure streak. A user toggling
+    the adapter mid-outage is a rare, deliberate, high-signal event, and it is the exact moment the
+    missing snapshot would be taken. Caveat: it must run *before* that branch's teardown loop, and
+    `contending_le_links` may already be degraded at `TURNING_OFF` — capture it anyway and mark the
+    event so it is never diffed against a healthy `ble_wedge` snapshot as if equivalent.
+
 Deliberately **not** doing: hammering reconnects harder. Rapid `connectGatt`/`closeGatt`
 churn is the #1 cause of daemon wedges, which is why `AUTONOMOUS_RETRY_STOP_AFTER` exists —
 and why #7 exists, since the foreground path currently walks that back.
+
+Also deliberately **not** doing: adding a `ScanFilter` to the Find Devices scan as a contention
+mitigation. `ScanFilter` filters *results* (offloaded to the controller at best, saving host
+wakeups); `ScanSettings.setScanMode` sets the *duty cycle*. Filtering does not reduce radio-on time,
+so it cannot relieve establishment contention. Considered and rejected during the Wedge 7 pass.
 
 ---
 
@@ -887,7 +985,12 @@ and why #7 exists, since the foreground path currently walks that back.
   start — i.e. **not** a rising/ADVERTISING-establishment signature; it looks central-side. But
   Wedge 3 cleared sub-threshold so we have **no full env snapshot / probe verdict** for it. Still
   need one toggle-required wedge that trips the 6-failure snapshot to confirm `omi_in_gatt_list`
-  and the probe verdict.
+  and the probe verdict. **Wedge 7 (2026-08-04) reproduced the signature exactly** — all-`-1`,
+  flat estab (19→19 either side, the cleanest before/after pair on record), cured by a **~2.6 s**
+  adapter cycle — so the signature is now n=2 and stable. It also cleared sub-threshold, so the env
+  snapshot is *still* missing for this class; that is what §6 #10 is for, and it is now the
+  cheapest way to close this item. Note also that the brief cure at Wedge 7 removes toggle
+  *duration* as the explanation for 5b's toggle-resistance.
 - **estab delta on each wedge** — is "rose vs flat" a reliable predictor of toggle-required?
   Hypothesis: flat/SILENT = central-side scanner starvation = toggle helps; rose/ADVERTISING
   = establishment RF failure = toggle only helps by resetting the initiator.
