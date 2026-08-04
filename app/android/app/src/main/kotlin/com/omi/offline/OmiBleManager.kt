@@ -685,6 +685,14 @@ class OmiBleManager private constructor(private val application: Application) {
      * missed by the other. [reason] is what the failed callbacks report, and is the only
      * thing that differs between the two.
      *
+     * [reason] does NOT apply to the download failure, which must always lead with
+     * "Stream closed without EOT". That string is a wire contract, not a message: it travels
+     * verbatim through Pigeon into SDCardWalSync's `definiteTransportError` check, which is
+     * what stops a mid-transfer link failure from being charged against the file's poison
+     * budget. Fail a download with anything else and a dropped link reads as an unreadable
+     * file — and enough of those delete a perfectly good recording off the device. The
+     * reason is appended for the logs; the Dart side matches with contains().
+     *
      * Deliberately does NOT stop the RSSI/storage keep-alives: those take no address, so
      * they belong only to the disconnect path, which knows the whole link is going away.
      *
@@ -703,7 +711,7 @@ class OmiBleManager private constructor(private val application: Application) {
         readCompletions.keys().toList().filter { it.startsWith(prefix) }.forEach { readCompletions.remove(it)?.invoke(Result.failure(Exception(reason))) }
         writeCompletions.keys().toList().filter { it.startsWith(prefix) }.forEach { writeCompletions.remove(it)?.invoke(Result.failure(Exception(reason))) }
         resetCommandPipeline()
-        activeDownloads.remove(addr)?.complete(Result.failure(Exception(reason)))
+        activeDownloads.remove(addr)?.complete(Result.failure(Exception("Stream closed without EOT ($reason)")))
     }
 
     private fun createGattCallback() = object : BluetoothGattCallback() {
