@@ -48,6 +48,13 @@ static bool     segtab_dirty;        /* wrap dropped entries; flush on next sync
  * buffer), so this is a pointer, not an array: never sizeof() it. */
 static uint8_t *stage;
 static uint32_t stage_fill;          /* unwritten staged bytes, [0, RING_STAGE_BYTES) */
+/* True when bytes have been appended that are not yet on the NAND. NOT the same
+ * as stage_fill != 0: sd_ring_sync() writes the padded partial tail sector to disk
+ * but deliberately KEEPS it staged so appends keep filling it, so a non-empty stage
+ * can be fully durable. Set on append, cleared only by a fully successful sync —
+ * conservative in the one case a flush happens to empty the stage exactly. Read by
+ * sd_ring_begin_segment() to skip a redundant sync when the caller already did one. */
+static bool stage_dirty;
 
 /* Host hooks (see sd_ring_host_t). Both optional. */
 static void (*host_io_wake)(void);
@@ -407,6 +414,7 @@ int sd_ring_init(const sd_ring_host_t *host)
     }
     stage = host->stage;
     stage_fill = 0;
+    stage_dirty = false;
     host_io_wake = host->io_wake;
     host_io_busy = host->io_busy;
     return 0;
@@ -449,8 +457,10 @@ int sd_ring_mount(uint32_t total_sectors)
     }
     load_segtable();
 
-    /* Restore the partial head sector so appends continue into it. */
+    /* Restore the partial head sector so appends continue into it. Read back from
+     * disk, so the stage starts clean: nothing here is un-written. */
     stage_fill = (uint32_t) (head_abs % RING_SECTOR_SIZE);
+    stage_dirty = false;
     memset(stage, 0, RING_STAGE_BYTES);
     if (stage_fill != 0) {
         uint32_t sec = abs_to_sector(head_abs - stage_fill);
@@ -563,6 +573,7 @@ int sd_ring_format(uint32_t total_sectors)
     cursor_seq = 1;
     cursor_slot = 0;
     stage_fill = 0;
+    stage_dirty = false;
     memset(stage, 0, RING_STAGE_BYTES);
 
     memset(&segtab, 0, sizeof(segtab));
@@ -625,6 +636,7 @@ int sd_ring_append(const uint8_t *data, size_t len)
     memcpy(stage + stage_fill, data, len);
     stage_fill += (uint32_t) len;
     head_abs += len;
+    stage_dirty = true;
 
     /* Once a full batch has accumulated, flush it (page-aligned, chunked). This is
      * the ONLY routine reason the write path touches the NAND, so the stage size
@@ -672,7 +684,12 @@ int sd_ring_sync(void)
     if (rc) {
         return rc;
     }
-    return write_cursor();
+    rc = write_cursor();
+    if (rc == 0) {
+        /* Everything appended is now on the NAND and claimed by a durable cursor. */
+        stage_dirty = false;
+    }
+    return rc;
 }
 
 /* ------------------------------------------------------------------ */
@@ -688,6 +705,37 @@ int sd_ring_begin_segment(uint32_t timestamp, uint32_t session_id)
     if (segtab.count > 0) {
         ring_segment_t *last = &segtab.entries[segtab.count - 1];
         if (last->flags & RING_SEG_FLAG_OPEN) {
+            /* Sync BEFORE publishing the close. The length below is derived from
+             * head_abs, which counts bytes still staged in RAM, and write_segtable()
+             * at the end of this function makes that length DURABLE. Without the sync,
+             * a power cut between here and the caller's next sync leaves an on-disk
+             * table whose closed length runs past the durable cursor — and
+             * sd_ring_read_segment() bounds reads by seg.length and tail_abs, never by
+             * head_abs, so it would serve stale ring content off the end of that
+             * recording. The exposure is one stage (RING_STAGE_BYTES) of audio.
+             *
+             * Every current caller already syncs immediately before calling, except the
+             * "no current segment" path in sd_card.c's write handler — which is only
+             * reachable at boot, after a format, or after a failed segment-header write,
+             * i.e. exactly the states where an SD error has already occurred. Rather
+             * than depend on that argument holding for every future caller, make the
+             * invariant structural: a segment boundary is minutes apart, so the
+             * occasional redundant sync costs nothing measurable.
+             *
+             * On failure do NOT close: a published length we cannot back with durable
+             * bytes is the very thing this prevents. The caller blocks writes and
+             * retries, matching the rotation path's existing sync-failure handling.
+             *
+             * Gated on stage_dirty so the callers that DO sync first don't pay a second
+             * CTRL_SYNC per segment boundary — that is the expensive NAND op (it can
+             * force an erase), and doubling it at every rotation would claw back part
+             * of the idle-current win this backend was tuned for. */
+            if (stage_dirty) {
+                int rc = sd_ring_sync();
+                if (rc != 0) {
+                    return rc;
+                }
+            }
             last->length = (uint32_t) (head_abs - last->start_abs);
             last->flags &= ~RING_SEG_FLAG_OPEN;
         }
