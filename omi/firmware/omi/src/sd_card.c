@@ -62,8 +62,9 @@ static bool ring_pending_explicit_rotate;
  * mirroring the LittleFS fsync gate. 256 KiB is NOT arbitrary: at the measured
  * ~5 KB/s ingest it is ~52 s ≈ the 60 s fsync interval, so the byte cap and the
  * time cap target the SAME ~1 min worst-case loss by design; it is also a power-of-2
- * multiple of the 512 B sector and the 4 KB stage batch, keeping the flush
- * page-aligned. The byte cap (not a timer) is what bounds loss during DISCONNECTED
+ * multiple of the 512 B sector and of the 4 KB NAND page the stage flushes in, so
+ * every write stays page-aligned. The byte cap (not a timer) is what bounds loss
+ * during DISCONNECTED
  * continuous speech, where the write-wait timeout never fires (audio blocks arrive
  * ~86 ms apart, faster than the 500 ms disconnected wait), so appended bytes are
  * the only elapsed-audio signal.
@@ -318,7 +319,28 @@ static struct lfs_config lfs_cfg = {
 static uint8_t writing_error_counter = 0;
 static uint8_t sd_recovery_cycles = 0;  /* consecutive failed write-block recoveries */
 static bool sd_write_blocked = false;
-static uint8_t write_batch_buffer[WRITE_BATCH_COUNT * MAX_WRITE_SIZE];
+/* Write-batching scratch, shared by the two backends. Exactly one is live per
+ * boot — g_backend is read once at sd_worker start and switching backends reboots
+ * — so the LittleFS batch buffer and the ring's append stage never coexist, and
+ * overlaying them lets the ring batch as deeply as LittleFS (the flush cadence is
+ * what sets SPI/NAND wake frequency, i.e. idle current) for zero extra RAM.
+ * Nothing may carry state across a backend switch, which a reboot already
+ * guarantees. */
+static union {
+    uint8_t lfs_batch[WRITE_BATCH_COUNT * MAX_WRITE_SIZE];
+#ifdef CONFIG_OMI_AUDIO_RING
+    uint8_t ring_stage[RING_STAGE_BYTES];
+#endif
+} sd_write_scratch __aligned(4);
+
+#ifdef CONFIG_OMI_AUDIO_RING
+/* Keeps the overlay honest: if the stage ever outgrows the LittleFS batch buffer
+ * it stops being free RAM, which is the entire premise above. */
+BUILD_ASSERT(RING_STAGE_BYTES <= WRITE_BATCH_COUNT * MAX_WRITE_SIZE,
+             "ring stage must fit inside the LittleFS batch buffer to stay RAM-neutral");
+#endif
+
+#define write_batch_buffer (sd_write_scratch.lfs_batch)
 static size_t write_batch_offset = 0;
 static int write_batch_counter = 0;
 static int64_t last_write_blocked_log_ms = 0;
@@ -1000,6 +1022,38 @@ static void sd_set_io_low_power(bool enable)
     /* spi3 is safe to suspend — BLE connect always resumes it before OTA can start */
 }
 
+#ifdef CONFIG_OMI_AUDIO_RING
+/* --- Ring I/O hooks (see sd_ring_host_t) --- */
+
+/* Resume the bus on the ring's first real disk access. sd_set_io_low_power()
+ * short-circuits on an atomic CAS when already awake, so paying this per disk op
+ * is far cheaper than what it replaces: waking unconditionally per audio block,
+ * when all but roughly one block in RING_STAGE_BYTES/MAX_WRITE_SIZE (~93) only
+ * memcpy into the stage and never reach the NAND. */
+static void ring_io_wake_cb(void)
+{
+    sd_set_io_low_power(false);
+}
+
+/* A BLE read is queued — a multi-chunk flush should hand the worker back. Mirrors
+ * the preemption check inside flush_batch_buffer_chunked() on the LittleFS path. */
+static bool ring_io_busy_cb(void)
+{
+    return k_msgq_num_used_get(&sd_prio_msgq) > 0;
+}
+
+static int ring_install_host(void)
+{
+    const sd_ring_host_t host = {
+        .stage = sd_write_scratch.ring_stage,
+        .stage_bytes = sizeof(sd_write_scratch.ring_stage),
+        .io_wake = ring_io_wake_cb,
+        .io_busy = ring_io_busy_cb,
+    };
+    return sd_ring_init(&host);
+}
+#endif /* CONFIG_OMI_AUDIO_RING */
+
 void sd_set_ota_active(bool active)
 {
     if (active) {
@@ -1252,6 +1306,12 @@ static int sd_mount(bool allow_format)
          * mount. Format fresh on a backend switch; otherwise mount an existing ring, or
          * format one on first use (foreign FS / fresh card — the one-time SD wipe). */
         ring_total_sectors = sector_count;
+        /* Hand the ring its scratch buffer + I/O hooks before any mount/format.
+         * Re-installed on every mount (including a runtime remount) so the stage
+         * always starts empty against the cursor we are about to load. Should this
+         * ever fail, mount/format return -EINVAL and the revert-to-LittleFS path
+         * below takes over rather than booting with a dead write path. */
+        (void) ring_install_host();
         int rr;
         if (force_format) {
             LOG_WRN("[SD] backend switch — formatting fresh ring (SD wipe)");
@@ -2498,19 +2558,6 @@ sd_boot_done:
 
         /* ---- Write data ---- */
         case REQ_WRITE_DATA: {
-#ifdef CONFIG_OMI_AUDIO_RING
-            /* Ring writes touch the SD every block (append + periodic cursor sync),
-             * unlike the LittleFS path which only buffers to RAM here. Wake the bus
-             * ONCE for the whole write burst (this req + the drain loop below) and
-             * suspend after — never per block. The LittleFS path stays suspended
-             * while buffering and wakes only on a flush; the ring must mirror that
-             * or the per-block pm_device power-cycle starves sd_msgq. */
-            bool ring_spi_woken = false;
-            if (ring_active()) {
-                sd_set_io_low_power(false);
-                ring_spi_woken = true;
-            }
-#endif
             process_write_data_req(&req);
             reads_since_write = 0;
             /* Drain up to 16 additional write/save_offset messages in one pass
@@ -2530,7 +2577,19 @@ sd_boot_done:
                     process_save_offset_req(&_next);
             }
 #ifdef CONFIG_OMI_AUDIO_RING
-            if (ring_spi_woken) {
+            /* Ring: the bus is woken lazily by sd_ring's io_wake hook, on the first
+             * disk op of this burst — and most bursts never have one, because an
+             * append that fits in the stage is a memcpy. Suspend unconditionally
+             * here: sd_set_io_low_power() no-ops when the bus was never resumed, so
+             * this costs one atomic CAS on the (common) memcpy-only burst.
+             *
+             * Do NOT reinstate an eager wake at the top of this case. It ran ~11.6x
+             * per second of audio (one block per loop pass, since blocks arrive every
+             * ~86 ms and write_wait is 50 ms while connected) against ~1.2 real
+             * flushes, and a pm_device RESUME/SUSPEND pair re-inits the SD card. That
+             * gap versus LittleFS — which stays suspended while it buffers and wakes
+             * only to flush — was the ring's idle-current regression. */
+            if (ring_active()) {
                 sd_set_io_low_power(true);
             }
 #endif
@@ -3273,12 +3332,12 @@ static void process_write_data_req_ring(const sd_req_t *req)
         ring_pending_explicit_rotate = false;
     }
 
-    /* SPI is already awake here — do NOT power-cycle it per block. The worker loop
-     * wakes the bus once around the whole write burst (the REQ_WRITE_DATA case +
-     * its drain loop), and the non-write handlers that reach this path via the
-     * shutdown drain (REQ_CREATE_NEW_FILE / REQ_UNMOUNT) wake it too. A per-block
-     * pm_device RESUME/SUSPEND re-inits the SD card (tens of ms) ~12x/s, which
-     * pegged sd_msgq at 120/120 and dropped audio instead of draining it. */
+    /* Do NOT wake the bus here, and do NOT power-cycle it per block. sd_ring's
+     * io_wake hook resumes it on the first real disk access, so a block that only
+     * lands in the stage (all but ~1 in 93) never touches SPI at all; the worker
+     * suspends once after the whole burst. A per-block pm_device RESUME/SUSPEND
+     * re-inits the SD card (tens of ms) ~12x/s, which pegged sd_msgq at 120/120 and
+     * dropped audio instead of draining it. */
     if (current_filename[0] == '\0') {
         if (ring_create_segment() < 0) {
             last_write_error_uptime_ms = k_uptime_get();
