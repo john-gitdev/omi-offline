@@ -382,6 +382,34 @@ class NativeBleTransport extends DeviceTransport {
   }
 
   void _handleDeviceReady(List<BleService> services) {
+    // A ready carrying an empty service table is not a usable link, and must never be
+    // latched as connected. readCharacteristic short-circuits to [] whenever
+    // _hasCharacteristic misses, so with _services empty the app looks connected while
+    // the capability read returns 0 (Device Settings → Customization collapses to its one
+    // ungated row) and every storage write throws (nothing ever syncs). Worse, connect()
+    // early-returns while _state is connected, so nothing re-drives the link and the
+    // session stays stranded until the app is force-closed.
+    //
+    // Native's manageDevice used to produce exactly this by taking its
+    // "Dart restarted, native kept the link" shortcut in the window between
+    // STATE_CONNECTED and onServicesDiscovered (fixed there too — it now gates on
+    // hasDiscoveredServices). Keep the guard here regardless: an empty table is never
+    // worth adopting, and native's own discovery fires a real ready moments later.
+    //
+    // Drop the event and leave any pending completer alone, rather than failing it. The
+    // real ready is what should resolve connect(), and it lands within a second or so;
+    // erroring here instead would make connect() throw for something that immediately
+    // succeeded, and push the caller through a spurious disconnected → connected
+    // transition. Nothing can hang on this: a genuine disconnect fails the pending
+    // completer in _handleConnectionState, and connect() times out at 30s regardless —
+    // well outside native's 15s discovery timeout, which drops a stuck link into the
+    // ordinary retry path long before then.
+    if (services.isEmpty) {
+      Logger.warning('[NativeBleTransport] $_peripheralUuid: device-ready carried 0 services — ignoring, '
+          'waiting for the real discovery');
+      return;
+    }
+
     _services = services;
     if (_deviceReadyCompleter != null && !_deviceReadyCompleter!.isCompleted) {
       Logger.debug(

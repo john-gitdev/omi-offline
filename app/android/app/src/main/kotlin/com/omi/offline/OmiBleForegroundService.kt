@@ -558,9 +558,20 @@ class OmiBleForegroundService : Service() {
         }
 
         val existing = managedDevices[addr]
-        if (existing != null && bleManager.isPeripheralConnected(addr)) {
-            // Dart may have restarted (e.g. hot restart) while native kept the connection alive.
-            // Re-fire onDeviceReady so the new Dart layer discovers this existing connection.
+        if (existing != null && bleManager.isPeripheralConnected(addr) && bleManager.hasDiscoveredServices(addr)) {
+            // Dart may have restarted (e.g. hot restart, or a process kill from an APK
+            // update) while native kept the connection alive. Re-fire onDeviceReady so the
+            // new Dart layer discovers this existing connection.
+            //
+            // Gated on hasDiscoveredServices, NOT on isPeripheralConnected alone: that only
+            // reports the ACL/GATT link state, which goes true at onConnectionStateChange
+            // (STATE_CONNECTED) — before discoverServices() completes. Taking this shortcut
+            // inside that window hands Dart an EMPTY gatt.services, and Dart latches
+            // "connected" on it: every characteristic read then short-circuits to [] without
+            // touching the radio, so the capability read comes back 0 (Customization collapses
+            // to its one ungated row) and every storage write throws (no file sync) until the
+            // app is force-closed. When discovery is still pending we fall through instead and
+            // let native's own onServicesDiscovered fire the ready with the real table.
             val gatt = bleManager.connectedGatts[addr]
             val services = gatt?.services?.map { svc ->
                 BleService(
@@ -569,6 +580,22 @@ class OmiBleForegroundService : Service() {
                 )
             } ?: emptyList()
             fireDeviceReady(addr, services)
+            return
+        }
+        if (existing != null && bleManager.isPeripheralConnected(addr)) {
+            // Link up, discovery still in flight. Return rather than falling through: the
+            // reconnect logic below only holds off while currentGattHash/pendingReconnect are
+            // set, and currentGattHash is set by onGattConnected — which runs on the binder
+            // thread AFTER OmiBleManager records the gatt, so a manageDevice landing between
+            // the two would read a null hash and tear down a link that is coming up fine.
+            // Nothing to do here anyway: onServicesDiscovered fires the ready on its own, and
+            // if discovery never lands, DISCOVERY_TIMEOUT_MS (15 s, inside Dart's 30 s ready
+            // timeout) drops the link into the normal disconnect/retry path.
+            // Unlike the already-discovered branch above, the bond flag is still live here:
+            // onGattServicesDiscovered reads it when discovery lands, so a caller asking for
+            // a bond must not lose that by arriving a few milliseconds early.
+            synchronized(syncLock) { if (bond && !existing.requiresBond) existing.requiresBond = true }
+            Log.i(TAG, "manageDevice($addr): link up but discovery still pending — waiting for onServicesDiscovered")
             return
         }
 

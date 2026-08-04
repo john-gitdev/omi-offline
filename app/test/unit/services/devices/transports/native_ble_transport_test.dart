@@ -115,10 +115,57 @@ void main() {
       await Future.delayed(const Duration(milliseconds: 100));
       expect(completed, isFalse, reason: 'Connect future should still be pending after transient errors');
 
-      // Now simulate success
-      BleBridge.instance.onDeviceReady('test-uuid', []);
+      // Now simulate success. The service list must be non-empty: a ready carrying zero
+      // services is rejected as an unusable link (see the empty-table guard below).
+      BleBridge.instance.onDeviceReady('test-uuid', [_service()]);
       await connectFuture;
       expect(completed, isTrue);
     });
+
+    test('ignores a device-ready with no services and waits for the real one', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockDecodedMessageHandler<Object?>(
+        const BasicMessageChannel<Object?>(
+          'dev.flutter.pigeon.omi_pigeon.BleHostApi.manageDevice',
+          BleHostApi.pigeonChannelCodec,
+        ),
+        (message) async => <Object?>[null],
+      );
+
+      final states = <DeviceTransportState>[];
+      final subscription = transport.connectionStateStream.listen(states.add);
+
+      final connectFuture = transport.connect();
+      // Track resolution without awaiting, so "still pending" is assertable. onError keeps
+      // a failure from escaping as an unhandled zone error; settled is what the test reads.
+      String settled = 'pending';
+      connectFuture.then((_) => settled = 'ok', onError: (_) => settled = 'error');
+      await Future.delayed(Duration.zero);
+
+      // Native can fire ready in the window between STATE_CONNECTED and
+      // onServicesDiscovered, when gatt.services is still empty. Latching that as connected
+      // strands the session: reads short-circuit to [] (capabilities read as 0) and
+      // connect() early-returns forever, so only a force-close recovers.
+      BleBridge.instance.onDeviceReady('test-uuid', []);
+      await Future.delayed(const Duration(milliseconds: 10));
+
+      expect(states, isNot(contains(DeviceTransportState.connected)));
+      expect(settled, 'pending', reason: 'an empty table must neither resolve nor fail connect()');
+
+      // The real discovery lands a moment later and is what resolves the connect.
+      BleBridge.instance.onDeviceReady('test-uuid', [_service()]);
+      await connectFuture;
+      await Future.delayed(const Duration(milliseconds: 10));
+
+      expect(settled, 'ok');
+      expect(states.last, DeviceTransportState.connected);
+
+      await subscription.cancel();
+    });
   });
 }
+
+/// A minimal non-empty service table — the shape native delivers post-discovery.
+BleService _service() => BleService(
+      uuid: '19b10010-e8f2-537e-4f6c-d104768a1214',
+      characteristicUuids: const ['19b10013-e8f2-537e-4f6c-d104768a1214'],
+    );

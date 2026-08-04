@@ -319,6 +319,19 @@ class OmiBleManager private constructor(private val application: Application) {
             it.disconnect()
             it.close()
             connectedGatts.remove(addr)
+            // Run the same teardown a disconnect would. close() suppresses the
+            // STATE_DISCONNECTED callback, so this is the one path where it doesn't happen
+            // by itself — and skipping it leaves servicesDiscoveredFor holding the address,
+            // which makes onServicesDiscovered early-return for the NEW gatt as "already
+            // discovered". The ready event that carries the service table up to Dart then
+            // never fires again for this link.
+            //
+            // Reusing the disconnect hook rather than a bespoke subset: this IS a link
+            // teardown, and every piece of it applies (the stale completions, the download
+            // streaming over a dead link, the command queue whose in-flight slot belongs to
+            // a callback close() just ate). The keep-alives it stops are single-slot and
+            // restart on the new link's onGattConnected moments later.
+            cleanupPeripheral(addr)
         }
 
         // Check if device is already connected to the system by another app or previous session
@@ -358,6 +371,23 @@ class OmiBleManager private constructor(private val application: Application) {
             gatt.close()
         }
         connectedGatts.remove(addr)
+    }
+
+    /**
+     * True once onServicesDiscovered has landed for the CURRENT gatt on [address].
+     *
+     * Distinct from [isPeripheralConnected], which reports only the ACL/GATT link state and
+     * so goes true a discovery round-trip early. Anything that hands a service table to Dart
+     * must gate on this one — the link being up says nothing about gatt.services being filled.
+     *
+     * Checks the table itself as well as the flag, so the predicate validates what callers
+     * actually consume rather than a flag that is merely supposed to imply it. The flag alone
+     * is accurate today (both paths that retire a gatt clear it), but that is bookkeeping a
+     * future edit could break silently, and the table is the ground truth either way.
+     */
+    fun hasDiscoveredServices(address: String): Boolean {
+        val addr = address.uppercase()
+        return servicesDiscoveredFor.contains(addr) && connectedGatts[addr]?.services?.isNotEmpty() == true
     }
 
     fun isPeripheralConnected(address: String): Boolean {
