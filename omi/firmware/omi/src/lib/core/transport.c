@@ -19,6 +19,11 @@
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/ring_buffer.h>
 
+/* aad.h is needed for the one AAD call in this file — settings_vad_threshold_write_handler's
+ * aad_set_threshold(). Without it that call was an implicit declaration: benign on this ABI
+ * (uint16_t promotes to int in r0, void return ignored) but formally UB, unchecked against the
+ * real prototype, and a hard error under GCC 14 / C23. */
+#include "aad.h"
 #include "accel.h"
 #include "button.h"
 #include "config.h"
