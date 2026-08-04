@@ -100,10 +100,16 @@
  * larger, and sd_ring_sync() flushes the stage before committing the cursor.
  *
  *   Invariant: the bytes [head_abs - stage_fill, head_abs) live in
- *   stage[0 .. stage_fill) and are NOT yet on disk; everything before that IS.
- *   The on-disk "written head" (head_abs - stage_fill) only ever advances by
- *   whole sectors, so it stays sector-aligned — which write_run() and
- *   flush_full_sectors() depend on. */
+ *   stage[0 .. stage_fill), and the on-disk "written head" (head_abs - stage_fill)
+ *   only ever advances by whole sectors, so it stays sector-aligned — which
+ *   write_run() and flush_full_sectors() depend on.
+ *
+ *   Staged does NOT imply un-durable: sd_ring_sync() writes the padded partial tail
+ *   sector and deliberately keeps it staged so appends keep filling it, so a
+ *   non-empty stage can be entirely on disk. Ask stage_dirty (sd_ring.c), never
+ *   stage_fill, whether anything is still un-written — sd_ring_begin_segment()
+ *   depends on that distinction to decide if it must sync before publishing a
+ *   segment's closed length. */
 #define RING_STAGE_SECTORS 80u
 #define RING_STAGE_BYTES   (RING_STAGE_SECTORS * RING_SECTOR_SIZE)
 
