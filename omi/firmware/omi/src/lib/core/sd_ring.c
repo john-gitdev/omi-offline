@@ -43,21 +43,31 @@ static uint32_t segtab_seq = 1;      /* next table seq */
 static uint8_t  segtab_next_ab;      /* 0 -> write copy A next, 1 -> copy B */
 static bool     segtab_dirty;        /* wrap dropped entries; flush on next sync */
 
-/* Audio staged in RAM and flushed to the NAND in large, page-aligned batches
- * instead of one 512 B sector at a time. A sub-page (512 B) write forces the NAND
- * FTL to read-modify-write the whole page — on-device this showed ~300 ms write
- * stalls and a write path with no throughput headroom, so audio dropped the
- * moment anything else loaded the card (e.g. a backlog sync). Batching to
- * RING_STAGE_BYTES (page-aligned) removes the amplification.
- *   Invariant: the bytes [head_abs - stage_fill, head_abs) live in
- *   stage[0 .. stage_fill) and are NOT yet on disk; everything before that IS.
- *   The on-disk "written head" (head_abs - stage_fill) only ever advances by
- *   whole sectors, so it stays sector-aligned — which write_run() and
- *   flush_full_sectors() depend on. */
-#define RING_STAGE_SECTORS 8u                                    /* 4 KB batch */
-#define RING_STAGE_BYTES   (RING_STAGE_SECTORS * RING_SECTOR_SIZE)
-static uint8_t  stage[RING_STAGE_BYTES] __aligned(4);
+/* Append stage — sizing and ownership are documented in sd_ring.h. The buffer is
+ * supplied by sd_card.c via sd_ring_init() (it shares RAM with the LittleFS batch
+ * buffer), so this is a pointer, not an array: never sizeof() it. */
+static uint8_t *stage;
 static uint32_t stage_fill;          /* unwritten staged bytes, [0, RING_STAGE_BYTES) */
+
+/* Host hooks (see sd_ring_host_t). Both optional. */
+static void (*host_io_wake)(void);
+static bool (*host_io_busy)(void);
+
+/* Called before every disk access so the host can keep the SPI bus suspended
+ * until the ring actually reaches the NAND. Idempotent by contract. */
+static inline void io_wake(void)
+{
+    if (host_io_wake) {
+        host_io_wake();
+    }
+}
+
+/* True when a higher-priority request is waiting and a multi-chunk flush should
+ * hand the worker back rather than finish. */
+static inline bool io_busy(void)
+{
+    return host_io_busy && host_io_busy();
+}
 
 /* ------------------------------------------------------------------ */
 /* Diagnostics: pinpoint a worker stall to a single SD primitive.       */
@@ -92,6 +102,7 @@ uint32_t sd_ring_io_errors(void)  { return ring_io_errors; }
 /* ------------------------------------------------------------------ */
 static inline int read_sectors(uint32_t sector, void *buf, uint32_t n)
 {
+    io_wake();
     int64_t t0 = k_uptime_get();
     int rc = disk_access_read(RING_DISK, buf, sector, n) == 0 ? 0 : -EIO;
     note_io(2, t0, 0); /* reads don't count toward io_errors (BLE-read path, non-fatal) */
@@ -100,6 +111,7 @@ static inline int read_sectors(uint32_t sector, void *buf, uint32_t n)
 
 static inline int write_sectors(uint32_t sector, const void *buf, uint32_t n)
 {
+    io_wake();
     int64_t t0 = k_uptime_get();
     int rc = disk_access_write(RING_DISK, buf, sector, n) == 0 ? 0 : -EIO;
     note_io(1, t0, rc);
@@ -108,6 +120,7 @@ static inline int write_sectors(uint32_t sector, const void *buf, uint32_t n)
 
 static inline int sync_disk(void)
 {
+    io_wake();
     int64_t t0 = k_uptime_get();
     int raw = disk_access_ioctl(RING_DISK, DISK_IOCTL_CTRL_SYNC, NULL);
     int rc = (raw == 0 || raw == -ENOTSUP || raw == -ENOSYS) ? 0 : -EIO;
@@ -145,26 +158,59 @@ static int write_run(uint64_t start_abs, const uint8_t *buf, uint32_t nsec)
                          nsec - until_wrap);
 }
 
-/* Flush every COMPLETE sector currently staged, in one page-aligned run, keeping
- * the trailing sub-sector remainder in the stage. Advances the on-disk written
- * head (head_abs - stage_fill) by whole sectors, preserving its alignment. */
-static int flush_full_sectors(void)
+/* Flush every COMPLETE sector currently staged, keeping the trailing sub-sector
+ * remainder in the stage. Advances the on-disk written head (head_abs -
+ * stage_fill) by whole sectors, preserving its alignment.
+ *
+ * The run is issued as RING_FLUSH_CHUNK_SECTORS-sized writes rather than one
+ * 40 KB op: same bytes, same number of NAND pages, but the worker is never
+ * inside a single long disk op, so a BLE read waiting on sd_prio_msgq isn't held
+ * off for the length of the whole flush. With @p allow_yield, the flush stops at
+ * a chunk boundary as soon as one is waiting and leaves the rest staged — the
+ * ring's ordinary not-yet-durable state, which the next flush or sync completes.
+ * Always makes progress when it returns 0: at least one chunk is written before
+ * the first yield check, so callers flushing to free room always get a chunk.
+ *
+ * Callers that must leave nothing staged (sd_ring_sync, before the cursor
+ * commits) pass allow_yield = false. */
+static int flush_full_sectors_ex(bool allow_yield)
 {
     uint32_t nfull = stage_fill / RING_SECTOR_SIZE;
     if (nfull == 0) {
         return 0;
     }
+
     uint64_t start_abs = head_abs - stage_fill; /* sector-aligned written head */
-    if (write_run(start_abs, stage, nfull)) {
-        return -EIO;
+    uint32_t done = 0;
+    int rc = 0;
+
+    while (done < nfull) {
+        uint32_t n = MIN(RING_FLUSH_CHUNK_SECTORS, nfull - done);
+        rc = write_run(start_abs + (uint64_t) done * RING_SECTOR_SIZE,
+                       stage + (size_t) done * RING_SECTOR_SIZE, n);
+        if (rc) {
+            break;
+        }
+        done += n;
+        if (allow_yield && done < nfull && io_busy()) {
+            break;
+        }
     }
-    uint32_t flushed = nfull * RING_SECTOR_SIZE;
-    uint32_t partial = stage_fill - flushed;
-    if (partial > 0) {
-        memmove(stage, stage + flushed, partial);
+
+    /* Commit whatever landed, even on a later chunk's error: those sectors ARE on
+     * disk, and leaving them staged would re-write them and (worse) hold the
+     * written head behind bytes that are already durable. */
+    if (done > 0) {
+        uint32_t flushed = done * RING_SECTOR_SIZE;
+        stage_fill -= flushed;
+        memmove(stage, stage + flushed, stage_fill);
     }
-    stage_fill = partial;
-    return 0;
+    return rc;
+}
+
+static inline int flush_full_sectors(void)
+{
+    return flush_full_sectors_ex(true);
 }
 
 /* ------------------------------------------------------------------ */
@@ -353,8 +399,24 @@ static void set_geometry(uint32_t total_sectors, uint32_t data_start, uint64_t r
     (void) total_sectors;
 }
 
+int sd_ring_init(const sd_ring_host_t *host)
+{
+    if (!host || !host->stage || host->stage_bytes < RING_STAGE_BYTES) {
+        LOG_ERR("ring init: stage missing or < %u bytes", (unsigned) RING_STAGE_BYTES);
+        return -EINVAL;
+    }
+    stage = host->stage;
+    stage_fill = 0;
+    host_io_wake = host->io_wake;
+    host_io_busy = host->io_busy;
+    return 0;
+}
+
 int sd_ring_mount(uint32_t total_sectors)
 {
+    if (!stage) {
+        return -EINVAL; /* sd_ring_init() not called */
+    }
     if (total_sectors <= RING_DATA_START_SECTOR + 16) {
         return -EINVAL;
     }
@@ -389,7 +451,7 @@ int sd_ring_mount(uint32_t total_sectors)
 
     /* Restore the partial head sector so appends continue into it. */
     stage_fill = (uint32_t) (head_abs % RING_SECTOR_SIZE);
-    memset(stage, 0, sizeof(stage));
+    memset(stage, 0, RING_STAGE_BYTES);
     if (stage_fill != 0) {
         uint32_t sec = abs_to_sector(head_abs - stage_fill);
         if (read_sectors(sec, stage, 1) != 0) {
@@ -452,6 +514,9 @@ int sd_ring_mount(uint32_t total_sectors)
 
 int sd_ring_format(uint32_t total_sectors)
 {
+    if (!stage) {
+        return -EINVAL; /* sd_ring_init() not called */
+    }
     if (total_sectors <= RING_DATA_START_SECTOR + 16) {
         return -EINVAL;
     }
@@ -498,7 +563,7 @@ int sd_ring_format(uint32_t total_sectors)
     cursor_seq = 1;
     cursor_slot = 0;
     stage_fill = 0;
-    memset(stage, 0, sizeof(stage));
+    memset(stage, 0, RING_STAGE_BYTES);
 
     memset(&segtab, 0, sizeof(segtab));
     segtab.count = 0;
@@ -561,9 +626,11 @@ int sd_ring_append(const uint8_t *data, size_t len)
     stage_fill += (uint32_t) len;
     head_abs += len;
 
-    /* Once a full batch has accumulated, flush it as one page-aligned write.
-     * Non-fatal on error: the bytes remain staged and become durable on the next
-     * successful sync, so head_abs is not rolled back here. */
+    /* Once a full batch has accumulated, flush it (page-aligned, chunked). This is
+     * the ONLY routine reason the write path touches the NAND, so the stage size
+     * sets both the NAND write cadence and — via the io_wake hook — how often the
+     * SPI bus is powered up. Non-fatal on error: the bytes remain staged and become
+     * durable on the next successful sync, so head_abs is not rolled back here. */
     if (stage_fill >= RING_STAGE_BYTES) {
         (void) flush_full_sectors();
     }
@@ -577,20 +644,19 @@ int sd_ring_sync(void)
     }
     if (stage_fill > 0) {
         /* Persist ALL staged bytes so head_abs is recoverable: the full sectors
-         * plus the partial tail sector (padded — only its valid prefix is ever
-         * read, since reads are bounded by segment length). Keep the partial tail
-         * staged so appends keep filling it; drop the flushed full sectors. */
-        uint32_t nsec = (stage_fill + RING_SECTOR_SIZE - 1) / RING_SECTOR_SIZE;
-        uint64_t start_abs = head_abs - stage_fill; /* sector-aligned written head */
-        if (write_run(start_abs, stage, nsec)) {
+         * first (chunked, never yielding — a sync must leave nothing on the wrong
+         * side of the cursor it is about to commit), then the partial tail sector
+         * (padded — only its valid prefix is ever read, since reads are bounded by
+         * segment length). The tail stays staged so appends keep filling it. */
+        if (flush_full_sectors_ex(false) != 0) {
             return -EIO;
         }
-        uint32_t nfull = stage_fill / RING_SECTOR_SIZE;
-        uint32_t partial = stage_fill - nfull * RING_SECTOR_SIZE;
-        if (nfull > 0 && partial > 0) {
-            memmove(stage, stage + nfull * RING_SECTOR_SIZE, partial);
+        if (stage_fill > 0) {
+            uint64_t start_abs = head_abs - stage_fill; /* sector-aligned written head */
+            if (write_run(start_abs, stage, 1)) {
+                return -EIO;
+            }
         }
-        stage_fill = partial;
     }
     if (segtab_dirty) {
         /* The pruned table (keep-newest dropped segments + advanced tail) MUST reach
