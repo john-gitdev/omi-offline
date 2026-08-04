@@ -172,6 +172,7 @@ class DiagGroup extends StatefulWidget {
     required this.rows,
     this.allClear = false,
     this.clearSummary = 'all clear',
+    this.alertSummary,
     this.trailing,
   });
 
@@ -181,9 +182,14 @@ class DiagGroup extends StatefulWidget {
   /// True when nothing in this group needs attention — drives the collapsed state.
   final bool allClear;
 
-  /// Shown on the header while collapsed. Carries the group's one useful
-  /// still-healthy reading (e.g. queue headroom) so collapsing loses nothing.
+  /// Shown on the header while collapsed AND [allClear]. Carries the group's one
+  /// useful still-healthy reading (e.g. queue headroom) so collapsing loses nothing.
   final String clearSummary;
+
+  /// Shown on the header while collapsed and NOT [allClear]. Required for honesty:
+  /// a group can be collapsed by hand while it holds a live fault, and rendering
+  /// [clearSummary] there would put "no drops" above three block drops.
+  final String? alertSummary;
 
   /// Optional controls pinned to the expanded group's header row.
   final Widget? trailing;
@@ -226,14 +232,24 @@ class _DiagGroupState extends State<DiagGroup> {
                   style: const TextStyle(
                       color: Colors.white38, fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.8),
                 ),
-                const Spacer(),
-                if (!_expanded)
-                  Text(
-                    widget.clearSummary,
-                    style: TextStyle(
-                        color: widget.allClear ? DiagLevel.ok.color.withValues(alpha: 0.8) : Colors.white54,
-                        fontSize: 11),
-                  ),
+                const SizedBox(width: 12),
+                // Expanded rather than Spacer + Flexible: those split the free space
+                // evenly, so a long summary ellipsized at half the row while the rest
+                // sat empty.
+                Expanded(
+                  child: _expanded
+                      ? const SizedBox.shrink()
+                      : Text(
+                          widget.allClear ? widget.clearSummary : (widget.alertSummary ?? 'needs attention'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.right,
+                          style: TextStyle(
+                            color: widget.allClear ? DiagLevel.ok.color.withValues(alpha: 0.8) : DiagLevel.warn.color,
+                            fontSize: 11,
+                          ),
+                        ),
+                ),
               ],
             ),
           ),
