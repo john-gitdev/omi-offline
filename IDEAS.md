@@ -437,6 +437,30 @@ real fix and needs the gatt threaded into `completeCommand()` at ~17 call sites 
 files, all inside GATT callbacks — worth doing only as its own change, with the queue's
 serialization contract as the stated goal rather than as a patch to a connect race.
 
+#### Settled: `cleanupPeripheral` on GATT replacement stops addressless keep-alives
+
+Raised in review, and the mechanism is real: `stopRssiKeepAlive()`/`stopStorageKeepAlive()`
+take no address, so there is exactly **one** keep-alive slot, owned by whichever device
+started it last. Cleaning up device A therefore stops whatever keep-alive is running, which
+could in principle be B's.
+
+**Not a concern, and not worth reverting for.** The product only ever has one Omi paired at
+a time (confirmed 2026-08-03), and the code agrees: Dart holds a single `_connection` and
+disposes the old transport on a device switch (`devices.dart:167-170`, which unmanages it),
+and the native binding persists a single `managed_device` key. The keep-alives are already
+single-device by construction anyway — `startStorageKeepAlive(B)` opens by calling
+`stopStorageKeepAlive()`, so two connected devices would clobber each other's keep-alive
+independently of any of this. It is also pre-existing on the busier path: `cleanupPeripheral`
+has run on every *disconnect* since long before this work, and disconnects vastly outnumber
+GATT replacements.
+
+The suggested remedy — keep the replacement teardown per-address instead — is exactly what
+this entry's PR carried for three review rounds, and it cost an unfailed-completions bug, a
+stalled command queue, a duplicated code path, and the wire-contract regression below. If
+multi-device ever becomes real, fix the keep-alives themselves (`stopRssiKeepAlive(address)`
+over a keyed map), which repairs every caller including the disconnect path. Patching the one
+call site would leave the more common path broken.
+
 #### Landmine worth remembering
 
 `activeDownloads` must fail with a message containing **`Stream closed without EOT`**. It is a
