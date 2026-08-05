@@ -255,7 +255,7 @@ Confirmed in the log: the 07:20 run reprocessed 12 bins from 04:50–06:44 alrea
 ### Boot Sequence
 1. **LEDs breathing white** — `boot_led_sequence()` starts `led_start_breathing()` right after `led_start()` (which just asserts PWM ready, doesn't drive any LED itself)
 2. **Haptic buzz** (100ms) — fires during breathing while settings + SD init run
-3. **Breathing continues** — `boot_warming_sequence()` spin-waits for the SD worker to finish mount + `lfs_fs_gc` + file open (< 5 s with little data, up to ~50 s with 200 MB)
+3. **Breathing continues** — `boot_warming_sequence()` spin-waits for the SD worker to finish the card power-on + ring mount (fast and roughly constant; before `oo-2.9.0` this also waited on the LittleFS `lfs_fs_gc` pre-warm, which ran up to ~50 s with 200 MB on the card)
 4. **Mic starts** — `mic_start()` runs once SD is ready
 5. **Breathing stops, solid white → fade to off** — `boot_ready_fade()` holds solid white (R+G+B at `dim_ratio`) for 1 s, then fades all three channels down to 0 over ~1000 ms (100 × 10 ms steps). Main loop's `set_led_state()` (500 ms cadence) then takes over.
 
@@ -353,13 +353,13 @@ Battery voltage on the 150 mAh LiPo changes on the order of millivolts per minut
 #define SD_FSYNC_INTERVAL_MS (60 * 1000)  // fsync every 60s
 ```
 
-Each slot in `sd_msgq` holds one `sd_req_t`, which embeds a `uint8_t buf[MAX_WRITE_SIZE]` (440 B) directly — so the queue's RAM cost is ~`SD_REQ_QUEUE_MSGS × 452 B` (440 B buffer + type/len/ptr). At 120 that's **~53 KB** — on par with `write_batch_buffer` (44 KB) as the largest RAM consumer in the app core. A `k_mem_slab` refactor (pointer-in-slot instead of embedded buffer) was tried and **reverted** — same buffer depth = same RAM, no win. The only lever to shrink the queue's RAM is the slot **count**: each slot dropped frees ~452 B.
+Each slot in `sd_msgq` holds one `sd_req_t`, which embeds a `uint8_t buf[MAX_WRITE_SIZE]` (440 B) directly — so the queue's RAM cost is ~`SD_REQ_QUEUE_MSGS × 452 B` (440 B buffer + type/len/ptr). At 120 that's **~53 KB** — the largest single RAM consumer in the app core (the ring's 40 KB append stage is next). A `k_mem_slab` refactor (pointer-in-slot instead of embedded buffer) was tried and **reverted** — same buffer depth = same RAM, no win. The only lever to shrink the queue's RAM is the slot **count**: each slot dropped frees ~452 B.
 
 **Write fairness (`0095b1fa8`, 2026-06-10) is now what holds the line — not depth.** The priority (read) queue is normally drained first, but a steady read stream during an active sync must not starve audio writes. The worker forces a write turn after `MAX_READS_BETWEEN_WRITES` (6) consecutive reads and drains at least `WRITE_FAIR_MIN` (4) writes before yielding back to reads. This bounds write latency to ~6 read-ops regardless of read pressure, so the queue depth no longer has to absorb full read-burst diversions — which is why the depth could come back down from 150 to 100 without re-introducing the sync-time drops (see history below). Two new since-boot observability counters track headroom: `sd_msgq_peak_depth` (high-water mark of occupancy vs the queue limit — 120 as of `oo-2.6.2`, 100 before) and `write_fair_activations` (times fairness engaged); both are surfaced in Debug Tools (see "SD Write Drop Counters").
 
-`SD_FSYNC_INTERVAL_MS` (60 s) controls durability: data is in the LittleFS write cache until fsync fires. A hard power-off within this window risks losing up to 60 s of audio, but LittleFS's copy-on-write metadata ensures the filesystem itself stays consistent.
+`SD_FSYNC_INTERVAL_MS` (60 s) is the wall-clock backstop on durability: audio is claimed only once the ring commits its cursor, which happens on whichever comes first — `RING_SYNC_BYTES` (256 KB ≈ 52 s) of appended audio, a segment rotation, a critical marker, or this 60 s timer. A hard power-off in that window loses up to ~1 min of tail audio; it can never corrupt what came before, because the log is append-only and bytes past the last cursor record were never claimed.
 
-The early-flush path (`sd_boot_ready` gate + high-watermark logic) prevents the queue from filling during the boot `lfs_fs_gc` pre-warm and during bursts of rapid audio ingestion.
+The `sd_boot_ready` gate prevents the queue from filling during the card power-on + mount window and during bursts of rapid audio ingestion.
 
 ### Depth history — 120 today (do not re-litigate without data)
 
@@ -380,7 +380,9 @@ The early-flush path (`sd_boot_ready` gate + high-watermark logic) prevents the 
 
 **Rate note (the "2–4 s vs 13 s" confusion):** the Mar 23 commit assumed 25 slots = 500 ms (≈50 blocks/s → 100 = 2 s, 200 = 4 s). On-device measurement (`audio/stats.txt`) showed ~5,100 B/s, i.e. ~11.6 blocks/s → 150 = ~13 s, 100 = ~8.6 s. The queue holds **encoded Opus**, not PCM, so it fills ~6× slower than the 32 KB/s mic rate. The two estimates were never reconciled, but the *observed* drops at 100 settle the decision regardless.
 
-### The second stall class: LittleFS allocator traversal (2026-07-18)
+### The second stall class: LittleFS allocator traversal (2026-07-18) — RESOLVED in `oo-2.9.0`
+
+> **Historical.** This is the stall class the ring backend was built to eliminate, and removing LittleFS in `oo-2.9.0` retired it for good: a raw append-only log has no free-map to rebuild, so there is no scan to stall on. Kept because it is the rationale for the ring, and because the queue depth of 120 was sized partly around it.
 
 The "read/write contention during sync" story above is not the whole picture. There is a second, **sync-independent** way to peg `sd_msgq`: the LittleFS block allocator. When its lookahead window drains, `lfs_alloc` runs a **full-FS traversal** (`lfs_alloc_scan → lfs_fs_traverse_`) that reads every block of every file on the single SD-worker thread — **10–50+ s on a full card** (`sd_card.c` lookahead comment, ~line 114). While it runs, writes queue and eventually drop. This is intermittent (fires only when the window drains, ~every `LFS_LOOKAHEAD_SIZE × 8 × block_size` bytes written) and its duration scales with how full the SD is. It is the likely cause of the peak-depth spiking toward the ceiling **without** an active sync — a case write fairness cannot help, because fairness interleaves discrete ops and cannot preempt one long `lfs_*` call.
 
@@ -617,7 +619,7 @@ These span the whole capture→card pipeline. In pipeline order (mic → encoder
 | `codec_drops` | `codec.c::codec_receive_pcm` | The codec ring buffer (`AUDIO_BUFFER_SAMPLES`, 16000 = 1.0 s of PCM; defined in `src/lib/core/config.h`) is full when a mic chunk arrives — the **encoder** is CPU-starved. Each drop ≈ one mic chunk (~100 ms). This is the *capture-stage* loss; it's the number that tells you whether `AUDIO_BUFFER_SAMPLES` is too small. Added 2026-06-10. |
 | `sd_stream_drops` | `sd_card.c::write_to_file` | `k_msgq_put(&sd_msgq, …)` times out after a 1–5 ms retry — a single audio frame is lost. Upstream signal; most block drops are downstream of a stream drop. |
 | `block_drops` | `transport.c::write_custom_packet_to_storage` | `write_to_file` returns ≠ `MAX_WRITE_SIZE` — the entire 440 B block is lost (~5 Opus frames ≈ 100 ms). Headline number; exactly the loss the marker-drift proposal solved for. |
-| `sd_boot_drops` | `sd_card.c::write_to_file` boot path | An audio frame arrives before SD mount + `lfs_fs_gc` + file-open completes. Cold-start issue, **not** relevant to mid-stream drift. |
+| `sd_boot_drops` | `sd_card.c::write_to_file` boot path | An audio frame arrives before the card power-on + ring mount completes. Cold-start issue, **not** relevant to mid-stream drift. |
 | `conn_fails` | `transport.c::_transport_connected` | A BLE connection establishment fails (HCI error). Flash-persisted across reboots (survives the power-cycle needed to reconnect and read it). Plus `last_failed_adv_slow` = whether the last fail was during slow (1 s) advertising. |
 
 ### BLE characteristic `0x19B10062` (diagnostics service)
