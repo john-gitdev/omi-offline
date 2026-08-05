@@ -82,6 +82,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   final Mutex _dropMutex = Mutex();
   // Serializes event-log gate writes so a flip is never dropped (see _pushDiagLogGate).
   final Mutex _diagGateMutex = Mutex();
+  // True when the last gate write didn't reach the device (a sync held the storage
+  // lock), so `diagLogEnabled` is the desired state rather than the device's actual
+  // one until DeviceProvider re-pushes it on the next connect.
+  bool _diagGatePending = false;
   // _dropClock.elapsed when _dropStats was last replaced, by either the notify or the
   // READ path. Drives the freshness pill. Monotonic for the same reason the
   // subscription watchdog is: a backward wall-clock adjustment (NTP/DST/manual) would
@@ -1030,8 +1034,13 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     await _diagGateMutex.acquire();
     try {
       if (!mounted) return false;
-      return await context.read<DeviceProvider>().pushDiagLogEnabled();
+      final ok = await context.read<DeviceProvider>().pushDiagLogEnabled();
+      // One flag, set in the one place that knows: until a push lands, the pref is
+      // the desired gate, not the device's current one.
+      if (mounted) setState(() => _diagGatePending = !ok);
+      return ok;
     } catch (_) {
+      if (mounted) setState(() => _diagGatePending = true);
       return false;
     } finally {
       _diagGateMutex.release();
@@ -1621,17 +1630,21 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               const Text('Diagnostics',
                   style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
               const SizedBox(height: 2),
-              // Capability-aware: on firmware without the event log the switch drives
-              // counters only, and promising events it will never capture is the same
-              // kind of lie the merged switch was built to remove.
+              // Says only what it can actually know. `hasEventLog` is false both when
+              // the firmware lacks the capability AND when it simply hasn't been read
+              // (disconnected, or the read was skipped mid-sync), so the negative
+              // branch must not assert absence. And when a gate write was deferred,
+              // the pref is not yet the device's state — say so rather than reporting
+              // the local preference as fact.
               Text(
-                enabled
-                    ? (hasEventLog
-                        ? 'Device counters polled every 2 s, plus the on-device event log.'
-                        : 'Device counters polled every 2 s. This firmware has no on-device event log.')
-                    : (hasEventLog
-                        ? 'Off — nothing is polled, and the device records no events.'
-                        : 'Off — nothing is polled.'),
+                !enabled
+                    ? 'Off — nothing is polled, and the device records no events.'
+                    : _diagGatePending
+                        ? 'Device counters polled every 2 s. Event capture is pending — it applies on the next connect.'
+                        : hasEventLog
+                            ? 'Device counters polled every 2 s, plus the on-device event log.'
+                            : 'Device counters polled every 2 s. The on-device event log starts when a device that '
+                                'supports it connects.',
                 style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
               ),
             ],
