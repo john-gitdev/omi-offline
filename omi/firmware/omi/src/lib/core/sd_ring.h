@@ -322,12 +322,16 @@ uint64_t sd_ring_used_bytes(void);
 uint64_t sd_ring_free_bytes(void);
 
 /**
- * @brief Bytes that sd_ring_append() can stage without touching the disk.
+ * @brief Free bytes in the append stage.
  *
- * An append of at most this many bytes is a pure memcpy — it cannot flush, so it
- * cannot fail on a sick card. The write path uses this to keep buffering audio
- * during its error backoff (the role the filesystem backend's 44 KB batch buffer
- * used to play) without issuing the disk I/O the backoff exists to avoid.
+ * An append of at most this many bytes never takes sd_ring_append()'s
+ * flush-to-make-room path, so it cannot fail. The write path uses this to keep
+ * buffering audio during its error backoff — the role the filesystem backend's
+ * 44 KB batch buffer used to play — while holding disk I/O to at most one
+ * opportunistic flush: a block landing on EXACTLY this value fills the stage and
+ * trips the trailing flush at the end of sd_ring_append(). That is bounded, not a
+ * loop. If it fails, stage_fill stays at RING_STAGE_BYTES, this returns 0, and
+ * every later block is refused (and counted by the caller) with no further I/O.
  */
 size_t sd_ring_stage_headroom(void);
 
