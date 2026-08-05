@@ -194,7 +194,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // honestly. Without this a link that goes silent leaves the card showing frozen
     // counters under a stale "live" badge — the exact failure the pill exists to
     // expose. Cheap: this page is a debug screen and the tick is 2 s.
-    if (_dropPollTimer != null) setState(() {});
+    // mounted, not just the timer: _readDropStatsFallback awaits a BLE read, and the
+    // page can be closed during it. dispose() cancels the timer but the field stays
+    // non-null, so the timer check alone does not prove the State is still alive.
+    if (mounted && _dropPollTimer != null) setState(() {});
   }
 
   /// Direct READ of the drop counters (0x0062), the MTU-agnostic fallback when the
@@ -886,6 +889,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   void dispose() {
     _pollTimer?.cancel();
     _dropPollTimer?.cancel();
+    // Null it too: the field means "polling is active", which after dispose it is not.
+    _dropPollTimer = null;
     // Cancel the Dart sub and tell the device to stop pushing (CCCD=0); can't await
     // in dispose, so fire-and-forget — the generation bump runs synchronously.
     unawaited(_teardownDropSubscription());
@@ -970,7 +975,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     unawaited(
       _runDiagLogAction(() async {
         if (!await devProvider.pushDiagLogEnabled()) {
-          _reportDiagLogResult('Saved — the device is busy syncing, so it applies on the next connect.');
+          // Cause-neutral: the write can also fail because the link dropped or the
+          // characteristic errored, and naming a sync as the reason sends a developer
+          // looking in the wrong place.
+          _reportDiagLogResult('Saved — the device could not be updated just now; it applies on the next connect.');
           return;
         }
         // Pull immediately on enable so a bench session starts from a known state.
@@ -1555,14 +1563,21 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   /// hundred pixels the moment counters arrive.
   Widget _buildDiagnosticsCard() {
     final enabled = SharedPreferencesUtil().showSdWriteDrops;
-    // Watched so the card rebuilds when the event-log capability resolves on connect.
-    Provider.of<DeviceProvider>(context);
+    final devProvider = Provider.of<DeviceProvider>(context);
     return DiagCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _buildDiagnosticsHeader(enabled),
           if (enabled) ...[const SizedBox(height: 12), _buildDiagnosticsBody()],
+          // Outside the `enabled` gate on purpose. Event capture is its own switch, so
+          // routing it through the counters switch would leave it unreachable to turn
+          // OFF without first turning counter polling back on — an independent control
+          // you can only reach via the other one is not independent. This also makes
+          // the counters/events split structural rather than a special case inside the
+          // loading branch.
+          if (devProvider.diagLogSupported) _buildEventsGroup(devProvider, _dropStats),
+          if (enabled) _buildBaselineActions(),
         ],
       ),
     );
@@ -1615,20 +1630,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       return _diagPlaceholder('Waiting for device connection…');
     }
     final stats = _dropStats;
-    if (stats == null) {
-      // The event log is a separate characteristic on a separate read path, so it
-      // must not be hostage to the counter read: on a link where the counters are
-      // slow (or a sync owns the storage lock) the events are often the only thing
-      // available, and hiding them behind "Reading counters…" made the whole card
-      // look dead.
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _diagPlaceholder('Reading counters…'),
-          if (devProvider.diagLogSupported) _buildEventsGroup(devProvider, null),
-        ],
-      );
-    }
+    if (stats == null) return _diagPlaceholder('Reading counters…');
 
     // Every firmware counter here resets to 0 on device reboot, so "Mark baseline"
     // baselines them uniformly: show the value since the last mark, clamped at 0 so a
@@ -1939,7 +1941,18 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               DiagStatRow('Last fail adv mode', stats.lastFailedConnDuringSlowAdv ? 'slow (1 s)' : 'fast'),
           ],
         ),
-        if (devProvider.diagLogSupported) _buildEventsGroup(devProvider, stats),
+      ],
+    );
+  }
+
+  /// The baseline / snapshot actions. Split out of the body so the Events group can
+  /// render between the counter groups and these buttons while still being outside the
+  /// counters switch — Copy snapshot includes the event log, so it belongs below it.
+  Widget _buildBaselineActions() {
+    final hasBaseline = _dropBaseline != null || _connFailBaseline != null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
         const SizedBox(height: 10),
         Row(
           children: [
@@ -2012,7 +2025,12 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       ..writeln('captured ${DateTime.now().toIso8601String()} · device up ${_formatDuration(stats.currentUptimeMs)}')
       ..writeln(
         'sd: blocks=${stats.blockDrops} frames=${stats.streamFrameDrops} '
-        'codec=${stats.codecFrameDrops} boot=${stats.bootFrameDrops}',
+        'codec=${stats.codecFrameDrops} boot=${stats.bootFrameDrops} '
+        // When the last block drop happened. The "Last block drop" row is derived
+        // from it, and it is the one piece of when-did-this-happen evidence the rest
+        // of the snapshot cannot reconstruct. -1 = none since boot.
+        'lastDropUptimeMs=${stats.lastBlockDropUptimeMs} '
+        'msSinceLastDrop=${stats.msSinceLastBlockDrop ?? -1}',
       )
       ..writeln('queue: peak=${stats.msgqPeakDepth}/${stats.sdQueueMax} writeFair=${stats.writeFairActivations}')
       ..writeln(
@@ -2027,12 +2045,17 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         'lastAdv=${stats.lastFailedConnDuringSlowAdv ? 'slow' : 'fast'}',
       );
 
+    // Always emitted, even with nothing held: "held=0 dropped=12" is itself the
+    // finding (the ring overflowed while the phone was away), and skipping the line
+    // when records was empty threw that away. capture= records whether the log was
+    // even switched on, so a silent snapshot is not misread as a quiet device.
     final records = devProvider.diagLogRecords;
-    if (records.isNotEmpty) {
-      b.writeln('events (${records.length}, oldest first, ${devProvider.diagLogDroppedCount} dropped):');
-      for (final r in records) {
-        b.writeln('  $r');
-      }
+    b.writeln(
+      'events: capture=${SharedPreferencesUtil().diagLogEnabled} supported=${devProvider.diagLogSupported} '
+      'held=${records.length} dropped=${devProvider.diagLogDroppedCount} (oldest first)',
+    );
+    for (final r in records) {
+      b.writeln('  $r');
     }
 
     await Clipboard.setData(ClipboardData(text: b.toString()));
@@ -2091,6 +2114,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
 
     final capturing = SharedPreferencesUtil().diagLogEnabled;
     return DiagGroup(
+      // Keyed like its siblings: it renders in two different slots (beside the loading
+      // placeholder, then after the counter groups), and without a key Flutter rebuilds
+      // its State across that move, discarding a hand-applied collapse.
+      key: const ValueKey('diag-events'),
       title: 'Events (${records.length})',
       allClear: records.isEmpty && dropped == 0,
       clearSummary: capturing ? 'nothing captured' : 'capture off',
