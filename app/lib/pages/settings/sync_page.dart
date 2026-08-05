@@ -997,14 +997,21 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
     setState(() {});
 
+    // Persist the desired gate BEFORE the capability guard. Behind it, turning
+    // Diagnostics off while the capability was still unknown (disconnected, or the
+    // capability read lost its race with a sync) left `diagLogEnabled` true — and the
+    // next capable connect pushed that stale true, so the device recorded events
+    // under a switch reading off. Only the device write is capability-gated.
+    prefs.diagLogEnabled = val;
     final devProvider = context.read<DeviceProvider>();
     if (!devProvider.diagLogSupported) return;
-    prefs.diagLogEnabled = val;
     final reached = await _pushDiagLogGate();
     if (!reached) {
       // The pref is kept and re-pushed on the next connect, but say so rather than
-      // implying on-device capture already flipped.
-      _reportDiagLogResult('Counters are on. The device is busy syncing — event capture applies on next connect.');
+      // implying on-device capture already flipped — in either direction.
+      _reportDiagLogResult(val
+          ? 'Counters are on. The device is busy syncing — event capture starts on the next connect.'
+          : 'Counters are off. The device is busy syncing — event capture stops on the next connect.');
       return;
     }
     // Pull immediately on enable so a bench session starts from a known state.
@@ -1587,11 +1594,12 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   /// hundred pixels the moment counters arrive.
   Widget _buildDiagnosticsCard() {
     final enabled = SharedPreferencesUtil().showSdWriteDrops;
+    final hasEventLog = Provider.of<DeviceProvider>(context).diagLogSupported;
     return DiagCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildDiagnosticsHeader(enabled),
+          _buildDiagnosticsHeader(enabled, hasEventLog),
           if (enabled) ...[
             const SizedBox(height: 12),
             _buildDiagnosticsBody(),
@@ -1601,7 +1609,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     );
   }
 
-  Widget _buildDiagnosticsHeader(bool enabled) {
+  Widget _buildDiagnosticsHeader(bool enabled, bool hasEventLog) {
     return Row(
       children: [
         const FaIcon(FontAwesomeIcons.waveSquare, size: 14, color: Colors.white70),
@@ -1613,10 +1621,17 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               const Text('Diagnostics',
                   style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
               const SizedBox(height: 2),
+              // Capability-aware: on firmware without the event log the switch drives
+              // counters only, and promising events it will never capture is the same
+              // kind of lie the merged switch was built to remove.
               Text(
                 enabled
-                    ? 'Device counters polled every 2 s, plus the on-device event log.'
-                    : 'Off — nothing is polled, and the device records no events.',
+                    ? (hasEventLog
+                        ? 'Device counters polled every 2 s, plus the on-device event log.'
+                        : 'Device counters polled every 2 s. This firmware has no on-device event log.')
+                    : (hasEventLog
+                        ? 'Off — nothing is polled, and the device records no events.'
+                        : 'Off — nothing is polled.'),
                 style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
               ),
             ],
@@ -1772,6 +1787,15 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (peakHot) watches.add('SD queue near its limit');
     if (sdStackHot || codecStackHot) watches.add('thread stack near ceiling');
     if (isRing && ringSlow) watches.add('slow SD op (${stats.ringMaxIoMs} ms)');
+    // The event log is part of this card, so it has to count toward the card's
+    // verdict: without this the banner read "All clear" over a red advertising-fail
+    // or wedged-mic entry sitting a few rows below it.
+    final eventLevels =
+        devProvider.diagLogSupported ? devProvider.diagLogRecords.map(diagEventLevel).toList() : const <DiagLevel>[];
+    final eventFaults = eventLevels.where((l) => l == DiagLevel.bad).length;
+    final eventWarns = eventLevels.where((l) => l == DiagLevel.warn).length;
+    if (eventFaults > 0) problems.add('$eventFaults event fault${eventFaults == 1 ? '' : 's'}');
+    if (eventWarns > 0) watches.add('$eventWarns event warning${eventWarns == 1 ? '' : 's'}');
 
     final uptime = _formatDuration(stats.currentUptimeMs);
     final DiagLevel verdict =
@@ -1853,7 +1877,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           title: 'SD write path',
           allClear: sdFlags.isEmpty,
           clearSummary: 'no drops · queue $peak/${stats.sdQueueMax}',
-          alertSummary: sdFlags.join(' · '),
+          alertSummary: _alertSummary(sdFlags),
           rows: [
             DiagStatRow('440 B blocks dropped', '$blocks', level: blocks > 0 ? DiagLevel.bad : DiagLevel.info),
             DiagStatRow('Audio frames dropped (SD queue)', '$frames',
@@ -1884,7 +1908,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           allClear: markerFlags.isEmpty,
           clearSummary:
               (prioStarts == 0 && prioStops == 0) ? 'no activity' : '$prioStarts started · $prioStops stopped',
-          alertSummary: markerFlags.join(' · '),
+          alertSummary: _alertSummary(markerFlags),
           rows: [
             DiagStatRow('Priority recordings started', '$prioStarts'),
             DiagStatRow('Priority recordings stopped', '$prioStops',
@@ -1906,7 +1930,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           title: 'Memory',
           allClear: memoryFlags.isEmpty,
           clearSummary: stats.sdWorkerStackUsed == 0 ? 'not reported' : 'headroom ok',
-          alertSummary: memoryFlags.join(' · '),
+          alertSummary: _alertSummary(memoryFlags),
           rows: [
             // Read after a heavy session (an allocator scan is the SD worker's deepest
             // path; busy encoding is the codec's) so the high-water reflects the worst
@@ -1933,7 +1957,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           title: 'BLE link',
           allClear: bleFlags.isEmpty,
           clearSummary: 'no failures',
-          alertSummary: bleFlags.join(' · '),
+          alertSummary: _alertSummary(bleFlags),
           rows: [
             // "Died at establishment" is the one that identifies a "visible but
             // unconnectable" outage — if the phone logs 0x3e while this stays 0, the
@@ -2183,6 +2207,16 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   static String _hhmm(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+
+  /// Collapsed-header summary for a group that has active flags.
+  ///
+  /// Capped rather than left to ellipsis: the header updates live while collapsed, so
+  /// a group folded by hand still reports what it holds — but a long list would push
+  /// a newly-appeared flag off the end invisibly. Saying "+2 more" keeps the header
+  /// honest without re-expanding the group behind the user's back, which during a
+  /// drop burst would mean fighting them open every 2 s.
+  static String _alertSummary(List<String> flags) =>
+      flags.length <= 2 ? flags.join(' · ') : '${flags.take(2).join(' · ')} +${flags.length - 2} more';
 
   static String _formatDuration(int ms) {
     if (ms < 1000) return '${ms}ms';
