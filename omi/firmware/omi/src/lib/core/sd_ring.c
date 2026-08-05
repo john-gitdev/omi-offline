@@ -44,7 +44,7 @@ static uint8_t  segtab_next_ab;      /* 0 -> write copy A next, 1 -> copy B */
 static bool     segtab_dirty;        /* wrap dropped entries; flush on next sync */
 
 /* Append stage — sizing and ownership are documented in sd_ring.h. The buffer is
- * supplied by sd_card.c via sd_ring_init() (it shares RAM with the LittleFS batch
+ * supplied by sd_card.c via sd_ring_init() (it was shared RAM with the LittleFS batch
  * buffer), so this is a pointer, not an array: never sizeof() it. */
 static uint8_t *stage;
 static uint32_t stage_fill;          /* unwritten staged bytes, [0, RING_STAGE_BYTES) */
@@ -465,19 +465,19 @@ int sd_ring_mount(uint32_t total_sectors)
     if (stage_fill != 0) {
         uint32_t sec = abs_to_sector(head_abs - stage_fill);
         if (read_sectors(sec, stage, 1) != 0) {
-            /* Partial tail sector is unreadable. Do NOT fail the mount (the caller
-             * would fall back to LittleFS and lfs_format() the volume, wiping every
-             * synced-but-undrained recording) and do NOT overwrite the bad sector in
-             * this traversal. Close/truncate the last segment at the last good sector
-             * boundary — so no closed recording claims unreadable bytes and the open
-             * one cannot span a gap — then resume recording just PAST the bad sector,
-             * leaving it as dead space owned by no segment.
+            /* Partial tail sector is unreadable. Do NOT fail the mount — that blocks
+             * recording for the whole boot over one bad sector — and do NOT overwrite
+             * the bad sector in this traversal. Close/truncate the last segment at the
+             * last good sector boundary — so no closed recording claims unreadable
+             * bytes and the open one cannot span a gap — then resume recording just
+             * PAST the bad sector, leaving it as dead space owned by no segment. Every
+             * synced-but-undrained recording is preserved.
              * LIMITATION: the raw log has no bad-block remapping, so a full ring wrap
              * (only reachable if the phone never drains for ~26 h of continuous
              * recording) would eventually re-address this physical sector; a
              * persistently-bad sector then surfaces as an ordinary write drop /
-             * sd_write_blocked, not corruption. LittleFS (the FTL-backed default) is
-             * the answer for a genuinely failing card. */
+             * sd_write_blocked, not corruption. A genuinely failing card needs
+             * replacing — there is no FTL here to route around it. */
             uint64_t bnd = head_abs - stage_fill; /* last good sector boundary */
             LOG_WRN("ring mount: partial tail unreadable — closing at %llu, skipping bad sector",
                     (unsigned long long) bnd);
