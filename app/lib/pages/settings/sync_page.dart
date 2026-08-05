@@ -82,10 +82,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   final Mutex _dropMutex = Mutex();
   // Serializes event-log gate writes so a flip is never dropped (see _pushDiagLogGate).
   final Mutex _diagGateMutex = Mutex();
-  // True when the last gate write didn't reach the device (a sync held the storage
-  // lock), so `diagLogEnabled` is the desired state rather than the device's actual
-  // one until DeviceProvider re-pushes it on the next connect.
-  bool _diagGatePending = false;
   // _dropClock.elapsed when _dropStats was last replaced, by either the notify or the
   // READ path. Drives the freshness pill. Monotonic for the same reason the
   // subscription watchdog is: a backward wall-clock adjustment (NTP/DST/manual) would
@@ -1034,13 +1030,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     await _diagGateMutex.acquire();
     try {
       if (!mounted) return false;
-      final ok = await context.read<DeviceProvider>().pushDiagLogEnabled();
-      // One flag, set in the one place that knows: until a push lands, the pref is
-      // the desired gate, not the device's current one.
-      if (mounted) setState(() => _diagGatePending = !ok);
-      return ok;
+      // pushDiagLogEnabled records what it actually wrote (diagLogGateApplied), so
+      // the pending state is derived at render time rather than tracked here.
+      return await context.read<DeviceProvider>().pushDiagLogEnabled();
     } catch (_) {
-      if (mounted) setState(() => _diagGatePending = true);
       return false;
     } finally {
       _diagGateMutex.release();
@@ -1603,12 +1596,20 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   /// hundred pixels the moment counters arrive.
   Widget _buildDiagnosticsCard() {
     final enabled = SharedPreferencesUtil().showSdWriteDrops;
-    final hasEventLog = Provider.of<DeviceProvider>(context).diagLogSupported;
+    final devProvider = Provider.of<DeviceProvider>(context);
+    final hasEventLog = devProvider.diagLogSupported;
+    // Derived, not stored: the device's gate is whatever last landed, and a null
+    // (never written) is off, since the firmware gate defaults off and resets each
+    // reboot. Because DeviceProvider re-pushes on connect and notifies, a pending
+    // state clears itself the moment the write lands — a page-side flag stayed stuck
+    // reading "pending" forever, since nothing told the page the re-push had happened.
+    final gatePending =
+        hasEventLog && (devProvider.diagLogGateApplied ?? false) != SharedPreferencesUtil().diagLogEnabled;
     return DiagCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildDiagnosticsHeader(enabled, hasEventLog),
+          _buildDiagnosticsHeader(enabled, hasEventLog, gatePending),
           if (enabled) ...[
             const SizedBox(height: 12),
             _buildDiagnosticsBody(),
@@ -1618,7 +1619,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     );
   }
 
-  Widget _buildDiagnosticsHeader(bool enabled, bool hasEventLog) {
+  Widget _buildDiagnosticsHeader(bool enabled, bool hasEventLog, bool gatePending) {
     return Row(
       children: [
         const FaIcon(FontAwesomeIcons.waveSquare, size: 14, color: Colors.white70),
@@ -1638,8 +1639,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               // the local preference as fact.
               Text(
                 !enabled
-                    ? 'Off — nothing is polled, and the device records no events.'
-                    : _diagGatePending
+                    // The off branch has to respect pending too: switching off while a
+                    // sync holds the storage lock leaves the device's gate ON until the
+                    // next connect, so claiming it records nothing would contradict both
+                    // the snackbar and the device.
+                    ? (gatePending
+                        ? 'Off — but the device keeps recording events until the next connect.'
+                        : 'Off — nothing is polled, and the device records no events.')
+                    : gatePending
                         ? 'Device counters polled every 2 s. Event capture is pending — it applies on the next connect.'
                         : hasEventLog
                             ? 'Device counters polled every 2 s, plus the on-device event log.'
