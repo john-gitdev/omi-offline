@@ -1046,20 +1046,6 @@ class OmiDeviceConnection extends DeviceConnection {
   }
 
   @override
-  Future<bool> sendSetStorageBackendCommand(int backend) async {
-    // [0x1A][backend]: 0 = LittleFS, 1 = ring. The device persists it and cold-
-    // reboots to apply (reformatting the SD to the selected backend on first use),
-    // so the connection drops right after — a thrown write is expected and fine.
-    try {
-      await transport.writeCharacteristic(
-          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x1A, backend & 0xFF]);
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  @override
   Future<bool> performStopStorageSync() async {
     try {
       final completer = Completer<bool>();
