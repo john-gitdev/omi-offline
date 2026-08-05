@@ -97,13 +97,16 @@ class DiagPill extends StatelessWidget {
         : level.color.withValues(alpha: 0.12);
     return GestureDetector(
       onTap: onTap,
-      // Tappable pills (the baseline selector, the event filters) get a roomier box
-      // than the read-only status pills — at the status size they were a ~20 px
-      // target, which is a miss more often than a hit.
+      // Interactive pills (the baseline selector, the event filters, the capture
+      // switch) get a roomier box than the read-only status pills — at the status size
+      // they were a ~20 px target, which is a miss more often than a hit. Keyed on
+      // `selected`, which marks a pill as interactive, NOT on `onTap`: a pill disabled
+      // mid-action still occupies its slot, and sizing by onTap made the header shrink
+      // while a BLE write was in flight.
       child: Container(
-        padding: onTap == null
-            ? const EdgeInsets.symmetric(horizontal: 8, vertical: 3)
-            : const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        padding: isSegment
+            ? const EdgeInsets.symmetric(horizontal: 12, vertical: 7)
+            : const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
         decoration: BoxDecoration(
           color: bg,
           borderRadius: BorderRadius.circular(20),
