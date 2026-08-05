@@ -577,6 +577,24 @@ class SharedPreferencesUtil {
     await remove('autoUploadFailAt_$key');
   }
 
+  /// Removes the Debug Tools diagnostics baselines left behind from when each key was
+  /// suffixed with a device id. Only one Omi is ever paired, so the keys are plain now
+  /// and any suffixed ones are unreachable. The plain keys have no trailing underscore,
+  /// so they can't match these prefixes.
+  Future<void> clearLegacyPerDeviceBaselines() async {
+    final keys = (_preferences?.getKeys() ?? {})
+        .where(
+          (k) =>
+              k.startsWith('drop_baseline_json_') ||
+              k.startsWith('conn_fail_baseline_') ||
+              k.startsWith('estab_fail_baseline_'),
+        )
+        .toList();
+    for (final key in keys) {
+      await _preferences?.remove(key);
+    }
+  }
+
   Future<void> clearAllAutoUploadRetries() async {
     final keys = (_preferences?.getKeys() ?? {})
         .where((k) => k.startsWith('autoUploadRetry_') || k.startsWith('autoUploadFailAt_'))
