@@ -359,26 +359,6 @@ int main(void)
         /* Overwrite NVS with this boot's cause; uptime starts at 0 and is updated in the main loop */
         app_settings_save_last_reset(this_cause, 0);
 
-#ifdef CONFIG_OMI_AUDIO_RING
-        /* Anti-brick self-heal: if the ring backend is active and the device has
-         * been crash-looping (watchdog/lockup) across boots, revert to the
-         * known-good LittleFS backend so a ring bug can't wedge it into needing a
-         * reflash. BLE/DFU comes up before the bounded SD wait, so the device
-         * stays DFU-reachable regardless — this just also gets it recording again.
-         * The counter is cleared once a boot proves healthy (see main loop). */
-        if (app_settings_get_storage_backend() == STORAGE_BACKEND_RING &&
-            (this_cause & (RESET_WATCHDOG | RESET_CPU_LOCKUP))) {
-            uint8_t fails = app_settings_get_ring_boot_fails() + 1;
-            if (fails >= RING_BOOT_FAIL_LIMIT) {
-                LOG_ERR("[BOOT] ring backend crash-looped (%u boots) — reverting to LittleFS", fails);
-                app_settings_save_storage_backend(STORAGE_BACKEND_LITTLEFS);
-                app_settings_save_ring_boot_fails(0);
-            } else {
-                LOG_WRN("[BOOT] post-crash boot %u/%u with ring backend active", fails, RING_BOOT_FAIL_LIMIT);
-                app_settings_save_ring_boot_fails(fails);
-            }
-        }
-#endif
     }
 #endif
 
@@ -476,22 +456,6 @@ int main(void)
     while (1) {
         watchdog_feed();
 
-#ifdef CONFIG_OMI_AUDIO_RING
-        /* Once this boot has run long enough to be definitely healthy (past any
-         * boot-time fault window), clear the ring crash-loop counter so only
-         * CONSECUTIVE bad boots accumulate toward the auto-revert. */
-        static bool ring_fails_cleared = false;
-        if (!ring_fails_cleared && k_uptime_get() > 120000) {
-            /* Clear regardless of the CURRENT backend: a healthy LittleFS boot must
-             * also reset the count, otherwise stale failures from an earlier Ring
-             * trial would make the next Ring trial auto-revert on its first crash
-             * instead of after RING_BOOT_FAIL_LIMIT consecutive ones. */
-            if (app_settings_get_ring_boot_fails() != 0) {
-                app_settings_save_ring_boot_fails(0);
-            }
-            ring_fails_cleared = true;
-        }
-#endif
 
 #ifdef CONFIG_OMI_ENABLE_MONITOR
         monitor_log_metrics();
