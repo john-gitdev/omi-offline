@@ -327,11 +327,15 @@ uint64_t sd_ring_free_bytes(void);
  * An append of at most this many bytes never takes sd_ring_append()'s
  * flush-to-make-room path, so it cannot fail. The write path uses this to keep
  * buffering audio during its error backoff — the role the filesystem backend's
- * 44 KB batch buffer used to play — while holding disk I/O to at most one
- * opportunistic flush: a block landing on EXACTLY this value fills the stage and
- * trips the trailing flush at the end of sd_ring_append(). That is bounded, not a
- * loop. If it fails, stage_fill stays at RING_STAGE_BYTES, this returns 0, and
- * every later block is refused (and counted by the caller) with no further I/O.
+ * 44 KB batch buffer used to play.
+ *
+ * It BOUNDS disk I/O on that path rather than eliminating it: a block landing on
+ * exactly this value fills the stage and trips the trailing flush at the end of
+ * sd_ring_append(). So the backoff issues at most one flush per stage-fill (~8 s
+ * of audio), never one per block — the latter being the hammering it exists to
+ * prevent. Returns 0 while the stage is full, so a card failing every write stalls
+ * the path completely; one that fails partway through a flush commits what landed,
+ * frees that much headroom, and gets retried on the next fill.
  */
 size_t sd_ring_stage_headroom(void);
 
