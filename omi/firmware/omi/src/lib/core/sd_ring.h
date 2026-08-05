@@ -321,6 +321,16 @@ uint64_t sd_ring_used_bytes(void);
 /** @brief Free bytes remaining before keep-newest overwrite begins. */
 uint64_t sd_ring_free_bytes(void);
 
+/**
+ * @brief Bytes that sd_ring_append() can stage without touching the disk.
+ *
+ * An append of at most this many bytes is a pure memcpy — it cannot flush, so it
+ * cannot fail on a sick card. The write path uses this to keep buffering audio
+ * during its error backoff (the role the filesystem backend's 44 KB batch buffer
+ * used to play) without issuing the disk I/O the backoff exists to avoid.
+ */
+size_t sd_ring_stage_headroom(void);
+
 /** @brief Total audio-ring capacity in bytes. */
 uint64_t sd_ring_capacity_bytes(void);
 
