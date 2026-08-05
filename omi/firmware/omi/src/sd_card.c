@@ -1,27 +1,29 @@
 /*
- * sd_card.c â€” LittleFS over disk_access (SD NAND via SPI SD protocol)
+ * sd_card.c — raw circular-log audio storage over disk_access (SD NAND via SPI)
  *
  * Architecture:
- *   SD NAND chip â†’ SD SPI stack (disk_access) â†’ LittleFS block callbacks
+ *   SD NAND chip → SD SPI stack (disk_access) → sd_ring append-only log
  *
- * Why LittleFS instead of FATFS:
- *   - Copy-on-write metadata: filesystem is always consistent after power loss
- *   - No "dirty bit" that causes FATFS to refuse writes after ungraceful shutdown
- *   - Journaling: data integrity without complex recovery code
- *   - SD card handles erase internally â†’ erase callback is a no-op
- *   - SD card has internal wear leveling â†’ block_cycles = -1
+ * Why a raw ring and not a filesystem:
+ *   LittleFS has no persistent free-map, so once its lookahead window drains
+ *   lfs_alloc runs a full-FS traversal (O(data on disk), 10-50 s over SPI) on
+ *   this file's single sd_worker thread — saturating sd_msgq and dropping audio
+ *   exactly in the all-day-offline state this device is built for. The ring
+ *   appends in O(1) with no free-map and no scan. It owns raw sectors: segments
+ *   are delimited by the inline 0xFFFFFFFB header and presented to BLE as
+ *   "files" keyed <timestamp>_<session_id>, so the storage protocol and the
+ *   app-side WAL are unchanged from the filesystem era.
+ *
+ *   See sd_ring.h for the on-card layout and durability contract.
  */
 #include "lib/core/sd_card.h"
 #include "lib/core/transport.h"
 #include "lib/core/storage.h"
 #include "lib/core/settings.h"
-#ifdef CONFIG_OMI_AUDIO_RING
 #include "lib/core/sd_ring.h"
-#endif
 #include "lib/core/diag_log.h"
 
 #include <ctype.h>
-#include <lfs.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -39,15 +41,8 @@
 LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 
 /* ------------------------------------------------------------------ */
-/* Storage backend selector (LittleFS default / raw ring)             */
+/* Ring backend state                                                  */
 /* ------------------------------------------------------------------ */
-/* Read once at sd_worker boot from the persisted setting. Switching backends
- * requires a reboot (the switch command sets the setting + reboots), so this is
- * stable for the life of a boot. When CONFIG_OMI_AUDIO_RING is off, the ring
- * code is not compiled and ring_active() is a compile-time false so every fork
- * below folds to the LittleFS path. */
-static uint8_t g_backend = STORAGE_BACKEND_LITTLEFS;
-#ifdef CONFIG_OMI_AUDIO_RING
 static uint32_t ring_total_sectors; /* disk sector count, captured at mount for reformat */
 static size_t ring_bytes_since_sync;
 static uint32_t ring_last_seg_ts;   /* last segment identity ts — bump on same-second collision */
@@ -58,8 +53,8 @@ static bool ring_pending_explicit_rotate;
 /* The cursor is durably advanced (partial-tail write + CTRL_SYNC + cursor write)
  * on whichever comes first: RING_SYNC_BYTES of appended audio, a ~5 min segment
  * rotation, a critical marker (block_has_critical_marker), or the write-wait-timeout
- * branch once SD_FSYNC_INTERVAL_MS (60 s) has elapsed — the wall-clock backstop,
- * mirroring the LittleFS fsync gate. 256 KiB is NOT arbitrary: at the measured
+ * branch once SD_FSYNC_INTERVAL_MS (60 s) has elapsed — the wall-clock backstop.
+ * 256 KiB is NOT arbitrary: at the measured
  * ~5 KB/s ingest it is ~52 s ≈ the 60 s fsync interval, so the byte cap and the
  * time cap target the SAME ~1 min worst-case loss by design; it is also a power-of-2
  * multiple of the 512 B sector and of the 4 KB NAND page the stage flushes in, so
@@ -72,22 +67,11 @@ static bool ring_pending_explicit_rotate;
  * Only an ungraceful stop loses anything, and for an offline-first device that is
  * realistically just the battery going flat — a <~1 min tail loss there is
  * indistinguishable from "didn't charge enough". At the old 4 KB this synced
- * ~1.25x/s (~75x the LittleFS cadence), burning power on redundant NAND commits
- * (a CTRL_SYNC can trigger a NAND erase — the expensive op). VAD-resume markers
- * (0xFFFFFFFD) also no longer force a sync: they fire on every speech-after-silence
- * wake and carry only a timestamp re-anchor, so they were the dominant per-wake
- * commit in auto mode. */
+ * ~1.25x/s, burning power on redundant NAND commits (a CTRL_SYNC can trigger a
+ * NAND erase — the expensive op). VAD-resume markers (0xFFFFFFFD) also no longer
+ * force a sync: they fire on every speech-after-silence wake and carry only a
+ * timestamp re-anchor, so they were the dominant per-wake commit in auto mode. */
 #define RING_SYNC_BYTES (256 * 1024)
-static inline bool ring_active(void)
-{
-    return g_backend == STORAGE_BACKEND_RING;
-}
-#else
-static inline bool ring_active(void)
-{
-    return false;
-}
-#endif
 
 /* ------------------------------------------------------------------ */
 /* Power Management Helpers                                           */
@@ -111,246 +95,33 @@ static inline bool ring_active(void)
 #define MAX_READS_BETWEEN_WRITES 6
 #define WRITE_FAIR_MIN 4
 #define SD_FSYNC_INTERVAL_MS (60 * 1000)
-#define WRITE_BATCH_COUNT 100
-#define ERROR_THRESHOLD 5
-/* After this many failed 2s recovery cycles, escalate from plain retry to a
- * full power-cycle + remount of the SD card before continuing to drop. */
-#define SD_RECOVERY_REMOUNT_THRESHOLD 3
 
 /* SPI3 MOSI hold-low pin — disconnected on SD power-off to prevent back-feed.
    gpio1 pin 11 = P1.11 on the nRF52840 board schematic. */
 #define SD_SPI_MOSI_HOLD_PIN 11
 
 #define FILE_CACHE_TTL_MS (30 * 1000)
-#define FILE_CONTINUE_THRESHOLD_SEC 60
-#define BOOT_MIN_AUDIO_FILE_SIZE 10000
-
-/* LittleFS paths are relative to FS root (no mount-point prefix) */
-#define FILE_DATA_DIR  "audio"
-#define FILE_INFO_PATH "info.txt"
-/* Magic cookie written on every clean LFS format.  If lfs_mount() accidentally
- * succeeds on stale FatFS data (bytes happen to pass LFS superblock CRC), the
- * magic file will be absent or contain wrong bytes — triggering a reformat. */
-#define LFS_MAGIC_PATH  ".lfs_magic"
-#define LFS_MAGIC_VALUE 0x4C465356u /* 'L','F','S','V' */
-
-/* ------------------------------------------------------------------ */
-/* Disk sector size (always 512 for SD) */
-#define DISK_SECTOR_SIZE 512
-/* LFS block size: groups 8 sectors into one LFS block.
- * With 512-byte blocks, a 512 MB SD has 1M blocks and LFS metadata overhead
- * is enormous (CTZ skip-lists, lookahead scans).  4096-byte blocks reduce
- * the block count to ~128K and cut metadata overhead by ~8x. */
-#define LFS_BLOCK_SIZE 4096
-#define LFS_CACHE_SIZE LFS_BLOCK_SIZE                         /* cache = 1 full block for multi-sector I/O */
-#define SECTORS_PER_BLOCK (LFS_BLOCK_SIZE / DISK_SECTOR_SIZE) /* 8 */
-
-/* ------------------------------------------------------------------ */
-/* LittleFS state                                                     */
-/* ------------------------------------------------------------------ */
-
-/* Raw LFS instance */
-static lfs_t lfs_fs;
-
-/* Open file handles */
-static lfs_file_t lfs_fil_data;
-static lfs_file_t lfs_fil_info;
-
-/* Static buffers for lfs_file_opencfg (avoids heap allocation)
- * Size must match cache_size (LFS_CACHE_SIZE = 4096). */
-static uint8_t lfs_fdata_buf[LFS_CACHE_SIZE];
-static uint8_t lfs_finfo_buf[LFS_CACHE_SIZE];
-static struct lfs_file_config lfs_fdata_cfg = {.buffer = lfs_fdata_buf};
-static struct lfs_file_config lfs_finfo_cfg = {.buffer = lfs_finfo_buf};
-
-
-/* LFS I/O buffers — sized to cache_size (4096) for multi-sector I/O */
-static uint8_t lfs_read_buf[LFS_CACHE_SIZE];
-static uint8_t lfs_prog_buf[LFS_CACHE_SIZE];
-/* Lookahead buffer sizing:
- * 128 bytes = 1024 blocks = 4 MB window → too small for 512 MB SD (128K blocks).
- * Every time the window is exhausted, LFS triggers a FULL filesystem traversal
- * (lfs_alloc_scan → lfs_fs_traverse_) which reads every block in every file.
- * With 200 MB of data (~50K blocks) this costs 10-50+ seconds per scan over SPI.
- *
- * The traversal runs on the single sd_worker thread and is the dominant source of
- * intermittent sd_msgq saturation (peak-depth spikes toward SD_REQ_QUEUE_MSGS): it
- * fires only when the window drains, and its duration tracks how full the SD is.
- *
- * 4096 bytes = 32768 blocks = 128 MB window → ~4 scans to cover entire disk.
- * Reduces scan frequency to every ~128 MB written (vs ~64 MB at 2048), halving how
- * often the write path eats a full-FS traversal. Does NOT shorten each scan — that
- * cost is O(data on disk), so prompt app-side sync+delete (keeping the FS emptier)
- * remains the biggest lever on stall *duration*.
- * Cost: 2048 bytes extra static RAM vs the prior 2048-byte window. */
-#define LFS_LOOKAHEAD_SIZE 4096
-static uint8_t lfs_lookahead_buf[LFS_LOOKAHEAD_SIZE];
-
-/* Shared temp sector buffer â€” only used from worker thread, safe as static */
-static uint8_t _lfs_io_tmp[512];
-
-/* LittleFS disk_access callbacks                                      */
-/* ------------------------------------------------------------------ */
-
-/*
- * Map LFS (block, offset) to disk sector.
- *
- * NOTE: LittleFS is NOT thread-safe by default. In this architecture, all
- * lfs_* functions and these callbacks are strictly serialized on the single
- * sd_worker thread. If LFS is ever called from another thread, it will 
- * cause immediate filesystem corruption.
- *
- *   LFS block N at byte offset K  →  disk sector  N * SECTORS_PER_BLOCK + K/512
- * With cache_size == 4096 (== block_size), LFS typically calls us with
- * size == 4096 and off == 0.  The fast path handles any aligned multi-sector
- * read in a single disk_access call (CMD18 multi-block read).
- */
-static int lfs_disk_read_cb(const struct lfs_config *c, lfs_block_t block, lfs_off_t off, void *buffer, lfs_size_t size)
-{
-    (void) c;
-    uint32_t sector = (uint32_t) block * SECTORS_PER_BLOCK + off / DISK_SECTOR_SIZE;
-    uint32_t sec_off = off % DISK_SECTOR_SIZE;
-
-    /* Fast path: aligned multi-sector read (the common case with cache_size=4096) */
-    if (sec_off == 0 && (size % DISK_SECTOR_SIZE) == 0) {
-        uint32_t nsec = size / DISK_SECTOR_SIZE;
-        return disk_access_read(DISK_DRIVE_NAME, buffer, sector, nsec) == 0 ? LFS_ERR_OK : LFS_ERR_IO;
-    }
-    /* Generic path: partial / unaligned */
-    uint8_t *dst = (uint8_t *) buffer;
-    while (size > 0) {
-        if (disk_access_read(DISK_DRIVE_NAME, _lfs_io_tmp, sector, 1) != 0)
-            return LFS_ERR_IO;
-        lfs_size_t chunk = DISK_SECTOR_SIZE - sec_off;
-        if (chunk > size)
-            chunk = size;
-        memcpy(dst, _lfs_io_tmp + sec_off, chunk);
-        dst += chunk;
-        size -= chunk;
-        sec_off = 0;
-        sector++;
-    }
-    return LFS_ERR_OK;
-}
-
-static int
-lfs_disk_prog_cb(const struct lfs_config *c, lfs_block_t block, lfs_off_t off, const void *buffer, lfs_size_t size)
-{
-    (void) c;
-    uint32_t sector = (uint32_t) block * SECTORS_PER_BLOCK + off / DISK_SECTOR_SIZE;
-    uint32_t sec_off = off % DISK_SECTOR_SIZE;
-
-    /* Fast path: aligned multi-sector write (CMD25 multi-block write) */
-    if (sec_off == 0 && (size % DISK_SECTOR_SIZE) == 0) {
-        uint32_t nsec = size / DISK_SECTOR_SIZE;
-        return disk_access_write(DISK_DRIVE_NAME, buffer, sector, nsec) == 0 ? LFS_ERR_OK : LFS_ERR_IO;
-    }
-    /* Generic path: read-modify-write per sector */
-    const uint8_t *src = (const uint8_t *) buffer;
-    while (size > 0) {
-        if (disk_access_read(DISK_DRIVE_NAME, _lfs_io_tmp, sector, 1) != 0)
-            return LFS_ERR_IO;
-        lfs_size_t chunk = DISK_SECTOR_SIZE - sec_off;
-        if (chunk > size)
-            chunk = size;
-        memcpy(_lfs_io_tmp + sec_off, src, chunk);
-        if (disk_access_write(DISK_DRIVE_NAME, _lfs_io_tmp, sector, 1) != 0)
-            return LFS_ERR_IO;
-        src += chunk;
-        size -= chunk;
-        sec_off = 0;
-        sector++;
-    }
-    return LFS_ERR_OK;
-}
-
-static int lfs_disk_erase_cb(const struct lfs_config *c, lfs_block_t block)
-{
-    /* SD card erases blocks internally on write â€” this is a true no-op. */
-    (void) c;
-    (void) block;
-    return LFS_ERR_OK;
-}
-
-static int lfs_disk_sync_cb(const struct lfs_config *c)
-{
-    (void) c;
-    int ret = disk_access_ioctl(DISK_DRIVE_NAME, DISK_IOCTL_CTRL_SYNC, NULL);
-    if (ret != 0 && ret != -ENOTSUP && ret != -ENOSYS) {
-        LOG_WRN("[SD] CTRL_SYNC failed: %d (data may not be durable)", ret);
-        return LFS_ERR_IO;
-    }
-    return LFS_ERR_OK;
-}
-
-/* LFS config â€” block_count filled at runtime from DISK_IOCTL_GET_SECTOR_COUNT */
-static struct lfs_config lfs_cfg = {
-    .read = lfs_disk_read_cb,
-    .prog = lfs_disk_prog_cb,
-    .erase = lfs_disk_erase_cb,
-    .sync = lfs_disk_sync_cb,
-
-    .read_size = DISK_SECTOR_SIZE,
-    .prog_size = DISK_SECTOR_SIZE,
-    .block_size = LFS_BLOCK_SIZE,
-    .block_count = 0,                     /* set at mount time */
-    .cache_size = LFS_CACHE_SIZE,         /* 4096: full-block cache → multi-sector I/O */
-    .lookahead_size = LFS_LOOKAHEAD_SIZE, /* 4096 bytes = 32768 blocks = 128 MB window */
-
-    .read_buffer = lfs_read_buf,
-    .prog_buffer = lfs_prog_buf,
-    .lookahead_buffer = lfs_lookahead_buf,
-
-    /* SD card has internal wear leveling â†’ disable LFS wear leveling */
-    .block_cycles = -1,
-
-#if LFS_VERSION >= 0x00020009
-    /* Disable metadata compaction during lfs_fs_gc() -- we only want
-     * the allocator pre-warm (lookahead scan), not expensive compaction.
-     * compact_thresh was added in LFS 2.9. */
-    .compact_thresh = (lfs_size_t) -1,
-#endif
-};
 
 /* ------------------------------------------------------------------ */
 /* General state                                                      */
 /* ------------------------------------------------------------------ */
 
-static uint8_t writing_error_counter = 0;
-static uint8_t sd_recovery_cycles = 0;  /* consecutive failed write-block recoveries */
 static bool sd_write_blocked = false;
-/* Write-batching scratch, shared by the two backends. Exactly one is live per
- * boot — g_backend is read once at sd_worker start and switching backends reboots
- * — so the LittleFS batch buffer and the ring's append stage never coexist, and
- * overlaying them lets the ring batch as deeply as LittleFS (the flush cadence is
- * what sets SPI/NAND wake frequency, i.e. idle current) for zero extra RAM.
- * Nothing may carry state across a backend switch, which a reboot already
- * guarantees. */
-static union {
-    uint8_t lfs_batch[WRITE_BATCH_COUNT * MAX_WRITE_SIZE];
-#ifdef CONFIG_OMI_AUDIO_RING
-    uint8_t ring_stage[RING_STAGE_BYTES];
-#endif
-} sd_write_scratch __aligned(4);
-
-#ifdef CONFIG_OMI_AUDIO_RING
-/* Keeps the overlay honest: if the stage ever outgrows the LittleFS batch buffer
- * it stops being free RAM, which is the entire premise above. */
-BUILD_ASSERT(RING_STAGE_BYTES <= WRITE_BATCH_COUNT * MAX_WRITE_SIZE,
-             "ring stage must fit inside the LittleFS batch buffer to stay RAM-neutral");
-#endif
-
-#define write_batch_buffer (sd_write_scratch.lfs_batch)
-static size_t write_batch_offset = 0;
-static int write_batch_counter = 0;
+/* The ring's append stage. Handed to sd_ring via sd_ring_init(); sd_ring.c holds
+ * only the pointer. Sized (RING_STAGE_BYTES, 40 KB) so a flush covers whole NAND
+ * pages and the SPI bus wakes ~0.125x per second of audio rather than per block —
+ * the flush cadence is what sets idle current. Until oo-2.9.0 this was a union
+ * with the LittleFS write-batch buffer, since exactly one backend was live per
+ * boot; with LittleFS gone it is a plain array. */
+static uint8_t ring_stage[RING_STAGE_BYTES] __aligned(4);
 static int64_t last_write_blocked_log_ms = 0;
 static int64_t last_write_error_uptime_ms = 0;
 static uint32_t write_drop_packets = 0;
 static uint32_t write_drop_bytes = 0;
 
-/* SD boot readiness gate: cleared during init, set after pre-warm + file open.
- * write_to_file() silently discards data while this is 0, preventing the message
- * queue from filling up while lfs_fs_gc() is running on the worker thread. */
+/* SD boot readiness gate: cleared during init, set once the ring is mounted.
+ * write_to_file() silently discards data while this is 0, so the message queue
+ * can't fill during the card's power-on + mount window on the worker thread. */
 static atomic_t sd_boot_ready;
 
 /* Counter of audio frames dropped while SD boot was in progress.
@@ -424,9 +195,8 @@ static inline bool block_has_critical_marker(const uint8_t *buf, size_t len)
     return block_scan_markers(buf, len, false) != 0;
 }
 
-/* Protects current_filename / current_file_path across threads.
- * The SD worker updates these during file creation and TMP→hex rename;
- * the storage thread reads them via sd_is_current_recording_file(). */
+/* Protects current_filename across threads. The SD worker updates it when it
+ * opens a segment; the storage thread reads it via sd_is_current_recording_file(). */
 static K_MUTEX_DEFINE(current_filename_lock);
 
 /* Deferred control requests when prio queue is temporarily saturated */
@@ -458,18 +228,15 @@ static atomic_t sd_dev_pm_supported = ATOMIC_INIT(1);
  * recording until a reboot. */
 
 /* Worker thread & task definitions */
-/* 12 KB: on-device the sd_worker high-water is ~5.8 KB on the ring path and, after
- * shrinking sd_ring_format()'s zeroing buffer (4 KB→512 B), its peak stays ~6 KB;
- * the LittleFS path's lfs ops (incl. the traverse scan) are iterative/bounded and
- * fit comfortably too. The 4 KB reclaimed vs the old 16 KB is handed to the codec
- * thread, which ran at ~17.5/18.6 KB (94%). Net RAM change: zero. Verify after a
- * backend switch that the LittleFS-path high-water stays well under this. */
+/* 12 KB: on-device the sd_worker high-water is ~2.7-3.0 KB (0x0062 offset 68) and,
+ * after shrinking sd_ring_format()'s zeroing buffer (4 KB→512 B), its peak stays
+ * ~6 KB even through a format. The 4 KB reclaimed vs the old 16 KB was handed to
+ * the codec thread, which ran at ~17.5/18.6 KB (94%). */
 #if defined(CONFIG_OMI_DIAG_LOG)
 /* The diagnostic event ring's RAM (DIAG_LOG_RING_BYTES = 2 KB) is carved out of this
  * stack when the feature is compiled in, keeping total RAM identical to production
  * (10240 stack + 2048 ring == the 12288 stack prod uses). The sd_worker high-water is
- * ~6 KB on the ring path, so 10 KB leaves comfortable headroom — but re-verify the
- * LittleFS-path high-water (0x0062 offset 68) after a backend switch before trusting it. */
+ * ~3 KB, so 10 KB leaves comfortable headroom. */
 #define SD_WORKER_STACK_SIZE (12288 - DIAG_LOG_RING_BYTES)
 #else
 #define SD_WORKER_STACK_SIZE 12288
@@ -482,12 +249,10 @@ static k_tid_t sd_worker_tid = NULL;
 static bool sd_ready = false;
 static bool sd_shutdown_in_progress = false;
 static uint32_t current_file_size = 0;
-static size_t bytes_since_sync = 0;
 static int64_t last_file_sync_uptime_ms = 0;
 
 /* Current writing file info */
 static char current_filename[MAX_FILENAME_LEN] = {0};
-static char current_file_path[64] = {0};
 static int64_t current_file_created_uptime_ms = -1;
 static bool current_file_needs_rename = false;
 static uint32_t cached_stats_file_count = 0;
@@ -508,9 +273,6 @@ static int64_t ble_connect_time_ms = 0;
 /* Track if active file was deleted while BLE connected */
 static atomic_t current_file_deleted;
 
-/* Offset info (oldest file + byte offset) */
-static sd_offset_info_t current_offset_info = {0};
-
 /* Hardware device references */
 static const struct device *const sd_dev = DEVICE_DT_GET(DT_NODELABEL(sdhc0));
 static const struct gpio_dt_spec sd_en = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(sdcard_en_pin), gpios, {0});
@@ -518,24 +280,9 @@ static const struct gpio_dt_spec sd_en = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(sdcard
 K_MSGQ_DEFINE(sd_msgq, sizeof(sd_req_t), SD_REQ_QUEUE_MSGS, 4);
 K_MSGQ_DEFINE(sd_prio_msgq, sizeof(sd_req_t), SD_PRIO_QUEUE_MSGS, 4);
 
-/* Persistent read file handle — kept open between read_audio_data calls
- * so we avoid the expensive LFS open/seek/close on every read.
- * With 512-byte blocks and a 1 MB+ file, an open+seek costs O(sqrt(N/512))
- * block reads (≈50 SPI transactions), making each read 100–300 ms.
- * Keeping the handle open reduces this to a simple sequential read (~5 ms). */
-static lfs_file_t lfs_read_handle;
-static uint8_t lfs_read_handle_buf[LFS_CACHE_SIZE];
-static struct lfs_file_config lfs_read_handle_cfg = {.buffer = lfs_read_handle_buf};
-static char read_handle_filename[MAX_FILENAME_LEN] = {0};
-static bool read_handle_open = false;
-static lfs_soff_t read_handle_pos = 0;
-
-/* Sync generation: incremented every time lfs_fil_data is synced.
- * The read handle records which generation it was opened at;
- * if it doesn't match, the handle is stale (file grew) and must reopen. */
-static uint32_t data_sync_gen = 0;
-static uint32_t read_handle_gen = 0;
-
+/* The ring needs no persistent read handle: a segment read resolves to a byte
+ * range in the log and goes straight to disk_access, with none of the open /
+ * seek / close cost a filesystem charged per read. */
 
 static void parse_filename_to_meta(const char* filename, uint32_t size, AudioFileMeta_t* meta)
 {
@@ -574,21 +321,6 @@ void build_filename_from_meta(const AudioFileMeta_t* meta, char* out_buffer, siz
     } else {
         snprintf(out_buffer, max_len, "%08X.txt", meta->timestamp);
     }
-}
-
-static int compare_meta(const AudioFileMeta_t* a, const AudioFileMeta_t* b)
-{
-    if (a->timestamp != b->timestamp) {
-        return (a->timestamp > b->timestamp) ? 1 : -1;
-    }
-    if (a->uptime_offset != b->uptime_offset) {
-        return (a->uptime_offset > b->uptime_offset) ? 1 : -1;
-    }
-    /* is_tmp is part of the identity — keep consistent with sd_is_current_recording_file_meta */
-    if (a->is_tmp != b->is_tmp) {
-        return a->is_tmp ? 1 : -1;
-    }
-    return 0;
 }
 
 bool sd_is_current_recording_file_meta(const AudioFileMeta_t *meta)
@@ -641,57 +373,15 @@ uint64_t sd_get_cached_total_size(void)
 /* Forward declarations */
 void sd_worker_thread(void);
 static void process_write_data_req(const sd_req_t *req);
-static int flush_batch_buffer_chunked(void);
-static int create_audio_file_with_timestamp(void);
 static bool should_rotate_file(void);
-static void build_file_path(const char *filename, char *path, size_t path_size);
 static void invalidate_file_cache(void);
 static void invalidate_file_cache_deferrable(void);
-static void update_current_file_cache_size(uint32_t delta);
-static void sort_cached_file_entries(void);
 static void sd_set_io_low_power(bool enable);
 static int sd_unmount(void);
-static int sd_remount_and_reopen_info(void);
-
-#ifdef CONFIG_OMI_AUDIO_RING
-/* Ring-backend variants of the LittleFS operations, dispatched behind
- * ring_active(). Defined together near the end of this file. */
+/* Defined together near the end of this file. */
 static int ring_create_segment(void);
-static void process_write_data_req_ring(const sd_req_t *req);
-static int ring_refresh_file_cache(void);
 static int ring_find_segment_index(uint32_t timestamp, uint32_t session_id);
 static void ring_handle_read_req(const sd_req_t *req);
-#endif
-
-static void process_save_offset_req(const sd_req_t *req)
-{
-    /* The read-resume offset lives in LittleFS info.txt. The ring tracks the read
-     * position via the app's WAL + the ring tail, so this is a no-op there. */
-    if (ring_active()) {
-        return;
-    }
-    if (sd_write_blocked) {
-        if ((k_uptime_get() - last_write_error_uptime_ms) > 2000) {
-            sd_write_blocked = false;
-            writing_error_counter = 0;
-            LOG_INF("[SD_WORK] Attempting recovery from write-blocked state (offset)");
-        } else {
-            return;
-        }
-    }
-
-    sd_set_io_low_power(false);
-    lfs_file_seek(&lfs_fs, &lfs_fil_info, 0, LFS_SEEK_SET);
-    lfs_ssize_t bw = lfs_file_write(&lfs_fs, &lfs_fil_info, &req->u.info.offset_info, sizeof(sd_offset_info_t));
-    if (bw == (lfs_ssize_t) sizeof(sd_offset_info_t)) {
-        lfs_file_sync(&lfs_fs, &lfs_fil_info);
-        memcpy(&current_offset_info, &req->u.info.offset_info, sizeof(sd_offset_info_t));
-    } else {
-        last_write_error_uptime_ms = k_uptime_get();
-        LOG_ERR("[SD_WORK] save offset write err %d", (int) bw);
-    }
-    sd_set_io_low_power(true);
-}
 
 /* SD-worker-thread-local guards: while true, process_write_data_req() must NOT
  * (sd_suppress_auto_rotate) auto-rotate (should_rotate_file()) mid-write, and
@@ -735,215 +425,10 @@ static void drain_pending_write_queue_for_shutdown(void)
 
         if (pending_req.type == REQ_WRITE_DATA) {
             process_write_data_req(&pending_req);
-        } else if (pending_req.type == REQ_SAVE_OFFSET) {
-            process_save_offset_req(&pending_req);
         }
     }
     sd_draining = false;
     sd_suppress_auto_rotate = false;
-}
-
-#define FLUSH_CHUNK_SIZE 4096 
-
-static int flush_batch_buffer_chunked(void)
-{
-    if (write_batch_offset == 0) return 0;
-    if (sd_write_blocked) {
-        write_batch_offset = 0;
-        write_batch_counter = 0;
-        return -EIO;
-    }
-
-    size_t to_write = write_batch_offset;
-    uint8_t *ptr = write_batch_buffer;
-    size_t total_written = 0;
-
-    while (to_write > 0) {
-        size_t chunk = (to_write > FLUSH_CHUNK_SIZE) ? FLUSH_CHUNK_SIZE : to_write;
-        lfs_ssize_t bw = lfs_file_write(&lfs_fs, &lfs_fil_data, ptr, chunk);
-
-        if (bw < 0 || (size_t)bw != chunk) {
-            k_msleep(50);
-            bw = lfs_file_write(&lfs_fs, &lfs_fil_data, ptr, chunk);
-        }
-
-        if (bw < 0 || (size_t)bw != chunk) {
-            writing_error_counter++;
-            last_write_error_uptime_ms = k_uptime_get();
-            if (writing_error_counter > ERROR_THRESHOLD) sd_write_blocked = true;
-            write_batch_offset = 0;
-            write_batch_counter = 0;
-            return -EIO;
-        }
-        ptr += bw;
-        to_write -= bw;
-        total_written += bw;
-        current_file_size += bw;
-        bytes_since_sync += bw;
-
-        /* CRITICAL: Preemption point to let BLE run! */
-        if (to_write > 0 && k_msgq_num_used_get(&sd_prio_msgq) > 0) {
-            memmove(write_batch_buffer, ptr, to_write);
-            write_batch_offset = to_write;
-            update_current_file_cache_size(total_written);
-            return 0; 
-        }
-        if (to_write > 0) k_yield(); 
-    }
-
-    update_current_file_cache_size(total_written);
-    writing_error_counter = 0;
-    sd_recovery_cycles = 0;  /* a successful flush means the card is healthy again */
-    write_batch_offset = 0;
-    write_batch_counter = 0;
-    return 0;
-}
-
-static void process_write_data_req(const sd_req_t *req)
-{
-#ifdef CONFIG_OMI_AUDIO_RING
-    if (ring_active()) {
-        process_write_data_req_ring(req);
-        return;
-    }
-#endif
-
-    bool spi_woken = false;
-
-    if (sd_write_blocked) {
-        if ((k_uptime_get() - last_write_error_uptime_ms) > 2000) {
-            if (++sd_recovery_cycles >= SD_RECOVERY_REMOUNT_THRESHOLD) {
-                /* Plain 2s retries aren't clearing the fault — power-cycle and
-                 * remount the card ("unplug/replug") before continuing to drop. */
-                LOG_WRN("[SD_WORK] %u failed recoveries — power-cycling + remounting SD",
-                        sd_recovery_cycles);
-                sd_set_io_low_power(false);
-                spi_woken = true;
-                sd_unmount();
-                int mret = sd_remount_and_reopen_info();
-                sd_recovery_cycles = 0;
-                if (mret == 0) {
-                    sd_write_blocked = false;
-                    writing_error_counter = 0;
-                    LOG_INF("[SD_WORK] SD remounted — resuming writes");
-                } else {
-                    /* Remount failed too; stay blocked and retry in 2s. */
-                    last_write_error_uptime_ms = k_uptime_get();
-                }
-            } else {
-                sd_write_blocked = false;
-                writing_error_counter = 0;
-                LOG_INF("[SD_WORK] Attempting recovery from write-blocked state (data, cycle %u)",
-                        sd_recovery_cycles);
-            }
-        }
-
-        if (sd_write_blocked) {
-            /* Still blocked: buffer the frame to preserve audio if space allows */
-            if (write_batch_offset + req->u.write.len <= sizeof(write_batch_buffer)) {
-                memcpy(write_batch_buffer + write_batch_offset,
-                       req->u.write.buf, req->u.write.len);
-                write_batch_offset += req->u.write.len;
-                write_batch_counter++;
-            } else {
-                /* Batch buffer full — frame is truly unrecoverable */
-                atomic_inc(&stat_dropped_frames);
-            }
-            if (spi_woken) {
-                sd_set_io_low_power(true);
-            }
-            return;
-        }
-    }
-
-    /* Skip the pause gate while draining: drain_pending_write_queue_for_shutdown()
-     * persists frames already accepted into sd_msgq before a concurrent pause (e.g.
-     * the 0xFFFFFFFC a priority-record stop just enqueued right before it queued the
-     * pause and rotated the bin). Dropping them here is the deterministic stop-marker
-     * loss. (Manual-mode stop doesn't rotate, so its marker never reaches this drain
-     * — that path is unchanged here.) */
-    if (!sd_draining && atomic_get(&sd_write_paused)) {
-        /* A pause is a power optimization for silence, NOT a correctness gate. A
-         * marker-bearing block MUST still be persisted here, or a priority/manual stop
-         * that enqueued 0xFFFFFFFC and then queued a pause loses it: the SD worker can
-         * pull that marker off sd_msgq via this normal path BEFORE the
-         * REQ_CREATE_NEW_FILE drain runs, so the drain-bypass alone didn't cover it
-         * (confirmed on-device — session_end_marker_emits moved while the app saw no
-         * stop, and marker_pause_gate_saves logged the drop). Write a marker block
-         * through despite the pause; drop only non-marker (audio) blocks. The counter
-         * tallies these RESCUES (markers kept through a pause), not losses. */
-        uint32_t pause_marker = block_scan_markers(req->u.write.buf, req->u.write.len, true);
-        if (pause_marker != 0) {
-            atomic_inc(&marker_pause_gate_saves);
-            /* arg0 = which marker was rescued (low16); arg1 = block length. */
-            diag_log_event(DIAG_MARKER_PAUSE_GATE_SAVE, STORAGE_BACKEND_LITTLEFS, (uint16_t) (pause_marker & 0xFFFF),
-                           req->u.write.len);
-            /* fall through to persist the marker despite the pause */
-        } else {
-            if (spi_woken) {
-                sd_set_io_low_power(true);
-            }
-            return;
-        }
-    }
-
-    if (current_filename[0] == '\0') {
-        if (!spi_woken) { sd_set_io_low_power(false); spi_woken = true; }
-        int res = create_audio_file_with_timestamp();
-        if (res < 0) {
-            last_write_error_uptime_ms = k_uptime_get();
-            sd_write_blocked = true;
-            goto done;
-        }
-        atomic_clear(&current_file_deleted);
-    }
-
-    if (!sd_suppress_auto_rotate && should_rotate_file()) {
-        LOG_INF("[SD_WORK] Rotating file after %d min", (int)(FILE_ROTATION_INTERVAL_MS / 60000));
-        if (!spi_woken) { sd_set_io_low_power(false); spi_woken = true; }
-        int flush_res = flush_batch_buffer_chunked();
-        if (flush_res < 0) {
-            LOG_ERR("[SD_WORK] flush failed before rotation: %d", flush_res);
-            last_write_error_uptime_ms = k_uptime_get();
-            sd_write_blocked = true;
-            goto done;
-        }
-        int res = create_audio_file_with_timestamp();
-        if (res < 0) {
-            last_write_error_uptime_ms = k_uptime_get();
-            sd_write_blocked = true;
-            goto done;
-        }
-    }
-
-    /* Overflow guard — flush first if this frame won't fit */
-    if (write_batch_offset + req->u.write.len > sizeof(write_batch_buffer)) {
-        if (!spi_woken) { sd_set_io_low_power(false); spi_woken = true; }
-        flush_batch_buffer_chunked();
-        if (write_batch_offset + req->u.write.len > sizeof(write_batch_buffer)) {
-            LOG_ERR("[SD_WORK] batch buffer overflow guard len=%u", (unsigned) req->u.write.len);
-            goto done;
-        }
-    }
-
-    memcpy(write_batch_buffer + write_batch_offset, req->u.write.buf, req->u.write.len);
-    write_batch_offset += req->u.write.len;
-    write_batch_counter++;
-
-done:
-    if (spi_woken) {
-        sd_set_io_low_power(true);
-    }
-}
-
-static void close_read_handle(void)
-{
-    if (read_handle_open) {
-        lfs_file_close(&lfs_fs, &lfs_read_handle);
-        read_handle_open = false;
-        read_handle_filename[0] = '\0';
-        read_handle_pos = 0;
-    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1022,7 +507,6 @@ static void sd_set_io_low_power(bool enable)
     /* spi3 is safe to suspend — BLE connect always resumes it before OTA can start */
 }
 
-#ifdef CONFIG_OMI_AUDIO_RING
 /* --- Ring I/O hooks (see sd_ring_host_t) --- */
 
 /* Resume the bus on the ring's first real disk access. sd_set_io_low_power()
@@ -1035,8 +519,8 @@ static void ring_io_wake_cb(void)
     sd_set_io_low_power(false);
 }
 
-/* A BLE read is queued — a multi-chunk flush should hand the worker back. Mirrors
- * the preemption check inside flush_batch_buffer_chunked() on the LittleFS path. */
+/* A BLE read is queued — a multi-chunk flush should hand the worker back, so a
+ * sync's 40 KB flush can't hold the worker for its whole duration. */
 static bool ring_io_busy_cb(void)
 {
     return k_msgq_num_used_get(&sd_prio_msgq) > 0;
@@ -1045,14 +529,13 @@ static bool ring_io_busy_cb(void)
 static int ring_install_host(void)
 {
     const sd_ring_host_t host = {
-        .stage = sd_write_scratch.ring_stage,
-        .stage_bytes = sizeof(sd_write_scratch.ring_stage),
+        .stage = ring_stage,
+        .stage_bytes = sizeof(ring_stage),
         .io_wake = ring_io_wake_cb,
         .io_busy = ring_io_busy_cb,
     };
     return sd_ring_init(&host);
 }
-#endif /* CONFIG_OMI_AUDIO_RING */
 
 void sd_set_ota_active(bool active)
 {
@@ -1119,125 +602,24 @@ void sd_write_pause(bool pause)
 }
 
 /* ------------------------------------------------------------------ */
-/* LittleFS mount / unmount                                            */
+/* Ring mount / unmount                                                */
 /* ------------------------------------------------------------------ */
 
-static void lfs_close_files(void)
-{
-    flush_batch_buffer_chunked();
-    lfs_file_close(&lfs_fs, &lfs_fil_data);
-    lfs_file_close(&lfs_fs, &lfs_fil_info);
-    k_mutex_lock(&current_filename_lock, K_FOREVER);
-    current_filename[0] = '\0';
-    current_file_path[0] = '\0';
-    k_mutex_unlock(&current_filename_lock);
-    /* Reset batch and sync counters so a post-recovery remount starts clean */
-    write_batch_offset  = 0;
-    write_batch_counter = 0;
-    bytes_since_sync    = 0;
-    current_file_size   = 0;
-}
-
 /*
- * Mount the filesystem.  LittleFS mounts existing FS or formats on first use.
+ * Bring the SD NAND up and hand its raw sectors to sd_ring.
  *
- * Key difference from FATFS: if there is any corruption LittleFS recovers
- * from its journal automatically â€” no mkfs needed, no power-loss dirty bit.
+ * This is the BOOT mount, and the only place the card is ever formatted: a card
+ * with no ring on it — fresh, or written by other firmware — is formatted once,
+ * which is the one-time wipe on migration. There is deliberately NO runtime
+ * remount: a mid-session remount that formatted would erase recordings the app
+ * has not synced yet, so a write fault recovers by retrying (sd_write_blocked
+ * plus the 2 s backoff on the worker), never by reformatting.
+ *
+ * A persistent failure here leaves recording blocked but the device fully
+ * reachable — main.c starts BLE/DFU before it waits on the SD card — so a card
+ * or ring fault is recoverable with a firmware update, never a reflash.
  */
-/**
- * check_magic - verify the LFS format-version cookie on a freshly mounted FS.
- *
- *   0         the magic file exists and holds LFS_MAGIC_VALUE → a clean
- *             omi-offline filesystem this firmware family formatted.
- *   -ENOENT   the magic file is absent. omi-offline writes the cookie immediately
- *             after every format it performs (see write_magic() call sites), so an
- *             absent cookie on a *mountable* volume means the data was laid down by
- *             some other firmware (e.g. stock Omi) — not ours.
- *   -EBADMSG  the magic file exists but holds the wrong value → ghost mount on
- *             stale FatFS bytes that happened to pass the LFS superblock CRC.
- *
- * In every non-zero case the caller must lfs_unmount + lfs_format + lfs_mount +
- * write_magic to guarantee a clean slate. This is what makes the one-time wipe on
- * migration from a different firmware happen exactly once: the boot after the wipe
- * finds a valid cookie and keeps recordings.
- *
- * NOTE: reuses lfs_finfo_cfg because the info file is not open at mount time.
- */
-static int check_magic(void)
-{
-    lfs_file_t f;
-    uint32_t   magic = 0;
-
-    int ret = lfs_file_opencfg(&lfs_fs, &f, LFS_MAGIC_PATH, LFS_O_RDONLY, &lfs_finfo_cfg);
-    if (ret == LFS_ERR_OK) {
-        lfs_ssize_t rd = lfs_file_read(&lfs_fs, &f, &magic, sizeof(magic));
-        lfs_file_close(&lfs_fs, &f);
-        if (rd == (lfs_ssize_t)sizeof(magic) && magic == LFS_MAGIC_VALUE) {
-            return 0; /* clean omi-offline filesystem confirmed */
-        }
-        LOG_WRN("[SD] LFS magic mismatch (read=0x%08X expected=0x%08X) — ghost mount detected",
-                magic, LFS_MAGIC_VALUE);
-        return -EBADMSG;
-    }
-
-    LOG_WRN("[SD] LFS magic cookie absent — volume not formatted by omi-offline");
-    return -ENOENT;
-}
-
-/**
- * write_magic - stamp the omi-offline format cookie onto a freshly formatted FS.
- *
- * Call after every lfs_format()+lfs_mount() so this firmware recognises its own
- * filesystem on the next boot. Skipping it anywhere would make that volume look
- * foreign on the next mount and get wiped — so it must follow every format.
- */
-static int write_magic(void)
-{
-    lfs_file_t f;
-    int ret = lfs_file_opencfg(&lfs_fs, &f, LFS_MAGIC_PATH, LFS_O_WRONLY | LFS_O_CREAT, &lfs_finfo_cfg);
-    if (ret != LFS_ERR_OK) {
-        LOG_ERR("[SD] Failed to create LFS magic file: %d", ret);
-        return ret;
-    }
-    uint32_t magic = LFS_MAGIC_VALUE;
-    lfs_ssize_t wr = lfs_file_write(&lfs_fs, &f, &magic, sizeof(magic));
-    lfs_file_close(&lfs_fs, &f);
-    if (wr != (lfs_ssize_t)sizeof(magic)) {
-        LOG_ERR("[SD] LFS magic write failed: %d", (int)wr);
-        return -EIO;
-    }
-    LOG_INF("[SD] LFS magic file written (fresh format)");
-    return 0;
-}
-
-/* Before accepting writes on `backend`, make sure no format-pending intent for it lingers.
- * We reach the call sites either having just force-formatted `backend` for a switch, or having
- * mounted an already-formatted one while the flag was left armed (a prior boot's clear failed).
- * The flag MUST be durably cleared before recording — otherwise the next reboot's force-format
- * wipes whatever we record now. Returns 0 when the flag isn't armed for `backend` (NONE, or
- * armed for the other backend) or was cleared; on a persistent clear failure returns non-zero so
- * the caller fails the mount and refuses writes (the freshly/previously formatted card is empty,
- * so nothing is lost and the next boot re-formats + retries the clear). */
-static int consume_format_pending(uint8_t backend)
-{
-    if (app_settings_get_storage_format_pending() != backend) {
-        return 0;
-    }
-    int err = app_settings_save_storage_format_pending(STORAGE_FORMAT_PENDING_NONE);
-    if (err) {
-        err = app_settings_save_storage_format_pending(STORAGE_FORMAT_PENDING_NONE); /* one retry */
-    }
-    if (err) {
-        LOG_ERR("[SD] could not clear format-pending for backend %u (%d) — failing mount", backend, err);
-    }
-    return err;
-}
-
-/* allow_format gates EVERY on-card wipe to the BOOT mount: the one-shot backend-switch reformat,
- * the ring/LittleFS format-on-first-use / foreign-card fallback, and the migration cookie reformat.
- * The runtime remount path (sd_remount_and_reopen_info) passes false, so a transient mount failure
- * mid-session surfaces an error to the caller instead of formatting away live recordings. */
-static int sd_mount(bool allow_format)
+static int sd_mount(void)
 {
     if (is_mounted) {
         return 0;
@@ -1278,616 +660,62 @@ static int sd_mount(bool allow_format)
     disk_access_ioctl(DISK_DRIVE_NAME, DISK_IOCTL_GET_SECTOR_COUNT, &sector_count);
     disk_access_ioctl(DISK_DRIVE_NAME, DISK_IOCTL_GET_SECTOR_SIZE, &sector_size);
 
-    /* LittleFS only needs the disk to be 'initialised' from here on;
-     * keep driver active (no CTRL_DEINIT) so callbacks work. */
+    /* The ring needs the disk only 'initialised' from here on; keep the driver
+     * active (no CTRL_DEINIT) so sd_ring's sector I/O works. */
     LOG_INF("SD: %u sectors x %u bytes = %u MB",
             sector_count,
             sector_size,
             (unsigned) ((uint64_t) sector_count * sector_size >> 20));
 
-    /* A backend switch armed a fresh format of a specific TARGET backend
-     * (storage_format_pending holds that STORAGE_BACKEND_*, or STORAGE_FORMAT_PENDING_NONE
-     * when disarmed). Force-format only when BOTH hold:
-     *   - allow_format: this is the boot mount, not a runtime remount. A mid-session
-     *     remount must never wipe — it may be sitting on recordings not yet synced.
-     *   - the armed target equals the backend we are actually mounting. This makes the
-     *     switch's two NVS writes (arm target, then save backend) safe against an interruption
-     *     between them: a reboot still on the OLD backend won't match, so a switch that never
-     *     committed can't wipe the current storage. (NONE == 0xFF never matches a real backend.)
-     * The intent stays ARMED across the wipe and is cleared only AFTER the format commits
-     * (consume_format_pending at each success path), so a reset mid-format re-formats next boot
-     * rather than falling through to a normal mount of stale target metadata. */
-    bool force_format = allow_format &&
-                        (app_settings_get_storage_format_pending() == g_backend);
+    ring_total_sectors = sector_count;
 
-#ifdef CONFIG_OMI_AUDIO_RING
-    if (ring_active()) {
-        /* Raw ring backend: the disk is initialised; hand it to sd_ring. No LittleFS
-         * mount. Format fresh on a backend switch; otherwise mount an existing ring, or
-         * format one on first use (foreign FS / fresh card — the one-time SD wipe). */
-        ring_total_sectors = sector_count;
-        /* Hand the ring its scratch buffer + I/O hooks before any mount/format.
-         * Re-installed on every mount (including a runtime remount) so the stage
-         * always starts empty against the cursor we are about to load. Should this
-         * ever fail, mount/format return -EINVAL and the revert-to-LittleFS path
-         * below takes over rather than booting with a dead write path. */
-        (void) ring_install_host();
-        int rr;
-        if (force_format) {
-            LOG_WRN("[SD] backend switch — formatting fresh ring (SD wipe)");
-            rr = sd_ring_format(sector_count);
-        } else {
-            rr = sd_ring_mount(sector_count);
-            if (rr == -ENOENT && allow_format) {
-                LOG_WRN("[SD] no ring on card — formatting as ring (one-time SD wipe)");
-                rr = sd_ring_format(sector_count);
-            }
-        }
-        if (rr == 0) {
-            /* Clear the switch's format intent now that the ring is committed; a failed clear
-             * is an incomplete switch — fail the mount so nothing we record gets wiped by the
-             * re-armed next boot (the just/previously formatted ring is empty, nothing lost). */
-            if (consume_format_pending(g_backend) != 0) {
-                is_mounted = false;
-                sd_enable_power(false);
-                return -EIO;
-            }
-            is_mounted = true;
-            sd_ready = true;
-            LOG_INF("[SD] ring backend mounted OK");
-            return 0;
-        }
-        if (!allow_format) {
-            /* Runtime remount: the ring holds our live recordings. Don't format it and don't
-             * revert the backend — either would erase live data or persist a spurious switch.
-             * Surface the error so the caller retries / a full boot runs real recovery. */
-            LOG_ERR("[SD] ring remount failed: %d — not formatting/reverting (live data)", rr);
-            sd_enable_power(false);
-            return rr;
-        }
-        /* Ring couldn't mount OR format (persistent SD init failure that isn't a
-         * crash, so the crash-loop auto-revert in main.c won't catch it). Don't
-         * strand the device recording-blocked forever: revert the persisted
-         * selection to LittleFS, flip g_backend so ring_active() is now false, and
-         * fall through to the LittleFS mount below for this boot — a recoverable
-         * state instead of a silent brick. */
-        LOG_ERR("[SD] ring mount/format failed: %d — reverting to LittleFS", rr);
-        (void) app_settings_save_storage_backend(STORAGE_BACKEND_LITTLEFS);
-        g_backend = STORAGE_BACKEND_LITTLEFS;
-    }
-#endif
-
-    /* read/prog stay at sector granularity (512);
-     * cache = full block (4096) for multi-sector I/O. */
-    uint32_t ss = (sector_size > 0) ? sector_size : DISK_SECTOR_SIZE;
-    lfs_cfg.read_size = ss;
-    lfs_cfg.prog_size = ss;
-    lfs_cfg.cache_size = LFS_CACHE_SIZE;
-    lfs_cfg.block_size = LFS_BLOCK_SIZE;
-    lfs_cfg.block_count = sector_count / (LFS_BLOCK_SIZE / ss);
-
-    /* Re-evaluate against the CURRENT backend before any LittleFS wipe. A failed ring switch
-     * flips g_backend to LittleFS above while the armed target is still Ring; the force_format
-     * captured at the top (computed when g_backend was Ring) must NOT carry into a LittleFS wipe,
-     * or a switch that FAILED would destroy the user's existing LittleFS recordings. Recomputed
-     * here the ring target no longer matches, so a failed ring switch falls to the normal
-     * mount-and-keep path below (which still formats only if the card isn't a valid LittleFS).
-     * A genuine LittleFS switch (armed target == LittleFS) still force-formats. */
-    force_format = allow_format &&
-                   (app_settings_get_storage_format_pending() == g_backend);
-    if (force_format) {
-        LOG_WRN("[SD] backend switch — formatting fresh LittleFS (SD wipe)");
-        ret = lfs_format(&lfs_fs, &lfs_cfg);
-        if (ret != LFS_ERR_OK) {
-            LOG_ERR("LFS switch format failed: %d", ret);
-            sd_enable_power(false);
-            return -EIO;
-        }
-        ret = lfs_mount(&lfs_fs, &lfs_cfg);
-        if (ret != LFS_ERR_OK) {
-            LOG_ERR("LFS mount after switch format failed: %d", ret);
-            sd_enable_power(false);
-            return -EIO;
-        }
-        /* Stamp the format cookie; fail the mount if it doesn't land. Without it the
-         * NEXT boot's check_magic() treats the volume as foreign and reformats — which
-         * would wipe whatever this boot recorded. On failure the target remains armed, so
-         * the next boot retries the backend-switch format rather than accepting this
-         * filesystem. */
-        ret = write_magic();
-        if (ret != 0) {
-            LOG_ERR("LFS magic write after switch format failed: %d", ret);
-            lfs_unmount(&lfs_fs);
-            sd_enable_power(false);
-            return ret;
-        }
-        /* Format + cookie committed — clear the intent; fail the mount if it won't persist
-         * (incomplete switch; next boot re-formats, nothing recorded to lose). */
-        if (consume_format_pending(g_backend) != 0) {
-            lfs_unmount(&lfs_fs);
-            sd_enable_power(false);
-            return -EIO;
-        }
-        is_mounted = true;
-        sd_ready = true;
-        LOG_INF("LittleFS formatted fresh on backend switch");
-        return 0;
-    }
-
-    /* Try to mount existing filesystem */
-    int64_t mount_start_ms = k_uptime_get();
-    ret = lfs_mount(&lfs_fs, &lfs_cfg);
-    LOG_INF("[SD_BOOT] lfs_mount took %lld ms (ret=%d)", k_uptime_get() - mount_start_ms, ret);
-    if (ret != LFS_ERR_OK) {
-        if (!allow_format) {
-            /* Runtime remount: the card holds our live recordings. A transient mount failure must
-             * NOT trigger a format (that would erase them) — surface the error so the caller
-             * retries / a full boot handles real recovery. */
-            LOG_ERR("[SD] LittleFS remount failed (%d) — not formatting (would erase live data)", ret);
-            sd_enable_power(false);
-            return ret;
-        }
-        LOG_WRN("LFS mount failed (%d) — existing data on SD will be ERASED by format", ret);
-        LOG_WRN("If this device was previously using FATFS, all old recordings are lost.");
-        ret = lfs_format(&lfs_fs, &lfs_cfg);
-        if (ret != LFS_ERR_OK) {
-            LOG_ERR("LFS format failed: %d", ret);
-            sd_enable_power(false);
-            return -EIO;
-        }
-        ret = lfs_mount(&lfs_fs, &lfs_cfg);
-        if (ret != LFS_ERR_OK) {
-            LOG_ERR("LFS mount after format failed: %d", ret);
-            sd_enable_power(false);
-            return -EIO;
-        }
-        /* Stamp the cookie on the freshly formatted filesystem (an unmountable card
-         * means foreign/blank data — not an omi-offline filesystem). */
-        (void)write_magic();
-    } else {
-        /* Mount succeeded — but only KEEP the data if this is genuinely an
-         * omi-offline filesystem. check_magic() is non-zero when the cookie is
-         * absent (foreign data, e.g. stock Omi firmware that left a mountable
-         * LittleFS) or wrong (ghost mount on stale FatFS bytes). Either way,
-         * format once so a migration from non-"oo" firmware starts clean; the
-         * next boot finds the cookie and keeps recordings. Released omi-offline
-         * builds (>= oo-1.9.3) always carry the cookie, so an upgrade never
-         * re-wipes them. */
-        int magic_ret = check_magic();
-        if (magic_ret != 0) {
-            if (!allow_format) {
-                /* Runtime remount: a cookie check that fails here (our own mounted FS) must not
-                 * trigger a reformat — the card holds live recordings. Surface the error. */
-                LOG_ERR("[SD] LittleFS remount: cookie check failed (%d) — not reformatting (live data)",
-                        magic_ret);
-                lfs_unmount(&lfs_fs);
-                sd_enable_power(false);
-                return -EIO;
-            }
-            LOG_WRN("[SD] Mounted volume is not an omi-offline filesystem (%d) — formatting once", magic_ret);
-            lfs_unmount(&lfs_fs);
-            ret = lfs_format(&lfs_fs, &lfs_cfg);
-            if (ret != LFS_ERR_OK) {
-                LOG_ERR("LFS format (migration wipe) failed: %d", ret);
-                sd_enable_power(false);
-                return -EIO;
-            }
-            ret = lfs_mount(&lfs_fs, &lfs_cfg);
-            if (ret != LFS_ERR_OK) {
-                LOG_ERR("LFS mount after migration wipe failed: %d", ret);
-                sd_enable_power(false);
-                return -EIO;
-            }
-            (void)write_magic();
-        }
-    }
-
-    /* A runtime remount after a boot that force-formatted this backend but couldn't clear the
-     * flag can reach here with the intent still armed; clear it before accepting writes, or the
-     * next reboot re-wipes what we record. No-op on the normal path (flag already NONE). */
-    if (consume_format_pending(g_backend) != 0) {
-        lfs_unmount(&lfs_fs);
+    /* Hand the ring its stage buffer + I/O hooks before any mount/format, so the
+     * stage always starts empty against the cursor we are about to load. */
+    ret = ring_install_host();
+    if (ret != 0) {
+        LOG_ERR("[SD] ring host install failed: %d", ret);
         sd_enable_power(false);
-        return -EIO;
+        return ret;
     }
+
+    ret = sd_ring_mount(sector_count);
+    if (ret == -ENOENT) {
+        LOG_WRN("[SD] no ring on card — formatting (one-time SD wipe)");
+        ret = sd_ring_format(sector_count);
+    }
+    if (ret != 0) {
+        LOG_ERR("[SD] ring mount/format failed: %d", ret);
+        sd_enable_power(false);
+        return ret;
+    }
+
     is_mounted = true;
     sd_ready = true;
-    LOG_INF("LittleFS mounted OK (block_size=%u, block_count=%u, lookahead=%u bytes = %u blocks window)",
-            (unsigned) lfs_cfg.block_size,
-            (unsigned) lfs_cfg.block_count,
-            (unsigned) lfs_cfg.lookahead_size,
-            (unsigned) lfs_cfg.lookahead_size * 8);
+    LOG_INF("[SD] ring mounted OK");
     return 0;
 }
 
 static int sd_unmount(void)
 {
     sd_ready = false;
-#ifdef CONFIG_OMI_AUDIO_RING
-    if (ring_active()) {
-        /* Flush the partial sector + cursor so the shutdown is a clean durability
-         * point, then drop power. No LittleFS handles are open in ring mode. Retry
-         * once on failure (transient SD hiccup at a reboot/backend-switch boundary),
-         * and surface the result instead of reporting a clean unmount — app_sd_off()
-         * uses this path, so the caller can see the final batch wasn't persisted. */
-        int sr = sd_ring_sync();
-        if (sr != 0) {
-            sr = sd_ring_sync();
-        }
-        is_mounted = false;
-        sd_enable_power(false);
-        if (sr != 0) {
-            LOG_ERR("ring unmount: final sync failed (%d) — up to the last batch may be lost", sr);
-        } else {
-            LOG_INF("ring unmounted");
-        }
-        return sr;
+    /* Flush the partial sector + cursor so the shutdown is a clean durability
+     * point, then drop power. Retry once on failure (transient SD hiccup at a
+     * reboot boundary), and surface the result instead of reporting a clean
+     * unmount — app_sd_off() uses this path, so the caller can see that the
+     * final batch wasn't persisted. */
+    int sr = sd_ring_sync();
+    if (sr != 0) {
+        sr = sd_ring_sync();
     }
-#endif
-    close_read_handle();
-    lfs_close_files();
-    if (is_mounted) {
-        lfs_unmount(&lfs_fs);
-        is_mounted = false;
-    }
+    is_mounted = false;
     sd_enable_power(false);
-    LOG_INF("LittleFS unmounted");
-    return 0;
+    if (sr != 0) {
+        LOG_ERR("ring unmount: final sync failed (%d) — up to the last batch may be lost", sr);
+    } else {
+        LOG_INF("ring unmounted");
+    }
+    return sr;
 }
-
-/* Power on + remount (NO lfs_fs_gc — that runs once at boot) and reopen the info
- * file that a prior unmount closed. The audio file is intentionally NOT reopened:
- * current_filename is empty, so the next write starts a fresh segment. Used by
- * the sd_write_blocked recovery path. Returns 0 on success, negative errno
- * otherwise; the caller decides what to do with the result. */
-static int sd_remount_and_reopen_info(void)
-{
-    int64_t t0 = k_uptime_get();
-
-    int res = sd_mount(false); /* runtime remount: never force-format (may hold live recordings) */
-    if (res != 0) {
-        LOG_ERR("[SD] remount failed: %d", res);
-        return res;
-    }
-
-    res = lfs_file_opencfg(&lfs_fs, &lfs_fil_info, FILE_INFO_PATH,
-                           LFS_O_CREAT | LFS_O_RDWR, &lfs_finfo_cfg);
-    if (res < 0) {
-        LOG_ERR("[SD] reopen info failed: %d", res);
-        return res;
-    }
-    lfs_file_seek(&lfs_fs, &lfs_fil_info, 0, LFS_SEEK_SET);
-    lfs_ssize_t rb = lfs_file_read(&lfs_fs, &lfs_fil_info, &current_offset_info,
-                                   sizeof(current_offset_info));
-    if (rb != (lfs_ssize_t) sizeof(current_offset_info)) {
-        LOG_WRN("[SD] info read short (%d) — keeping cached copy", (int) rb);
-    }
-
-    LOG_INF("[SD] remount + reopen info in %lld ms", k_uptime_get() - t0);
-    return 0;
-}
-
-/* ------------------------------------------------------------------ */
-/* Path helpers                                                        */
-/* ------------------------------------------------------------------ */
-
-static void build_file_path(const char *filename, char *path, size_t path_size)
-{
-    snprintf(path, path_size, "%s/%s", FILE_DATA_DIR, filename);
-}
-
-static bool filename_equals_ignore_case(const char *a, const char *b)
-{
-    if (!a || !b)
-        return false;
-    for (size_t i = 0; i < MAX_FILENAME_LEN; i++) {
-        if (tolower((unsigned char) a[i]) != tolower((unsigned char) b[i]))
-            return false;
-        if (a[i] == '\0' && b[i] == '\0')
-            return true;
-        if (a[i] == '\0' || b[i] == '\0')
-            return false;
-    }
-    return true;
-}
-
-/* ------------------------------------------------------------------ */
-/* Boot: list existing audio files                                     */
-/* ------------------------------------------------------------------ */
-
-static void print_audio_files_at_boot(void)
-{
-    lfs_dir_t dir;
-    struct lfs_info info;
-    uint32_t file_count = 0;
-    uint64_t total_size = 0;
-
-    if (lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR) < 0) {
-        LOG_INF("[SD_BOOT] No audio directory found");
-        return;
-    }
-
-    /* Clear file cache arrays before populating */
-    memset(cached_file_meta, 0, sizeof(cached_file_meta));
-    int list_count = 0;
-
-    LOG_INF("========== AUDIO FILES ON SD CARD ==========");
-    while (lfs_dir_read(&lfs_fs, &dir, &info) > 0) {
-        if (info.type != LFS_TYPE_REG)
-            continue;
-        char *dot = strrchr(info.name, '.');
-        if (dot && strcasecmp(dot, ".txt") == 0) {
-            LOG_INF("  [%u] %s - %u bytes", file_count + 1, info.name, (unsigned) info.size);
-            total_size += info.size;
-            file_count++;
-            /* Also populate the file list cache so that get_file_list
-             * can return data immediately during the long gc pre-warm. */
-            if (list_count < MAX_AUDIO_FILES) {
-                parse_filename_to_meta(info.name, (uint32_t)info.size, &cached_file_meta[list_count]);
-                list_count++;
-            }
-        }
-    }
-    lfs_dir_close(&lfs_fs, &dir);
-    cached_file_list_count = list_count;
-    sort_cached_file_entries();
-    cached_stats_file_count = file_count;
-    cached_stats_total_size = total_size;
-    cached_stats_valid_until_ms = k_uptime_get() + FILE_CACHE_TTL_MS;
-    cached_total_file_count = file_count;
-    cached_total_file_size = total_size;
-    file_cache_valid = true;
-    LOG_INF("[SD_BOOT] %u files, %u bytes total", file_count, (unsigned) total_size);
-    LOG_INF("=============================================");
-}
-
-/* ------------------------------------------------------------------ */
-/* File creation / continuation at boot                               */
-/* ------------------------------------------------------------------ */
-
-/* Helper: open a file and set the common state variables for continuation. */
-static int _open_file_for_continuation(const char *filename, bool needs_rename)
-{
-    strncpy(current_filename, filename, sizeof(current_filename) - 1);
-    current_filename[sizeof(current_filename) - 1] = '\0';
-    build_file_path(current_filename, current_file_path, sizeof(current_file_path));
-
-    int ret = lfs_file_opencfg(&lfs_fs, &lfs_fil_data, current_file_path, LFS_O_RDWR | LFS_O_APPEND, &lfs_fdata_cfg);
-    if (ret < 0) {
-        LOG_ERR("[SD_BOOT] open file for continuation failed: %d", ret);
-        current_filename[0] = '\0';
-        current_file_path[0] = '\0';
-        return -1;
-    }
-
-    {
-        lfs_ssize_t _sz = lfs_file_size(&lfs_fs, &lfs_fil_data);
-        current_file_size = (_sz >= 0) ? (uint32_t)_sz : 0;
-    }
-    bytes_since_sync = 0;
-    write_batch_offset = 0;
-    write_batch_counter = 0;
-
-    last_file_sync_uptime_ms = k_uptime_get();
-    current_file_created_uptime_ms = k_uptime_get();
-    current_file_needs_rename = needs_rename;
-    return 0;
-}
-
-static int try_continue_latest_file(void)
-{
-    lfs_dir_t dir;
-    struct lfs_info info;
-
-    uint32_t current_time = get_utc_time();
-    bool rtc_valid = (current_time != 0 && current_time >= 1700000000U);
-
-    if (lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR) < 0) {
-        return -1;
-    }
-
-    char latest_utc_fn[MAX_FILENAME_LEN] = {0};
-    uint32_t latest_utc_ts = 0;
-    lfs_size_t latest_utc_sz = 0;
-
-    char latest_tmp_fn[MAX_FILENAME_LEN] = {0};
-    uint32_t latest_tmp_uptime = 0;
-    lfs_size_t latest_tmp_sz = 0;
-
-    while (lfs_dir_read(&lfs_fs, &dir, &info) > 0) {
-        if (info.type != LFS_TYPE_REG)
-            continue;
-
-        if (info.size < BOOT_MIN_AUDIO_FILE_SIZE)
-            continue;
-
-        if (strncmp(info.name, "TMP_", 4) == 0) {
-            uint32_t uptime = (uint32_t)strtoul(info.name + 4, NULL, 16);
-            if (uptime > latest_tmp_uptime) {
-                latest_tmp_uptime = uptime;
-                latest_tmp_sz = info.size;
-                strncpy(latest_tmp_fn, info.name, sizeof(latest_tmp_fn) - 1);
-            }
-        } else {
-            char *dot = strrchr(info.name, '.');
-            if (dot && strcasecmp(dot, ".txt") == 0) {
-                uint32_t ts = (uint32_t)strtoul(info.name, NULL, 16);
-                if (ts > latest_utc_ts) {
-                    latest_utc_ts = ts;
-                    latest_utc_sz = info.size;
-                    strncpy(latest_utc_fn, info.name, sizeof(latest_utc_fn) - 1);
-                }
-            }
-        }
-    }
-    lfs_dir_close(&lfs_fs, &dir);
-
-    /* 1. Prefer UTC file if valid and within window */
-    if (rtc_valid && latest_utc_ts > 0) {
-        int32_t diff = (int32_t)(current_time - latest_utc_ts);
-        if (diff >= 0 && diff <= FILE_CONTINUE_THRESHOLD_SEC) {
-            LOG_INF("[SD_BOOT] Continuing UTC file: %s (diff=%d s, sz=%u)",
-                    latest_utc_fn, diff, (unsigned)latest_utc_sz);
-            return _open_file_for_continuation(latest_utc_fn, /*needs_rename=*/false);
-        }
-    }
-
-    /* 2. Fall back to TMP file (always needs rename) */
-    if (latest_tmp_uptime > 0) {
-        LOG_INF("[SD_BOOT] Continuing TMP file: %s (sz=%u)",
-                latest_tmp_fn, (unsigned)latest_tmp_sz);
-        return _open_file_for_continuation(latest_tmp_fn, /*needs_rename=*/true);
-    }
-
-    return -1;
-}
-
-static int create_audio_file_with_timestamp(void)
-{
-#ifdef CONFIG_OMI_AUDIO_RING
-    if (ring_active()) {
-        return ring_create_segment();
-    }
-#endif
-
-    bool rtc_valid = rtc_is_valid();
-    uint32_t timestamp = 0;
-
-    if (rtc_valid) {
-        timestamp = get_utc_time();
-        if (timestamp == 0 || timestamp < 1700000000U)
-            rtc_valid = false;
-    }
-
-    /* Close current file if open */
-    if (current_filename[0] != '\0') {
-        /* Flush the pending batch into the OLD file BEFORE measuring it, so audio
-         * still buffered in write_batch_buffer at the rotation counts toward the
-         * size (flush_batch_buffer_chunked updates current_file_size synchronously
-         * via lfs_file_write). Without this a short recording whose audio hadn't been
-         * flushed yet would read as an empty bin. */
-        flush_batch_buffer_chunked();
-        /* Diagnostics: a bin closed with no audio beyond the inline metadata header
-         * (0xFFFFFFFB) means the file was opened+rotated but nothing landed in it —
-         * the on-device signature of a lost Priority Recording (0xFFFFFFF8 marker +
-         * force-captured frames dropped at the rotate). Surface it over BLE
-         * (0x19B10062) so it's visible without an RTT capture. */
-        if (current_file_size <= sizeof(RecordingHeader_v1_t)) {
-            atomic_inc(&empty_bin_rotations);
-            diag_log_event(DIAG_EMPTY_BIN_ROTATION, STORAGE_BACKEND_LITTLEFS, 0, current_file_size);
-        }
-        lfs_file_close(&lfs_fs, &lfs_fil_data);
-        k_mutex_lock(&current_filename_lock, K_FOREVER);
-        current_filename[0] = '\0';
-        k_mutex_unlock(&current_filename_lock);
-    }
-
-    /* Ensure audio directory exists */
-    struct lfs_info dir_info;
-    if (lfs_stat(&lfs_fs, FILE_DATA_DIR, &dir_info) < 0) {
-        int mk = lfs_mkdir(&lfs_fs, FILE_DATA_DIR);
-        if (mk < 0 && mk != LFS_ERR_EXIST) {
-            LOG_ERR("mkdir %s failed: %d", FILE_DATA_DIR, mk);
-            return mk;
-        }
-    }
-
-    /* Read device_session_id once via atomic_get — it's atomic_t since
-     * the lazy-init in transport.c uses atomic_cas (A8/B7). */
-    uint32_t sid_snap = (uint32_t)atomic_get(&device_session_id);
-
-    /* Build a COLLISION-PROOF filename. The identity is <seconds>_<session> (or
-     * TMP_<uptime_ms>_<session> pre-time-sync), which is second-granular. Two
-     * create_new_audio_file() calls in the same UTC second — e.g. a ~5-min
-     * natural rotation landing on the same second as a button/priority rotation —
-     * would otherwise resolve to the same name; the old LFS_O_CREAT|LFS_O_APPEND
-     * open then SILENTLY REOPENED and concatenated two recordings into one file,
-     * and left it as the active write target (the source of the unreadable/stuck
-     * bin the app kept re-reading). LFS_O_EXCL makes the open fail on an existing
-     * name; on collision we bump the identity and retry. The audio timeline is
-     * unaffected — the app anchors each recording to the inline 0xFFFFFFFB
-     * header's utc_start_ms (written from real time below), not the filename. */
-    char fname[MAX_FILENAME_LEN];
-    char fpath[64];
-    int ret = LFS_ERR_EXIST;
-    uint32_t ident = rtc_valid ? timestamp : (uint32_t) k_uptime_get_32();
-    for (int attempt = 0; attempt < 16; attempt++) {
-        if (rtc_valid) {
-            snprintf(fname, sizeof(fname), "%08X_%08X.txt", ident, sid_snap);
-        } else {
-            snprintf(fname, sizeof(fname), "TMP_%08X_%08X.txt", ident, sid_snap);
-        }
-        build_file_path(fname, fpath, sizeof(fpath));
-        ret = lfs_file_opencfg(&lfs_fs, &lfs_fil_data, fpath, LFS_O_CREAT | LFS_O_EXCL | LFS_O_RDWR,
-                               &lfs_fdata_cfg);
-        if (ret != LFS_ERR_EXIST) {
-            break; /* created, or a real (non-collision) open error */
-        }
-        LOG_WRN("Audio filename collision on %s — bumping identity and retrying", fname);
-        ident++; /* next second (UTC) / next ms (pre-time-sync TMP_) */
-    }
-
-    if (ret < 0) {
-        LOG_ERR("Failed to create %s: %d", fpath, ret);
-        k_mutex_lock(&current_filename_lock, K_FOREVER);
-        current_filename[0] = '\0';
-        current_file_path[0] = '\0';
-        k_mutex_unlock(&current_filename_lock);
-        return ret;
-    }
-
-    k_mutex_lock(&current_filename_lock, K_FOREVER);
-    strncpy(current_filename, fname, sizeof(current_filename) - 1);
-    current_filename[sizeof(current_filename) - 1] = '\0';
-    strncpy(current_file_path, fpath, sizeof(current_file_path) - 1);
-    current_file_path[sizeof(current_file_path) - 1] = '\0';
-    current_file_needs_rename = !rtc_valid;
-    k_mutex_unlock(&current_filename_lock);
-
-    LOG_INF("Creating audio file: %s", current_file_path);
-    if (!rtc_valid)
-        LOG_WRN("RTC not synced, temp file: %s", current_filename);
-
-    if (lfs_file_size(&lfs_fs, &lfs_fil_data) == 0) {
-        RecordingHeader_v1_t header = {
-            .marker = 0xFFFFFFFB,
-            .payload_len = 28,
-            .utc_start_ms = rtc_get_utc_time_ms(),
-            .uptime_start_ms = (uint64_t)k_uptime_get(),
-            .session_id = (uint32_t)atomic_get(&device_session_id),
-            .version = 1,
-        };
-        uint32_t imu_ts = 0;
-        if (lsm6dsl_timestamp_read(&imu_ts) == 0) {
-            header.imu_ticks = imu_ts;
-        } else {
-            header.imu_ticks = 0;
-        }
-        lfs_file_write(&lfs_fs, &lfs_fil_data, &header, sizeof(header));
-        lfs_file_sync(&lfs_fs, &lfs_fil_data);
-    }
-
-    {
-        lfs_ssize_t _sz = lfs_file_size(&lfs_fs, &lfs_fil_data);
-        current_file_size = (_sz >= 0) ? (uint32_t)_sz : 0;
-    }
-    bytes_since_sync = 0;
-    write_batch_offset = 0;
-    write_batch_counter = 0;
-
-    writing_error_counter = 0;
-    sd_write_blocked = false;
-    last_file_sync_uptime_ms = k_uptime_get();
-    current_file_created_uptime_ms = k_uptime_get();
-
-    LOG_INF("Audio file created: %s", current_filename);
-    /* Deferrable: a rotation during a sync session must not force a mid-session
-     * rebuild (it never changes index 0). The rebuild happens once the session
-     * ends so the new file is enumerated then. */
-    invalidate_file_cache_deferrable();
-    return 0;
-}
-
 
 /* ------------------------------------------------------------------ */
 /* File rotation helper                                                */
@@ -1921,27 +749,8 @@ static bool should_rotate_file(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* Filename sort (hex timestamp, oldest first)                        */
+/* File list cache                                                     */
 /* ------------------------------------------------------------------ */
-
-/* TMP_ files have no valid hex timestamp — strtoul returns 0, which would
- * incorrectly sort them as "oldest". Return UINT32_MAX so they sort last,
- * after all real timestamped files. TMP files are the currently-recording
- * file (pre-time-sync) and should never be synced before being renamed. */
-static void update_cached_free_bytes(void)
-{
-    if (lfs_cfg.block_count == 0) return;
-    uint64_t total_cap = (uint64_t)lfs_cfg.block_count * lfs_cfg.block_size;
-    /* Reserve ~2% for LFS metadata (CTZ skip-lists, dir entries, superblock).
-       Minimum reservation: 512 KB to avoid false "disk full" near capacity. */
-    uint64_t metadata_reserve = total_cap / 50;  /* 2% */
-    if (metadata_reserve < (512 * 1024)) metadata_reserve = 512 * 1024;
-    uint64_t usable = (total_cap > metadata_reserve)
-                      ? (total_cap - metadata_reserve) : 0;
-    cached_free_bytes = (cached_total_file_size < usable)
-                        ? (uint32_t)(usable - cached_total_file_size)
-                        : 0;
-}
 
 static void invalidate_file_cache(void)
 {
@@ -1966,177 +775,61 @@ static void invalidate_file_cache_deferrable(void)
     invalidate_file_cache();
 }
 
-static void sort_cached_file_entries(void)
-{
-    if (cached_file_list_count <= 1) {
-        return;
-    }
-
-    for (int i = 1; i < cached_file_list_count; i++) {
-        AudioFileMeta_t tmp_meta = cached_file_meta[i];
-
-        int j = i - 1;
-        while (j >= 0 && compare_meta(&cached_file_meta[j], &tmp_meta) > 0) {
-            cached_file_meta[j + 1] = cached_file_meta[j];
-            j--;
-        }
-
-        cached_file_meta[j + 1] = tmp_meta;
-    }
-}
-
-static void update_current_file_cache_size(uint32_t delta)
-{
-    if (!file_cache_valid || delta == 0 || current_filename[0] == '\0') {
-        return;
-    }
-
-    /* Snapshot filename under lock so a concurrent BLE rename cannot
-       change it between our cache lookup and the size update. */
-    char fname_snap[MAX_FILENAME_LEN];
-    k_mutex_lock(&current_filename_lock, K_FOREVER);
-    if (current_filename[0] == '\0') {
-        k_mutex_unlock(&current_filename_lock);
-        return;
-    }
-    strncpy(fname_snap, current_filename, sizeof(fname_snap) - 1);
-    fname_snap[sizeof(fname_snap) - 1] = '\0';
-    k_mutex_unlock(&current_filename_lock);
-
-    cached_total_file_size += delta;
-    cached_stats_total_size = cached_total_file_size;
-    cached_stats_file_count = cached_total_file_count;
-    update_cached_free_bytes();
-    cached_stats_valid_until_ms = k_uptime_get() + FILE_CACHE_TTL_MS;
-
-    k_mutex_lock(&file_cache_mutex, K_FOREVER);
-    AudioFileMeta_t current_meta;
-    parse_filename_to_meta(fname_snap, current_file_size, &current_meta);
-
-    for (int i = 0; i < cached_file_list_count; i++) {
-        if (compare_meta(&cached_file_meta[i], &current_meta) == 0) {
-            cached_file_meta[i].file_size += delta;
-            k_mutex_unlock(&file_cache_mutex);
-            return;
-        }
-    }
-
-    /* Cache became stale (e.g. filename not indexed due truncation). This fires
-     * for every write to a just-rotated active file that isn't in the frozen
-     * cache, so during a sync it must defer rather than force a mid-session
-     * rebuild (the active file is excluded from the sync anyway). */
-    invalidate_file_cache_deferrable();
-    k_mutex_unlock(&file_cache_mutex);
-}
-
+/* Build the file-list cache from the ring's CLOSED segments (oldest first — the
+ * ring's segment table is in append order, so no sort is needed). The open
+ * segment is excluded by sd_ring_segment_count(): the app never syncs the
+ * recording still being written. */
 static int refresh_file_cache(void)
 {
-
     if (!is_mounted) {
         return -ENODEV;
     }
 
-#ifdef CONFIG_OMI_AUDIO_RING
-    if (ring_active()) {
-        if (is_storage_sync_active() && file_cache_valid) {
-            return 0; /* keep frozen indices stable during an active sync session */
-        }
-        return ring_refresh_file_cache();
-    }
-#endif
-
     if (is_storage_sync_active() && file_cache_valid) {
-        LOG_DBG("refresh_file_cache: session active, skipping refresh to maintain stable indices");
-        return 0;
+        return 0; /* keep frozen indices stable during an active sync session */
     }
-
-    lfs_dir_t dir;
-    struct lfs_info info;
-    int list_count = 0;
-    uint32_t total_count = 0;
-    uint64_t total_size = 0;
 
     k_mutex_lock(&file_cache_mutex, K_FOREVER);
     memset(cached_file_meta, 0, sizeof(cached_file_meta));
 
-    int dres = lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR);
-    if (dres < 0) {
-        if (dres == LFS_ERR_NOENT) {
-            cached_file_list_count = 0;
-            cached_total_file_count = 0;
-            cached_total_file_size = 0;
-            cached_stats_file_count = 0;
-            cached_stats_total_size = 0;
-            update_cached_free_bytes();
-            cached_stats_valid_until_ms = k_uptime_get() + FILE_CACHE_TTL_MS;
-            file_cache_valid = true;
-            k_mutex_unlock(&file_cache_mutex);
-            return 0;
-        }
-        k_mutex_unlock(&file_cache_mutex);
-        return dres;
-    }
-
-    while (lfs_dir_read(&lfs_fs, &dir, &info) > 0) {
-        if (info.type != LFS_TYPE_REG) {
+    int n = sd_ring_segment_count();
+    int list_count = 0;
+    uint64_t total_size = 0;
+    for (int i = 0; i < n; i++) {
+        ring_segment_t seg;
+        if (sd_ring_get_segment(i, &seg) < 0) {
             continue;
         }
-
-        char *dot = strrchr(info.name, '.');
-        if (!dot || strcasecmp(dot, ".txt") != 0) {
-            continue;
-        }
-
-        total_count++;
-        total_size += info.size;
-
+        /* Count every closed segment toward the storage stats, so used-bytes /
+         * file-count stay accurate even past the cache cap... */
+        total_size += seg.length;
+        /* ...but only the first MAX_AUDIO_FILES fit the BLE-indexed list cache (the
+         * app drains + deletes, freeing slots, well before this bound in practice). */
         if (list_count < MAX_AUDIO_FILES) {
-            parse_filename_to_meta(info.name, (uint32_t)info.size, &cached_file_meta[list_count]);
-            list_count++;
+            AudioFileMeta_t *meta = &cached_file_meta[list_count++];
+            memset(meta, 0, sizeof(*meta));
+            meta->timestamp = seg.timestamp;
+            meta->uptime_offset = seg.session_id;
+            meta->file_size = seg.length;
+            meta->is_tmp = (seg.timestamp < 946684800U); /* pre-time-sync key → unorganized */
         }
     }
-    lfs_dir_close(&lfs_fs, &dir);
 
     cached_file_list_count = list_count;
-    sort_cached_file_entries();
-
-    if (current_filename[0] != '\0') {
-        AudioFileMeta_t current_meta;
-        parse_filename_to_meta(current_filename, current_file_size, &current_meta);
-        for (int i = 0; i < cached_file_list_count; i++) {
-            if (compare_meta(&cached_file_meta[i], &current_meta) == 0) {
-                total_size = total_size - cached_file_meta[i].file_size + current_file_size;
-                cached_file_meta[i].file_size = current_file_size;
-                break;
-            }
-        }
-    }
-
-    /* Exclude the currently-open recording from the reported count — it is not
-     * yet available for sync (send_file_list_response skips it too). */
-    uint32_t reportable_count = total_count;
-    if (current_filename[0] != '\0' && reportable_count > 0) {
-        reportable_count--;
-    }
-    cached_total_file_count = reportable_count;
+    cached_total_file_count = (uint32_t) n;
     cached_total_file_size = total_size;
-    cached_stats_file_count = reportable_count;
+    cached_stats_file_count = (uint32_t) n;
     cached_stats_total_size = total_size;
-    update_cached_free_bytes();
-
-    /* Do NOT call refresh_free_bytes_if_stale() here. lfs_fs_size() traverses
-     * every block in the filesystem and can take 30+ seconds on a full card.
-     * It was blocking the file-list response path, causing the 30 s semaphore
-     * in get_audio_file_list_with_sizes() to expire (especially after a time-
-     * sync, which invalidates both caches together). Free-space is computed
-     * lazily the next time it is actually queried. */
-
+    {
+        uint64_t freeb = sd_ring_free_bytes();
+        cached_free_bytes = (freeb > UINT32_MAX) ? UINT32_MAX : (uint32_t) freeb;
+    }
     cached_stats_valid_until_ms = k_uptime_get() + FILE_CACHE_TTL_MS;
     file_cache_valid = true;
-
-    /* Reset the block flag if refresh was successful — the card is working now. */
-    sd_write_blocked = false;
-    writing_error_counter = 0;
+    /* Do NOT clear sd_write_blocked here: listing reads the in-RAM segment table
+     * and never touches the write path, so a successful list says nothing about a
+     * pending write fault. Let the write path's own timed recovery clear it, or a
+     * fault would be masked and retried too early. */
 
     k_mutex_unlock(&file_cache_mutex);
     return 0;
@@ -2151,130 +844,6 @@ static int ensure_file_cache(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* Filename rename after time-sync                                     */
-/* ------------------------------------------------------------------ */
-
-void sd_update_filename_after_timesync(uint32_t synced_utc_time)
-{
-    if (!is_mounted)
-        return;
-
-    /* Ring segments carry their timestamp in the table and are not renamed:
-     * pre-time-sync segments keep their uptime-based key (shown "unorganized",
-     * like LittleFS TMP files before rename) and the app anchors real timing to
-     * each segment's inline 0xFFFFFFFB header. The REQ_TIME_SYNCED handler just
-     * rotates to a fresh UTC-keyed segment; there is no directory to walk here. */
-    if (ring_active()) {
-        return;
-    }
-
-    /* Calculate the UTC offset between uptime and real-world time */
-    uint32_t rtc_offset = synced_utc_time - (uint32_t)(k_uptime_get() / 1000U);
-    LOG_INF("Time sync received: offset is %u s", rtc_offset);
-
-    /* 
-     * Retroactively rename all CLOSED temporary files.
-     * Use a search-and-repeat loop to avoid renaming while iterating the directory
-     * (safe for LittleFS) and to save RAM (no large buffer of filenames).
-     */
-    bool file_renamed;
-    do {
-        file_renamed = false;
-        lfs_dir_t dir;
-        struct lfs_info info;
-
-        if (lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR) < 0) {
-            break;
-        }
-
-        while (lfs_dir_read(&lfs_fs, &dir, &info) > 0) {
-            /* Only rename finished TMP_ segments. The active one was already
-             * rotated out by the worker before calling this function. */
-            if (info.type == LFS_TYPE_REG && strncmp(info.name, "TMP_", 4) == 0 &&
-                strcmp(info.name, current_filename) != 0) {
-
-                char old_path[64], new_path[64], new_fn[MAX_FILENAME_LEN];
-                uint32_t original_uptime_ms = (uint32_t)strtoul(info.name + 4, NULL, 16);
-                uint32_t session_id = 0;
-                const char *sep = strchr(info.name + 4, '_');
-                if (sep) {
-                    session_id = (uint32_t)strtoul(sep + 1, NULL, 16);
-                }
-
-                // Only rename files that belong to the current session. Files from
-                // previous sessions have an uptime that is not relative to the
-                // current rtc_offset and would result in incorrect timestamps.
-                if (session_id != (uint32_t)atomic_get(&device_session_id)) {
-                    continue;
-                }
-
-                uint32_t correct_ts = (original_uptime_ms / 1000U) + rtc_offset;
-                snprintf(new_fn, MAX_FILENAME_LEN, "%08X_%08X.txt", correct_ts, session_id);
-                build_file_path(new_fn, new_path, sizeof(new_path));
-
-                /* Collision-proof the target. correct_ts is second-granular
-                 * (uptime_ms / 1000), so two TMP_ files whose uptimes fall in the
-                 * same second map to the same UTC name — and lfs_rename would
-                 * OVERWRITE (destroy) the first. Bump the target second until it is
-                 * free (also dodges a real UTC file created right after time-sync).
-                 * lfs_stat is read-only, so probing here is safe while the dir cursor
-                 * is still open — only the lfs_rename below mutates this directory and
-                 * must be preceded by lfs_dir_close(). Bounded; the <=1s nudge is below
-                 * the app's stitch threshold. Rename-time analogue of the LFS_O_EXCL
-                 * guard in create_audio_file_with_timestamp(). */
-                struct lfs_info existing;
-                for (int bump = 0; bump < 16 && lfs_stat(&lfs_fs, new_path, &existing) == 0; bump++) {
-                    correct_ts++;
-                    snprintf(new_fn, MAX_FILENAME_LEN, "%08X_%08X.txt", correct_ts, session_id);
-                    build_file_path(new_fn, new_path, sizeof(new_path));
-                }
-
-                if (lfs_stat(&lfs_fs, new_path, &existing) == 0) {
-                    /* No free UTC second within the budget — renaming would OVERWRITE
-                     * (destroy) an existing recording. Skip ONLY this file (leave it
-                     * as TMP_, still syncable with a derived timestamp) and keep
-                     * scanning, so one collision can't strand unrelated recordings.
-                     * The dir cursor is untouched (no mutation yet), so continue
-                     * iterating. Needs 16 consecutive occupied seconds — effectively
-                     * unreachable in practice. */
-                    LOG_ERR("Retro-rename: no free UTC slot for %s within budget — leaving as TMP_", info.name);
-                    continue;
-                }
-
-                /* Free slot found. lfs_rename mutates this directory, so close the
-                 * iteration cursor first (LittleFS-safe), then restart the scan. */
-                build_file_path(info.name, old_path, sizeof(old_path));
-                lfs_dir_close(&lfs_fs, &dir);
-
-                if (lfs_rename(&lfs_fs, old_path, new_path) == 0) {
-                    LOG_INF("Retroactive rename: %s -> %s", info.name, new_fn);
-                } else {
-                    LOG_ERR("Failed to rename %s", info.name);
-                }
-
-                file_renamed = true;
-                break;
-            }
-        }
-
-        if (!file_renamed) {
-            lfs_dir_close(&lfs_fs, &dir);
-        }
-
-        /* Yield to allow other prio-msgq requests (like get list) to be processed
-         * between renames if there are many files. */
-        k_yield();
-    } while (file_renamed);
-    invalidate_file_cache();
-}
-
-/* ------------------------------------------------------------------ */
-/* Internal helpers: file list, file stats                            */
-/* ------------------------------------------------------------------ */
-
-
-
-/* ------------------------------------------------------------------ */
 /* SD worker thread                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -2283,133 +852,18 @@ void sd_worker_thread(void)
     sd_req_t req;
     int res;
 
-    /* Select the storage backend for this boot (persisted; a switch reboots). */
-    g_backend = app_settings_get_storage_backend();
-    LOG_INF("[SD_BOOT] storage backend: %s", ring_active() ? "ring" : "littlefs");
-
     /* ---- Mount ---- */
-    res = sd_mount(true); /* boot mount: allowed to apply a pending backend-switch reformat */
+    res = sd_mount();
     if (res != 0) {
         LOG_ERR("[SD_WORK] mount failed: %d", res);
         sd_write_blocked = true;
         return;
     }
 
-#ifdef CONFIG_OMI_AUDIO_RING
-    if (ring_active()) {
-        /* sd_mount() already brought the ring up. None of the LittleFS boot steps
-         * (audio dir, allocator pre-warm, info.txt, initial-file continuation)
-         * apply — the first audio write lazily opens the first segment. Skip
-         * straight to marking the SD ready so BLE bring-up / boot warming proceed. */
-        goto sd_boot_done;
-    }
-#endif
+    /* sd_mount() brought the ring up; the first audio write lazily opens the
+     * first segment. There is no boot-time filesystem work to do — mark the SD
+     * ready so BLE bring-up / boot warming proceed. */
 
-    /* ---- Ensure audio directory exists ---- */
-    struct lfs_info dir_info;
-    if (lfs_stat(&lfs_fs, FILE_DATA_DIR, &dir_info) < 0) {
-        int mk = lfs_mkdir(&lfs_fs, FILE_DATA_DIR);
-        if (mk < 0 && mk != LFS_ERR_EXIST) {
-            LOG_ERR("[SD_WORK] mkdir audio failed: %d â€” write path blocked", mk);
-            sd_write_blocked = true;
-        }
-    }
-
-    /* ---- Print existing files at boot ---- */
-    print_audio_files_at_boot();
-
-    /* ---- Pre-warm LFS block allocator ---- */
-    {
-        int64_t gc_start_ms = k_uptime_get();
-        LOG_INF("[SD_BOOT] Pre-warming LFS allocator (lookahead=%u bytes, %u blocks window)...",
-                LFS_LOOKAHEAD_SIZE,
-                LFS_LOOKAHEAD_SIZE * 8);
-        int gc_res = lfs_fs_gc(&lfs_fs);
-        int64_t gc_elapsed_ms = k_uptime_get() - gc_start_ms;
-        if (gc_res < 0) {
-            LOG_WRN("[SD_BOOT] lfs_fs_gc failed: %d (took %lld ms)", gc_res, gc_elapsed_ms);
-            if (gc_res == LFS_ERR_CORRUPT) {
-                LOG_ERR("[SD_BOOT] Hard corruption detected (-84) during GC. Forcing format...");
-                lfs_unmount(&lfs_fs);
-                lfs_format(&lfs_fs, &lfs_cfg);
-                lfs_mount(&lfs_fs, &lfs_cfg);
-                write_magic();
-            }
-        } else {
-            LOG_INF("[SD_BOOT] LFS allocator pre-warmed OK in %lld ms", gc_elapsed_ms);
-        }
-    }
-
-    /* ---- Open / create info file ---- */
-    {
-        struct lfs_info info_lstat;
-        bool info_exists = (lfs_stat(&lfs_fs, FILE_INFO_PATH, &info_lstat) == 0);
-        bool need_init_off = !info_exists || (info_lstat.size < sizeof(sd_offset_info_t));
-
-        res = lfs_file_opencfg(&lfs_fs, &lfs_fil_info, FILE_INFO_PATH, LFS_O_CREAT | LFS_O_RDWR, &lfs_finfo_cfg);
-        if (res < 0) {
-            LOG_ERR("[SD_WORK] open info failed: %d", res);
-            if (res == LFS_ERR_CORRUPT) {
-                LOG_ERR("[SD_BOOT] Hard corruption detected (-84) opening info. Forcing format...");
-                lfs_unmount(&lfs_fs);
-                lfs_format(&lfs_fs, &lfs_cfg);
-                lfs_mount(&lfs_fs, &lfs_cfg);
-                write_magic();
-                res = lfs_file_opencfg(&lfs_fs, &lfs_fil_info, FILE_INFO_PATH, LFS_O_CREAT | LFS_O_RDWR, &lfs_finfo_cfg);
-            }
-            if (res < 0) {
-                sd_write_blocked = true;
-            }
-        }
-        
-        if (res >= 0) {
-            if (need_init_off) {
-                memset(&current_offset_info, 0, sizeof(current_offset_info));
-                lfs_ssize_t bw = lfs_file_write(&lfs_fs, &lfs_fil_info, &current_offset_info, sizeof(current_offset_info));
-                if (bw != (lfs_ssize_t) sizeof(current_offset_info)) {
-                    LOG_ERR("[SD_WORK] init info write failed: %d", (int) bw);
-                } else {
-                    lfs_file_sync(&lfs_fs, &lfs_fil_info);
-                }
-            } else {
-                lfs_file_seek(&lfs_fs, &lfs_fil_info, 0, LFS_SEEK_SET);
-                lfs_ssize_t rb = lfs_file_read(&lfs_fs, &lfs_fil_info, &current_offset_info, sizeof(current_offset_info));
-                if (rb != (lfs_ssize_t) sizeof(current_offset_info)) {
-                    LOG_ERR("[SD_WORK] read offset info failed: %d", (int) rb);
-                    memset(&current_offset_info, 0, sizeof(current_offset_info));
-                } else {
-                    LOG_INF("[SD_WORK] Loaded offset: file=%s off=%u",
-                            current_offset_info.oldest_filename,
-                            current_offset_info.offset_in_file);
-                }
-            }
-        }
-    }
-
-    /* ---- Open initial audio file ---- */
-    res = try_continue_latest_file();
-    if (res < 0) {
-        res = create_audio_file_with_timestamp();
-        if (res < 0) {
-            LOG_ERR("[SD_WORK] initial file create failed: %d â€” write blocked", res);
-            if (res == LFS_ERR_CORRUPT && !sd_write_blocked) {
-                LOG_ERR("[SD_BOOT] Hard corruption detected (-84) creating file. Forcing format...");
-                lfs_unmount(&lfs_fs);
-                lfs_format(&lfs_fs, &lfs_cfg);
-                lfs_mount(&lfs_fs, &lfs_cfg);
-                write_magic();
-                res = create_audio_file_with_timestamp();
-            }
-            if (res < 0) {
-                sd_write_blocked = true;
-            }
-        }
-    }
-
-    /* ---- SD boot init complete, allow writes ---- */
-#ifdef CONFIG_OMI_AUDIO_RING
-sd_boot_done:
-#endif
     atomic_set(&sd_boot_ready, 1);
     {
         long dropped = (long)atomic_get(&boot_dropped_frames);
@@ -2436,26 +890,12 @@ sd_boot_done:
         if (atomic_cas(&pending_flush_on_ble_connect, 1, 0)) {
             if (!atomic_get(&current_file_deleted) && current_filename[0] != '\0') {
                 sd_set_io_low_power(false);
-                int sr;
-#ifdef CONFIG_OMI_AUDIO_RING
-                if (ring_active()) {
-                    /* Ring mode: lfs_fil_data is never opened — flush the cursor via
-                     * the ring backend instead of the inactive LittleFS handle. */
-                    sr = sd_ring_sync();
-                    if (sr == 0) {
-                        ring_bytes_since_sync = 0;
-                    }
-                } else
-#endif
-                {
-                    sr = lfs_file_sync(&lfs_fs, &lfs_fil_data);
-                }
+                int sr = sd_ring_sync();
                 sd_set_io_low_power(true);
                 if (sr < 0) {
                     atomic_set(&pending_flush_on_ble_connect, 1);
                 } else {
-                    data_sync_gen++;
-                    bytes_since_sync = 0;
+                    ring_bytes_since_sync = 0;
                     last_file_sync_uptime_ms = k_uptime_get();
                     LOG_INF("[SD_WORK] Deferred BLE flush OK (%u bytes)", current_file_size);
                 }
@@ -2484,32 +924,31 @@ sd_boot_done:
         /* Block waiting for the next audio write.
          * Short timeout when BLE connected (keeps reads responsive);
          * longer when disconnected (saves CPU/power).
-         * On timeout, flush any partially-filled batch buffer. */
+         * On timeout, commit the cursor if a sync is due. */
         k_timeout_t write_wait = atomic_get(&ble_connected) ? K_MSEC(50) : K_MSEC(500);
         if (k_msgq_get(&sd_msgq, &req, write_wait) == 0) {
             reads_since_write = 0;
             goto handle_req;
         }
 
-#ifdef CONFIG_OMI_AUDIO_RING
-        /* Ring: no batch buffer. On the write-wait timeout, commit the cursor for
-         * audio appended since the last sync — but rate-gated to SD_FSYNC_INTERVAL_MS
-         * exactly like the LittleFS fsync path below, NOT on every timeout. When BLE
-         * is connected (the app is connected whenever it is open) write_wait is 50 ms,
-         * shorter than the ~86 ms audio-block spacing, so this branch fires in the gap
-         * after nearly every block; an ungated commit meant a full partial-sector +
-         * CTRL_SYNC + cursor write ~12x/s during active connected audio. The threshold
-         * (RING_SYNC_BYTES) and any critical marker still force earlier commits, so a
-         * crash in the sub-interval window loses at most the same bytes the byte cap
-         * already tolerates. */
-        if (ring_active()) {
-            /* Commit when the periodic gate elapses OR a prior commit failed and its
-             * 2 s soft-recovery has passed: the SD_FSYNC_INTERVAL_MS gate throttles
-             * ROUTINE periodic commits, but must NOT delay recovering undurable data —
-             * notably a failed session-end marker after audio has stopped, when no
-             * further write arrives to retry it via the write path. The retry honors
-             * the same 2 s backoff the write path uses so a persistently-failing card
-             * isn't hammered every timeout tick. */
+        /* On the write-wait timeout, commit the cursor for audio appended since the
+         * last sync — but rate-gated to SD_FSYNC_INTERVAL_MS, NOT on every timeout.
+         * When BLE is connected (the app is connected whenever it is open) write_wait
+         * is 50 ms, shorter than the ~86 ms audio-block spacing, so this branch fires
+         * in the gap after nearly every block; an ungated commit meant a full
+         * partial-sector + CTRL_SYNC + cursor write ~12x/s during active connected
+         * audio. The threshold (RING_SYNC_BYTES) and any critical marker still force
+         * earlier commits, so a crash in the sub-interval window loses at most the
+         * same bytes the byte cap already tolerates.
+         *
+         * Commit when the periodic gate elapses OR a prior commit failed and its
+         * 2 s soft-recovery has passed: the SD_FSYNC_INTERVAL_MS gate throttles
+         * ROUTINE periodic commits, but must NOT delay recovering undurable data —
+         * notably a failed session-end marker after audio has stopped, when no
+         * further write arrives to retry it via the write path. The retry honors
+         * the same 2 s backoff the write path uses so a persistently-failing card
+         * isn't hammered every timeout tick. */
+        {
             bool ring_sync_due = (k_uptime_get() - last_file_sync_uptime_ms) >= SD_FSYNC_INTERVAL_MS;
             bool ring_retry_due = sd_write_blocked &&
                                   (k_uptime_get() - last_write_error_uptime_ms) > 2000;
@@ -2519,7 +958,6 @@ sd_boot_done:
                     ring_bytes_since_sync = 0;
                     last_file_sync_uptime_ms = k_uptime_get();
                     sd_write_blocked = false; /* recovered — unblock the write path */
-                    writing_error_counter = 0;
                 } else {
                     /* Still failing: keep ring_bytes_since_sync pending and stay
                      * blocked so ring_retry_due fires again after the 2 s backoff. */
@@ -2528,22 +966,6 @@ sd_boot_done:
                 }
                 sd_set_io_low_power(true);
             }
-            continue;
-        }
-#endif
-
-        /* Timeout: flush batch if data is waiting. */
-        if (write_batch_offset > 0) {
-            sd_set_io_low_power(false);
-            flush_batch_buffer_chunked();
-            if (bytes_since_sync > 0 &&
-                (k_uptime_get() - last_file_sync_uptime_ms) >= SD_FSYNC_INTERVAL_MS) {
-                lfs_file_sync(&lfs_fs, &lfs_fil_data);
-                data_sync_gen++;
-                bytes_since_sync = 0;
-                last_file_sync_uptime_ms = k_uptime_get();
-            }
-            sd_set_io_low_power(true);
         }
         continue;
 
@@ -2560,11 +982,10 @@ sd_boot_done:
         case REQ_WRITE_DATA: {
             process_write_data_req(&req);
             reads_since_write = 0;
-            /* Drain up to 16 additional write/save_offset messages in one pass
-             * to improve SD throughput by batching more work per wake. The
-             * first WRITE_FAIR_MIN drain unconditionally so a steady read
-             * stream can't starve audio; beyond that, yield to pending reads
-             * to keep sync responsive. */
+            /* Drain up to 16 additional write messages in one pass to improve SD
+             * throughput by batching more work per wake. The first WRITE_FAIR_MIN
+             * drain unconditionally so a steady read stream can't starve audio;
+             * beyond that, yield to pending reads to keep sync responsive. */
             for (int _d = 0; _d < 16; _d++) {
                 if (_d >= WRITE_FAIR_MIN && k_msgq_num_used_get(&sd_prio_msgq) > 0)
                     break;
@@ -2573,246 +994,43 @@ sd_boot_done:
                     break;
                 if (_next.type == REQ_WRITE_DATA)
                     process_write_data_req(&_next);
-                else if (_next.type == REQ_SAVE_OFFSET)
-                    process_save_offset_req(&_next);
             }
-#ifdef CONFIG_OMI_AUDIO_RING
-            /* Ring: the bus is woken lazily by sd_ring's io_wake hook, on the first
-             * disk op of this burst — and most bursts never have one, because an
-             * append that fits in the stage is a memcpy. Suspend unconditionally
-             * here: sd_set_io_low_power() no-ops when the bus was never resumed, so
-             * this costs one atomic CAS on the (common) memcpy-only burst.
+            /* The bus is woken lazily by sd_ring's io_wake hook, on the first disk op
+             * of this burst — and most bursts never have one, because an append that
+             * fits in the stage is a memcpy. Suspend unconditionally here:
+             * sd_set_io_low_power() no-ops when the bus was never resumed, so this
+             * costs one atomic CAS on the (common) memcpy-only burst.
              *
              * Do NOT reinstate an eager wake at the top of this case. It ran ~11.6x
              * per second of audio (one block per loop pass, since blocks arrive every
              * ~86 ms and write_wait is 50 ms while connected) against ~1.2 real
-             * flushes, and a pm_device RESUME/SUSPEND pair re-inits the SD card. That
-             * gap versus LittleFS — which stays suspended while it buffers and wakes
-             * only to flush — was the ring's idle-current regression. */
-            if (ring_active()) {
-                sd_set_io_low_power(true);
-            }
-#endif
+             * flushes, and a pm_device RESUME/SUSPEND pair re-inits the SD card —
+             * which is what made the ring's idle current worse than the filesystem's
+             * before the lazy hook landed. */
+            sd_set_io_low_power(true);
             break;
         }
 
-        /* ---- Read audio data (uses persistent file handle) ---- */
-        case REQ_READ_DATA: {
-#ifdef CONFIG_OMI_AUDIO_RING
-            if (ring_active()) {
-                ring_handle_read_req(&req);
-                break;
-            }
-#endif
-            char read_path[64];
-            build_file_path(req.u.read.filename, read_path, sizeof(read_path));
-
-            bool is_active_file = (current_filename[0] != '\0' && strcmp(req.u.read.filename, current_filename) == 0);
-
-            /* Close handle if different file requested */
-            if (read_handle_open && strcmp(read_handle_filename, req.u.read.filename) != 0) {
-                close_read_handle();
-            }
-
-            /* Reopen if handle is stale (file was synced since handle opened) */
-            if (read_handle_open && read_handle_gen != data_sync_gen) {
-                close_read_handle();
-            }
-
-            /* Open file if not already open */
-            if (!read_handle_open) {
-                res = lfs_file_opencfg(&lfs_fs, &lfs_read_handle, read_path, LFS_O_RDONLY, &lfs_read_handle_cfg);
-                if (res < 0) {
-                    LOG_ERR("[SD_WORK] open read failed: %s err=%d", read_path, res);
-                    if (req.u.read.resp) {
-                        req.u.read.resp->res = res;
-                        req.u.read.resp->read_bytes = 0;
-                        k_sem_give(&req.u.read.resp->sem);
-                    }
-                    break;
-                }
-                strncpy(read_handle_filename, req.u.read.filename, MAX_FILENAME_LEN - 1);
-                read_handle_open = true;
-                read_handle_pos = 0;
-                read_handle_gen = data_sync_gen;
-            }
-
-            /* Only seek if position doesn't match (sequential reads skip seek) */
-            if (read_handle_pos != (lfs_soff_t) req.u.read.offset) {
-                lfs_file_seek(&lfs_fs, &lfs_read_handle, (lfs_soff_t) req.u.read.offset, LFS_SEEK_SET);
-                read_handle_pos = (lfs_soff_t) req.u.read.offset;
-            }
-
-            lfs_ssize_t br = lfs_file_read(&lfs_fs, &lfs_read_handle, req.u.read.out_buf, req.u.read.length);
-
-            /* Lazy sync: if we got 0 bytes (EOF) on the active file and
-             * there is uncommitted data, flush+sync now and retry once.
-             * This avoids the expensive lfs_file_sync on EVERY read
-             * (was ~50-100 ms each) — we only pay the cost when we
-             * actually hit the stale-EOF boundary. */
-            if (br == 0 && is_active_file && (write_batch_offset > 0 || bytes_since_sync > 0)) {
-                if (write_batch_offset > 0)
-                    flush_batch_buffer_chunked();
-                if (bytes_since_sync > 0) {
-                    int sr = lfs_file_sync(&lfs_fs, &lfs_fil_data);
-                    if (sr == 0) {
-                        data_sync_gen++;
-                        bytes_since_sync = 0;
-                        last_file_sync_uptime_ms = k_uptime_get();
-
-                        /* Reopen read handle to pick up new file size.
-                         * Re-verify the file is still active after the close-reopen
-                         * window to guard against concurrent file rotation. */
-                        close_read_handle();
-                        k_mutex_lock(&current_filename_lock, K_FOREVER);
-                        bool still_active = (current_filename[0] != '\0' &&
-                                             strcmp(req.u.read.filename, current_filename) == 0);
-                        k_mutex_unlock(&current_filename_lock);
-                        if (!still_active) {
-                            /* File rotated under us — signal completion. */
-                            is_active_file = false;
-                        }
-                        res = lfs_file_opencfg(&lfs_fs, &lfs_read_handle, read_path, LFS_O_RDONLY, &lfs_read_handle_cfg);
-                        if (res < 0) {
-                            if (req.u.read.resp) {
-                                req.u.read.resp->res = res;
-                                req.u.read.resp->read_bytes = 0;
-                                k_sem_give(&req.u.read.resp->sem);
-                            }
-                            break;
-                        }
-                        strncpy(read_handle_filename, req.u.read.filename, MAX_FILENAME_LEN - 1);
-                        read_handle_open = true;
-                        read_handle_pos = 0;
-                        read_handle_gen = data_sync_gen;
-
-                        /* Re-check if the file is still the active file after reopen.
-                         * A file rotation could have changed current_filename between
-                         * the sync and reopen, making our read_path stale. */
-                        k_mutex_lock(&current_filename_lock, K_FOREVER);
-                        still_active = (current_filename[0] != '\0' &&
-                                        strcmp(req.u.read.filename, current_filename) == 0);
-                        k_mutex_unlock(&current_filename_lock);
-                        if (!still_active) {
-                            if (req.u.read.resp) {
-                                req.u.read.resp->res = 0;
-                                req.u.read.resp->read_bytes = 0;
-                                k_sem_give(&req.u.read.resp->sem);
-                            }
-                            break;
-                        }
-
-                        lfs_file_seek(&lfs_fs, &lfs_read_handle, (lfs_soff_t) req.u.read.offset, LFS_SEEK_SET);
-                        read_handle_pos = (lfs_soff_t) req.u.read.offset;
-
-                        br = lfs_file_read(&lfs_fs, &lfs_read_handle, req.u.read.out_buf, req.u.read.length);
-                    } else {
-                        LOG_ERR("[SD_WORK] lazy sync failed: %d", sr);
-                    }
-                }
-            }
-
-            if (br > 0) {
-                read_handle_pos += br;
-                    }
-
-            if (req.u.read.resp) {
-                req.u.read.resp->res = (br < 0) ? (int) br : 0;
-                req.u.read.resp->read_bytes = (br < 0) ? 0 : (int) br;
-                k_sem_give(&req.u.read.resp->sem);
-            }
-            break;
-        }
-
-        /* ---- Save offset ---- */
-        case REQ_SAVE_OFFSET:
-            process_save_offset_req(&req);
+        /* ---- Read audio data ---- */
+        case REQ_READ_DATA:
+            ring_handle_read_req(&req);
             break;
 
-        /* ---- Clear audio directory ---- */
+        /* ---- Clear all recordings ---- */
         case REQ_CLEAR_AUDIO_DIR: {
-#ifdef CONFIG_OMI_AUDIO_RING
-            if (ring_active()) {
-                /* Reformat the ring (wipes all segments) and reopen a fresh one. */
-                int cr = sd_ring_format(ring_total_sectors);
-                k_mutex_lock(&current_filename_lock, K_FOREVER);
-                current_filename[0] = '\0';
-                current_file_path[0] = '\0';
-                k_mutex_unlock(&current_filename_lock);
-                current_file_size = 0;
-                ring_bytes_since_sync = 0;
-                invalidate_file_cache();
-                if (cr == 0) {
-                    cr = create_audio_file_with_timestamp();
-                }
-                if (req.u.clear_dir.resp) {
-                    req.u.clear_dir.resp->res = cr;
-                    k_sem_give(&req.u.clear_dir.resp->sem);
-                }
-                break;
-            }
-#endif
-            flush_batch_buffer_chunked();
-            close_read_handle();
-            lfs_file_close(&lfs_fs, &lfs_fil_data);
+            /* Reformat the ring (wipes all segments) and open a fresh one. */
+            int cr = sd_ring_format(ring_total_sectors);
             k_mutex_lock(&current_filename_lock, K_FOREVER);
             current_filename[0] = '\0';
-            current_file_path[0] = '\0';
             k_mutex_unlock(&current_filename_lock);
-
-            char fpath[64];
-            bool clear_ok = true;
-
-            /* RAM-efficient search-and-delete loop (avoids 9.6KB static buffer).
-             * We find one file, close dir, delete it, and repeat until empty. 
-             * This $O(N^2)$ approach is safe and saves significant RAM. */
-            while (1) {
-                lfs_dir_t dir;
-                struct lfs_info info;
-                char to_delete[MAX_FILENAME_LEN] = {0};
-
-                if (lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR) == 0) {
-                    while (lfs_dir_read(&lfs_fs, &dir, &info) > 0) {
-                        if (info.type == LFS_TYPE_REG) {
-                            strncpy(to_delete, info.name, MAX_FILENAME_LEN - 1);
-                            break;
-                        }
-                    }
-                    lfs_dir_close(&lfs_fs, &dir);
-                }
-
-                if (to_delete[0] == '\0') {
-                    break; /* Directory is empty */
-                }
-
-                build_file_path(to_delete, fpath, sizeof(fpath));
-                int rm = lfs_remove(&lfs_fs, fpath);
-                if (rm < 0) {
-                    LOG_ERR("[SD_WORK] rm %s: %d", fpath, rm);
-                    clear_ok = false;
-                    break; /* Stop on error to avoid infinite loops */
-                }
-                k_yield();
+            current_file_size = 0;
+            ring_bytes_since_sync = 0;
+            invalidate_file_cache();
+            if (cr == 0) {
+                cr = ring_create_segment();
             }
-
-            if (clear_ok) {
-                /* Reset offset info */
-                memset(&current_offset_info, 0, sizeof(current_offset_info));
-                lfs_file_seek(&lfs_fs, &lfs_fil_info, 0, LFS_SEEK_SET);
-                lfs_file_write(&lfs_fs, &lfs_fil_info, &current_offset_info, sizeof(current_offset_info));
-                lfs_file_sync(&lfs_fs, &lfs_fil_info);
-                invalidate_file_cache();
-                bytes_since_sync = 0;
-                write_batch_offset = 0;
-                write_batch_counter = 0;
-
-                res = create_audio_file_with_timestamp();
-            } else {
-                res = -EIO;
-            }
-
             if (req.u.clear_dir.resp) {
-                req.u.clear_dir.resp->res = res;
+                req.u.clear_dir.resp->res = cr;
                 k_sem_give(&req.u.clear_dir.resp->sem);
             }
             break;
@@ -2830,30 +1048,20 @@ sd_boot_done:
              * stay self-contained: [0xFFFFFFF8 .. audio .. 0xFFFFFFFC]). Reuses the
              * same helper REQ_UNMOUNT uses; name is historical, behaviour is generic. */
             drain_pending_write_queue_for_shutdown();
-            res = 0;
-#ifdef CONFIG_OMI_AUDIO_RING
-            if (ring_active()) {
-                /* Head must be durable before create_audio_file_with_timestamp ->
-                 * begin_segment publishes the closing segment's length. If the sync
-                 * fails, don't rotate: report the error and let the caller/next write
-                 * retry, rather than committing an over-claimed close. */
-                res = sd_ring_sync();
-                if (res == 0) {
-                    ring_bytes_since_sync = 0;
-                } else {
-                    /* Explicit rotation could not be made durable now — mark it
-                     * pending so the write path completes it BEFORE accepting more
-                     * audio; otherwise this requested boundary is lost and the next
-                     * recording's audio lands in the current segment. */
-                    ring_pending_explicit_rotate = true;
-                }
-            } else
-#endif
-            {
-                flush_batch_buffer_chunked();
-            }
+            /* Head must be durable before ring_create_segment -> begin_segment
+             * publishes the closing segment's length. If the sync fails, don't
+             * rotate: report the error and let the caller/next write retry, rather
+             * than committing an over-claimed close. */
+            res = sd_ring_sync();
             if (res == 0) {
-                res = create_audio_file_with_timestamp();
+                ring_bytes_since_sync = 0;
+                res = ring_create_segment();
+            } else {
+                /* Explicit rotation could not be made durable now — mark it
+                 * pending so the write path completes it BEFORE accepting more
+                 * audio; otherwise this requested boundary is lost and the next
+                 * recording's audio lands in the current segment. */
+                ring_pending_explicit_rotate = true;
             }
             if (req.u.create_file.resp) {
                 req.u.create_file.resp->res = res;
@@ -2876,47 +1084,20 @@ sd_boot_done:
 
 
 
-        /* ---- Flush current file ---- */
+        /* ---- Flush (commit the ring cursor) ---- */
         case REQ_FLUSH_FILE: {
-#ifdef CONFIG_OMI_AUDIO_RING
-            if (ring_active()) {
-                int fr = sd_ring_sync();
-                if (fr == 0) {
-                    ring_bytes_since_sync = 0; /* keep pending on failure so it retries */
-                }
-                if (req.u.create_file.resp) {
-                    req.u.create_file.resp->res = fr;
-                    k_sem_give(&req.u.create_file.resp->sem);
-                }
-                break;
-            }
-#endif
-            int flush_res = 0;
-            if (!atomic_get(&current_file_deleted) && current_filename[0] != '\0') {
-                flush_res = flush_batch_buffer_chunked();
-                if (flush_res == 0) {
-                    int sr = lfs_file_sync(&lfs_fs, &lfs_fil_data);
-                    if (sr < 0) {
-                        LOG_ERR("[SD_WORK] lfs_file_sync failed: %d", sr);
-                        flush_res = sr;
-                    } else {
-                        data_sync_gen++;
-                        bytes_since_sync = 0;
-                        write_batch_offset = 0;
-                        write_batch_counter = 0;
-                        last_file_sync_uptime_ms = k_uptime_get();
-                        LOG_INF("[SD_WORK] Flushed %s (%u bytes)", current_filename, current_file_size);
-                    }
-                }
+            int fr = sd_ring_sync();
+            if (fr == 0) {
+                ring_bytes_since_sync = 0; /* keep pending on failure so it retries */
             }
             if (req.u.create_file.resp) {
-                req.u.create_file.resp->res = flush_res;
+                req.u.create_file.resp->res = fr;
                 k_sem_give(&req.u.create_file.resp->sem);
             }
             break;
         }
 
-        /* ---- Unmount SD/LFS (must run on worker thread) ---- */
+        /* ---- Unmount (must run on worker thread) ---- */
         case REQ_UNMOUNT: {
             /* Shutdown path: stop accepting new writes and drain queued writes
              * so data already enqueued by mic thread is persisted before unmount. */
@@ -2929,57 +1110,17 @@ sd_boot_done:
             break;
         }
 
-        /* ---- Delete file ---- */
+        /* ---- Delete file (ack the segment) ---- */
         case REQ_DELETE_FILE: {
-#ifdef CONFIG_OMI_AUDIO_RING
-            if (ring_active()) {
-                /* Deletion = ack the segment; the ring advances its tail past
-                 * leading acked segments to reclaim space. */
-                AudioFileMeta_t m;
-                parse_filename_to_meta(req.u.delete_file.filename, 0, &m);
-                int idx = ring_find_segment_index(m.timestamp, m.uptime_offset);
-                int rc = (idx >= 0) ? sd_ring_ack_segment(idx) : 0; /* absent = already gone */
-                invalidate_file_cache();
-                if (req.u.delete_file.resp) {
-                    req.u.delete_file.resp->res = (rc < 0) ? rc : 0;
-                    k_sem_give(&req.u.delete_file.resp->sem);
-                }
-                break;
-            }
-#endif
-            char del_path[64];
-            build_file_path(req.u.delete_file.filename, del_path, sizeof(del_path));
-
-            /* Close read handle if we're about to delete the file being read */
-            if (read_handle_open && filename_equals_ignore_case(read_handle_filename, req.u.delete_file.filename)) {
-                close_read_handle();
-            }
-
-            if (current_filename[0] != '\0' &&
-                filename_equals_ignore_case(current_filename, req.u.delete_file.filename)) {
-                LOG_INF("[SD_WORK] Deleting active recording file");
-                flush_batch_buffer_chunked();
-                lfs_file_close(&lfs_fs, &lfs_fil_data);
-                k_mutex_lock(&current_filename_lock, K_FOREVER);
-                current_filename[0] = '\0';
-                current_file_path[0] = '\0';
-                k_mutex_unlock(&current_filename_lock);
-                current_file_size = 0;
-                bytes_since_sync = 0;
-                write_batch_offset = 0;
-                write_batch_counter = 0;
-                last_file_sync_uptime_ms = 0;
-                atomic_set(&current_file_deleted, 1);
-            }
-
-            int rm = lfs_remove(&lfs_fs, del_path);
-            if (rm < 0 && rm != LFS_ERR_NOENT) {
-                LOG_ERR("[SD_WORK] remove %s failed: %d", del_path, rm);
-            } else {
-                invalidate_file_cache();
-                    }
+            /* Deletion = ack the segment; the ring advances its tail past leading
+             * acked segments to reclaim space. */
+            AudioFileMeta_t m;
+            parse_filename_to_meta(req.u.delete_file.filename, 0, &m);
+            int idx = ring_find_segment_index(m.timestamp, m.uptime_offset);
+            int rc = (idx >= 0) ? sd_ring_ack_segment(idx) : 0; /* absent = already gone */
+            invalidate_file_cache();
             if (req.u.delete_file.resp) {
-                req.u.delete_file.resp->res = rm;
+                req.u.delete_file.resp->res = (rc < 0) ? rc : 0;
                 k_sem_give(&req.u.delete_file.resp->sem);
             }
             break;
@@ -2987,34 +1128,20 @@ sd_boot_done:
 
         /* ---- Pause IO ---- */
         case REQ_PAUSE_IO: {
-#ifdef CONFIG_OMI_AUDIO_RING
-            if (ring_active()) {
-                int psr = sd_ring_sync();
-                if (psr == 0) {
-                    ring_bytes_since_sync = 0;
-                } else {
-                    /* Durability sync failed at the pause boundary — keep the bytes
-                     * pending and enter recovery (the write-wait-timeout retries the
-                     * sync) so the final audio/marker isn't silently lost, and report
-                     * the error to the caller instead of ack'ing success. */
-                    last_write_error_uptime_ms = k_uptime_get();
-                    sd_write_blocked = true;
-                }
-                sd_write_pause(true);
-                if (req.u.create_file.resp) {
-                    req.u.create_file.resp->res = psr;
-                    k_sem_give(&req.u.create_file.resp->sem);
-                }
-                break;
-            }
-#endif
-            flush_batch_buffer_chunked();
-            if (current_filename[0] != '\0') {
-                lfs_file_sync(&lfs_fs, &lfs_fil_data);
+            int psr = sd_ring_sync();
+            if (psr == 0) {
+                ring_bytes_since_sync = 0;
+            } else {
+                /* Durability sync failed at the pause boundary — keep the bytes
+                 * pending and enter recovery (the write-wait-timeout retries the
+                 * sync) so the final audio/marker isn't silently lost, and report
+                 * the error to the caller instead of ack'ing success. */
+                last_write_error_uptime_ms = k_uptime_get();
+                sd_write_blocked = true;
             }
             sd_write_pause(true);
             if (req.u.create_file.resp) {
-                req.u.create_file.resp->res = 0;
+                req.u.create_file.resp->res = psr;
                 k_sem_give(&req.u.create_file.resp->sem);
             }
             break;
@@ -3036,50 +1163,24 @@ sd_boot_done:
 
         /* ---- Time synced ---- */
         case REQ_TIME_SYNCED:
-#ifdef CONFIG_OMI_AUDIO_RING
-            if (ring_active()) {
-                /* Rotate to a fresh UTC-keyed segment so subsequent audio is
-                 * organized. Existing pre-sync segments keep their uptime key
-                 * (no directory to rename); the app anchors timing to each
-                 * segment's inline header. */
-                if (current_filename[0] == '\0' || current_file_needs_rename) {
-                    /* If an open (TMP) segment will be closed by this rotation, make
-                     * its head durable first: create_audio_file_with_timestamp ->
-                     * begin_segment publishes the closing length from head_abs, so an
-                     * un-synced head could expose uncommitted bytes past the recovered
-                     * cursor after a power cut. On sync failure, defer — a later
-                     * rotation retries with a durable head. */
-                    if (current_filename[0] != '\0') {
-                        if (sd_ring_sync() != 0) {
-                            atomic_set(&timesync_rename_pending, 0);
-                            break;
-                        }
-                        ring_bytes_since_sync = 0;
+            /* Rotate to a fresh UTC-keyed segment so subsequent audio is organized.
+             * Existing pre-sync segments keep their uptime key — there is no
+             * directory to rename, and the app anchors real timing to each segment's
+             * inline 0xFFFFFFFB header, so they simply show as "unorganized". */
+            if (current_filename[0] == '\0' || current_file_needs_rename) {
+                /* If an open (TMP) segment will be closed by this rotation, make its
+                 * head durable first: ring_create_segment -> begin_segment publishes
+                 * the closing length from head_abs, so an un-synced head could expose
+                 * uncommitted bytes past the recovered cursor after a power cut. On
+                 * sync failure, defer — a later rotation retries with a durable head. */
+                if (current_filename[0] != '\0') {
+                    if (sd_ring_sync() != 0) {
+                        atomic_set(&timesync_rename_pending, 0);
+                        break;
                     }
-                    create_audio_file_with_timestamp();
+                    ring_bytes_since_sync = 0;
                 }
-                atomic_set(&timesync_rename_pending, 0);
-                break;
-            }
-#endif
-            if (current_filename[0] != '\0' && current_file_needs_rename) {
-                /*
-                 * Time sync received while recording to a temporary file.
-                 * 1. Rotate to a new file (which will now use the correct UTC timestamp).
-                 * 2. Retroactively rename all previously closed TMP_ segments.
-                 */
-                int res = create_audio_file_with_timestamp();
-                if (res >= 0) {
-                    sd_update_filename_after_timesync(req.u.time_synced.utc_time);
-                } else {
-                    LOG_ERR("[SD_WORK] Time sync rotation failed: %d", res);
-                }
-            } else if (current_filename[0] == '\0') {
-                /* No file open yet, start a fresh one with UTC name. */
-                create_audio_file_with_timestamp();
-            } else {
-                /* Already recording with UTC name; just catch up any old TMP segments. */
-                sd_update_filename_after_timesync(req.u.time_synced.utc_time);
+                ring_create_segment();
             }
             atomic_set(&timesync_rename_pending, 0);
             break;
@@ -3152,46 +1253,33 @@ uint32_t sd_get_worker_stack_used(void)
 }
 
 /* Ring SD-primitive diagnostics: slowest disk op (packed tag+ms) and write/sync
- * error count. 0 when the ring backend is compiled out or not active. */
+ * error count. */
 uint32_t sd_get_ring_max_io_ms(void)
 {
-#ifdef CONFIG_OMI_AUDIO_RING
-    if (ring_active()) return sd_ring_max_io_ms();
-#endif
-    return 0;
+    return sd_ring_max_io_ms();
 }
 
 uint32_t sd_get_ring_io_errors(void)
 {
-#ifdef CONFIG_OMI_AUDIO_RING
-    if (ring_active()) return sd_ring_io_errors();
-#endif
-    return 0;
+    return sd_ring_io_errors();
 }
 
 uint8_t sd_get_active_backend(void)
 {
-    /* What is ACTUALLY mounted this boot — authoritative even when a ring
-     * mount/format failure reverted to LittleFS but the persisted-selector write
-     * didn't land. */
-#ifdef CONFIG_OMI_AUDIO_RING
-    return ring_active() ? STORAGE_BACKEND_RING : STORAGE_BACKEND_LITTLEFS;
-#else
-    return STORAGE_BACKEND_LITTLEFS;
-#endif
+    /* Kept on the wire (0x0062 status_flags) after the LittleFS backend was
+     * removed in oo-2.9.0: the app's Diagnostics panel reads it to name the
+     * backend, and an older app still expects the field. */
+    return STORAGE_BACKEND_RING;
 }
 
-#ifdef CONFIG_OMI_AUDIO_RING
 /* ================================================================== */
-/* Ring backend glue — dispatched behind ring_active().               */
-/* All functions run on the sd_worker thread, like their LittleFS      */
-/* counterparts.                                                       */
+/* Ring segment plumbing                                               */
+/* All functions run on the sd_worker thread.                          */
 /* ================================================================== */
 
-/* Open a new ring segment and write its inline 0xFFFFFFFB RecordingHeader,
- * mirroring create_audio_file_with_timestamp(). Reuses the shared
- * current_filename / current_file_size / rotation-timer state so
- * should_rotate_file() and the marker plumbing work unchanged. */
+/* Open a new ring segment and write its inline 0xFFFFFFFB RecordingHeader.
+ * Drives the shared current_filename / current_file_size / rotation-timer state
+ * so should_rotate_file() and the marker plumbing work off one set of fields. */
 static int ring_create_segment(void)
 {
     bool rtc_valid = rtc_is_valid();
@@ -3229,15 +1317,15 @@ static int ring_create_segment(void)
         return rc;
     }
 
-    /* Synthetic filename so the shared list/read/delete/marker plumbing keys on
-     * it exactly like the LittleFS path (identity = <ts>_<sid>). */
+    /* Synthetic filename: segments are presented to BLE as files, so the list /
+     * read / delete / marker plumbing all key on this identity (<ts>_<sid>). The
+     * ".txt" suffix and TMP_ prefix are the storage protocol's, not a filesystem's. */
     k_mutex_lock(&current_filename_lock, K_FOREVER);
     if (rtc_valid) {
         snprintf(current_filename, sizeof(current_filename), "%08X_%08X.txt", seg_ts, sid);
     } else {
         snprintf(current_filename, sizeof(current_filename), "TMP_%08X_%08X.txt", seg_ts, sid);
     }
-    current_file_path[0] = '\0';
     current_file_needs_rename = !rtc_valid;
     k_mutex_unlock(&current_filename_lock);
 
@@ -3275,24 +1363,20 @@ static int ring_create_segment(void)
     ring_bytes_since_sync = 0;
 
     current_file_size = sizeof(RecordingHeader_v1_t);
-    bytes_since_sync = 0;
     current_file_created_uptime_ms = k_uptime_get();
     last_file_sync_uptime_ms = k_uptime_get();
-    writing_error_counter = 0;
     sd_write_blocked = false;
     invalidate_file_cache_deferrable();
     return 0;
 }
 
-/* Ring write path: 2 s soft-recovery + pause-gate marker rescue + lazy segment
- * open + rotation + append + bounded cursor sync. Mirrors the control flow of
- * the LittleFS process_write_data_req() minus the batch buffer and remount. */
-static void process_write_data_req_ring(const sd_req_t *req)
+/* The write path: 2 s soft-recovery + pause-gate marker rescue + lazy segment
+ * open + rotation + append + bounded cursor sync. */
+static void process_write_data_req(const sd_req_t *req)
 {
     if (sd_write_blocked) {
         if ((k_uptime_get() - last_write_error_uptime_ms) > 2000) {
             sd_write_blocked = false;
-            writing_error_counter = 0;
         } else {
             return;
         }
@@ -3432,57 +1516,6 @@ static void ring_handle_read_req(const sd_req_t *req)
     }
 }
 
-/* Build the file-list cache from the ring's CLOSED segments (oldest first). The
- * open segment is excluded by sd_ring_segment_count(), matching the LittleFS
- * "exclude the currently-recording file" behaviour. */
-static int ring_refresh_file_cache(void)
-{
-    k_mutex_lock(&file_cache_mutex, K_FOREVER);
-    memset(cached_file_meta, 0, sizeof(cached_file_meta));
-
-    int n = sd_ring_segment_count();
-    int list_count = 0;
-    uint64_t total_size = 0;
-    for (int i = 0; i < n; i++) {
-        ring_segment_t seg;
-        if (sd_ring_get_segment(i, &seg) < 0) {
-            continue;
-        }
-        /* Count every closed segment toward the storage stats, so used-bytes /
-         * file-count stay accurate even past the cache cap... */
-        total_size += seg.length;
-        /* ...but only the first MAX_AUDIO_FILES fit the BLE-indexed list cache (the
-         * app drains + deletes, freeing slots, well before this bound in practice). */
-        if (list_count < MAX_AUDIO_FILES) {
-            AudioFileMeta_t *meta = &cached_file_meta[list_count++];
-            memset(meta, 0, sizeof(*meta));
-            meta->timestamp = seg.timestamp;
-            meta->uptime_offset = seg.session_id;
-            meta->file_size = seg.length;
-            meta->is_tmp = (seg.timestamp < 946684800U); /* pre-time-sync key → unorganized */
-        }
-    }
-
-    cached_file_list_count = list_count;
-    cached_total_file_count = (uint32_t) n;
-    cached_total_file_size = total_size;
-    cached_stats_file_count = (uint32_t) n;
-    cached_stats_total_size = total_size;
-    {
-        uint64_t freeb = sd_ring_free_bytes();
-        cached_free_bytes = (freeb > UINT32_MAX) ? UINT32_MAX : (uint32_t) freeb;
-    }
-    cached_stats_valid_until_ms = k_uptime_get() + FILE_CACHE_TTL_MS;
-    file_cache_valid = true;
-    /* Do NOT clear sd_write_blocked / writing_error_counter here: listing reads the
-     * in-RAM segment table and never touches the write path, so a successful list
-     * says nothing about a pending write fault. Let the write path's own timed
-     * recovery clear it, or a fault would be masked and retried too early. */
-
-    k_mutex_unlock(&file_cache_mutex);
-    return 0;
-}
-#endif /* CONFIG_OMI_AUDIO_RING */
 
 int app_sd_init(void)
 {
@@ -3703,8 +1736,8 @@ static uint32_t write_to_file_impl(uint8_t *data, uint32_t length, k_timeout_t r
     static int64_t last_write_err_log_ms;
     static int64_t last_shutdown_drop_log_ms;
 
-    /* Discard data while SD boot init is still running
-     * (mount + lfs_fs_gc pre-warm + file open).  Rate-limited logging
+    /* Discard data while SD boot init is still running (card power-on + ring
+     * mount).  Rate-limited logging
      * so the drop is observable; counter is queryable after boot. */
     if (!atomic_get(&sd_boot_ready)) {
         static int64_t last_not_ready_log_ms;
@@ -3970,22 +2003,6 @@ int clear_audio_directory(void)
     atomic_set(&clear_in_flight, 0);
     if (resp.res) {
         LOG_ERR("clear_audio_directory failed: %d", resp.res);
-        return -1;
-    }
-    return 0;
-}
-
-int save_offset(const char *filename, uint32_t offset)
-{
-
-    sd_req_t req = {0};
-    req.type = REQ_SAVE_OFFSET;
-    strncpy(req.u.info.offset_info.oldest_filename, filename, MAX_FILENAME_LEN - 1);
-    req.u.info.offset_info.offset_in_file = offset;
-
-    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(20));
-    if (ret) {
-        LOG_ERR("Failed to queue save_offset: %d", ret);
         return -1;
     }
     return 0;
