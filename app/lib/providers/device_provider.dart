@@ -172,6 +172,14 @@ class DeviceProvider extends ChangeNotifier
   int diagLogDroppedCount = 0;
   DateTime? diagLogLastPulledAt;
 
+  /// The gate value last successfully written to the device (0x0064). Null means no
+  /// write has landed, which is equivalent to off: the firmware gate defaults off and
+  /// resets on every reboot. Debug Tools compares this with the pref to tell "the
+  /// switch says on" apart from "the device is actually capturing" — derived rather
+  /// than tracked page-side, so the connect re-push below clears a pending state on
+  /// its own instead of needing to notify anyone.
+  bool? diagLogGateApplied;
+
   void _loadCrashLogs() {
     try {
       final raw = SharedPreferencesUtil().getString(_crashLogsKey);
@@ -575,7 +583,13 @@ class DeviceProvider extends ChangeNotifier
     final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
     if (connection == null) return false;
     try {
-      return await connection.setDiagLogEnabled(SharedPreferencesUtil().diagLogEnabled);
+      final desired = SharedPreferencesUtil().diagLogEnabled;
+      final ok = await connection.setDiagLogEnabled(desired);
+      if (ok) {
+        diagLogGateApplied = desired;
+        notifyListeners();
+      }
+      return ok;
     } catch (e) {
       Logger.debug('DeviceProvider: pushDiagLogEnabled failed: $e');
       return false;
