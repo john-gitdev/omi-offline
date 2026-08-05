@@ -196,7 +196,6 @@ class DiagGroup extends StatefulWidget {
     this.clearSummary = 'all clear',
     this.alertSummary,
     this.trailing,
-    this.headerAction,
   });
 
   final String title;
@@ -216,11 +215,6 @@ class DiagGroup extends StatefulWidget {
 
   /// Optional controls pinned to the expanded group's header row.
   final Widget? trailing;
-
-  /// Optional control rendered in the header itself, so it stays reachable while the
-  /// group is collapsed. Sits outside the expand/collapse tap target — a control you
-  /// have to expand the group to reach is a control you can't use to un-hide it.
-  final Widget? headerAction;
 
   @override
   State<DiagGroup> createState() => _DiagGroupState();
@@ -246,57 +240,48 @@ class _DiagGroupState extends State<DiagGroup> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: InkWell(
-                onTap: () => setState(() => _expanded = !_expanded),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  child: Row(
-                    children: [
-                      FaIcon(
-                        _expanded ? FontAwesomeIcons.chevronDown : FontAwesomeIcons.chevronRight,
-                        size: 9,
-                        color: Colors.white38,
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        widget.title.toUpperCase(),
-                        style: const TextStyle(
-                          color: Colors.white38,
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: 0.8,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      // Expanded rather than Spacer + Flexible: those split the free space
-                      // evenly, so a long summary ellipsized at half the row while the rest
-                      // sat empty.
-                      Expanded(
-                        child: _expanded
-                            ? const SizedBox.shrink()
-                            : Text(
-                                widget.allClear ? widget.clearSummary : (widget.alertSummary ?? 'needs attention'),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                textAlign: TextAlign.right,
-                                style: TextStyle(
-                                  color: widget.allClear
-                                      ? DiagLevel.ok.color.withValues(alpha: 0.8)
-                                      : DiagLevel.warn.color,
-                                  fontSize: 11,
-                                ),
-                              ),
-                      ),
-                    ],
+        InkWell(
+          onTap: () => setState(() => _expanded = !_expanded),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Row(
+              children: [
+                FaIcon(
+                  _expanded ? FontAwesomeIcons.chevronDown : FontAwesomeIcons.chevronRight,
+                  size: 9,
+                  color: Colors.white38,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  widget.title.toUpperCase(),
+                  style: const TextStyle(
+                    color: Colors.white38,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.8,
                   ),
                 ),
-              ),
+                const SizedBox(width: 12),
+                // Expanded rather than Spacer + Flexible: those split the free space
+                // evenly, so a long summary ellipsized at half the row while the rest
+                // sat empty.
+                Expanded(
+                  child: _expanded
+                      ? const SizedBox.shrink()
+                      : Text(
+                          widget.allClear ? widget.clearSummary : (widget.alertSummary ?? 'needs attention'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.right,
+                          style: TextStyle(
+                            color: widget.allClear ? DiagLevel.ok.color.withValues(alpha: 0.8) : DiagLevel.warn.color,
+                            fontSize: 11,
+                          ),
+                        ),
+                ),
+              ],
             ),
-            if (widget.headerAction != null) widget.headerAction!,
-          ],
+          ),
         ),
         if (_expanded) ...[
           if (widget.trailing != null) Padding(padding: const EdgeInsets.only(bottom: 6), child: widget.trailing!),
