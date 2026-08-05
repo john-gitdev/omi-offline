@@ -259,7 +259,8 @@ class DeviceProvider extends ChangeNotifier
 
   void _onBackgroundSyncRequested() {
     Logger.debug(
-        '[BLE] _onBackgroundSyncRequested: OS scheduler fired (fg=$_isAppInForeground connected=$isConnected)');
+      '[BLE] _onBackgroundSyncRequested: OS scheduler fired (fg=$_isAppInForeground connected=$isConnected)',
+    );
     if (isConnected) {
       _doBackgroundSync();
     } else {
@@ -284,8 +285,10 @@ class DeviceProvider extends ChangeNotifier
   void _onStateRestored(List<String> peripheralUuids) {
     if (!Platform.isIOS) return;
     final due = _shouldSyncNow();
-    Logger.debug('[BLE] _onStateRestored: ${peripheralUuids.length} peripheral(s) restored, syncDue=$due '
-        '(connected=$isConnected)');
+    Logger.debug(
+      '[BLE] _onStateRestored: ${peripheralUuids.length} peripheral(s) restored, syncDue=$due '
+      '(connected=$isConnected)',
+    );
     if (!due) return;
     if (isConnected) {
       _doBackgroundSync();
@@ -553,15 +556,18 @@ class DeviceProvider extends ChangeNotifier
         // preserved split (4/5) config can't leave the picker holding an action
         // it no longer offers when Combine is on (and vice versa).
         if (SharedPreferencesUtil.shouldPreserveExistingButtonConfig(existing)) {
-          prefs.buttonConfigAuto =
-              SharedPreferencesUtil.normalizeButtonConfigForCombine(existing, prefs.combineRecordButton);
+          prefs.buttonConfigAuto = SharedPreferencesUtil.normalizeButtonConfigForCombine(
+            existing,
+            prefs.combineRecordButton,
+          );
         }
         prefs.buttonConfigMigrated = true;
       }
       // Belt-and-suspenders: never push a config inconsistent with the combine
       // style (idempotent when the stored config is already normalized).
       await connection.setButtonConfig(
-          SharedPreferencesUtil.normalizeButtonConfigForCombine(prefs.activeButtonConfig, prefs.combineRecordButton));
+        SharedPreferencesUtil.normalizeButtonConfigForCombine(prefs.activeButtonConfig, prefs.combineRecordButton),
+      );
       return true;
     } catch (e) {
       Logger.error('DeviceProvider: pushActiveButtonConfig failed: $e');
@@ -616,8 +622,10 @@ class DeviceProvider extends ChangeNotifier
       await DebugLogManager.logEvent('device_diag_log', r.toJson());
     }
     if (result.droppedCount > 0) {
-      Logger.warning('Diag-log: ${result.records.length} records pulled, '
-          '${result.droppedCount} lost to ring overflow while the app was away');
+      Logger.warning(
+        'Diag-log: ${result.records.length} records pulled, '
+        '${result.droppedCount} lost to ring overflow while the app was away',
+      );
     } else if (result.records.isNotEmpty) {
       Logger.debug('Diag-log: ${result.records.length} records pulled');
     }
@@ -669,8 +677,10 @@ class DeviceProvider extends ChangeNotifier
             final thr = await conn?.getVadThreshold();
             if (thr == 65535 || thr == 32769) {
               _manualRecording = thr == 65535;
-              Logger.debug('DeviceProvider: Manual mode — recording '
-                  '${_manualRecording ? "started" : "stopped"} (read from device).');
+              Logger.debug(
+                'DeviceProvider: Manual mode — recording '
+                '${_manualRecording ? "started" : "stopped"} (read from device).',
+              );
               notifyListeners();
             }
           }
@@ -688,8 +698,9 @@ class DeviceProvider extends ChangeNotifier
     final currentTime = now ?? DateTime.now();
     final delta = (_lastNotifiedBatteryLevel - value).abs();
     final batteryNotifyTime = _lastBatteryNotifyTime;
-    final elapsed =
-        batteryNotifyTime == null ? const Duration(minutes: 999) : currentTime.difference(batteryNotifyTime);
+    final elapsed = batteryNotifyTime == null
+        ? const Duration(minutes: 999)
+        : currentTime.difference(batteryNotifyTime);
     final crossedLowBatteryThreshold =
         (value < 20 && _lastNotifiedBatteryLevel >= 20) || (value >= 20 && _lastNotifiedBatteryLevel < 20);
     final shouldNotify =
@@ -773,7 +784,8 @@ class DeviceProvider extends ChangeNotifier
       if (device != null) return device;
     } catch (e) {
       Logger.debug(
-          '[BLE] _scanConnectDevice: timed out/failed after ${DateTime.now().difference(t0).inMilliseconds}ms ($e)');
+        '[BLE] _scanConnectDevice: timed out/failed after ${DateTime.now().difference(t0).inMilliseconds}ms ($e)',
+      );
     }
 
     await Future.delayed(const Duration(seconds: 2));
@@ -829,8 +841,10 @@ class DeviceProvider extends ChangeNotifier
           final steps = _consecutiveConnectFailures - _reconnectThrottleAfter;
           final delay = Duration(seconds: (45 << steps.clamp(0, 4)).clamp(45, 720));
           _reconnectAt = DateTime.now().add(delay);
-          Logger.debug('[BLE] reconnect throttled: failure #$_consecutiveConnectFailures, '
-              'next attempt in ${delay.inSeconds}s');
+          Logger.debug(
+            '[BLE] reconnect throttled: failure #$_consecutiveConnectFailures, '
+            'next attempt in ${delay.inSeconds}s',
+          );
         }
       } else {
         _resetReconnectThrottle();
@@ -1633,8 +1647,9 @@ class DeviceProvider extends ChangeNotifier
         Logger.debug('DeviceProvider: GATT-cache refresh deferred — sync in flight');
       } else {
         Logger.warning(
-            'DeviceProvider: ${wasMigration ? 'first fingerprint for this device' : 'firmware identity changed'}'
-            ' — recycling the link to drop the stale GATT cache');
+          'DeviceProvider: ${wasMigration ? 'first fingerprint for this device' : 'firmware identity changed'}'
+          ' — recycling the link to drop the stale GATT cache',
+        );
         // NOTE: no `await` between the isSyncing check above and this call — Dart
         // is single-threaded, so with no suspension point in between nothing can
         // start a sync after the check and before the recycle commits. Do not add
@@ -1800,7 +1815,8 @@ class DeviceProvider extends ChangeNotifier
       final log = await conn.getDiagnostics();
       if (log != null) {
         // Only add if it's a new event (different device, cause, or uptime)
-        bool isDuplicate = crashLogs.isNotEmpty &&
+        bool isDuplicate =
+            crashLogs.isNotEmpty &&
             crashLogs.first.deviceId == log.deviceId &&
             crashLogs.first.resetCause == log.resetCause &&
             crashLogs.first.uptimeSeconds == log.uptimeSeconds;
@@ -1815,7 +1831,8 @@ class DeviceProvider extends ChangeNotifier
           // stuck at 44h?" confusion.
           if (log.isCrash) {
             Logger.warning(
-                'Device diagnostics: CRASH — ${log.causeLabel}; prior boot ran ${log.uptimeStr} before this reset (not current uptime)');
+              'Device diagnostics: CRASH — ${log.causeLabel}; prior boot ran ${log.uptimeStr} before this reset (not current uptime)',
+            );
             await DebugLogManager.logEvent('device_crash', {
               ...log.toJson(),
               'cause_label': log.causeLabel,
@@ -1823,7 +1840,8 @@ class DeviceProvider extends ChangeNotifier
             });
           } else {
             Logger.debug(
-                'Device diagnostics: last reset = ${log.causeLabel}; prior boot ran ${log.uptimeStr} before it (not current uptime)');
+              'Device diagnostics: last reset = ${log.causeLabel}; prior boot ran ${log.uptimeStr} before it (not current uptime)',
+            );
           }
         }
       }
@@ -1846,9 +1864,11 @@ class DeviceProvider extends ChangeNotifier
       final dropStats = await conn.getDropStats();
       if (dropStats != null) {
         if (dropStats.failedConnCount > 0 || dropStats.estabFailCount > 0) {
-          Logger.warning('Device BLE connect-fail counters: conn=${dropStats.failedConnCount} '
-              'estab_0x3e=${dropStats.estabFailCount} '
-              '(last failure during ${dropStats.lastFailedConnDuringSlowAdv ? "slow" : "fast"} advertising)');
+          Logger.warning(
+            'Device BLE connect-fail counters: conn=${dropStats.failedConnCount} '
+            'estab_0x3e=${dropStats.estabFailCount} '
+            '(last failure during ${dropStats.lastFailedConnDuringSlowAdv ? "slow" : "fast"} advertising)',
+          );
         }
         await DebugLogManager.logEvent('device_conn_fail', {
           'failed_conn_count': dropStats.failedConnCount,
@@ -1864,7 +1884,8 @@ class DeviceProvider extends ChangeNotifier
         // only movement between two readings means anything.
         final int liveUptimeS = dropStats.currentUptimeMs ~/ 1000;
         final String liveUptimeStr = '${liveUptimeS ~/ 3600}h ${(liveUptimeS % 3600) ~/ 60}m';
-        final String dropMsg = 'Device SD-drop counters: blocks=${dropStats.blockDrops} '
+        final String dropMsg =
+            'Device SD-drop counters: blocks=${dropStats.blockDrops} '
             'streamFrames=${dropStats.streamFrameDrops} bootFrames=${dropStats.bootFrameDrops} '
             'codecFrames=${dropStats.codecFrameDrops} msgqPeak=${dropStats.msgqPeakDepth} '
             'writeFair=${dropStats.writeFairActivations} '
@@ -1897,7 +1918,8 @@ class DeviceProvider extends ChangeNotifier
         // traceable from the app log without an RTT capture. Counters are cumulative
         // since boot; only movement between two readings means anything. Skip the noise
         // when all zero (older firmware, or no priority recording has run).
-        final bool priorityActivity = dropStats.priorityRecordStarts > 0 ||
+        final bool priorityActivity =
+            dropStats.priorityRecordStarts > 0 ||
             dropStats.priorityRecordStops > 0 ||
             dropStats.markerWriteDrops > 0 ||
             dropStats.emptyBinRotations > 0 ||
@@ -1908,7 +1930,8 @@ class DeviceProvider extends ChangeNotifier
           // 0xFFFFFFFC (seEmits moves) and it's kept through the pause (pauseGateSaves
           // moves) rather than lost. emits flat = the firmware finalize path never
           // fired. pauseGateSaves is a rescue, so it is NOT a loss warning.
-          final priorityMsg = 'Device priority-record counters: starts=${dropStats.priorityRecordStarts} '
+          final priorityMsg =
+              'Device priority-record counters: starts=${dropStats.priorityRecordStarts} '
               'stops=${dropStats.priorityRecordStops} markerDrops=${dropStats.markerWriteDrops} '
               'emptyBinRotations=${dropStats.emptyBinRotations} seEmits=${dropStats.sessionEndMarkerEmits} '
               'pauseGateSaves=${dropStats.markerPauseGateSaves}';
@@ -1941,6 +1964,15 @@ class DeviceProvider extends ChangeNotifier
       // The cache is deliberately NOT device-scoped: only one Omi is ever paired and
       // connected, so records can't be carried across a device switch and it isn't a
       // case worth holding code for.
+      //
+      // The applied gate IS connection-scoped, though. The firmware gate lives in
+      // volatile RAM and comes up off after a reboot, and the read below is skipped
+      // outright while a sync owns the storage lock — so carrying the previous link's
+      // value over would let Debug Tools report capture as running against a device
+      // that had reset it. Unknown until something is written to THIS link; the page's
+      // reconcile pushes it when the lock frees.
+      diagLogGateApplied = null;
+
       final int? deviceFeatures = await conn.getFeaturesIfIdle();
       if (deviceFeatures != null) {
         diagLogSupported = (deviceFeatures & OmiFeatures.diagLog) != 0;
@@ -1961,23 +1993,27 @@ class DeviceProvider extends ChangeNotifier
 
     if (_pendingAppOpenSync) {
       _pendingAppOpenSync = false;
-      unawaited(Future.delayed(const Duration(seconds: 10), () {
-        if (!_disposed && isConnected) {
-          unawaited(_doBackgroundSync().then((_) => _startBackgroundSyncTimer()));
-        }
-      }));
+      unawaited(
+        Future.delayed(const Duration(seconds: 10), () {
+          if (!_disposed && isConnected) {
+            unawaited(_doBackgroundSync().then((_) => _startBackgroundSyncTimer()));
+          }
+        }),
+      );
     }
   }
 
   void _handleDeviceConnected(String deviceId) async {
     _consecutiveAccidentalDisconnects = 0;
     Logger.debug(
-        '[BLE] _handleDeviceConnected: $deviceId (fg=$_isAppInForeground pendingBgSync=$_pendingBackgroundSync pendingResume=$_pendingSyncResume)');
+      '[BLE] _handleDeviceConnected: $deviceId (fg=$_isAppInForeground pendingBgSync=$_pendingBackgroundSync pendingResume=$_pendingSyncResume)',
+    );
     try {
       var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
       if (connection == null) {
         Logger.warning(
-            '[BLE] _handleDeviceConnected: ensureConnection returned null for $deviceId — state mismatch or device already disconnected');
+          '[BLE] _handleDeviceConnected: ensureConnection returned null for $deviceId — state mismatch or device already disconnected',
+        );
         return;
       }
       // Defense in depth: if a foreground-initiated scan completed after the
