@@ -172,14 +172,6 @@ class DeviceProvider extends ChangeNotifier
   int diagLogDroppedCount = 0;
   DateTime? diagLogLastPulledAt;
 
-  /// The gate value last successfully written to the device (0x0064). Null means no
-  /// write has landed, which is equivalent to off: the firmware gate defaults off and
-  /// resets on every reboot. Debug Tools compares this with the pref to tell "the
-  /// switch says on" apart from "the device is actually capturing" — derived rather
-  /// than tracked page-side, so the connect re-push below clears a pending state on
-  /// its own instead of needing to notify anyone.
-  bool? diagLogGateApplied;
-
   void _loadCrashLogs() {
     try {
       final raw = SharedPreferencesUtil().getString(_crashLogsKey);
@@ -589,13 +581,7 @@ class DeviceProvider extends ChangeNotifier
     final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
     if (connection == null) return false;
     try {
-      final desired = SharedPreferencesUtil().diagLogEnabled;
-      final ok = await connection.setDiagLogEnabled(desired);
-      if (ok) {
-        diagLogGateApplied = desired;
-        notifyListeners();
-      }
-      return ok;
+      return await connection.setDiagLogEnabled(SharedPreferencesUtil().diagLogEnabled);
     } catch (e) {
       Logger.debug('DeviceProvider: pushDiagLogEnabled failed: $e');
       return false;
@@ -1964,15 +1950,6 @@ class DeviceProvider extends ChangeNotifier
       // The cache is deliberately NOT device-scoped: only one Omi is ever paired and
       // connected, so records can't be carried across a device switch and it isn't a
       // case worth holding code for.
-      //
-      // The applied gate IS connection-scoped, though. The firmware gate lives in
-      // volatile RAM and comes up off after a reboot, and the read below is skipped
-      // outright while a sync owns the storage lock — so carrying the previous link's
-      // value over would let Debug Tools report capture as running against a device
-      // that had reset it. Unknown until something is written to THIS link; the page's
-      // reconcile pushes it when the lock frees.
-      diagLogGateApplied = null;
-
       final int? deviceFeatures = await conn.getFeaturesIfIdle();
       if (deviceFeatures != null) {
         diagLogSupported = (deviceFeatures & OmiFeatures.diagLog) != 0;
