@@ -22,14 +22,6 @@ LOG_MODULE_REGISTER(app_settings, CONFIG_LOG_DEFAULT_LEVEL);
  * come up enabled on every boot. */
 #define DEFAULT_LED_BOOT_ENABLED 0
 
-/* Active audio storage backend. Persisted in NVS (on internal flash) — the
- * backend CHOICE is a tiny value; the audio + ring metadata it selects live on
- * the SD NAND. Default 0 = LittleFS (unchanged behaviour); 1 = raw ring buffer.
- * A device with no stored value (factory / pre-ring firmware) reads the default,
- * so shipping the ring code never changes an existing device's backend until the
- * user opts in from the app. */
-#define DEFAULT_STORAGE_BACKEND STORAGE_BACKEND_LITTLEFS
-
 // In-memory cache for the settings
 static uint8_t dim_light_ratio = DEFAULT_DIM_LIGHT_RATIO;
 static uint8_t mic_gain = DEFAULT_MIC_GAIN;
@@ -37,18 +29,6 @@ static uint16_t vad_threshold = DEFAULT_VAD_THRESHOLD;
 static uint16_t priority_record_max_minutes = DEFAULT_PRIORITY_RECORD_MAX_MINUTES;
 static uint8_t connected_led_enabled = DEFAULT_CONNECTED_LED;
 static uint8_t led_boot_enabled = DEFAULT_LED_BOOT_ENABLED;
-static uint8_t storage_backend = DEFAULT_STORAGE_BACKEND;
-/* Consecutive post-crash (watchdog/lockup) boots observed while the ring backend
- * is active. Anti-brick: at RING_BOOT_FAIL_LIMIT the device auto-reverts to the
- * known-good LittleFS backend so a ring bug can't crash-loop it into needing a
- * reflash (BLE/DFU is up before the SD wait, so it's reachable regardless — this
- * also gets recording working again). Cleared once a boot proves healthy. */
-static uint8_t ring_boot_fails = 0;
-/* Armed by the backend-switch command with the TARGET backend to format; consumed at the
- * next sd_mount() (a plain mount can otherwise pick up stale on-card metadata from the
- * previous backend and mount OK onto overwritten bytes). Holds STORAGE_FORMAT_PENDING_NONE
- * when disarmed — the default, so an existing device that upgrades never force-formats. */
-static uint8_t storage_format_pending = STORAGE_FORMAT_PENDING_NONE;
 static struct rtc_time rtc_timestamp = {0};
 static uint64_t rtc_epoch = 0;
 
@@ -182,45 +162,6 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         if (rc >= 0) {
             led_boot_enabled = led_boot_enabled ? 1 : 0;
             LOG_INF("Loaded led_boot: %u", led_boot_enabled);
-            return 0;
-        }
-        return rc;
-    }
-
-    if (settings_name_steq(name, "storage_backend", &next) && !next) {
-        if (len != sizeof(storage_backend)) {
-            return -EINVAL;
-        }
-        rc = read_cb(cb_arg, &storage_backend, sizeof(storage_backend));
-        if (rc >= 0) {
-            if (storage_backend > STORAGE_BACKEND_RING) {
-                storage_backend = DEFAULT_STORAGE_BACKEND; /* reject an out-of-range persisted value */
-            }
-            LOG_INF("Loaded storage_backend: %u", storage_backend);
-            return 0;
-        }
-        return rc;
-    }
-
-    if (settings_name_steq(name, "ring_boot_fails", &next) && !next) {
-        if (len != sizeof(ring_boot_fails)) {
-            return -EINVAL;
-        }
-        rc = read_cb(cb_arg, &ring_boot_fails, sizeof(ring_boot_fails));
-        if (rc >= 0) {
-            LOG_INF("Loaded ring_boot_fails: %u", ring_boot_fails);
-            return 0;
-        }
-        return rc;
-    }
-
-    if (settings_name_steq(name, "storage_format_pending", &next) && !next) {
-        if (len != sizeof(storage_format_pending)) {
-            return -EINVAL;
-        }
-        rc = read_cb(cb_arg, &storage_format_pending, sizeof(storage_format_pending));
-        if (rc >= 0) {
-            LOG_INF("Loaded storage_format_pending: %u", storage_format_pending);
             return 0;
         }
         return rc;
@@ -559,63 +500,6 @@ int app_settings_save_led_boot_enabled(bool enabled)
 bool app_settings_get_led_boot_enabled(void)
 {
     return led_boot_enabled != 0;
-}
-
-int app_settings_save_storage_backend(uint8_t backend)
-{
-    if (backend > STORAGE_BACKEND_RING) {
-        return -EINVAL;
-    }
-    /* Only update the in-memory selector after the NVS write succeeds, so a failed
-     * save leaves the cache consistent with the persisted value and the mounted
-     * backend (a nonzero ACK then honestly reports "unchanged"). */
-    int err = settings_save_one("omi/storage_backend", &backend, sizeof(backend));
-    if (err) {
-        LOG_ERR("Failed to save storage_backend (err %d)", err);
-        return err;
-    }
-    storage_backend = backend;
-    LOG_INF("Saved storage_backend: %u", storage_backend);
-    return 0;
-}
-
-uint8_t app_settings_get_storage_backend(void)
-{
-    return storage_backend;
-}
-
-int app_settings_save_ring_boot_fails(uint8_t fails)
-{
-    ring_boot_fails = fails;
-    int err = settings_save_one("omi/ring_boot_fails", &ring_boot_fails, sizeof(ring_boot_fails));
-    if (err) {
-        LOG_ERR("Failed to save ring_boot_fails (err %d)", err);
-    }
-    return err;
-}
-
-uint8_t app_settings_get_ring_boot_fails(void)
-{
-    return ring_boot_fails;
-}
-
-int app_settings_save_storage_format_pending(uint8_t target)
-{
-    /* target is a STORAGE_BACKEND_* to format, or STORAGE_FORMAT_PENDING_NONE to disarm.
-     * Stored verbatim — the mount validates it against the backend it actually mounts. */
-    int err = settings_save_one("omi/storage_format_pending", &target, sizeof(target));
-    if (err) {
-        LOG_ERR("Failed to save storage_format_pending (err %d)", err);
-        return err;
-    }
-    storage_format_pending = target;
-    LOG_INF("Saved storage_format_pending: %u", storage_format_pending);
-    return 0;
-}
-
-uint8_t app_settings_get_storage_format_pending(void)
-{
-    return storage_format_pending;
 }
 
 int app_settings_save_priority_record_max_minutes(uint16_t minutes)

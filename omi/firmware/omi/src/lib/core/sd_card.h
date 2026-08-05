@@ -27,7 +27,7 @@ int sd_get_cached_file_meta(int index, AudioFileMeta_t *out_meta);
 bool sd_is_current_recording_file_meta(const AudioFileMeta_t *meta);
 uint64_t sd_get_cached_total_size(void);
 
-// Utility for reconstructing LittleFS/BLE strings
+// Utility for reconstructing the BLE-facing <ts>_<sid>.txt segment name
 void build_filename_from_meta(const AudioFileMeta_t* meta, char* out_buffer, size_t max_len);
 
 /* Request types for the SD worker */
@@ -35,7 +35,6 @@ typedef enum {
     REQ_CLEAR_AUDIO_DIR,
     REQ_WRITE_DATA,
     REQ_READ_DATA,
-    REQ_SAVE_OFFSET,
     REQ_CREATE_NEW_FILE,
     REQ_GET_FILE_STATS,
     REQ_DELETE_FILE,
@@ -61,12 +60,6 @@ struct file_stats_resp {
     uint64_t total_size;
 };
 
-/* Offset info structure stored in info.txt */
-typedef struct {
-    char oldest_filename[MAX_FILENAME_LEN]; // Oldest file being read
-    uint32_t offset_in_file;                // Offset within that file
-} sd_offset_info_t;
-
 /* Generic request message passed to worker */
 typedef struct {
     sd_req_type_t type;
@@ -83,9 +76,6 @@ typedef struct {
             uint8_t *out_buf;
             struct read_resp *resp;
         } read;
-        struct {
-            sd_offset_info_t offset_info;
-        } info;
         struct {
             struct read_resp *resp;
         } clear_dir;
@@ -113,18 +103,26 @@ typedef struct {
 int app_sd_init(void);
 
 /**
- * @brief Check if the SD card has completed boot init (mount + lfs_fs_gc pre-warm + file open).
+ * @brief Check if the SD card has completed boot init (card power-on + ring mount).
  *
  * Returns true once the SD worker has set sd_boot_ready. Safe to poll from any thread.
  */
 bool sd_is_boot_ready(void);
 
 /**
- * @brief Check whether a TMP→UTC filename rename is currently in flight.
+ * @brief Check whether the post-time-sync segment rotation is still in flight.
  *
- * Set when sd_notify_time_synced() is called; cleared by the SD worker once
- * sd_update_filename_after_timesync() completes. The storage thread polls this
- * before responding to CMD_LIST_FILES so it never returns uptime-stamped entries.
+ * Set when sd_notify_time_synced() is called; cleared by the SD worker once it has
+ * rotated to a UTC-keyed segment. The storage thread polls this before responding
+ * to CMD_LIST_FILES so the list is not built mid-rotation.
+ *
+ * It does NOT mean the list comes back free of uptime-keyed entries. Segments
+ * recorded before the sync keep their uptime key permanently — the ring has no
+ * directory to rename, so the app anchors them from each segment's inline
+ * 0xFFFFFFFB header and shows them as "Unorganized". Only the LittleFS backend
+ * ever made that guarantee, via a retroactive TMP→UTC rename walker that was
+ * removed with it in oo-2.9.0.
+ *
  * Safe to call from any thread.
  */
 bool sd_is_timesync_rename_pending(void);
@@ -132,8 +130,8 @@ bool sd_is_timesync_rename_pending(void);
 /**
  * @brief Get the number of audio frames dropped during SD boot init.
  *
- * During the SD boot phase (mount + lfs_fs_gc pre-warm + file open, typically
- * 10-50 seconds), incoming audio frames cannot be written and are discarded.
+ * During the SD boot phase (card power-on + ring mount), incoming audio frames
+ * cannot be written and are discarded.
  * This counter tracks how many frames were dropped. Safe to call from any thread.
  *
  * @return Number of audio frames dropped during boot (0 if boot was instant or
@@ -296,8 +294,8 @@ bool sd_is_current_recording_file(const char *filename);
 /**
  * @brief Return the most recently cached free space on the SD card (bytes).
  *
- * Updated each time sd_build_file_list_cache() runs on the SD worker thread.
- * Returns 0 if the cache has not been populated yet or lfs_fs_size() failed.
+ * Updated each time the file-list cache is rebuilt on the SD worker thread.
+ * Returns 0 if the cache has not been populated yet.
  */
 uint32_t sd_get_cached_free_bytes(void);
 
@@ -308,15 +306,6 @@ uint32_t sd_get_cached_free_bytes(void);
  * @return 0 if successful, negative errno code if error
  */
 int clear_audio_directory(void);
-
-/**
- * @brief Save the current offset info to the info file
- *
- * @param filename The oldest file being read
- * @param offset Offset within that file
- * @return 0 if successful, negative errno code if error
- */
-int save_offset(const char *filename, uint32_t offset);
 
 /**
  * @brief Create a new audio file with current timestamp
@@ -379,21 +368,11 @@ int delete_audio_file(const char *filename);
 int sd_flush_current_file(void);
 
 /**
- * @brief Update current audio filename after receiving time sync from BLE
- *
- * When device boots without RTC time, it creates file with uptime-based name.
- * After receiving real timestamp from BLE, this function calculates the correct
- * timestamp and renames the file accordingly.
- *
- * @param synced_utc_time The UTC timestamp received from BLE time sync
- */
-void sd_update_filename_after_timesync(uint32_t synced_utc_time);
-
-/**
  * @brief Notify SD card module that time has been synced
  *
- * Renames any temporary audio files to use correct UTC timestamp.
- * Safe to call from any thread (uses message queue internally).
+ * Rotates to a fresh UTC-keyed segment so subsequent audio is organized; the
+ * pre-sync segments keep their uptime key and the app anchors them from each
+ * segment's inline header. Safe to call from any thread (uses a message queue).
  *
  * @param utc_time The UTC timestamp that was just synced
  */

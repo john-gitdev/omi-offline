@@ -41,7 +41,7 @@
  *   direction. A torn cursor write fails CRC on boot and we fall back to the
  *   previous valid slot.
  *
- * THREADING: like the LittleFS path, ALL sd_ring_* calls are serialized on the
+ * THREADING: ALL sd_ring_* calls are serialized on the
  * single sd_worker thread. Not thread-safe; do not call from other threads.
  */
 #ifndef SD_RING_H
@@ -86,14 +86,12 @@
  * stalls and no throughput headroom, so audio dropped the moment anything else
  * loaded the card. Batching to a page multiple removes the amplification.
  *
- * SIZE (80 sectors = 40 KB ≈ 8 s of audio at the measured ~5 KB/s ingest) is set
- * to match the LittleFS path's 44,000 B write_batch_buffer (~8.6 s), and that is
- * the whole point: the flush cadence sets how often the SPI bus and NAND are
- * powered up, which was the dominant idle-current difference between the two
- * backends. At the previous 4 KB the ring woke the bus ~10x more often than
- * LittleFS for the same audio. The stage is NOT owned here — sd_card.c passes in
- * scratch it shares with the LittleFS batch buffer (exactly one backend is live
- * per boot), so matching LittleFS's power profile costs zero additional RAM.
+ * SIZE (80 sectors = 40 KB ≈ 8 s of audio at the measured ~5 KB/s ingest) was set
+ * to match the 44,000 B write batch the retired LittleFS backend used (~8.6 s),
+ * and that is the whole point: the flush cadence sets how often the SPI bus and
+ * NAND are powered up, which was the dominant idle-current difference between the
+ * two backends. At the previous 4 KB the ring woke the bus ~10x more often for the
+ * same audio. The stage is NOT owned here — sd_card.c passes it in.
  *
  * Growing the stage does NOT widen the crash-loss window: that is bounded by
  * RING_SYNC_BYTES (256 KB) and the 60 s fsync backstop in sd_card.c, both far
@@ -115,8 +113,8 @@
 
 /* One NAND page per disk op. A full-stage flush is issued as a run of these
  * rather than one 40 KB write, so the sd_worker never sits inside a single long
- * disk op — mirroring flush_batch_buffer_chunked() on the LittleFS path, which
- * chunks at 4 KB for exactly this reason. */
+ * disk op, which is what keeps a big stage from lengthening the worst-case
+ * sd_worker stall (and so the sd_msgq peak depth). */
 #define RING_FLUSH_CHUNK_SECTORS 8u
 
 /* Wiring supplied by sd_card.c before the first mount/format. Fields are copied,
@@ -213,7 +211,7 @@ int sd_ring_mount(uint32_t total_sectors);
 /**
  * @brief Wipe the metadata region and lay down a fresh, empty ring.
  *
- * Destroys any existing content (LittleFS or an older ring) — the one-time SD
+ * Destroys any existing content (a foreign filesystem, or an older ring) — the one-time SD
  * migration cost. Leaves the ring mounted and ready to append.
  *
  * @param total_sectors Disk sector count.
@@ -322,6 +320,24 @@ uint64_t sd_ring_used_bytes(void);
 
 /** @brief Free bytes remaining before keep-newest overwrite begins. */
 uint64_t sd_ring_free_bytes(void);
+
+/**
+ * @brief Free bytes in the append stage.
+ *
+ * An append of at most this many bytes never takes sd_ring_append()'s
+ * flush-to-make-room path, so it cannot fail. The write path uses this to keep
+ * buffering audio during its error backoff — the role the filesystem backend's
+ * 44 KB batch buffer used to play.
+ *
+ * It BOUNDS disk I/O on that path rather than eliminating it: a block landing on
+ * exactly this value fills the stage and trips the trailing flush at the end of
+ * sd_ring_append(). So the backoff issues at most one flush per stage-fill (~8 s
+ * of audio), never one per block — the latter being the hammering it exists to
+ * prevent. Returns 0 while the stage is full, so a card failing every write stalls
+ * the path completely; one that fails partway through a flush commits what landed,
+ * frees that much headroom, and gets retried on the next fill.
+ */
+size_t sd_ring_stage_headroom(void);
 
 /** @brief Total audio-ring capacity in bytes. */
 uint64_t sd_ring_capacity_bytes(void);

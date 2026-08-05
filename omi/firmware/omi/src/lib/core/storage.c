@@ -54,7 +54,6 @@ static uint32_t current_read_offset = 0;
 #define CMD_REBOOT           0x16   // Cold-reboot the device (remote restart)
 #define CMD_POWER_OFF        0x17   // Power off the device (ship mode; button/charger wake)
 #define CMD_ARM_POST_DFU_UNPAIR 0x18 // [0x18, arm]: arm(1)/disarm(0) one-shot bond wipe on next new-image boot
-#define CMD_SET_BACKEND      0x1A   // [0x1A, backend]: switch storage backend (0=LittleFS,1=ring), reboots to apply
 
 #define INVALID_COMMAND 6
 #define FILE_NOT_FOUND 7
@@ -89,8 +88,6 @@ static atomic_t rotate_file_requested = ATOMIC_INIT(0);
 static atomic_t clear_storage_requested = ATOMIC_INIT(0);
 static atomic_t reboot_requested = ATOMIC_INIT(0);
 static atomic_t power_off_requested = ATOMIC_INIT(0);
-static atomic_t backend_switch_requested = ATOMIC_INIT(0);
-static uint8_t  backend_switch_value = 0;
 
 static atomic_t delete_request_pending = ATOMIC_INIT(0);
 static int16_t  delete_file_index = -1;
@@ -598,13 +595,7 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
 
     if (command == CMD_REBOOT) {
         /* Defer to the storage thread so we can ACK before the link drops on the
-         * cold reboot; sys_reboot() never returns. Reject while a backend switch is
-         * pending: the storage thread services the reboot before the switch, so a
-         * plain reboot here would fire first and silently drop the switch (which
-         * cold-reboots anyway once it persists). */
-        if (atomic_get(&backend_switch_requested)) {
-            return 1; /* busy — a backend switch (which reboots) is pending */
-        }
+         * cold reboot; sys_reboot() never returns. */
         LOG_INF("CMD_REBOOT: received reboot command");
         atomic_set(&reboot_requested, 1);
         return 0xFF;  /* ACK + reboot handled by storage thread */
@@ -612,11 +603,7 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
 
     if (command == CMD_POWER_OFF) {
         /* Defer to the storage thread so we can ACK before turnoff_all() tears
-         * down BLE; it ends in sys_poweroff() and never returns. Reject while a
-         * backend switch is pending (same reason as CMD_REBOOT). */
-        if (atomic_get(&backend_switch_requested)) {
-            return 1; /* busy — a backend switch is pending */
-        }
+         * down BLE; it ends in sys_poweroff() and never returns. */
         LOG_INF("CMD_POWER_OFF: received power-off command");
         atomic_set(&power_off_requested, 1);
         return 0xFF;  /* ACK + power-off handled by storage thread */
@@ -636,26 +623,6 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
         int err = app_settings_arm_post_dfu_unpair(arm, CONFIG_BT_DIS_FW_REV_STR);
         LOG_INF("CMD_ARM_POST_DFU_UNPAIR: %s", arm ? "armed" : "disarmed");
         return err ? 1 : 0;  /* non-zero ACK signals a persist failure to the client */
-    }
-
-    if (command == CMD_SET_BACKEND) {
-        /* [0x1A][backend]: persist the storage backend and reboot to apply it.
-         * The reboot re-runs boot, which mounts the selected backend or formats
-         * the SD to it on first use (the one-time wipe). Fail-closed on a short
-         * write. The app should sync everything first — switching reformats. */
-        if (len < 2) {
-            return INVALID_COMMAND;
-        }
-        /* Reject a second switch while one is already pending: the handler saves +
-         * cold-reboots, so a racing later request would be accepted and then lost to
-         * the first request's reboot. (BLE writes on one link are serialized, so the
-         * check-then-set here is race-free.) */
-        if (atomic_get(&backend_switch_requested)) {
-            return 1; /* busy — a backend switch is already in flight */
-        }
-        backend_switch_value = ((uint8_t *) buf)[1];
-        atomic_set(&backend_switch_requested, 1);
-        return 0xFF; /* storage thread saves + reboots */
     }
 
     if (command == CMD_CLEAR_STORAGE) {
@@ -1039,69 +1006,12 @@ void storage_write(void)
                 sys_reboot(SYS_REBOOT_COLD);
             }
         }
-        if (atomic_get(&backend_switch_requested)) {
-            /* Persist the new backend and cold-reboot so boot mounts (or formats to)
-             * the selected backend. ACK before the link drops. Read backend_switch_value
-             * while the in-flight flag is STILL set so a racing CMD_SET_BACKEND is
-             * rejected (busy) and can't overwrite it before we persist; clear the flag
-             * only on a save FAILURE (to allow a retry). On success we cold-reboot, so
-             * the flag never needs clearing. */
-            uint8_t val = backend_switch_value;
-            uint8_t cur = app_settings_get_storage_backend();
-            if (val == cur) {
-                /* Re-selecting the ACTIVE backend is not a switch: don't arm a format or
-                 * reboot — that would wipe the user's recordings though nothing changed.
-                 * ACK success and drop the request. (A deliberate wipe-in-place is a
-                 * separate CLEAR_STORAGE, not a no-op backend "switch".) */
-                LOG_INF("CMD_SET_BACKEND: backend=%u already active — no reformat, no reboot", val);
-                if (conn) {
-                    uint8_t ack[2] = {PACKET_ACK, 0};
-                    STORAGE_NOTIFY(conn, ack, sizeof(ack));
-                }
-                atomic_clear(&backend_switch_requested);
-            } else {
-                /* Real switch. Arm a fresh format FOR THE TARGET backend, then persist the
-                 * backend. Without the wipe, boot mounts the previous backend's card as-is and
-                 * can pick up stale metadata (a still-valid ring header under freshly-written
-                 * LittleFS data) that mounts OK but points at overwritten bytes — the device
-                 * then records nothing. Arm-first, and arm the TARGET (not a bare flag): the
-                 * mount only force-formats when the armed target matches the backend it mounts,
-                 * so an interruption after this arm but before the backend save (reboot: old
-                 * backend + armed=new) can't wipe the current storage. The arm stays durable
-                 * until the boot mount both formats AND mounts the target and then clears it
-                 * (sd_card.c consume_format_pending) — a transient format/mount failure leaves
-                 * it armed so the next boot re-formats. If arming fails we never touch the
-                 * backend; if the backend save then fails we best-effort disarm. */
-                int perr = app_settings_save_storage_format_pending(val);
-                int serr = perr ? perr : app_settings_save_storage_backend(val);
-                if (serr && !perr) {
-                    (void) app_settings_save_storage_format_pending(STORAGE_FORMAT_PENDING_NONE);
-                }
-                if (conn) {
-                    uint8_t ack[2] = {PACKET_ACK, serr ? 1 : 0};
-                    STORAGE_NOTIFY(conn, ack, sizeof(ack));
-                }
-                if (serr == 0) {
-                    LOG_INF("CMD_SET_BACKEND: backend=%u armed — rebooting to apply fresh format", val);
-                    if (is_sd_on()) {
-                        app_sd_off(); /* flush + unmount cleanly first */
-                    }
-                    k_msleep(500);
-                    sys_reboot(SYS_REBOOT_COLD);
-                } else {
-                    LOG_ERR("CMD_SET_BACKEND: backend=%u NOT applied (save err %d) — no reboot", val, serr);
-                    atomic_clear(&backend_switch_requested); /* failed save — allow a retry */
-                }
-            }
-        }
         if (atomic_get(&stop_started)) {
             atomic_clear(&remaining_length);
             atomic_clear(&stop_started);
-            save_offset(current_read_filename, current_read_offset);
         }
         if (heartbeat_count == MAX_HEARTBEAT_FRAMES) {
             LOG_INF("no heartbeat sent");
-            save_offset(current_read_filename, current_read_offset);
             // ensure heartbeat count resets
             heartbeat_count = 0;
         }
@@ -1110,8 +1020,6 @@ void storage_write(void)
             if (conn == NULL) {
                 LOG_ERR("invalid connection");
                 atomic_clear(&remaining_length);
-                save_offset(current_read_filename, current_read_offset);
-                // save offset to flash
                 put_current_connection(conn);
                 continue;
                 // k_yield();
@@ -1124,11 +1032,7 @@ void storage_write(void)
                 if (atomic_get(&stop_started)) {
                     atomic_clear(&stop_started);
                 } else {
-                    save_offset(current_read_filename, current_read_offset);
                     LOG_INF("File done: %s", current_read_filename);
-
-                    /* Clear saved offset since file sync is complete */
-                    save_offset("", 0);
 
                     /* Notify app: file transfer complete (PACKET_EOT) */
                     LOG_INF("File sync complete, sending EOT: %s", current_read_filename);
@@ -1150,7 +1054,6 @@ void storage_write(void)
             !atomic_get(&list_files_requested) && !atomic_get(&delete_request_pending) &&
             !atomic_get(&rotate_file_requested) && !atomic_get(&clear_storage_requested) &&
             !atomic_get(&reboot_requested) && !atomic_get(&power_off_requested) &&
-            !atomic_get(&backend_switch_requested) &&
             !atomic_get(&read_request_pending)) {
             struct bt_conn *idle_conn = get_current_connection();
             uint32_t idle_sleep_ms = idle_conn

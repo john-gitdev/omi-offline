@@ -237,12 +237,6 @@ abstract class DeviceConnection {
   /// to match the user's opt-in.
   Future<bool> sendArmPostDfuUnpair(bool arm) async => false;
 
-  /// Switches the device's audio storage backend (0 = LittleFS, 1 = raw ring
-  /// buffer) and cold-reboots to apply it. The reboot reformats the SD to the
-  /// selected backend on first use, so any un-synced audio is lost — sync first.
-  /// The connection drops on reboot; a false return / dropped link is expected.
-  Future<bool> sendSetStorageBackendCommand(int backend) async => false;
-
   Future<BleAudioCodec?> getAudioCodec() async {
     if (await isConnected()) return performGetAudioCodec();
     return null;
