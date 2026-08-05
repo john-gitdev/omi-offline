@@ -215,15 +215,17 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   /// a cheap no-op on every tick after the two agree.
   Future<void> _reconcileDiagLogGate() async {
     final prefs = SharedPreferencesUtil();
-    if (!prefs.showSdWriteDrops || prefs.diagLogEnabled) return;
-    if (!mounted) return;
+    if (!prefs.showSdWriteDrops || !mounted) return;
     final devProvider = context.read<DeviceProvider>();
     if (!devProvider.diagLogSupported) return;
-    // Set before awaiting so the next 2 s tick sees the pref and skips — the guard
-    // above is what keeps this a one-shot rather than a repeating push.
-    prefs.diagLogEnabled = true;
-    // A failed push (a sync holds the storage lock) leaves the pref set, which is the
-    // same contract the switch has: DeviceProvider re-pushes it on the next connect.
+    // Counters on implies event capture on — that is what the merged switch means.
+    if (!prefs.diagLogEnabled) prefs.diagLogEnabled = true;
+    // Converge on a mismatch rather than firing once: as a one-shot keyed on the pref,
+    // this could not retry a push the storage lock had refused, and could not notice a
+    // reconnect that left the device's gate unwritten. Comparing against what actually
+    // landed makes it a no-op on every tick once the two agree, and self-correcting
+    // when they don't.
+    if ((devProvider.diagLogGateApplied ?? false) == prefs.diagLogEnabled) return;
     if (await _pushDiagLogGate() && mounted) {
       await _runDiagLogAction(() => devProvider.pullDiagLog());
     }
@@ -303,9 +305,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   void _showProcessingSnackbar() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Processing in progress — please wait until it finishes.')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Processing in progress — please wait until it finishes.')));
   }
 
   Future<void> _startSync() async {
@@ -335,7 +337,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       final result = await ServiceManager.instance().wal.getSyncs().syncAll(progress: this);
       deviceProvider.restartBackgroundSyncTimer();
       Logger.debug(
-          'DebugTools: syncAll complete — result=${result == null ? 'null (nothing to sync)' : 'SyncLocalFilesResponse'}');
+        'DebugTools: syncAll complete — result=${result == null ? 'null (nothing to sync)' : 'SyncLocalFilesResponse'}',
+      );
       if (!mounted) return;
       setState(() {
         if (result == null) {
@@ -929,7 +932,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (mounted) {
       setState(() {
         _progress = percentage;
-        _statusMessage = 'Downloading segments: ${(percentage * 100).toStringAsFixed(1)}% '
+        _statusMessage =
+            'Downloading segments: ${(percentage * 100).toStringAsFixed(1)}% '
             '${speedKBps != null && speedKBps > 0 ? '(${speedKBps.toStringAsFixed(1)} KB/s)' : ''}';
       });
     }
@@ -951,9 +955,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
 
     final deviceService = ServiceManager.instance().device;
     final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(SnackBar(
-      content: Text(value ? 'Enabling companion pairing…' : 'Disabling companion pairing…'),
-    ));
+    messenger.showSnackBar(
+      SnackBar(content: Text(value ? 'Enabling companion pairing…' : 'Disabling companion pairing…')),
+    );
 
     try {
       await deviceService.disconnectDevice(isManual: true);
@@ -1009,9 +1013,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (!reached) {
       // The pref is kept and re-pushed on the next connect, but say so rather than
       // implying on-device capture already flipped — in either direction.
-      _reportDiagLogResult(val
-          ? 'Counters are on. The device is busy syncing — event capture starts on the next connect.'
-          : 'Counters are off. The device is busy syncing — event capture stops on the next connect.');
+      _reportDiagLogResult(
+        val
+            ? 'Counters are on. The device is busy syncing — event capture starts on the next connect.'
+            : 'Counters are off. The device is busy syncing — event capture stops on the next connect.',
+      );
       return;
     }
     // Pull immediately on enable so a bench session starts from a known state.
@@ -1213,8 +1219,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         _optionCard(
           child: SwitchListTile(
             contentPadding: EdgeInsets.zero,
-            title: const Text('Companion Device Pairing',
-                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+            title: const Text(
+              'Companion Device Pairing',
+              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+            ),
             subtitle: Text(
               SharedPreferencesUtil().companionDeviceEnabled
                   ? 'On (recommended) — lets the app fix a stuck Bluetooth connection on its own, instead of you having to toggle phone Bluetooth. Turn off only if reconnecting gets worse with this on.'
@@ -1231,10 +1239,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       _optionCard(
         child: SwitchListTile(
           contentPadding: EdgeInsets.zero,
-          title: const Text('Keep Screen On',
-              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-          subtitle: Text('Holds a wakelock while the app is open so the screen never sleeps.',
-              style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
+          title: const Text(
+            'Keep Screen On',
+            style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+          ),
+          subtitle: Text(
+            'Holds a wakelock while the app is open so the screen never sleeps.',
+            style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+          ),
           value: SharedPreferencesUtil().keepScreenOn,
           onChanged: (val) async {
             SharedPreferencesUtil().keepScreenOn = val;
@@ -1251,12 +1263,15 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           children: [
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
-              title: const Text('Save Debug Logs to File',
-                  style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+              title: const Text(
+                'Save Debug Logs to File',
+                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+              ),
               subtitle: Text(
-                  'Persists info/debug logs to a file on your device. '
-                  'Leave on to capture BLE connection outages automatically, as they happen.',
-                  style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
+                'Persists info/debug logs to a file on your device. '
+                'Leave on to capture BLE connection outages automatically, as they happen.',
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+              ),
               value: SharedPreferencesUtil().devLogsToFileEnabled,
               onChanged: (val) async {
                 if (val) {
@@ -1286,8 +1301,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                         padding: const EdgeInsets.symmetric(vertical: 12),
                       ),
-                      child: const Text('Share Logs',
-                          style: TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold)),
+                      child: const Text(
+                        'Share Logs',
+                        style: TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold),
+                      ),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -1303,8 +1320,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                         padding: const EdgeInsets.symmetric(vertical: 12),
                       ),
-                      child: const Text('Clear Logs',
-                          style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold)),
+                      child: const Text(
+                        'Clear Logs',
+                        style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
+                      ),
                     ),
                   ),
                 ],
@@ -1319,13 +1338,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Widget _optionCard({required Widget child}) => Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1C1C1E),
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: child,
-      );
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(16)),
+    child: child,
+  );
 
   Future<void> _shareDebugLogs() async {
     final files = await DebugLogManager.listLogFiles();
@@ -1389,8 +1405,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   Widget _buildAdjustmentModeSection() {
     final on = SharedPreferencesUtil().adjustmentMode;
     final enabledAtMs = SharedPreferencesUtil().adjustmentModeEnabledAt;
-    final enabledAtLabel =
-        enabledAtMs > 0 ? DateFormat('MMM d, h:mm a').format(DateTime.fromMillisecondsSinceEpoch(enabledAtMs)) : '—';
+    final enabledAtLabel = enabledAtMs > 0
+        ? DateFormat('MMM d, h:mm a').format(DateTime.fromMillisecondsSinceEpoch(enabledAtMs))
+        : '—';
 
     // Styled as an option card, not a readout panel: since the toggles were grouped
     // it sits beside Keep Screen On / Save Debug Logs, and the panel styling made it
@@ -1400,10 +1417,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SwitchListTile(
-            title: const Text('Adjustment Mode',
-                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-            subtitle: Text('Copies all raw bins into an isolated folder for safe reprocessing.',
-                style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
+            title: const Text(
+              'Adjustment Mode',
+              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+            subtitle: Text(
+              'Copies all raw bins into an isolated folder for safe reprocessing.',
+              style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+            ),
             value: on,
             onChanged: _onAdjustmentModeToggled,
             activeThumbColor: Colors.deepPurpleAccent,
@@ -1422,8 +1443,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 padding: const EdgeInsets.symmetric(vertical: 12),
                 minimumSize: const Size(double.infinity, 0),
               ),
-              child: const Text('Copy Bins for Reprocessing',
-                  style: TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold)),
+              child: const Text(
+                'Copy Bins for Reprocessing',
+                style: TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold),
+              ),
             ),
             const SizedBox(height: 8),
             OutlinedButton(
@@ -1434,8 +1457,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 padding: const EdgeInsets.symmetric(vertical: 12),
                 minimumSize: const Size(double.infinity, 0),
               ),
-              child: const Text('Reprocess All from Segments',
-                  style: TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.bold)),
+              child: const Text(
+                'Reprocess All from Segments',
+                style: TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.bold),
+              ),
             ),
           ],
         ],
@@ -1537,12 +1562,16 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           Logger.error('Adjustment: failed to copy ${file.path} → $destPath: $e');
         }
       }
-      Logger.info('Adjustment: copied $copied bin(s) adjustment_mode_segments → raw_segments'
-          '${failed > 0 ? ' ($failed failed)' : ''} — sync/process to reprocess');
+      Logger.info(
+        'Adjustment: copied $copied bin(s) adjustment_mode_segments → raw_segments'
+        '${failed > 0 ? ' ($failed failed)' : ''} — sync/process to reprocess',
+      );
       await _refreshAdjustmentBinCount();
-      _reportCopyResult(copied == 0
-          ? 'No bins copied — adjustment folder is empty.'
-          : 'Copied $copied bin(s) to raw_segments${failed > 0 ? ' · $failed failed' : ''}. Run Sync/Process to reprocess.');
+      _reportCopyResult(
+        copied == 0
+            ? 'No bins copied — adjustment folder is empty.'
+            : 'Copied $copied bin(s) to raw_segments${failed > 0 ? ' · $failed failed' : ''}. Run Sync/Process to reprocess.',
+      );
     } catch (e) {
       Logger.error('Adjustment: copy-for-reprocessing failed: $e');
       _reportCopyResult('Copy failed: $e');
@@ -1585,9 +1614,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   void _reportCopyResult(String message) {
     if (!mounted) return;
     setState(() => _statusMessage = message);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), duration: const Duration(seconds: 5)),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message), duration: const Duration(seconds: 5)));
   }
 
   /// The merged Diagnostics card: firmware counters and the on-device event log in
@@ -1610,10 +1637,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _buildDiagnosticsHeader(enabled, hasEventLog, gatePending),
-          if (enabled) ...[
-            const SizedBox(height: 12),
-            _buildDiagnosticsBody(),
-          ],
+          if (enabled) ...[const SizedBox(height: 12), _buildDiagnosticsBody()],
         ],
       ),
     );
@@ -1628,8 +1652,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Diagnostics',
-                  style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+              const Text(
+                'Diagnostics',
+                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+              ),
               const SizedBox(height: 2),
               // Says only what it can actually know. `hasEventLog` is false both when
               // the firmware lacks the capability AND when it simply hasn't been read
@@ -1644,38 +1670,34 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                     // next connect, so claiming it records nothing would contradict both
                     // the snackbar and the device.
                     ? (gatePending
-                        ? 'Off — but the device keeps recording events until the next connect.'
-                        : 'Off — nothing is polled, and the device records no events.')
+                          ? 'Off — but the device keeps recording events until the next connect.'
+                          : 'Off — nothing is polled, and the device records no events.')
                     : gatePending
-                        ? 'Device counters polled every 2 s. Event capture is pending — it applies on the next connect.'
-                        : hasEventLog
-                            ? 'Device counters polled every 2 s, plus the on-device event log.'
-                            : 'Device counters polled every 2 s. The on-device event log starts when a device that '
-                                'supports it connects.',
+                    ? 'Device counters polled every 2 s. Event capture is pending — it applies on the next connect.'
+                    : hasEventLog
+                    ? 'Device counters polled every 2 s, plus the on-device event log.'
+                    : 'Device counters polled every 2 s. The on-device event log starts when a device that '
+                          'supports it connects.',
                 style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
               ),
             ],
           ),
         ),
-        Switch(
-          value: enabled,
-          onChanged: _setDiagnosticsEnabled,
-          activeThumbColor: Colors.deepPurpleAccent,
-        ),
+        Switch(value: enabled, onChanged: _setDiagnosticsEnabled, activeThumbColor: Colors.deepPurpleAccent),
       ],
     );
   }
 
   Widget _diagPlaceholder(String message) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Row(
-          children: [
-            const FaIcon(FontAwesomeIcons.circleNotch, size: 12, color: Colors.white38),
-            const SizedBox(width: 8),
-            Text(message, style: const TextStyle(color: Colors.white38, fontSize: 12)),
-          ],
-        ),
-      );
+    padding: const EdgeInsets.symmetric(vertical: 8),
+    child: Row(
+      children: [
+        const FaIcon(FontAwesomeIcons.circleNotch, size: 12, color: Colors.white38),
+        const SizedBox(width: 8),
+        Text(message, style: const TextStyle(color: Colors.white38, fontSize: 12)),
+      ],
+    ),
+  );
 
   Widget _buildDiagnosticsBody() {
     final devProvider = Provider.of<DeviceProvider>(context);
@@ -1777,10 +1799,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       if (prioStarts > prioStops) 'left open',
       if (prioStops > 0 && seEmits == 0) 'no session-end',
     ];
-    final memoryFlags = <String>[
-      if (sdStackHot) 'SD worker stack high',
-      if (codecStackHot) 'codec stack high',
-    ];
+    final memoryFlags = <String>[if (sdStackHot) 'SD worker stack high', if (codecStackHot) 'codec stack high'];
     final bleFlags = <String>[
       if (connFails > 0) '$connFails connect fail${connFails == 1 ? '' : 's'}',
       if (estabFails > 0) '$estabFails at establishment',
@@ -1810,16 +1829,18 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // The event log is part of this card, so it has to count toward the card's
     // verdict: without this the banner read "All clear" over a red advertising-fail
     // or wedged-mic entry sitting a few rows below it.
-    final eventLevels =
-        devProvider.diagLogSupported ? devProvider.diagLogRecords.map(diagEventLevel).toList() : const <DiagLevel>[];
+    final eventLevels = devProvider.diagLogSupported
+        ? devProvider.diagLogRecords.map(diagEventLevel).toList()
+        : const <DiagLevel>[];
     final eventFaults = eventLevels.where((l) => l == DiagLevel.bad).length;
     final eventWarns = eventLevels.where((l) => l == DiagLevel.warn).length;
     if (eventFaults > 0) problems.add('$eventFaults event fault${eventFaults == 1 ? '' : 's'}');
     if (eventWarns > 0) watches.add('$eventWarns event warning${eventWarns == 1 ? '' : 's'}');
 
     final uptime = _formatDuration(stats.currentUptimeMs);
-    final DiagLevel verdict =
-        problems.isNotEmpty ? DiagLevel.bad : (watches.isNotEmpty ? DiagLevel.warn : DiagLevel.ok);
+    final DiagLevel verdict = problems.isNotEmpty
+        ? DiagLevel.bad
+        : (watches.isNotEmpty ? DiagLevel.warn : DiagLevel.ok);
     final String headline;
     final String detail;
     if (problems.isNotEmpty) {
@@ -1883,11 +1904,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 onTap: () => setState(() => _showLifetime = false),
               ),
               const SizedBox(width: 6),
-              DiagPill(
-                text: 'Lifetime',
-                selected: _showLifetime,
-                onTap: () => setState(() => _showLifetime = true),
-              ),
+              DiagPill(text: 'Lifetime', selected: _showLifetime, onTap: () => setState(() => _showLifetime = true)),
             ],
           ],
         ),
@@ -1900,10 +1917,16 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           alertSummary: _alertSummary(sdFlags),
           rows: [
             DiagStatRow('440 B blocks dropped', '$blocks', level: blocks > 0 ? DiagLevel.bad : DiagLevel.info),
-            DiagStatRow('Audio frames dropped (SD queue)', '$frames',
-                level: frames > 0 ? DiagLevel.bad : DiagLevel.info),
-            DiagStatRow('Audio dropped pre-encode (codec)', '$codec',
-                level: codec > 0 ? DiagLevel.bad : DiagLevel.info),
+            DiagStatRow(
+              'Audio frames dropped (SD queue)',
+              '$frames',
+              level: frames > 0 ? DiagLevel.bad : DiagLevel.info,
+            ),
+            DiagStatRow(
+              'Audio dropped pre-encode (codec)',
+              '$codec',
+              level: codec > 0 ? DiagLevel.bad : DiagLevel.info,
+            ),
             DiagStatRow('Boot-window frame drops', '$boot', level: boot > 0 ? DiagLevel.warn : DiagLevel.info),
             DiagStatRow('Last block drop', lastDropLabel, level: blocks > 0 ? DiagLevel.warn : DiagLevel.info),
             DiagGaugeRow(
@@ -1916,8 +1939,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
             // The read-vs-write arbiter engaging, not a fault.
             DiagStatRow('Write-fairness activations', '$writeFair'),
             if (isRing)
-              DiagStatRow('Slowest SD op (since boot)', '${stats.ringMaxIoMs} ms (${stats.ringMaxIoOp})',
-                  level: ringSlow ? DiagLevel.warn : DiagLevel.info),
+              DiagStatRow(
+                'Slowest SD op (since boot)',
+                '${stats.ringMaxIoMs} ms (${stats.ringMaxIoOp})',
+                level: ringSlow ? DiagLevel.warn : DiagLevel.info,
+              ),
             if (isRing)
               DiagStatRow('NAND IO errors', '$ringErrs', level: ringErrs > 0 ? DiagLevel.bad : DiagLevel.info),
           ],
@@ -1926,22 +1952,32 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           key: const ValueKey('diag-markers'),
           title: 'Recording markers',
           allClear: markerFlags.isEmpty,
-          clearSummary:
-              (prioStarts == 0 && prioStops == 0) ? 'no activity' : '$prioStarts started · $prioStops stopped',
+          clearSummary: (prioStarts == 0 && prioStops == 0)
+              ? 'no activity'
+              : '$prioStarts started · $prioStops stopped',
           alertSummary: _alertSummary(markerFlags),
           rows: [
             DiagStatRow('Priority recordings started', '$prioStarts'),
-            DiagStatRow('Priority recordings stopped', '$prioStops',
-                level: prioStarts > prioStops ? DiagLevel.warn : DiagLevel.info),
-            DiagStatRow('Marker writes dropped', '$markerDrops',
-                level: markerDrops > 0 ? DiagLevel.bad : DiagLevel.info),
+            DiagStatRow(
+              'Priority recordings stopped',
+              '$prioStops',
+              level: prioStarts > prioStops ? DiagLevel.warn : DiagLevel.info,
+            ),
+            DiagStatRow(
+              'Marker writes dropped',
+              '$markerDrops',
+              level: markerDrops > 0 ? DiagLevel.bad : DiagLevel.info,
+            ),
             DiagStatRow('Empty bin rotations', '$emptyRot', level: emptyRot > 0 ? DiagLevel.warn : DiagLevel.info),
             // Flagged when a priority stop happened but no session-end marker was
             // emitted — the finalize path never firing, the exact failure these
             // counters exist to catch. "Kept at the pause gate" is a rescue, not a
             // loss, so it is never highlighted.
-            DiagStatRow('Session-end marker emits', '$seEmits',
-                level: prioStops > 0 && seEmits == 0 ? DiagLevel.warn : DiagLevel.info),
+            DiagStatRow(
+              'Session-end marker emits',
+              '$seEmits',
+              level: prioStops > 0 && seEmits == 0 ? DiagLevel.warn : DiagLevel.info,
+            ),
             DiagStatRow('Markers kept at SD pause gate', '$pauseSaves'),
           ],
         ),
@@ -1984,8 +2020,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
             // Omi never heard the connect requests and the phone is at fault. See
             // NOTES.md "BLE: advertising but won't connect".
             DiagStatRow('Connect failures', '$connFails', level: connFails > 0 ? DiagLevel.bad : DiagLevel.info),
-            DiagStatRow('Died at establishment (0x3e)', '$estabFails',
-                level: estabFails > 0 ? DiagLevel.bad : DiagLevel.info),
+            DiagStatRow(
+              'Died at establishment (0x3e)',
+              '$estabFails',
+              level: estabFails > 0 ? DiagLevel.bad : DiagLevel.info,
+            ),
             // Contextual, not a fault of its own: it describes whichever failure the
             // rows above are reporting, so it only appears alongside one — and it is
             // gated on the displayed deltas, so a baseline that zeroed both hides it.
@@ -2005,8 +2044,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   padding: const EdgeInsets.symmetric(vertical: 12),
                 ),
-                child:
-                    const Text('Mark baseline', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold)),
+                child: const Text(
+                  'Mark baseline',
+                  style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
+                ),
               ),
             ),
             const SizedBox(width: 10),
@@ -2018,8 +2059,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   padding: const EdgeInsets.symmetric(vertical: 12),
                 ),
-                child: const Text('Copy snapshot',
-                    style: TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold)),
+                child: const Text(
+                  'Copy snapshot',
+                  style: TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold),
+                ),
               ),
             ),
           ],
@@ -2029,9 +2072,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           child: Text(
             hasBaseline
                 ? 'Counters read as a delta from the marked baseline. Nothing was cleared on the device — switch to '
-                    'Lifetime for its own totals. Since-boot gauges (queue peak, stacks, uptime) stay live in both views.'
+                      'Lifetime for its own totals. Since-boot gauges (queue peak, stacks, uptime) stay live in both views.'
                 : 'Mark baseline snapshots the current values so the drop and failure counters read 0 from now on. '
-                    'Display only — the device keeps its own totals until it reboots.',
+                      'Display only — the device keeps its own totals until it reboots.',
             style: const TextStyle(color: Colors.white38, fontSize: 11, height: 1.3),
           ),
         ),
@@ -2060,16 +2103,22 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final b = StringBuffer()
       ..writeln('omi diagnostics — app $appVersion / fw $fw / backend $backend')
       ..writeln('captured ${DateTime.now().toIso8601String()} · device up ${_formatDuration(stats.currentUptimeMs)}')
-      ..writeln('sd: blocks=${stats.blockDrops} frames=${stats.streamFrameDrops} '
-          'codec=${stats.codecFrameDrops} boot=${stats.bootFrameDrops}')
+      ..writeln(
+        'sd: blocks=${stats.blockDrops} frames=${stats.streamFrameDrops} '
+        'codec=${stats.codecFrameDrops} boot=${stats.bootFrameDrops}',
+      )
       ..writeln('queue: peak=${stats.msgqPeakDepth}/${stats.sdQueueMax} writeFair=${stats.writeFairActivations}')
-      ..writeln('markers: starts=${stats.priorityRecordStarts} stops=${stats.priorityRecordStops} '
-          'drops=${stats.markerWriteDrops} emptyRot=${stats.emptyBinRotations} '
-          'seEmits=${stats.sessionEndMarkerEmits} pauseSaves=${stats.markerPauseGateSaves}')
+      ..writeln(
+        'markers: starts=${stats.priorityRecordStarts} stops=${stats.priorityRecordStops} '
+        'drops=${stats.markerWriteDrops} emptyRot=${stats.emptyBinRotations} '
+        'seEmits=${stats.sessionEndMarkerEmits} pauseSaves=${stats.markerPauseGateSaves}',
+      )
       ..writeln('stacks: sdWorker=${stats.sdWorkerStackUsed}B codec=${stats.codecStackUsed}B')
       ..writeln('ring: maxIo=${stats.ringMaxIoMs}ms(${stats.ringMaxIoOp}) ioErrors=${stats.ringIoErrors}')
-      ..writeln('ble: connFail=${stats.failedConnCount} estab0x3e=${stats.estabFailCount} '
-          'lastAdv=${stats.lastFailedConnDuringSlowAdv ? 'slow' : 'fast'}');
+      ..writeln(
+        'ble: connFail=${stats.failedConnCount} estab0x3e=${stats.estabFailCount} '
+        'lastAdv=${stats.lastFailedConnDuringSlowAdv ? 'slow' : 'fast'}',
+      );
 
     final records = devProvider.diagLogRecords;
     if (records.isNotEmpty) {
@@ -2081,9 +2130,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
 
     await Clipboard.setData(ClipboardData(text: b.toString()));
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Diagnostics snapshot copied to clipboard')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Diagnostics snapshot copied to clipboard')));
   }
 
   bool _diagLogBusy = false;
@@ -2102,9 +2151,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   /// device while a sync held the storage lock), so the result is never silent.
   void _reportDiagLogResult(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), duration: const Duration(seconds: 4)),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message), duration: const Duration(seconds: 4)));
   }
 
   /// The on-device diagnostic event log, folded into the Diagnostics card as one
@@ -2146,18 +2193,16 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               children: [
                 DiagPill(text: 'All', selected: activeFilter == null, onTap: () => setState(() => _eventFilter = null)),
                 for (final c in categories)
-                  DiagPill(
-                    text: c.label,
-                    selected: activeFilter == c,
-                    onTap: () => setState(() => _eventFilter = c),
-                  ),
+                  DiagPill(text: c.label, selected: activeFilter == c, onTap: () => setState(() => _eventFilter = c)),
               ],
             )
           : null,
       rows: [
         Row(
           children: [
-            Expanded(child: Text(meta.toString(), style: const TextStyle(color: Colors.white38, fontSize: 11))),
+            Expanded(
+              child: Text(meta.toString(), style: const TextStyle(color: Colors.white38, fontSize: 11)),
+            ),
             // Overflow means events happened while the phone was away and were never
             // captured — worth knowing before drawing conclusions from what's here.
             if (dropped > 0)
@@ -2204,8 +2249,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   padding: const EdgeInsets.symmetric(vertical: 10),
                 ),
-                child: Text(_diagLogBusy ? 'Working…' : 'Pull now',
-                    style: const TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold)),
+                child: Text(
+                  _diagLogBusy ? 'Working…' : 'Pull now',
+                  style: const TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold),
+                ),
               ),
             ),
             const SizedBox(width: 10),
@@ -2217,7 +2264,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   padding: const EdgeInsets.symmetric(vertical: 10),
                 ),
-                child: const Text('Clear', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold)),
+                child: const Text(
+                  'Clear',
+                  style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
+                ),
               ),
             ),
           ],
