@@ -95,6 +95,9 @@ static bool ring_pending_explicit_rotate;
 #define MAX_READS_BETWEEN_WRITES 6
 #define WRITE_FAIR_MIN 4
 #define SD_FSYNC_INTERVAL_MS (60 * 1000)
+/* After this many failed 2 s soft recoveries, escalate from plain retry to a full
+ * power-cycle + remount of the SD card before continuing to drop. */
+#define SD_RECOVERY_REMOUNT_THRESHOLD 3
 
 /* SPI3 MOSI hold-low pin — disconnected on SD power-off to prevent back-feed.
    gpio1 pin 11 = P1.11 on the nRF52840 board schematic. */
@@ -107,6 +110,7 @@ static bool ring_pending_explicit_rotate;
 /* ------------------------------------------------------------------ */
 
 static bool sd_write_blocked = false;
+static uint8_t sd_recovery_cycles = 0; /* consecutive failed soft recoveries */
 /* The ring's append stage. Handed to sd_ring via sd_ring_init(); sd_ring.c holds
  * only the pointer. Sized (RING_STAGE_BYTES, 40 KB) so a flush covers whole NAND
  * pages and the SPI bus wakes ~0.125x per second of audio rather than per block —
@@ -608,18 +612,18 @@ void sd_write_pause(bool pause)
 /*
  * Bring the SD NAND up and hand its raw sectors to sd_ring.
  *
- * This is the BOOT mount, and the only place the card is ever formatted: a card
- * with no ring on it — fresh, or written by other firmware — is formatted once,
- * which is the one-time wipe on migration. There is deliberately NO runtime
- * remount: a mid-session remount that formatted would erase recordings the app
- * has not synced yet, so a write fault recovers by retrying (sd_write_blocked
- * plus the 2 s backoff on the worker), never by reformatting.
+ * allow_format gates the ONLY on-card wipe there is — formatting a card that has
+ * no ring on it (fresh, or written by other firmware), i.e. the one-time wipe on
+ * migration. The boot mount passes true. The write path's recovery remount
+ * (sd_recover_remount) passes FALSE, because a transient read failure that makes
+ * the header look absent must never be answered by erasing recordings the app has
+ * not synced yet — there, a mount failure is surfaced and writes stay blocked.
  *
  * A persistent failure here leaves recording blocked but the device fully
  * reachable — main.c starts BLE/DFU before it waits on the SD card — so a card
  * or ring fault is recoverable with a firmware update, never a reflash.
  */
-static int sd_mount(void)
+static int sd_mount(bool allow_format)
 {
     if (is_mounted) {
         return 0;
@@ -679,7 +683,7 @@ static int sd_mount(void)
     }
 
     ret = sd_ring_mount(sector_count);
-    if (ret == -ENOENT) {
+    if (ret == -ENOENT && allow_format) {
         LOG_WRN("[SD] no ring on card — formatting (one-time SD wipe)");
         ret = sd_ring_format(sector_count);
     }
@@ -715,6 +719,53 @@ static int sd_unmount(void)
         LOG_INF("ring unmounted");
     }
     return sr;
+}
+
+/*
+ * Power-cycle the card and re-mount the ring after repeated write failures.
+ *
+ * Recovers a class of fault plain retries cannot: the SD controller latching busy,
+ * or the SPI slave state machine desyncing. Only re-running the card's init
+ * sequence clears those, so without this the device records nothing until someone
+ * notices and reboots it. This is the escalation the filesystem backend had at the
+ * same threshold; the ring never had one.
+ *
+ * Deliberately does NOT sync on the way down — the card is failing, and sd_unmount's
+ * two sync attempts would just be two more failed writes. Whatever was staged in RAM
+ * is therefore lost: sd_ring_init() re-runs inside sd_mount() and starts the stage
+ * empty against the cursor it reloads, so recording resumes from the last durable
+ * cursor. That is the same bound a power cut already carries (RING_SYNC_BYTES, or
+ * the 60 s backstop), and far better than staying deaf indefinitely.
+ *
+ * The open segment is abandoned rather than resumed — current_filename is cleared so
+ * the next write opens a fresh one, matching what the filesystem path did after its
+ * remount (it deliberately did not reopen the audio file either). Never formats.
+ */
+static int sd_recover_remount(void)
+{
+    LOG_WRN("[SD_WORK] %d failed recoveries — power-cycling + remounting SD",
+            SD_RECOVERY_REMOUNT_THRESHOLD);
+    sd_set_io_low_power(false);
+    is_mounted = false;
+    sd_ready = false;
+    sd_enable_power(false);
+    k_msleep(50);
+
+    int rc = sd_mount(false); /* recovery: never format — may hold un-synced audio */
+    if (rc != 0) {
+        LOG_ERR("[SD_WORK] SD remount failed: %d — staying blocked", rc);
+        return rc;
+    }
+
+    k_mutex_lock(&current_filename_lock, K_FOREVER);
+    current_filename[0] = '\0';
+    k_mutex_unlock(&current_filename_lock);
+    current_file_size = 0;
+    ring_bytes_since_sync = 0;
+    ring_pending_explicit_rotate = false;
+    invalidate_file_cache();
+    LOG_INF("[SD_WORK] SD remounted — resuming writes in a fresh segment");
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -853,7 +904,7 @@ void sd_worker_thread(void)
     int res;
 
     /* ---- Mount ---- */
-    res = sd_mount();
+    res = sd_mount(true); /* boot mount: may format a card that has no ring */
     if (res != 0) {
         LOG_ERR("[SD_WORK] mount failed: %d", res);
         sd_write_blocked = true;
@@ -958,6 +1009,7 @@ void sd_worker_thread(void)
                     ring_bytes_since_sync = 0;
                     last_file_sync_uptime_ms = k_uptime_get();
                     sd_write_blocked = false; /* recovered — unblock the write path */
+                    sd_recovery_cycles = 0;   /* card is healthy; re-arm the escalation */
                 } else {
                     /* Still failing: keep ring_bytes_since_sync pending and stay
                      * blocked so ring_retry_due fires again after the 2 s backoff. */
@@ -1366,6 +1418,7 @@ static int ring_create_segment(void)
     current_file_created_uptime_ms = k_uptime_get();
     last_file_sync_uptime_ms = k_uptime_get();
     sd_write_blocked = false;
+    sd_recovery_cycles = 0; /* header reached the card — re-arm the escalation */
     invalidate_file_cache_deferrable();
     return 0;
 }
@@ -1376,8 +1429,46 @@ static void process_write_data_req(const sd_req_t *req)
 {
     if (sd_write_blocked) {
         if ((k_uptime_get() - last_write_error_uptime_ms) > 2000) {
-            sd_write_blocked = false;
-        } else {
+            if (++sd_recovery_cycles >= SD_RECOVERY_REMOUNT_THRESHOLD) {
+                /* Soft retries aren't clearing the fault — escalate to a power-cycle.
+                 * Reset the counter either way so a failed remount costs another full
+                 * threshold of soft retries before we power-cycle again, rather than
+                 * cycling the card every 2 s on a permanently dead one. */
+                sd_recovery_cycles = 0;
+                if (sd_recover_remount() == 0) {
+                    sd_write_blocked = false;
+                } else {
+                    last_write_error_uptime_ms = k_uptime_get();
+                }
+            } else {
+                sd_write_blocked = false;
+            }
+        }
+
+        if (sd_write_blocked) {
+            /* Backing off after a write/sync failure. Keep the audio instead of
+             * discarding it: sd_ring_append() is a pure memcpy while the stage has
+             * room, so a fault that clears within ~8 s (RING_STAGE_BYTES at the
+             * ~5 KB/s ingest) costs nothing — the same protection the filesystem
+             * backend got from buffering into its 44 KB batch buffer while blocked.
+             *
+             * Gated on stage headroom so this path CANNOT flush: issuing disk I/O
+             * here is exactly what the backoff exists to prevent, and a failing
+             * flush would be retried per block (~11.6x/s) instead of per backoff.
+             * Requires an open segment — bytes appended with none would belong to
+             * no segment and never be listed.
+             *
+             * Anything we genuinely cannot keep is counted. Before this, every block
+             * arriving inside a backoff window was dropped silently, so a card
+             * fault under-reported its own audio loss in the 0x0062 counters. */
+            if (current_filename[0] != '\0' &&
+                req->u.write.len <= sd_ring_stage_headroom() &&
+                sd_ring_append(req->u.write.buf, req->u.write.len) == 0) {
+                current_file_size += req->u.write.len;
+                ring_bytes_since_sync += req->u.write.len;
+            } else {
+                atomic_inc(&stat_dropped_frames);
+            }
             return;
         }
     }
