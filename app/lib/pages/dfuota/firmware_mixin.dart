@@ -407,6 +407,10 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     _dfuLastBytesSent = 0;
     _dfuLastImageSize = 0;
     installProgress = 0;
+    // Repaint on its own: the card is already on screen showing the failed attempt's
+    // percentage, and the first progress event is several seconds away. Deliberately
+    // NOT an early return when unmounted — the flash must proceed exactly as before.
+    if (mounted) setState(() {});
 
     final updateStream = updateManager.setup();
 
