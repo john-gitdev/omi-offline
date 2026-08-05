@@ -226,6 +226,16 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
                   statusText,
                   style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600, color: Colors.white),
                 ),
+                // The bundle holds one image per core (app + net), and the percentage
+                // above now runs once across both. Naming the part explains why the
+                // bar slows at the hand-off instead of leaving it looking stuck.
+                if (isInstalling && installImageCount > 1) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    'Part ${installImageIndex + 1} of $installImageCount',
+                    style: TextStyle(fontSize: 13, color: Colors.grey.shade400),
+                  ),
+                ],
               ],
             ),
           ),
@@ -263,6 +273,10 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Container(
+          // Explicitly full width: the parent Column is crossAxisAlignment.start, so
+          // without this the card shrink-wraps its content and sits narrower than the
+          // repair-instructions card below it (whose Row/Expanded forces full width).
+          width: double.infinity,
           decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
           child: Padding(
             padding: const EdgeInsets.all(32),
