@@ -122,8 +122,10 @@ static void boot_warming_sequence(void)
     const int delay_ms = 10;
     int64_t wait_start_ms = k_uptime_get();
 
-    /* Spin while LEDs are breathing until sd_worker finishes mount + lfs_fs_gc + file open.
-     * With little data this completes in <5 s; with 200 MB it can take ~50 s.
+    /* Spin while LEDs are breathing until sd_worker finishes the card power-on +
+     * ring mount. Fast and roughly constant — it no longer scales with how much
+     * audio is on the card, as it did while the filesystem's allocator pre-warm
+     * (up to ~50 s at 200 MB) ran here.
      * Bounded: if the SD never initializes (card fault / unrecoverable corruption,
      * which returns the sd_worker thread before it sets sd_boot_ready), do NOT
      * spin forever feeding the watchdog — give up, flag fatal, and let the device
