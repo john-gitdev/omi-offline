@@ -95,28 +95,30 @@ class DiagPill extends StatelessWidget {
     final bg = isSegment
         ? (on ? Colors.white.withValues(alpha: 0.12) : Colors.transparent)
         : level.color.withValues(alpha: 0.12);
+    // Interactive pills (the baseline selector, the event filters, the capture switch)
+    // get a roomier box than the read-only status pills. Keyed on `selected`, which is
+    // what marks a pill interactive, NOT on `onTap`: a pill disabled mid-action still
+    // occupies its slot, and sizing by onTap made the header shrink during a BLE write.
+    final pill = Container(
+      padding: isSegment
+          ? const EdgeInsets.symmetric(horizontal: 12, vertical: 7)
+          : const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: isSegment && !on ? const Color(0xFF2C2C2E) : fg.withValues(alpha: 0.35)),
+      ),
+      child: Text(text, style: TextStyle(color: fg, fontSize: 11, fontWeight: FontWeight.w600)),
+    );
+    if (!isSegment) return pill;
+    // Even roomier, the painted pill is only ~28 dp tall — under any reliable touch
+    // target. Centre it in a 44 dp band with opaque hit testing so the whole band
+    // responds while the pill itself stays small: a header dense with chips would look
+    // wrong at 44 dp of painted pill, and inflating it is not what makes it tappable.
     return GestureDetector(
       onTap: onTap,
-      // Interactive pills (the baseline selector, the event filters, the capture
-      // switch) get a roomier box than the read-only status pills — at the status size
-      // they were a ~20 px target, which is a miss more often than a hit. Keyed on
-      // `selected`, which marks a pill as interactive, NOT on `onTap`: a pill disabled
-      // mid-action still occupies its slot, and sizing by onTap made the header shrink
-      // while a BLE write was in flight.
-      child: Container(
-        padding: isSegment
-            ? const EdgeInsets.symmetric(horizontal: 12, vertical: 7)
-            : const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-        decoration: BoxDecoration(
-          color: bg,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: isSegment && !on ? const Color(0xFF2C2C2E) : fg.withValues(alpha: 0.35)),
-        ),
-        child: Text(
-          text,
-          style: TextStyle(color: fg, fontSize: 11, fontWeight: FontWeight.w600),
-        ),
-      ),
+      behavior: HitTestBehavior.opaque,
+      child: SizedBox(height: 44, child: Center(child: pill)),
     );
   }
 }
