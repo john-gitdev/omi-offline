@@ -751,12 +751,10 @@ static int sd_recover_remount(void)
     sd_enable_power(false);
     k_msleep(50);
 
-    int rc = sd_mount(false); /* recovery: never format — may hold un-synced audio */
-    if (rc != 0) {
-        LOG_ERR("[SD_WORK] SD remount failed: %d — staying blocked", rc);
-        return rc;
-    }
-
+    /* Abandon the open segment BEFORE attempting the mount, not after it succeeds.
+     * The power-cycle has already invalidated it either way, and if the mount fails
+     * this is what stops the write path's backoff buffering from staging audio into
+     * a card that is powered off — that guard keys on current_filename. */
     k_mutex_lock(&current_filename_lock, K_FOREVER);
     current_filename[0] = '\0';
     k_mutex_unlock(&current_filename_lock);
@@ -764,6 +762,13 @@ static int sd_recover_remount(void)
     ring_bytes_since_sync = 0;
     ring_pending_explicit_rotate = false;
     invalidate_file_cache();
+
+    int rc = sd_mount(false); /* recovery: never format — may hold un-synced audio */
+    if (rc != 0) {
+        LOG_ERR("[SD_WORK] SD remount failed: %d — staying blocked", rc);
+        return rc;
+    }
+
     LOG_INF("[SD_WORK] SD remounted — resuming writes in a fresh segment");
     return 0;
 }
