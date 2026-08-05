@@ -930,6 +930,14 @@ uint64_t sd_ring_used_bytes(void)
     return ring_mounted ? (head_abs - tail_abs) : 0;
 }
 
+size_t sd_ring_stage_headroom(void)
+{
+    if (!ring_mounted || stage_fill >= RING_STAGE_BYTES) {
+        return 0;
+    }
+    return (size_t) (RING_STAGE_BYTES - stage_fill);
+}
+
 uint64_t sd_ring_free_bytes(void)
 {
     if (!ring_mounted) {
