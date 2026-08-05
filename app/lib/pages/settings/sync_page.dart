@@ -1576,7 +1576,12 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           // you can only reach via the other one is not independent. This also makes
           // the counters/events split structural rather than a special case inside the
           // loading branch.
-          if (devProvider.diagLogSupported) _buildEventsGroup(devProvider, _dropStats),
+          // Gated on the live connection as well as the capability: the capability is
+          // only ever set on connect and never cleared, so without this the group
+          // outlived the link — showing the last session's records as current and
+          // offering Pull/Clear/capture controls that silently do nothing, since every
+          // one of them needs a connection.
+          if (devProvider.isConnected && devProvider.diagLogSupported) _buildEventsGroup(devProvider, _dropStats),
           if (enabled) _buildBaselineActions(),
         ],
       ),
@@ -2174,6 +2179,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 // app-side debug log above. Skipped when the record post-dates the
                 // read (a notification can land between batches), which would
                 // otherwise render a wall clock in the future.
+                //
+                // Also absent when the counters switch is off, since nothing is reading
+                // uptime — events then show device uptime only, which is what this log
+                // showed everywhere before this change. Deliberately NOT solved by
+                // retaining the last anchor across the switch being off: an anchor from
+                // before a reboot maps the new boot's uptimes to confidently wrong wall
+                // clocks, and a wrong timestamp in a diagnostics tool is worse than an
+                // absent one.
                 final wall = stats != null && stats.currentUptimeMs >= r.uptimeMs
                     ? stats.readAt.subtract(Duration(milliseconds: stats.currentUptimeMs - r.uptimeMs))
                     : null;
