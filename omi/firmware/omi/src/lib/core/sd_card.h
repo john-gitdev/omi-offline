@@ -110,11 +110,19 @@ int app_sd_init(void);
 bool sd_is_boot_ready(void);
 
 /**
- * @brief Check whether a TMP→UTC filename rename is currently in flight.
+ * @brief Check whether the post-time-sync segment rotation is still in flight.
  *
  * Set when sd_notify_time_synced() is called; cleared by the SD worker once it has
  * rotated to a UTC-keyed segment. The storage thread polls this before responding
- * to CMD_LIST_FILES so it never returns uptime-stamped entries.
+ * to CMD_LIST_FILES so the list is not built mid-rotation.
+ *
+ * It does NOT mean the list comes back free of uptime-keyed entries. Segments
+ * recorded before the sync keep their uptime key permanently — the ring has no
+ * directory to rename, so the app anchors them from each segment's inline
+ * 0xFFFFFFFB header and shows them as "Unorganized". Only the LittleFS backend
+ * ever made that guarantee, via a retroactive TMP→UTC rename walker that was
+ * removed with it in oo-2.9.0.
+ *
  * Safe to call from any thread.
  */
 bool sd_is_timesync_rename_pending(void);
