@@ -88,10 +88,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   // Bumped whenever the subscription intent is invalidated (teardown / stop) so an
   // in-flight subscribe or a stale onClosed can't act on a superseded generation.
   int _dropSubGen = 0;
-  // Device the currently-shown diagnostics belong to. When the connected device changes
-  // we must clear the per-device state (stats, peak high-water, baselines) so the new
-  // device doesn't inherit the previous one's numbers.
-  String? _dropDeviceId;
+  // Latest counter snapshot. Deliberately not cleared on a device change: only one Omi
+  // is ever paired and connected, so there is no switch for it to survive (see "One Omi
+  // at a time" in CLAUDE.md). A reconnect re-subscribes and overwrites it.
   DeviceDropStats? _dropStats;
   // Active storage backend read once per subscription (0=LittleFS, 1=ring). null
   // until read, or when the firmware predates the status_flags field.
@@ -669,19 +668,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
     final dev = deviceProvider.connectedDevice;
     if (dev == null) return;
-    // Connected device changed → the previous device's counters, peak high-water, and
-    // baselines no longer apply. Clear them (and re-restore baselines for the new device)
-    // so its lower peak doesn't read inflated and the old baseline can't suppress its
-    // drops. Runs before the health check so it fires even when the old sub still looks
-    // "healthy".
-    if (_dropDeviceId != null && _dropDeviceId != dev.id) {
-      _resetPerDeviceDiagnostics();
-    }
-    _dropDeviceId = dev.id;
-    // Fast path only if the live subscription belongs to the *currently* connected
-    // device. A device switch while this page stays mounted must tear down and
-    // re-subscribe; otherwise the card keeps showing the previous device's counters.
-    if (_dropSubHealthy && _dropConn?.device.id == dev.id) {
+    // No dev.id comparison here on purpose: with one paired Omi the live subscription
+    // can only belong to the connected device, and a disconnect closes the stream —
+    // which drops the sub and fails _dropSubHealthy — so a dead link cannot survive
+    // this check either.
+    if (_dropSubHealthy) {
       // Sub already healthy — but retry the one-shot backend read here so a read
       // skipped earlier (device was mid-sync) still resolves instead of staying "—".
       final healthyConn = _dropConn;
@@ -693,7 +684,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     await _dropMutex.acquire();
     try {
       // Re-check under the lock — a teardown/subscribe may have run while we waited.
-      if (_dropSubHealthy && _dropConn?.device.id == dev.id) return;
+      if (_dropSubHealthy) return;
       // Tear down any dead/silent subscription first (awaited, under the lock) so the
       // transport's stream controller is gone before we re-subscribe — otherwise
       // getCharacteristicStream reuses the stale controller and skips the CCCD write.
@@ -753,6 +744,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (_baselineRestored) return;
     _baselineRestored = true;
     final prefs = SharedPreferencesUtil();
+    // Sweep the device-id-suffixed baselines from when this screen keyed them per
+    // device. Their value isn't carried forward — same call as the pre-JSON baseline
+    // below: a baseline is display-only, so the user re-taps once if they still want
+    // one, and that beats guessing which suffixed key was the current device's.
+    unawaited(prefs.clearLegacyPerDeviceBaselines());
 
     // SD-drop / lifecycle baseline: app-side, covers every boot-relative counter
     // (all of them reset to 0 when the device reboots). Discarded on reboot —
@@ -760,11 +756,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // can move one backwards), which the saved baseline would otherwise
     // over-subtract. Uptime is intentionally not used for this: it wraps every
     // ~49.7 days on the firmware's uint32-ms clock, which is not a reboot.
-    final savedJson = prefs.getString(_devKey(_kBaselineJson));
+    final savedJson = prefs.getString(_kBaselineJson);
     if (savedJson.isNotEmpty) {
       final saved = DeviceDropStats.fromBaselineJson(savedJson);
       if (saved == null || stats.looksRebootedFrom(saved)) {
-        unawaited(prefs.remove(_devKey(_kBaselineJson)));
+        unawaited(prefs.remove(_kBaselineJson));
       } else {
         setState(() => _dropBaseline = saved);
       }
@@ -781,19 +777,19 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // BLE connect-fail baselines: SURVIVE reboot (firmware counters are flash-
     // persisted). Only discard if a counter went backwards — i.e. the device's
     // flash was wiped / re-flashed below the saved baseline.
-    final savedConnFail = prefs.getInt(_devKey(_kBaselineConnFail), defaultValue: -1);
+    final savedConnFail = prefs.getInt(_kBaselineConnFail, defaultValue: -1);
     if (savedConnFail >= 0) {
       if (stats.failedConnCount < savedConnFail) {
-        unawaited(prefs.remove(_devKey(_kBaselineConnFail)));
+        unawaited(prefs.remove(_kBaselineConnFail));
       } else {
         setState(() => _connFailBaseline = savedConnFail);
       }
     }
 
-    final savedEstabFail = prefs.getInt(_devKey(_kBaselineEstabFail), defaultValue: -1);
+    final savedEstabFail = prefs.getInt(_kBaselineEstabFail, defaultValue: -1);
     if (savedEstabFail >= 0) {
       if (stats.estabFailCount < savedEstabFail) {
-        unawaited(prefs.remove(_devKey(_kBaselineEstabFail)));
+        unawaited(prefs.remove(_kBaselineEstabFail));
       } else {
         setState(() => _estabFailBaseline = savedEstabFail);
       }
@@ -803,7 +799,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   void _snapshotDropBaseline() {
     final stats = _dropStats;
     if (stats == null) return;
-    unawaited(SharedPreferencesUtil().saveString(_devKey(_kBaselineJson), stats.toBaselineJson()));
+    unawaited(SharedPreferencesUtil().saveString(_kBaselineJson, stats.toBaselineJson()));
     setState(() => _dropBaseline = stats);
   }
 
@@ -811,8 +807,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final stats = _dropStats;
     if (stats == null) return;
     final prefs = SharedPreferencesUtil();
-    unawaited(prefs.saveInt(_devKey(_kBaselineConnFail), stats.failedConnCount));
-    unawaited(prefs.saveInt(_devKey(_kBaselineEstabFail), stats.estabFailCount));
+    unawaited(prefs.saveInt(_kBaselineConnFail, stats.failedConnCount));
+    unawaited(prefs.saveInt(_kBaselineEstabFail, stats.estabFailCount));
     setState(() {
       _connFailBaseline = stats.failedConnCount;
       _estabFailBaseline = stats.estabFailCount;
@@ -834,26 +830,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // since-boot high-water mark, so a "reset" would snap straight back on the next
     // reading. It's labelled "(since boot)" and excluded from the baseline.
   }
-
-  // Clears everything that is specific to one device, so a device switch doesn't carry
-  // the previous device's numbers over. `_baselineRestored` is reset so the new device's
-  // own persisted baseline (if any) is re-restored on the next tick.
-  void _resetPerDeviceDiagnostics() {
-    if (!mounted) return;
-    setState(() {
-      _dropStats = null;
-      _lastStatsElapsed = null;
-      _storageBackend = null;
-      _dropBaseline = null;
-      _connFailBaseline = null;
-      _estabFailBaseline = null;
-      _baselineRestored = false;
-    });
-  }
-
-  // Baselines belong to one device, not globally — a device switch must not apply
-  // device A's reset baseline to device B. Suffix each pref key with the device id.
-  String _devKey(String base) => '${base}_${_dropDeviceId ?? 'unknown'}';
 
   /// Counts `.bin` files in the isolated Adjustment Mode folder.
   Future<void> _refreshAdjustmentBinCount() async {
@@ -903,7 +879,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (mounted) {
       setState(() {
         _progress = percentage;
-        _statusMessage = 'Downloading segments: ${(percentage * 100).toStringAsFixed(1)}% '
+        _statusMessage =
+            'Downloading segments: ${(percentage * 100).toStringAsFixed(1)}% '
             '${speedKBps != null && speedKBps > 0 ? '(${speedKBps.toStringAsFixed(1)} KB/s)' : ''}';
       });
     }
@@ -1279,10 +1256,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Widget _optionCard({required Widget child}) => Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(16)),
-        child: child,
-      );
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(16)),
+    child: child,
+  );
 
   Future<void> _shareDebugLogs() async {
     final files = await DebugLogManager.listLogFiles();
@@ -1346,8 +1323,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   Widget _buildAdjustmentModeSection() {
     final on = SharedPreferencesUtil().adjustmentMode;
     final enabledAtMs = SharedPreferencesUtil().adjustmentModeEnabledAt;
-    final enabledAtLabel =
-        enabledAtMs > 0 ? DateFormat('MMM d, h:mm a').format(DateTime.fromMillisecondsSinceEpoch(enabledAtMs)) : '—';
+    final enabledAtLabel = enabledAtMs > 0
+        ? DateFormat('MMM d, h:mm a').format(DateTime.fromMillisecondsSinceEpoch(enabledAtMs))
+        : '—';
 
     // Styled as an option card, not a readout panel: since the toggles were grouped
     // it sits beside Keep Screen On / Save Debug Logs, and the panel styling made it
@@ -1619,15 +1597,15 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Widget _diagPlaceholder(String message) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Row(
-          children: [
-            const FaIcon(FontAwesomeIcons.circleNotch, size: 12, color: Colors.white38),
-            const SizedBox(width: 8),
-            Text(message, style: const TextStyle(color: Colors.white38, fontSize: 12)),
-          ],
-        ),
-      );
+    padding: const EdgeInsets.symmetric(vertical: 8),
+    child: Row(
+      children: [
+        const FaIcon(FontAwesomeIcons.circleNotch, size: 12, color: Colors.white38),
+        const SizedBox(width: 8),
+        Text(message, style: const TextStyle(color: Colors.white38, fontSize: 12)),
+      ],
+    ),
+  );
 
   Widget _buildDiagnosticsBody() {
     final devProvider = Provider.of<DeviceProvider>(context);
@@ -1746,16 +1724,18 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // The event log is part of this card, so it has to count toward the card's
     // verdict: without this the banner read "All clear" over a red advertising-fail
     // or wedged-mic entry sitting a few rows below it.
-    final eventLevels =
-        devProvider.diagLogSupported ? devProvider.diagLogRecords.map(diagEventLevel).toList() : const <DiagLevel>[];
+    final eventLevels = devProvider.diagLogSupported
+        ? devProvider.diagLogRecords.map(diagEventLevel).toList()
+        : const <DiagLevel>[];
     final eventFaults = eventLevels.where((l) => l == DiagLevel.bad).length;
     final eventWarns = eventLevels.where((l) => l == DiagLevel.warn).length;
     if (eventFaults > 0) problems.add('$eventFaults event fault${eventFaults == 1 ? '' : 's'}');
     if (eventWarns > 0) watches.add('$eventWarns event warning${eventWarns == 1 ? '' : 's'}');
 
     final uptime = _formatDuration(stats.currentUptimeMs);
-    final DiagLevel verdict =
-        problems.isNotEmpty ? DiagLevel.bad : (watches.isNotEmpty ? DiagLevel.warn : DiagLevel.ok);
+    final DiagLevel verdict = problems.isNotEmpty
+        ? DiagLevel.bad
+        : (watches.isNotEmpty ? DiagLevel.warn : DiagLevel.ok);
     final String headline;
     final String detail;
     if (problems.isNotEmpty) {
@@ -1867,8 +1847,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           key: const ValueKey('diag-markers'),
           title: 'Recording markers',
           allClear: markerFlags.isEmpty,
-          clearSummary:
-              (prioStarts == 0 && prioStops == 0) ? 'no activity' : '$prioStarts started · $prioStops stopped',
+          clearSummary: (prioStarts == 0 && prioStops == 0)
+              ? 'no activity'
+              : '$prioStarts started · $prioStops stopped',
           alertSummary: _alertSummary(markerFlags),
           rows: [
             DiagStatRow('Priority recordings started', '$prioStarts'),
@@ -1997,9 +1978,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           child: Text(
             hasBaseline
                 ? 'Counters read as a delta from the marked baseline. Nothing was cleared on the device — switch to '
-                    'Lifetime for its own totals. Since-boot gauges (queue peak, stacks, uptime) stay live in both views.'
+                      'Lifetime for its own totals. Since-boot gauges (queue peak, stacks, uptime) stay live in both views.'
                 : 'Mark baseline snapshots the current values so the drop and failure counters read 0 from now on. '
-                    'Display only — the device keeps its own totals until it reboots.',
+                      'Display only — the device keeps its own totals until it reboots.',
             style: const TextStyle(color: Colors.white38, fontSize: 11, height: 1.3),
           ),
         ),

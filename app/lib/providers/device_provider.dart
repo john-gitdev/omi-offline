@@ -1708,10 +1708,11 @@ class DeviceProvider extends ChangeNotifier
         // refreshing would strand it — invisible new services until some
         // unrelated teardown clears the cache. Refresh once per device.
         //
-        // This is deliberately per-device and NOT gated on a global one-shot: a
-        // phone can be bonded to several Omis, and one global flag cannot
-        // express a per-device fact — the first device seen would consume the
-        // flag and every other bonded device would skip the refresh it needs.
+        // This is deliberately per-device and NOT gated on a global one-shot: the
+        // key expresses a per-device fact, so that a replacement unit still gets
+        // its one refresh instead of being skipped by a flag the previous unit
+        // consumed. Only one Omi is paired at a time, so this is about hardware
+        // being swapped, not about two devices in use together.
         // The cost of being unable to tell "predates fingerprinting" from
         // "freshly paired, cache already clean" is one wasted reconnect per
         // device, once, which is far cheaper than stranding a device for good.
