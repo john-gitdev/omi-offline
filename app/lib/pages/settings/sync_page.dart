@@ -879,8 +879,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (mounted) {
       setState(() {
         _progress = percentage;
-        _statusMessage =
-            'Downloading segments: ${(percentage * 100).toStringAsFixed(1)}% '
+        _statusMessage = 'Downloading segments: ${(percentage * 100).toStringAsFixed(1)}% '
             '${speedKBps != null && speedKBps > 0 ? '(${speedKBps.toStringAsFixed(1)} KB/s)' : ''}';
       });
     }
@@ -1256,10 +1255,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Widget _optionCard({required Widget child}) => Container(
-    padding: const EdgeInsets.all(16),
-    decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(16)),
-    child: child,
-  );
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(16)),
+        child: child,
+      );
 
   Future<void> _shareDebugLogs() async {
     final files = await DebugLogManager.listLogFiles();
@@ -1323,9 +1322,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   Widget _buildAdjustmentModeSection() {
     final on = SharedPreferencesUtil().adjustmentMode;
     final enabledAtMs = SharedPreferencesUtil().adjustmentModeEnabledAt;
-    final enabledAtLabel = enabledAtMs > 0
-        ? DateFormat('MMM d, h:mm a').format(DateTime.fromMillisecondsSinceEpoch(enabledAtMs))
-        : '—';
+    final enabledAtLabel =
+        enabledAtMs > 0 ? DateFormat('MMM d, h:mm a').format(DateTime.fromMillisecondsSinceEpoch(enabledAtMs)) : '—';
 
     // Styled as an option card, not a readout panel: since the toggles were grouped
     // it sits beside Keep Screen On / Save Debug Logs, and the panel styling made it
@@ -1597,15 +1595,15 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Widget _diagPlaceholder(String message) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 8),
-    child: Row(
-      children: [
-        const FaIcon(FontAwesomeIcons.circleNotch, size: 12, color: Colors.white38),
-        const SizedBox(width: 8),
-        Text(message, style: const TextStyle(color: Colors.white38, fontSize: 12)),
-      ],
-    ),
-  );
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(
+          children: [
+            const FaIcon(FontAwesomeIcons.circleNotch, size: 12, color: Colors.white38),
+            const SizedBox(width: 8),
+            Text(message, style: const TextStyle(color: Colors.white38, fontSize: 12)),
+          ],
+        ),
+      );
 
   Widget _buildDiagnosticsBody() {
     final devProvider = Provider.of<DeviceProvider>(context);
@@ -1647,9 +1645,16 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final peakHot = peak >= (stats.sdQueueMax * 0.8).round();
 
     // Peak thread stack usage vs the configured stack sizes (firmware constants,
-    // oo-2.7.2+: SD_WORKER_STACK_SIZE=12288, codec_stack=23096). Gauges, shown raw.
+    // oo-2.7.2+: codec_stack=23096). Gauges, shown raw.
+    //
+    // sd_worker is 12288 in production but (12288 - DIAG_LOG_RING_BYTES) = 10240 on a
+    // CONFIG_OMI_DIAG_LOG build, which carves the diag-event ring out of that stack.
+    // That macro is also the only thing that sets OmiFeatures.diagLog, so
+    // diagLogSupported is an exact proxy for which size is compiled in. Hardcoding the
+    // production 12288 understated the fill on every dev build and — worse — put the
+    // 85% warn line at 10445 B, above the entire 10240 B stack, so it could not fire.
     // Keep in sync with the firmware or the fill fraction is wrong.
-    const int sdWorkerStackSize = 12288;
+    final int sdWorkerStackSize = devProvider.diagLogSupported ? 12288 - 2048 : 12288;
     const int codecStackSize = 23096;
     String stackLabel(int used, int size) =>
         used == 0 ? '—' : '${(used / 1024).toStringAsFixed(1)} / ${(size / 1024).toStringAsFixed(1)} KB';
@@ -1724,18 +1729,16 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // The event log is part of this card, so it has to count toward the card's
     // verdict: without this the banner read "All clear" over a red advertising-fail
     // or wedged-mic entry sitting a few rows below it.
-    final eventLevels = devProvider.diagLogSupported
-        ? devProvider.diagLogRecords.map(diagEventLevel).toList()
-        : const <DiagLevel>[];
+    final eventLevels =
+        devProvider.diagLogSupported ? devProvider.diagLogRecords.map(diagEventLevel).toList() : const <DiagLevel>[];
     final eventFaults = eventLevels.where((l) => l == DiagLevel.bad).length;
     final eventWarns = eventLevels.where((l) => l == DiagLevel.warn).length;
     if (eventFaults > 0) problems.add('$eventFaults event fault${eventFaults == 1 ? '' : 's'}');
     if (eventWarns > 0) watches.add('$eventWarns event warning${eventWarns == 1 ? '' : 's'}');
 
     final uptime = _formatDuration(stats.currentUptimeMs);
-    final DiagLevel verdict = problems.isNotEmpty
-        ? DiagLevel.bad
-        : (watches.isNotEmpty ? DiagLevel.warn : DiagLevel.ok);
+    final DiagLevel verdict =
+        problems.isNotEmpty ? DiagLevel.bad : (watches.isNotEmpty ? DiagLevel.warn : DiagLevel.ok);
     final String headline;
     final String detail;
     if (problems.isNotEmpty) {
@@ -1847,9 +1850,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           key: const ValueKey('diag-markers'),
           title: 'Recording markers',
           allClear: markerFlags.isEmpty,
-          clearSummary: (prioStarts == 0 && prioStops == 0)
-              ? 'no activity'
-              : '$prioStarts started · $prioStops stopped',
+          clearSummary:
+              (prioStarts == 0 && prioStops == 0) ? 'no activity' : '$prioStarts started · $prioStops stopped',
           alertSummary: _alertSummary(markerFlags),
           rows: [
             DiagStatRow('Priority recordings started', '$prioStarts'),
@@ -1978,9 +1980,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           child: Text(
             hasBaseline
                 ? 'Counters read as a delta from the marked baseline. Nothing was cleared on the device — switch to '
-                      'Lifetime for its own totals. Since-boot gauges (queue peak, stacks, uptime) stay live in both views.'
+                    'Lifetime for its own totals. Since-boot gauges (queue peak, stacks, uptime) stay live in both views.'
                 : 'Mark baseline snapshots the current values so the drop and failure counters read 0 from now on. '
-                      'Display only — the device keeps its own totals until it reboots.',
+                    'Display only — the device keeps its own totals until it reboots.',
             style: const TextStyle(color: Colors.white38, fontSize: 11, height: 1.3),
           ),
         ),
