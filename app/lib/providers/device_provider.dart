@@ -171,9 +171,6 @@ class DeviceProvider extends ChangeNotifier
   List<DiagLogRecord> diagLogRecords = [];
   int diagLogDroppedCount = 0;
   DateTime? diagLogLastPulledAt;
-  // Device the cached diag-log records + capability belong to, so they can't outlive
-  // a device switch (see _finishDeviceSetup).
-  String? _diagLogDeviceId;
 
   void _loadCrashLogs() {
     try {
@@ -1927,20 +1924,9 @@ class DeviceProvider extends ChangeNotifier
       // leave the prior capability state and retry on the next idle connect. The drain
       // itself also self-skips on the same lock.
       //
-      // Scope the cache to one device FIRST, outside the null check. The clear below
-      // only runs when the capability read succeeds, so a device switch whose read is
-      // skipped (a sync owns the lock) would otherwise leave the previous device's
-      // records on screen — and, since they feed the Debug Tools verdict, attributed
-      // to the device now connected. The capability itself resets too: until this
-      // device has been read, it is unknown rather than whatever the last one was.
-      if (_diagLogDeviceId != null && _diagLogDeviceId != device.id) {
-        diagLogSupported = false;
-        diagLogRecords = [];
-        diagLogDroppedCount = 0;
-        diagLogLastPulledAt = null;
-      }
-      _diagLogDeviceId = device.id;
-
+      // The cache is deliberately NOT device-scoped: only one Omi is ever paired and
+      // connected, so records can't be carried across a device switch and it isn't a
+      // case worth holding code for.
       final int? deviceFeatures = await conn.getFeaturesIfIdle();
       if (deviceFeatures != null) {
         diagLogSupported = (deviceFeatures & OmiFeatures.diagLog) != 0;
