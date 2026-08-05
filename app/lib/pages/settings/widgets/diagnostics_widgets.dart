@@ -112,13 +112,23 @@ class DiagPill extends StatelessWidget {
     );
     if (!isSegment) return pill;
     // Even roomier, the painted pill is only ~28 dp tall — under any reliable touch
-    // target. Centre it in a 44 dp band with opaque hit testing so the whole band
-    // responds while the pill itself stays small: a header dense with chips would look
-    // wrong at 44 dp of painted pill, and inflating it is not what makes it tappable.
+    // target. Give it a 44 dp minimum in BOTH axes with opaque hit testing, so the
+    // whole box responds while the pill itself stays small: a header dense with chips
+    // would look wrong at 44 dp of painted pill, and the paint is not what catches the
+    // touch.
+    //
+    // widthFactor/heightFactor pin the Align to its child. Without them it expands to
+    // whatever the parent allows, which inside the filter Wrap meant every chip took
+    // the full row width and the five of them stacked vertically. A bare
+    // SizedBox(height: 44) has the same flaw — it constrains one axis and passes the
+    // parent's width straight through.
     return GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
-      child: SizedBox(height: 44, child: Center(child: pill)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+        child: Center(widthFactor: 1, heightFactor: 1, child: pill),
+      ),
     );
   }
 }
