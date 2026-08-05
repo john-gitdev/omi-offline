@@ -73,6 +73,19 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   bool isInstalling = false;
   bool isInstalled = false;
   int installProgress = 0;
+
+  // A DFU bundle for the nRF5340 carries two images (app core + net core), and the
+  // uploader reports bytesSent/imageSize for whichever one it is on. Reported raw,
+  // that ran the bar 0→100 twice under one "Installing firmware…" label, so the page
+  // looked like it was installing the firmware a second time. These fold the
+  // per-image reports into one monotonic percentage over the whole flash, and let the
+  // page name the part being written. See [_applyDfuProgress].
+  int installImageIndex = 0; // 0-based index of the image currently uploading
+  int installImageCount = 1;
+  int _dfuTotalBytes = 0;
+  int _dfuCompletedBytes = 0; // bytes belonging to images already finished
+  int _dfuLastBytesSent = 0;
+  int _dfuLastImageSize = 0;
   bool isLegacySecureDFU = true;
   List<String> otaUpdateSteps = [];
   final mcumgr.FirmwareUpdateManagerFactory? managerFactory = mcumgr.FirmwareUpdateManagerFactory();
@@ -330,6 +343,26 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     Provider.of<DeviceProvider>(context, listen: false).resetFirmwareUpdateState();
   }
 
+  /// Folds the uploader's per-image progress into one monotonic 0–100 %.
+  ///
+  /// A drop in `bytesSent` is the only signal the bridge gives that it moved on to
+  /// the next image, so bank the finished one there and add the running one on top.
+  /// Safe if a platform ever reports cumulative bytes against the bundle total
+  /// instead: nothing regresses, so the banked total stays 0 and the fraction is
+  /// already the overall one. Falls back to the reported image size when the bundle
+  /// total is unknown, which just restores the old per-image behaviour.
+  void _applyDfuProgress(int bytesSent, int imageSize) {
+    if (bytesSent < _dfuLastBytesSent) {
+      _dfuCompletedBytes += _dfuLastImageSize;
+      if (installImageIndex + 1 < installImageCount) installImageIndex++;
+    }
+    _dfuLastBytesSent = bytesSent;
+    _dfuLastImageSize = imageSize;
+    final total = _dfuTotalBytes > 0 ? _dfuTotalBytes : imageSize;
+    if (total <= 0) return;
+    installProgress = (((_dfuCompletedBytes + bytesSent) / total) * 100).round().clamp(0, 100);
+  }
+
   Future<void> startMCUDfu(BtDevice btDevice, {bool fileInAssets = false, String? zipFilePath}) async {
     _dfuTerminated = false;
     setState(() {
@@ -365,6 +398,15 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       _handleDfuFailure('Could not start the update. Please try again.');
       return;
     }
+
+    // Reset the multi-image progress fold for this attempt (a retry re-enters here).
+    installImageIndex = 0;
+    installImageCount = images.length;
+    _dfuTotalBytes = images.fold<int>(0, (sum, image) => sum + image.data.length);
+    _dfuCompletedBytes = 0;
+    _dfuLastBytesSent = 0;
+    _dfuLastImageSize = 0;
+    installProgress = 0;
 
     final updateStream = updateManager.setup();
 
@@ -402,9 +444,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       Logger.debug('progress: $progress');
       _armDfuStallWatchdog();
       if (mounted) {
-        setState(() {
-          installProgress = (progress.bytesSent / progress.imageSize * 100).round();
-        });
+        setState(() => _applyDfuProgress(progress.bytesSent, progress.imageSize));
       }
     });
 
@@ -428,6 +468,9 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   Future<void> startLegacyDfu(BtDevice btDevice, {bool fileInAssets = false, String? zipFilePath}) async {
     setState(() {
       isInstalling = true;
+      installImageIndex = 0;
+      installImageCount = 1;
+      installProgress = 0;
     });
     await Provider.of<DeviceProvider>(context, listen: false).prepareDFU();
     await Future.delayed(const Duration(seconds: 2));
@@ -446,9 +489,14 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       ),
       androidSpecialParameter: const AndroidSpecialParameter(packetReceiptNotificationsEnabled: true, rebootTime: 1000),
       onProgressChanged: (deviceAddress, percent, speed, avgSpeed, currentPart, partsTotal) {
-        Logger.debug('deviceAddress: $deviceAddress, percent: $percent');
+        Logger.debug('deviceAddress: $deviceAddress, percent: $percent, part: $currentPart/$partsTotal');
         setState(() {
-          installProgress = percent.toInt();
+          // Same one-bar-for-the-whole-flash rule as the MCU path, using the part
+          // indices Nordic hands us directly.
+          final parts = partsTotal > 0 ? partsTotal : 1;
+          installImageCount = parts;
+          installImageIndex = (currentPart - 1).clamp(0, parts - 1);
+          installProgress = (((installImageIndex * 100 + percent) / parts).round()).clamp(0, 100);
         });
       },
       onError: (deviceAddress, error, errorType, message) {
