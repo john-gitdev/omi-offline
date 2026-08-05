@@ -80,8 +80,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   // Serializes subscribe vs teardown so an async teardown's BLE unsubscribe can't
   // land on a freshly re-subscribed stream (fast Show-Diagnostics off/on).
   final Mutex _dropMutex = Mutex();
-  // Serializes event-log gate writes so a flip is never dropped (see _pushDiagLogGate).
-  final Mutex _diagGateMutex = Mutex();
   // _dropClock.elapsed when _dropStats was last replaced, by either the notify or the
   // READ path. Drives the freshness pill. Monotonic for the same reason the
   // subscription watchdog is: a backward wall-clock adjustment (NTP/DST/manual) would
@@ -192,43 +190,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (ref != null && _dropClock.elapsed - ref > _dropReadFallbackAfter) {
       await _readDropStatsFallback();
     }
-    await _reconcileDiagLogGate();
-    if (!mounted) return;
     // Rebuild every tick even when no new data arrived, so the freshness pill ages
     // honestly. Without this a link that goes silent leaves the card showing frozen
     // counters under a stale "live" badge — the exact failure the pill exists to
     // expose. Cheap: this page is a debug screen and the tick is 2 s.
     if (_dropPollTimer != null) setState(() {});
-  }
-
-  /// Bring the firmware's event-log gate in line with the merged Diagnostics switch.
-  ///
-  /// The switch writes `diagLogEnabled` when it is flipped, but that alone leaves two
-  /// ways for it to sit "on" while half of what it claims to control is off:
-  ///   * the capability is unknown until a device connects, so flipping the switch
-  ///     while disconnected skips the event-log half entirely — and the connect path
-  ///     then pushes the stale `false` it finds; and
-  ///   * anyone who had counter polling on from before the two were merged already
-  ///     has `showSdWriteDrops` true with `diagLogEnabled` false, and never flips the
-  ///     switch again to correct it.
-  /// Running from the poll tick means it self-heals on the first idle connect, and is
-  /// a cheap no-op on every tick after the two agree.
-  Future<void> _reconcileDiagLogGate() async {
-    final prefs = SharedPreferencesUtil();
-    if (!prefs.showSdWriteDrops || !mounted) return;
-    final devProvider = context.read<DeviceProvider>();
-    if (!devProvider.diagLogSupported) return;
-    // Counters on implies event capture on — that is what the merged switch means.
-    if (!prefs.diagLogEnabled) prefs.diagLogEnabled = true;
-    // Converge on a mismatch rather than firing once: as a one-shot keyed on the pref,
-    // this could not retry a push the storage lock had refused, and could not notice a
-    // reconnect that left the device's gate unwritten. Comparing against what actually
-    // landed makes it a no-op on every tick once the two agree, and self-correcting
-    // when they don't.
-    if ((devProvider.diagLogGateApplied ?? false) == prefs.diagLogEnabled) return;
-    if (await _pushDiagLogGate() && mounted) {
-      await _runDiagLogAction(() => devProvider.pullDiagLog());
-    }
   }
 
   /// Direct READ of the drop counters (0x0062), the MTU-agnostic fallback when the
@@ -932,8 +898,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (mounted) {
       setState(() {
         _progress = percentage;
-        _statusMessage =
-            'Downloading segments: ${(percentage * 100).toStringAsFixed(1)}% '
+        _statusMessage = 'Downloading segments: ${(percentage * 100).toStringAsFixed(1)}% '
             '${speedKBps != null && speedKBps > 0 ? '(${speedKBps.toStringAsFixed(1)} KB/s)' : ''}';
       });
     }
@@ -978,72 +943,40 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
   }
 
-  /// The single Diagnostics switch. It drives BOTH halves of what used to be two
-  /// separate, independently-toggled sections:
-  ///   * app-side counter polling (`showSdWriteDrops`), and
-  ///   * the firmware's on-device event-log capture gate (`diagLogEnabled`, 0x0064).
+  /// The Diagnostics switch: app-side counter polling, and nothing else.
   ///
-  /// They were always used together — the counters total the same health events the
-  /// event log timestamps — and splitting them meant a bench session routinely ran
-  /// with half the instrumentation on. The two prefs stay separate underneath
-  /// because they drive different mechanisms (a Dart timer vs a firmware write) and
-  /// `diagLogEnabled` is re-pushed from the connect path in DeviceProvider.
-  ///
-  /// The event-log half is skipped on firmware without the capability bit, where the
-  /// gate write is swallowed anyway.
-  Future<void> _setDiagnosticsEnabled(bool val) async {
-    final prefs = SharedPreferencesUtil();
-    prefs.showSdWriteDrops = val;
+  /// It deliberately does NOT drive the on-device event log. That gate is a BLE write
+  /// which can be refused mid-sync, resets to off whenever the device reboots, and is
+  /// re-pushed independently by DeviceProvider on connect — so a switch owning both
+  /// halves has to keep a local bool in agreement with a remote one over a link that
+  /// drops, which is where every reliability bug on this page came from. The event log
+  /// keeps its own control in the Events group, where its state is only its own.
+  void _setDiagnosticsEnabled(bool val) {
+    SharedPreferencesUtil().showSdWriteDrops = val;
     if (val) {
       _startDropPolling();
     } else {
       _stopDropPolling();
     }
     setState(() {});
-
-    // Persist the desired gate BEFORE the capability guard. Behind it, turning
-    // Diagnostics off while the capability was still unknown (disconnected, or the
-    // capability read lost its race with a sync) left `diagLogEnabled` true — and the
-    // next capable connect pushed that stale true, so the device recorded events
-    // under a switch reading off. Only the device write is capability-gated.
-    prefs.diagLogEnabled = val;
-    final devProvider = context.read<DeviceProvider>();
-    if (!devProvider.diagLogSupported) return;
-    final reached = await _pushDiagLogGate();
-    if (!reached) {
-      // The pref is kept and re-pushed on the next connect, but say so rather than
-      // implying on-device capture already flipped — in either direction.
-      _reportDiagLogResult(
-        val
-            ? 'Counters are on. The device is busy syncing — event capture starts on the next connect.'
-            : 'Counters are off. The device is busy syncing — event capture stops on the next connect.',
-      );
-      return;
-    }
-    // Pull immediately on enable so a bench session starts from a known state.
-    if (val && mounted) await _runDiagLogAction(() => devProvider.pullDiagLog());
   }
 
-  /// Serializes the event-log gate write (0x0064) so a flip can never be lost.
-  ///
-  /// Deliberately NOT routed through [_runDiagLogAction]: that drops an action while
-  /// another is in flight, which is right for the Pull/Clear buttons (swallowing a
-  /// double tap) but wrong for a state change. Switching Diagnostics off during the
-  /// reconcile's push would have had the "off" silently discarded, leaving the device
-  /// capturing until the next connect. Because [DeviceProvider.pushDiagLogEnabled]
-  /// reads the pref at call time, serializing also makes the last flip win.
-  Future<bool> _pushDiagLogGate() async {
-    await _diagGateMutex.acquire();
-    try {
-      if (!mounted) return false;
-      // pushDiagLogEnabled records what it actually wrote (diagLogGateApplied), so
-      // the pending state is derived at render time rather than tracked here.
-      return await context.read<DeviceProvider>().pushDiagLogEnabled();
-    } catch (_) {
-      return false;
-    } finally {
-      _diagGateMutex.release();
-    }
+  /// The Events group's own capture control (0x0064). Writes the pref, pushes, and
+  /// says so when the push couldn't land — DeviceProvider re-pushes on the next
+  /// connect. No local mirror of the device's gate, so there is nothing to drift.
+  void _setEventCaptureEnabled(bool val, DeviceProvider devProvider) {
+    SharedPreferencesUtil().diagLogEnabled = val;
+    setState(() {});
+    unawaited(
+      _runDiagLogAction(() async {
+        if (!await devProvider.pushDiagLogEnabled()) {
+          _reportDiagLogResult('Saved — the device is busy syncing, so it applies on the next connect.');
+          return;
+        }
+        // Pull immediately on enable so a bench session starts from a known state.
+        if (val) await devProvider.pullDiagLog();
+      }),
+    );
   }
 
   @override
@@ -1338,10 +1271,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Widget _optionCard({required Widget child}) => Container(
-    padding: const EdgeInsets.all(16),
-    decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(16)),
-    child: child,
-  );
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(16)),
+        child: child,
+      );
 
   Future<void> _shareDebugLogs() async {
     final files = await DebugLogManager.listLogFiles();
@@ -1405,9 +1338,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   Widget _buildAdjustmentModeSection() {
     final on = SharedPreferencesUtil().adjustmentMode;
     final enabledAtMs = SharedPreferencesUtil().adjustmentModeEnabledAt;
-    final enabledAtLabel = enabledAtMs > 0
-        ? DateFormat('MMM d, h:mm a').format(DateTime.fromMillisecondsSinceEpoch(enabledAtMs))
-        : '—';
+    final enabledAtLabel =
+        enabledAtMs > 0 ? DateFormat('MMM d, h:mm a').format(DateTime.fromMillisecondsSinceEpoch(enabledAtMs)) : '—';
 
     // Styled as an option card, not a readout panel: since the toggles were grouped
     // it sits beside Keep Screen On / Save Debug Logs, and the panel styling made it
@@ -1623,27 +1555,20 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   /// hundred pixels the moment counters arrive.
   Widget _buildDiagnosticsCard() {
     final enabled = SharedPreferencesUtil().showSdWriteDrops;
-    final devProvider = Provider.of<DeviceProvider>(context);
-    final hasEventLog = devProvider.diagLogSupported;
-    // Derived, not stored: the device's gate is whatever last landed, and a null
-    // (never written) is off, since the firmware gate defaults off and resets each
-    // reboot. Because DeviceProvider re-pushes on connect and notifies, a pending
-    // state clears itself the moment the write lands — a page-side flag stayed stuck
-    // reading "pending" forever, since nothing told the page the re-push had happened.
-    final gatePending =
-        hasEventLog && (devProvider.diagLogGateApplied ?? false) != SharedPreferencesUtil().diagLogEnabled;
+    // Watched so the card rebuilds when the event-log capability resolves on connect.
+    Provider.of<DeviceProvider>(context);
     return DiagCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildDiagnosticsHeader(enabled, hasEventLog, gatePending),
+          _buildDiagnosticsHeader(enabled),
           if (enabled) ...[const SizedBox(height: 12), _buildDiagnosticsBody()],
         ],
       ),
     );
   }
 
-  Widget _buildDiagnosticsHeader(bool enabled, bool hasEventLog, bool gatePending) {
+  Widget _buildDiagnosticsHeader(bool enabled) {
     return Row(
       children: [
         const FaIcon(FontAwesomeIcons.waveSquare, size: 14, color: Colors.white70),
@@ -1657,27 +1582,12 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 2),
-              // Says only what it can actually know. `hasEventLog` is false both when
-              // the firmware lacks the capability AND when it simply hasn't been read
-              // (disconnected, or the read was skipped mid-sync), so the negative
-              // branch must not assert absence. And when a gate write was deferred,
-              // the pref is not yet the device's state — say so rather than reporting
-              // the local preference as fact.
+              // Describes only what this switch does, which is entirely app-side. It
+              // makes no claim about the device — the Events group speaks for the
+              // event log, and every past wording bug here was this line trying to
+              // report state it had no way to know.
               Text(
-                !enabled
-                    // The off branch has to respect pending too: switching off while a
-                    // sync holds the storage lock leaves the device's gate ON until the
-                    // next connect, so claiming it records nothing would contradict both
-                    // the snackbar and the device.
-                    ? (gatePending
-                          ? 'Off — but the device keeps recording events until the next connect.'
-                          : 'Off — nothing is polled, and the device records no events.')
-                    : gatePending
-                    ? 'Device counters polled every 2 s. Event capture is pending — it applies on the next connect.'
-                    : hasEventLog
-                    ? 'Device counters polled every 2 s, plus the on-device event log.'
-                    : 'Device counters polled every 2 s. The on-device event log starts when a device that '
-                          'supports it connects.',
+                enabled ? 'Device counters polled every 2 s.' : 'Off — counters are not polled.',
                 style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
               ),
             ],
@@ -1689,15 +1599,15 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Widget _diagPlaceholder(String message) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 8),
-    child: Row(
-      children: [
-        const FaIcon(FontAwesomeIcons.circleNotch, size: 12, color: Colors.white38),
-        const SizedBox(width: 8),
-        Text(message, style: const TextStyle(color: Colors.white38, fontSize: 12)),
-      ],
-    ),
-  );
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(
+          children: [
+            const FaIcon(FontAwesomeIcons.circleNotch, size: 12, color: Colors.white38),
+            const SizedBox(width: 8),
+            Text(message, style: const TextStyle(color: Colors.white38, fontSize: 12)),
+          ],
+        ),
+      );
 
   Widget _buildDiagnosticsBody() {
     final devProvider = Provider.of<DeviceProvider>(context);
@@ -1829,18 +1739,16 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // The event log is part of this card, so it has to count toward the card's
     // verdict: without this the banner read "All clear" over a red advertising-fail
     // or wedged-mic entry sitting a few rows below it.
-    final eventLevels = devProvider.diagLogSupported
-        ? devProvider.diagLogRecords.map(diagEventLevel).toList()
-        : const <DiagLevel>[];
+    final eventLevels =
+        devProvider.diagLogSupported ? devProvider.diagLogRecords.map(diagEventLevel).toList() : const <DiagLevel>[];
     final eventFaults = eventLevels.where((l) => l == DiagLevel.bad).length;
     final eventWarns = eventLevels.where((l) => l == DiagLevel.warn).length;
     if (eventFaults > 0) problems.add('$eventFaults event fault${eventFaults == 1 ? '' : 's'}');
     if (eventWarns > 0) watches.add('$eventWarns event warning${eventWarns == 1 ? '' : 's'}');
 
     final uptime = _formatDuration(stats.currentUptimeMs);
-    final DiagLevel verdict = problems.isNotEmpty
-        ? DiagLevel.bad
-        : (watches.isNotEmpty ? DiagLevel.warn : DiagLevel.ok);
+    final DiagLevel verdict =
+        problems.isNotEmpty ? DiagLevel.bad : (watches.isNotEmpty ? DiagLevel.warn : DiagLevel.ok);
     final String headline;
     final String detail;
     if (problems.isNotEmpty) {
@@ -1952,9 +1860,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           key: const ValueKey('diag-markers'),
           title: 'Recording markers',
           allClear: markerFlags.isEmpty,
-          clearSummary: (prioStarts == 0 && prioStops == 0)
-              ? 'no activity'
-              : '$prioStarts started · $prioStops stopped',
+          clearSummary:
+              (prioStarts == 0 && prioStops == 0) ? 'no activity' : '$prioStarts started · $prioStops stopped',
           alertSummary: _alertSummary(markerFlags),
           rows: [
             DiagStatRow('Priority recordings started', '$prioStarts'),
@@ -2072,9 +1979,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           child: Text(
             hasBaseline
                 ? 'Counters read as a delta from the marked baseline. Nothing was cleared on the device — switch to '
-                      'Lifetime for its own totals. Since-boot gauges (queue peak, stacks, uptime) stay live in both views.'
+                    'Lifetime for its own totals. Since-boot gauges (queue peak, stacks, uptime) stay live in both views.'
                 : 'Mark baseline snapshots the current values so the drop and failure counters read 0 from now on. '
-                      'Display only — the device keeps its own totals until it reboots.',
+                    'Display only — the device keeps its own totals until it reboots.',
             style: const TextStyle(color: Colors.white38, fontSize: 11, height: 1.3),
           ),
         ),
@@ -2182,10 +2089,19 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final pulledAt = devProvider.diagLogLastPulledAt;
     if (pulledAt != null) meta.write(' · pulled ${_hhmm(pulledAt)}');
 
+    final capturing = SharedPreferencesUtil().diagLogEnabled;
     return DiagGroup(
       title: 'Events (${records.length})',
       allClear: records.isEmpty && dropped == 0,
-      clearSummary: 'nothing captured',
+      clearSummary: capturing ? 'nothing captured' : 'capture off',
+      // In the header, not the body: with no events yet the group collapses, and a
+      // capture control you must expand the group to reach is one you cannot use to
+      // start capturing.
+      headerAction: DiagPill(
+        text: capturing ? 'capture on' : 'capture off',
+        selected: capturing,
+        onTap: _diagLogBusy ? null : () => _setEventCaptureEnabled(!capturing, devProvider),
+      ),
       trailing: categories.length > 1
           ? Wrap(
               spacing: 6,
