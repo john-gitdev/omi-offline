@@ -1452,17 +1452,15 @@ static void process_write_data_req(const sd_req_t *req)
              * ~5 KB/s ingest) costs nothing — the same protection the filesystem
              * backend got from buffering into its 44 KB batch buffer while blocked.
              *
-             * Gated on stage headroom, which holds disk I/O here to at most ONE
-             * opportunistic flush rather than none: a block landing on exactly the
-             * free space fills the stage and trips sd_ring_append()'s trailing
-             * flush. That is deliberate — the alternative (refusing the block to
-             * guarantee zero I/O) throws away the very audio this path exists to
-             * keep, and the flush cannot repeat: if it fails, the stage stays full,
-             * headroom becomes 0, and every later block is refused and counted with
-             * no further I/O. What the gate does prevent is the flush-to-make-room
-             * path running per block (~11.6x/s), which is the hammering the backoff
-             * exists to stop. Requires an open segment — bytes appended with none
-             * would belong to no segment and never be listed.
+             * Gated on stage headroom, which BOUNDS the disk I/O here rather than
+             * removing it: a block landing on exactly the free space fills the stage
+             * and trips sd_ring_append()'s trailing flush, so this path can issue at
+             * most one flush per stage-fill (~8 s of audio) — never the per-block
+             * (~11.6x/s) flush-to-make-room the backoff exists to stop. Refusing
+             * that block instead, to guarantee zero I/O, would throw away the very
+             * audio this path exists to keep, so the flush is the better trade.
+             * Requires an open segment — bytes appended with none would belong to
+             * no segment and never be listed.
              *
              * Anything we genuinely cannot keep is counted. Before this, every block
              * arriving inside a backoff window was dropped silently, so a card
