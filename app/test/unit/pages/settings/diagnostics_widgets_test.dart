@@ -156,9 +156,32 @@ void main() {
       expect(disabled, enabled, reason: 'a pill disabled mid-action must still occupy its slot');
     });
 
-    testWidgets('an interactive pill offers a 44 dp tap target', (tester) async {
-      await tester.pumpWidget(host(DiagPill(text: 'All', selected: true, onTap: () {})));
-      expect(sizeOf(tester, find.byType(DiagPill)).height, greaterThanOrEqualTo(44.0));
+    testWidgets('interactive pills hit 44 dp in both axes without filling the row', (tester) async {
+      // Measured inside a BOUNDED parent, the way the Events group renders its filter
+      // chips. The first version of this test measured a pill under loose constraints
+      // and asserted only its height, which hid the real defect: the wrapper expanded
+      // to whatever width the parent allowed, so every chip took the full row and the
+      // five of them stacked vertically.
+      const labels = ['All', 'Storage', 'Markers', 'BLE', 'Mic'];
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 360,
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [for (final l in labels) DiagPill(text: l, selected: false, onTap: () {})],
+            ),
+          ),
+        ),
+      ));
+
+      for (final l in labels) {
+        final size = tester.getSize(find.ancestor(of: find.text(l), matching: find.byType(DiagPill)));
+        expect(size.height, greaterThanOrEqualTo(44.0), reason: '"$l" must be tappable');
+        expect(size.width, greaterThanOrEqualTo(44.0), reason: '"$l" must be tappable');
+        expect(size.width, lessThan(360.0), reason: '"$l" must shrink-wrap, not claim the whole row');
+      }
     });
 
     testWidgets('a read-only status pill stays compact', (tester) async {
