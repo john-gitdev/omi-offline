@@ -428,6 +428,13 @@ int sd_ring_mount(uint32_t total_sectors)
     if (total_sectors <= RING_DATA_START_SECTOR + 16) {
         return -EINVAL;
     }
+    /* Drop the mounted flag up front, as sd_ring_format() does, so EVERY failure
+     * path below leaves it false. This matters on a RE-mount (the write path's
+     * recovery remount): leaving a stale true would let sd_ring_stage_headroom()
+     * report room and sd_ring_append() keep accepting audio into a stage whose
+     * card is powered off and unmounted — silently buffering bytes that can never
+     * be written, and counting them as kept rather than dropped. */
+    ring_mounted = false;
 
     uint8_t buf[RING_SECTOR_SIZE] __aligned(4);
     if (read_sectors(RING_HDR_SECTOR, buf, 1)) {
