@@ -32,9 +32,6 @@ file(GLOB core_sources
 
 if(CONFIG_OMI_ENABLE_OFFLINE_STORAGE)
     list(APPEND core_sources src/lib/core/storage.c)
-endif()
-
-if(CONFIG_OMI_AUDIO_RING)
     list(APPEND core_sources src/lib/core/sd_ring.c)
 endif()
 
