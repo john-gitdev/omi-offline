@@ -85,7 +85,7 @@ typedef struct __packed {
     uint32_t seq;        /* monotonic, assigned at enqueue; the ack/drain key */
     uint32_t uptime_ms;  /* k_uptime_get_32() at the event */
     uint8_t  code;       /* diag_event_code_t */
-    uint8_t  backend;    /* 0 = littlefs, 1 = ring (sd_get_active_backend()) */
+    uint8_t  backend;    /* sd_get_active_backend(): 1 = ring (0 = the retired littlefs) */
     uint16_t arg0;       /* event-specific (see table above) */
     uint32_t arg1;       /* event-specific (see table above) */
 } diag_event_t;
