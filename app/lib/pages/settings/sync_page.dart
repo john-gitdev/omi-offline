@@ -931,7 +931,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   /// re-pushed independently by DeviceProvider on connect — so a switch owning both
   /// halves has to keep a local bool in agreement with a remote one over a link that
   /// drops, which is where every reliability bug on this page came from. The event log
-  /// keeps its own control in the Events group, where its state is only its own.
+  /// keeps its own switch beside this one, where its state is only its own.
   void _setDiagnosticsEnabled(bool val) {
     SharedPreferencesUtil().showSdWriteDrops = val;
     if (val) {
@@ -942,9 +942,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     setState(() {});
   }
 
-  /// The Events group's own capture control (0x0064). Writes the pref, pushes, and
-  /// says so when the push couldn't land — DeviceProvider re-pushes on the next
-  /// connect. No local mirror of the device's gate, so there is nothing to drift.
+  /// The event log's capture control (0x0064). Writes the pref, pushes, and says so
+  /// when the push couldn't land — DeviceProvider re-pushes on the next connect. No
+  /// local mirror of the device's gate, so there is nothing to drift.
   void _setEventCaptureEnabled(bool val, DeviceProvider devProvider) {
     SharedPreferencesUtil().diagLogEnabled = val;
     setState(() {});
@@ -995,6 +995,12 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               ),
               const SizedBox(height: 24),
               _buildDiagnosticsCard(),
+              const SizedBox(height: 12),
+              // Sits with the Diagnostics card rather than down in Options: the
+              // app-side log and the device-side counters/events are read together
+              // when chasing a fault, and it was the one switch people had to
+              // scroll past every destructive button to reach.
+              _buildDebugLogsCard(),
               const SizedBox(height: 28),
               const DebugSectionHeader('Actions'),
               if (_isProcessing) ...[
@@ -1123,8 +1129,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   /// The page's persistent switches, grouped at the bottom. They used to be
   /// interleaved with the readouts and the destructive actions, which put a
   /// wakelock toggle and a "delete everything" button in the same visual rhythm.
-  /// Each one owns whatever expands beneath it (the log window, the adjustment
-  /// archive controls).
+  /// Each one owns whatever expands beneath it (the adjustment archive controls).
+  /// The debug-log switch is the exception — it sits with the Diagnostics card
+  /// instead, see [_buildDebugLogsCard].
   List<Widget> _buildOptionRows() {
     return [
       // Companion Device Pairing (Android) — default ON. A troubleshooting toggle
@@ -1174,84 +1181,90 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         ),
       ),
       const SizedBox(height: 12),
-      _optionCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text(
-                'Save Debug Logs to File',
-                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
-              ),
-              subtitle: Text(
-                'Persists info/debug logs to a file on your device. '
-                'Leave on to capture BLE connection outages automatically, as they happen.',
-                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-              ),
-              value: SharedPreferencesUtil().devLogsToFileEnabled,
-              onChanged: (val) async {
-                if (val) {
-                  await DebugLogManager.setEnabled(true);
-                  _startLogPolling();
-                } else {
-                  // Stop the 2 s poll before deleting so getRecentLogs can't
-                  // recreate the file we're removing.
-                  _stopLogPolling();
-                  await DebugLogManager.setEnabled(false);
-                }
-                setState(() {});
-              },
-              activeThumbColor: Colors.deepPurpleAccent,
-            ),
-            if (SharedPreferencesUtil().devLogsToFileEnabled) ...[
-              const SizedBox(height: 12),
-              _buildLogWindow(),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed: _shareDebugLogs,
-                      style: OutlinedButton.styleFrom(
-                        side: const BorderSide(color: Colors.deepPurpleAccent, width: 1),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                      ),
-                      child: const Text(
-                        'Share Logs',
-                        style: TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed: () async {
-                        await DebugLogManager.clear();
-                        await _refreshLogs();
-                        if (mounted) setState(() => _statusMessage = 'Diagnostic logs cleared');
-                      },
-                      style: OutlinedButton.styleFrom(
-                        side: const BorderSide(color: Colors.white24, width: 1),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                      ),
-                      child: const Text(
-                        'Clear Logs',
-                        style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ],
-        ),
-      ),
-      const SizedBox(height: 12),
       _buildAdjustmentModeSection(),
     ];
+  }
+
+  /// The app-side debug log: its switch, the live log window, and the share/clear
+  /// actions. Rendered directly under the Diagnostics card (not with the other
+  /// option switches) so all three logs — device counters, device events, app log —
+  /// read as one block.
+  Widget _buildDebugLogsCard() {
+    return _optionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text(
+              'Save Debug Logs to File',
+              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+            subtitle: Text(
+              'Persists info/debug logs to a file on your device. '
+              'Leave on to capture BLE connection outages automatically, as they happen.',
+              style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+            ),
+            value: SharedPreferencesUtil().devLogsToFileEnabled,
+            onChanged: (val) async {
+              if (val) {
+                await DebugLogManager.setEnabled(true);
+                _startLogPolling();
+              } else {
+                // Stop the 2 s poll before deleting so getRecentLogs can't
+                // recreate the file we're removing.
+                _stopLogPolling();
+                await DebugLogManager.setEnabled(false);
+              }
+              setState(() {});
+            },
+            activeThumbColor: Colors.deepPurpleAccent,
+          ),
+          if (SharedPreferencesUtil().devLogsToFileEnabled) ...[
+            const SizedBox(height: 12),
+            _buildLogWindow(),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _shareDebugLogs,
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.deepPurpleAccent, width: 1),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text(
+                      'Share Logs',
+                      style: TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () async {
+                      await DebugLogManager.clear();
+                      await _refreshLogs();
+                      if (mounted) setState(() => _statusMessage = 'Diagnostic logs cleared');
+                    },
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.white24, width: 1),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text(
+                      'Clear Logs',
+                      style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
   }
 
   Widget _optionCard({required Widget child}) => Container(
@@ -1534,33 +1547,75 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   /// The merged Diagnostics card: firmware counters and the on-device event log in
-  /// one place, behind one switch. Every state (off, no device, reading, populated)
+  /// one place, under a switch each. Every state (off, no device, reading, populated)
   /// renders inside the same [DiagCard] shell, so the page no longer jumps several
   /// hundred pixels the moment counters arrive.
   Widget _buildDiagnosticsCard() {
     final enabled = SharedPreferencesUtil().showSdWriteDrops;
     final devProvider = Provider.of<DeviceProvider>(context);
+    // Gated on the live connection as well as the capability: the capability is only
+    // ever set on connect and never cleared, so without this the switch and the group
+    // outlived the link — showing the last session's records as current and offering
+    // Pull/Clear/capture controls that silently do nothing, since every one of them
+    // needs a connection.
+    final showEvents = devProvider.isConnected && devProvider.diagLogSupported;
     return DiagCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // The card's two switches first, then the actions that act on both of them,
+          // then the readings each switch produces. Event capture is deliberately NOT
+          // behind the counters switch: routing it there would leave it unreachable to
+          // turn OFF without first turning counter polling back on, and an independent
+          // control you can only reach via another one is not independent.
           _buildDiagnosticsHeader(enabled),
-          if (enabled) ...[const SizedBox(height: 12), _buildDiagnosticsBody()],
-          // Outside the `enabled` gate on purpose. Event capture is its own switch, so
-          // routing it through the counters switch would leave it unreachable to turn
-          // OFF without first turning counter polling back on — an independent control
-          // you can only reach via the other one is not independent. This also makes
-          // the counters/events split structural rather than a special case inside the
-          // loading branch.
-          // Gated on the live connection as well as the capability: the capability is
-          // only ever set on connect and never cleared, so without this the group
-          // outlived the link — showing the last session's records as current and
-          // offering Pull/Clear/capture controls that silently do nothing, since every
-          // one of them needs a connection.
-          if (devProvider.isConnected && devProvider.diagLogSupported) _buildEventsGroup(devProvider, _dropStats),
-          if (enabled) _buildBaselineActions(),
+          if (showEvents) ...[const SizedBox(height: 10), _buildEventCaptureSwitch(devProvider)],
+          if (enabled) ...[
+            _buildBaselineActions(),
+            const SizedBox(height: 12),
+            _buildDiagnosticsBody(),
+          ],
+          if (showEvents) ...[const SizedBox(height: 6), _buildEventsGroup(devProvider, _dropStats)],
         ],
       ),
+    );
+  }
+
+  /// The on-device event log's capture gate (0x0064), rendered as a peer of the
+  /// Diagnostics switch rather than a pill on the Events group header — the two are
+  /// separate instruments, and the pill read as a filter chip rather than a control.
+  ///
+  /// Keeps its no-local-mirror property: the label reports the pref (what the app
+  /// asked for), never a guess at the device's gate, which resets on every reboot and
+  /// is re-pushed by DeviceProvider on connect.
+  Widget _buildEventCaptureSwitch(DeviceProvider devProvider) {
+    final capturing = SharedPreferencesUtil().diagLogEnabled;
+    return Row(
+      children: [
+        const FaIcon(FontAwesomeIcons.listUl, size: 14, color: Colors.white70),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Event Capture',
+                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                capturing ? 'Device event log requested on.' : 'Off — the device is asked not to record events.',
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+        Switch(
+          value: capturing,
+          onChanged: _diagLogBusy ? null : (val) => _setEventCaptureEnabled(val, devProvider),
+          activeThumbColor: Colors.deepPurpleAccent,
+        ),
+      ],
     );
   }
 
@@ -1933,11 +1988,16 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     );
   }
 
-  /// The baseline / snapshot actions. Split out of the body so the Events group can
-  /// render between the counter groups and these buttons while still being outside the
-  /// counters switch — Copy snapshot includes the event log, so it belongs below it.
+  /// The baseline / snapshot actions, sitting directly under the card's two switches:
+  /// both act on everything below them (Copy snapshot includes the event log), so they
+  /// read as the card's controls rather than as a footer to the last group.
+  ///
+  /// Both need a counter read to have landed — `_copyDiagnosticsSnapshot` and
+  /// `_snapshotDropBaseline` bail on a null `_dropStats` — so they are disabled, not
+  /// silently inert, until one has.
   Widget _buildBaselineActions() {
     final hasBaseline = _dropBaseline != null || _connFailBaseline != null;
+    final ready = _dropStats != null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1946,30 +2006,36 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           children: [
             Expanded(
               child: OutlinedButton(
-                onPressed: _resetAllDiagnostics,
+                onPressed: ready ? _resetAllDiagnostics : null,
                 style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: Colors.white24, width: 1),
+                  side: BorderSide(color: ready ? Colors.white24 : Colors.white10, width: 1),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   padding: const EdgeInsets.symmetric(vertical: 12),
                 ),
-                child: const Text(
+                child: Text(
                   'Mark baseline',
-                  style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
+                  style: TextStyle(color: ready ? Colors.white70 : Colors.white24, fontWeight: FontWeight.bold),
                 ),
               ),
             ),
             const SizedBox(width: 10),
             Expanded(
               child: OutlinedButton(
-                onPressed: _copyDiagnosticsSnapshot,
+                onPressed: ready ? _copyDiagnosticsSnapshot : null,
                 style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: Colors.deepPurpleAccent, width: 1),
+                  side: BorderSide(
+                    color: ready ? Colors.deepPurpleAccent : Colors.deepPurpleAccent.withValues(alpha: 0.3),
+                    width: 1,
+                  ),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   padding: const EdgeInsets.symmetric(vertical: 12),
                 ),
-                child: const Text(
+                child: Text(
                   'Copy snapshot',
-                  style: TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                    color: ready ? Colors.deepPurpleAccent : Colors.deepPurpleAccent.withValues(alpha: 0.4),
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
             ),
@@ -2108,15 +2174,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       key: const ValueKey('diag-events'),
       title: 'Events (${records.length})',
       allClear: records.isEmpty && dropped == 0,
+      // Still reports the capture state while collapsed — with capture off the group
+      // is empty and folded, and "nothing captured" there would read as a quiet
+      // device. The switch itself lives at the top of the card.
       clearSummary: capturing ? 'nothing captured' : 'capture off',
-      // In the header, not the body: with no events yet the group collapses, and a
-      // capture control you must expand the group to reach is one you cannot use to
-      // start capturing.
-      headerAction: DiagPill(
-        text: capturing ? 'capture on' : 'capture off',
-        selected: capturing,
-        onTap: _diagLogBusy ? null : () => _setEventCaptureEnabled(!capturing, devProvider),
-      ),
       trailing: categories.length > 1
           ? Wrap(
               spacing: 6,
