@@ -107,37 +107,20 @@ void main() {
           reason: 'an expanded group must not collapse under the reader mid-read');
     });
 
-    testWidgets('headerAction stays reachable while the group is collapsed', (tester) async {
-      // The capture switch lives here precisely because the Events group collapses
-      // when nothing has been captured — a control you must expand the group to reach
-      // is one you cannot use to start capturing.
-      var taps = 0;
-      await tester.pumpWidget(host(DiagGroup(
+    testWidgets('a collapsed group still reports its capture state', (tester) async {
+      // The Events group collapses when nothing has been captured, and its summary is
+      // the only thing left on screen — so it has to distinguish "capture off" from a
+      // device that genuinely had nothing to report. The capture switch itself is a
+      // card-level control now, not a header action.
+      await tester.pumpWidget(host(const DiagGroup(
         title: 'Events (0)',
         allClear: true,
-        clearSummary: 'nothing captured',
-        headerAction: DiagPill(text: 'capture off', selected: false, onTap: () => taps++),
-        rows: const [DiagStatRow('held', '0')],
+        clearSummary: 'capture off',
+        rows: [DiagStatRow('held', '0')],
       )));
 
       expect(find.text('held'), findsNothing, reason: 'group should be collapsed');
       expect(find.text('capture off'), findsOneWidget);
-      await tester.tap(find.text('capture off'));
-      expect(taps, 1);
-    });
-
-    testWidgets('tapping headerAction does not toggle the group', (tester) async {
-      await tester.pumpWidget(host(DiagGroup(
-        title: 'Events (0)',
-        allClear: true,
-        clearSummary: 'nothing captured',
-        headerAction: DiagPill(text: 'capture off', selected: false, onTap: () {}),
-        rows: const [DiagStatRow('held', '0')],
-      )));
-
-      await tester.tap(find.text('capture off'));
-      await tester.pumpAndSettle();
-      expect(find.text('held'), findsNothing, reason: 'the action sits outside the expand/collapse target');
     });
   });
 
