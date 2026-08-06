@@ -222,6 +222,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     _lastStatsElapsed = _dropClock.elapsed;
     setState(() => _dropStats = s);
     _tryRestoreBaseline(s);
+    _dropStaleConnFailBaselines(s);
   }
 
   /// Cancel the Dart sub and stop the device pushing (CCCD=0). Assumes the caller
@@ -701,6 +702,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           _lastStatsElapsed = _dropClock.elapsed;
           setState(() => _dropStats = stats);
           _tryRestoreBaseline(stats);
+          _dropStaleConnFailBaselines(stats);
         },
         // Stream closed (disconnect) — the transport re-subscribes on reconnect
         // via a new controller this sub isn't attached to, so drop it and let the
@@ -738,6 +740,32 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     } finally {
       _dropMutex.release();
     }
+  }
+
+  /// Permanently drop a BLE connect-fail baseline the device has fallen below.
+  ///
+  /// [_tryRestoreBaseline] makes the same judgment, but only once, when the saved value
+  /// loads — so it cannot see a flash wipe / re-flash that lands while this page is
+  /// already open. This runs on every reading instead, and the drop must LATCH: after a
+  /// wipe the counter climbs again from zero, and a check re-evaluated per reading would
+  /// silently resurrect the baseline the moment the count passed it again, under-
+  /// reporting by its whole value and making the row fault-capable off a number that no
+  /// longer means anything. Clearing the pref alongside it means the drop also survives
+  /// reopening the page. Only ever drops a baseline, never re-derives one — re-marking
+  /// is the user's call.
+  void _dropStaleConnFailBaselines(DeviceDropStats stats) {
+    final connBase = _connFailBaseline;
+    final estabBase = _estabFailBaseline;
+    final connStale = connBase != null && stats.failedConnCount < connBase;
+    final estabStale = estabBase != null && stats.estabFailCount < estabBase;
+    if (!connStale && !estabStale) return;
+    final prefs = SharedPreferencesUtil();
+    if (connStale) unawaited(prefs.remove(_kBaselineConnFail));
+    if (estabStale) unawaited(prefs.remove(_kBaselineEstabFail));
+    setState(() {
+      if (connStale) _connFailBaseline = null;
+      if (estabStale) _estabFailBaseline = null;
+    });
   }
 
   void _tryRestoreBaseline(DeviceDropStats stats) {
@@ -1691,13 +1719,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final seEmits = rel(stats.sessionEndMarkerEmits, (b) => b.sessionEndMarkerEmits);
     final pauseSaves = rel(stats.markerPauseGateSaves, (b) => b.markerPauseGateSaves);
     // A reading BELOW the baseline means the device's flash was wiped or re-flashed
-    // under it, so the baseline no longer describes anything. _tryRestoreBaseline drops
-    // it on that condition, but only when the page loads its saved value — a reset while
-    // this page is already open leaves the restored baseline in memory, and subtracting
-    // it would render an impossible negative count. Treat a stale baseline as absent
-    // rather than clamping to 0: falling back to the lifetime reading (which cannot be
-    // negative) gets the row its "(lifetime)" label and drops it out of the verdict,
-    // which is what a number with nothing to subtract from actually is.
+    // under it, so the baseline no longer describes anything. _dropStaleConnFailBaselines
+    // latches that away on the reading that reveals it; this is the same-frame guard for
+    // the build that renders that reading, since the drop lands via setState one frame
+    // later. Do NOT make this the whole mechanism — recomputed per build it unlatches
+    // itself, resurrecting the baseline once a post-wipe counter climbs back above it.
+    // Falling back to the lifetime value rather than clamping to 0 keeps the number
+    // non-negative AND gets the row its "(lifetime)" label and exemption from the
+    // verdict, which is what a delta with nothing left to subtract from actually is.
     final connBaselineUsable = connBaseline != null && stats.failedConnCount >= connBaseline;
     final estabBaselineUsable = estabBaseline != null && stats.estabFailCount >= estabBaseline;
     final connFails = connBaselineUsable ? stats.failedConnCount - connBaseline : stats.failedConnCount;
