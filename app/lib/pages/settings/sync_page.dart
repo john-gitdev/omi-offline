@@ -1722,17 +1722,22 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // by the firmware as since-boot and absent from the baseline snapshot, so they
     // are shown raw in both views.
     final isRing = _storageBackend == 1;
-    // 1200 ms is where one slow op first becomes capable of costing audio, so below it
-    // the warn has nothing to warn about. A single op is one RING_FLUSH_CHUNK_SECTORS
-    // chunk (4 KB), and chunks never come alone: a full-stage flush issues ten of them
-    // back-to-back, during which the worker drains no audio. Ingest is ~10 of the 440 B
-    // blocks per second (20 ms Opus frames, 32 kbps VBR, + the 4 B inline header), so the
-    // 120-deep sd_msgq holds ~12 s of stall before it drops a block — and 12 s / 10 chunks
-    // is 1200 ms. The earlier 500 ms line flagged runs using under half the headroom,
-    // which is real but not actionable, and since this is a since-boot MAXIMUM that never
-    // decays, one tail event latched the warn until reboot. What actually reports lost
-    // audio is blockDrops / ringIoErrors; this row only attributes it.
-    final ringSlow = stats.ringMaxIoMs >= 1200;
+    // 1000 ms is just under the point where one slow op first becomes capable of costing
+    // audio, so below it the warn has nothing to warn about. A single op is one
+    // RING_FLUSH_CHUNK_SECTORS chunk (4 KB), and chunks never come alone: a full-stage
+    // flush issues ten of them back-to-back, during which the worker drains no audio.
+    // Ingest is ~10 of the 440 B blocks per second (20 ms Opus frames, 32 kbps VBR, + the
+    // 4 B inline header), so the 120-deep sd_msgq holds ~12 s of stall before it drops a
+    // block, putting the harm point near 12 s / 10 chunks = 1200 ms. Rounded DOWN to 1000
+    // deliberately: VBR frame sizes vary, and at the fast end of ingest (~11.6 blocks/s)
+    // the queue only holds ~10.3 s, which drags the harm point to ~1030 — so 1000 holds
+    // across the plausible range where 1200 assumes the favourable end of it, and it
+    // leaves some lead time, which is what a warn is for. The earlier 500 ms line flagged
+    // runs using under half the headroom, which is real but not actionable, and since this
+    // is a since-boot MAXIMUM that never decays, one tail event latched the warn until
+    // reboot. What actually reports lost audio is blockDrops / ringIoErrors; this row only
+    // attributes it.
+    final ringSlow = stats.ringMaxIoMs >= 1000;
     final ringErrs = stats.ringIoErrors;
 
     // "Since baseline" is derived from the block-drop count rising, not from the
