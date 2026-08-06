@@ -87,6 +87,19 @@ static uint8_t haptic_config[6] = {0, 0, 0, 0, 0, 0};
  * the DFU in NVS. */
 static char unpair_armed_fw[24] = {0};
 
+/* The arm path truncates with strncpy(buf, current_fw, sizeof(buf) - 1) while
+ * the consume path compares with strncmp(..., sizeof(unpair_armed_fw)) — 23
+ * significant bytes written, 24 compared. A version string that doesn't fit
+ * would therefore store truncated and then compare unequal against itself
+ * forever, so a *failed* flash (the same version still running) would still be
+ * read as "a real update landed" and wipe the bonds. The version is a
+ * compile-time constant, so this is caught at build time rather than guarded at
+ * runtime. If a longer version is ever wanted, widen unpair_armed_fw — don't
+ * relax this. */
+BUILD_ASSERT(sizeof(CONFIG_BT_DIS_FW_REV_STR) <= sizeof(unpair_armed_fw),
+             "CONFIG_BT_DIS_FW_REV_STR must fit unpair_armed_fw including its NUL "
+             "(max 23 characters), or a failed firmware update will wipe BLE bonds.");
+
 
 static int settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
