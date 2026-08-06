@@ -888,8 +888,25 @@ struct bt_gatt_service button_service = BT_GATT_SERVICE(button_service_attr);
  * stream as an inline marker (0xFFFFFFFE tap, 0xFFFFFFF8 priority-start, …),
  * which the app parses at decode time. Pushing tap events over BLE would only
  * matter while the phone is connected, and Omi is built to run disconnected.
- * The 23BA7924 service itself stays registered: removing a service shifts the
- * handles of every service after it and costs a re-pair. */
+ *
+ * The service itself stays registered, and is worth keeping: register_button_service()
+ * runs at the TOP of transport_start()'s registration sequence — before settings,
+ * features, storage, diagnostics, mute and led — so dropping it would shift the
+ * handles of every one of them and cost a re-pair. It is the most expensive service
+ * in the table to remove and free to keep.
+ *
+ * That also makes it the natural home for a future device→app push channel, which
+ * the app otherwise has no way to receive (it learns device-side state at connect
+ * or by polling). Reuse rules, in cost order:
+ *   - FREE (no handle change, no re-pair): notify a different, longer payload on the
+ *     existing 23BA7925 characteristic. The attribute table does not fix the value
+ *     length — bt_gatt_notify() may send up to ATT_MTU-3 bytes, so the 1-byte tap
+ *     code can become an N-byte struct. button_ccc_changed() already tells you when
+ *     the app subscribes.
+ *   - COSTS A RE-PAIR: adding a second characteristic to this service, since it sits
+ *     ahead of everything else. Same trap as adding to Settings (see the note on
+ *     settings_service_attr), but worse — put new attributes in the service
+ *     registered LAST, as led (0080) does. */
 
 // --- Mute Service ---
 // Service UUID:    19B10070-E8F2-537E-4F6C-D104768A1214
