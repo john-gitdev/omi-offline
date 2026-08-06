@@ -124,12 +124,6 @@ class Wal {
     switch (name.toLowerCase()) {
       case 'pcm8':
         return BleAudioCodec.pcm8;
-      case 'pcm16':
-        return BleAudioCodec.pcm16;
-      case 'mulaw8':
-        return BleAudioCodec.mulaw8;
-      case 'mulaw16':
-        return BleAudioCodec.mulaw16;
       case 'opus':
         return BleAudioCodec.opus;
       case 'opusfs320':
