@@ -31,11 +31,12 @@ enum ImageOrientation {
   }
 }
 
+/// Codecs the firmware can actually report on 0x19B10022: `20` = [opus],
+/// `21` = [opusFS320], anything else (or a failed read) falls back to [pcm8].
+/// [unknown] is not a wire codec — it is the sentinel [Wal.mapNameToCodec]
+/// returns for a name it can't parse.
 enum BleAudioCodec {
   pcm8,
-  pcm16,
-  mulaw8,
-  mulaw16,
   opus,
   opusFS320,
   unknown;
@@ -50,28 +51,22 @@ enum BleAudioCodec {
 
   int getFramesPerSecond() {
     switch (this) {
-      case BleAudioCodec.pcm8:
-      case BleAudioCodec.pcm16:
-        return 100;
       case BleAudioCodec.opus:
       case BleAudioCodec.opusFS320:
         return 50;
-      default:
+      case BleAudioCodec.pcm8:
+      case BleAudioCodec.unknown:
         return 100;
     }
   }
 
   int getFramesLengthInBytes() {
     switch (this) {
-      case BleAudioCodec.pcm8:
-        return 80;
-      case BleAudioCodec.pcm16:
-        return 160;
-      case BleAudioCodec.opus:
-        return 80;
       case BleAudioCodec.opusFS320:
         return 40;
-      default:
+      case BleAudioCodec.pcm8:
+      case BleAudioCodec.opus:
+      case BleAudioCodec.unknown:
         return 80;
     }
   }
