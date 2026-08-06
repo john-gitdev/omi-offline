@@ -33,7 +33,7 @@ enum ImageOrientation {
 
 /// Codecs the firmware can actually report on 0x19B10022: `20` = [opus],
 /// `21` = [opusFS320], anything else (or a failed read) falls back to [pcm8].
-/// [unknown] is not a wire codec — it is the sentinel [Wal.mapNameToCodec]
+/// [unknown] is not a wire codec — it is the sentinel `Wal.mapNameToCodec`
 /// returns for a name it can't parse.
 enum BleAudioCodec {
   pcm8,
