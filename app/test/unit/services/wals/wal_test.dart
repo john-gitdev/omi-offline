@@ -6,9 +6,6 @@ void main() {
   group('Wal', () {
     test('mapNameToCodec handles all valid codec names', () {
       expect(Wal.mapNameToCodec('pcm8'), BleAudioCodec.pcm8);
-      expect(Wal.mapNameToCodec('pcm16'), BleAudioCodec.pcm16);
-      expect(Wal.mapNameToCodec('mulaw8'), BleAudioCodec.mulaw8);
-      expect(Wal.mapNameToCodec('mulaw16'), BleAudioCodec.mulaw16);
       expect(Wal.mapNameToCodec('opus'), BleAudioCodec.opus);
       expect(Wal.mapNameToCodec('opusfs320'), BleAudioCodec.opusFS320);
       expect(Wal.mapNameToCodec('Opus'), BleAudioCodec.opus); // Case-insensitive
@@ -245,7 +242,7 @@ void main() {
       );
 
       final updated = original.copyWith(
-        codec: BleAudioCodec.pcm16,
+        codec: BleAudioCodec.pcm8,
         channel: 2,
         walOffset: 20,
         status: WalStatus.synced,
@@ -254,7 +251,7 @@ void main() {
       );
 
       // Changed fields
-      expect(updated.codec, BleAudioCodec.pcm16);
+      expect(updated.codec, BleAudioCodec.pcm8);
       expect(updated.channel, 2);
       expect(updated.walOffset, 20);
       expect(updated.status, WalStatus.synced);

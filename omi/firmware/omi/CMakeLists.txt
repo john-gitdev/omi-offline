@@ -13,7 +13,6 @@ file(GLOB app_sources
     src/sd_card.c
     src/spi_flash.c
     src/settings.c
-    src/feedback.c
     src/wdog_facade.c
     src/rtc.c
     src/imu.c

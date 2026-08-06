@@ -54,7 +54,6 @@ class DeviceProvider extends ChangeNotifier
   BtDevice? connectedDevice;
   BtDevice? pairedDevice;
   StreamSubscription<List<int>>? _bleBatteryLevelListener;
-  StreamSubscription<List<int>>? _bleButtonListener;
   int batteryLevel = -1;
   bool isCharging = false;
   bool isMuted = false;
@@ -360,15 +359,6 @@ class DeviceProvider extends ChangeNotifier
     );
   }
 
-  Future<StreamSubscription<List<int>>?> _getBleButtonListener(
-    String deviceId, {
-    void Function(List<int>)? onButtonReceived,
-  }) async {
-    var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
-    if (connection == null || onButtonReceived == null) return null;
-    return connection.getBleButtonListener(onButtonReceived: onButtonReceived);
-  }
-
   Future updateBatteryLevel() async {
     if (connectedDevice != null) {
       int currentLevel = await _retrieveBatteryLevel(connectedDevice!.id);
@@ -644,49 +634,14 @@ class DeviceProvider extends ChangeNotifier
     notifyListeners();
   }
 
-  initiateBleButtonListener() async {
-    if (connectedDevice == null) return;
-    _bleButtonListener?.cancel();
-    _bleButtonListener = await _getBleButtonListener(
-      connectedDevice?.id ?? '',
-      onButtonReceived: (List<int> value) async {
-        try {
-          if (value.isEmpty) return;
-          int event = value[0];
-          Logger.debug('DeviceProvider: Button event $event');
-          if (event == 2 && SharedPreferencesUtil().manualMode) {
-            // The firmware already toggled (and persists) the recording state on
-            // this tap. READ it back rather than echoing a command off our own
-            // (possibly stale) guess — echoing could flip the device to the
-            // opposite of what you actually did. The firmware owns the button.
-            final conn = await ServiceManager.instance().device.ensureConnection(connectedDevice?.id ?? '');
-            final thr = await conn?.getVadThreshold();
-            if (thr == 65535 || thr == 32769) {
-              _manualRecording = thr == 65535;
-              Logger.debug(
-                'DeviceProvider: Manual mode — recording '
-                '${_manualRecording ? "started" : "stopped"} (read from device).',
-              );
-              notifyListeners();
-            }
-          }
-        } catch (e) {
-          Logger.error('DeviceProvider: Button handler error: $e');
-        }
-      },
-    );
-    notifyListeners();
-  }
-
   @visibleForTesting
   bool updateBatteryLevelForTesting(int value, {DateTime? now}) {
     batteryLevel = value;
     final currentTime = now ?? DateTime.now();
     final delta = (_lastNotifiedBatteryLevel - value).abs();
     final batteryNotifyTime = _lastBatteryNotifyTime;
-    final elapsed = batteryNotifyTime == null
-        ? const Duration(minutes: 999)
-        : currentTime.difference(batteryNotifyTime);
+    final elapsed =
+        batteryNotifyTime == null ? const Duration(minutes: 999) : currentTime.difference(batteryNotifyTime);
     final crossedLowBatteryThreshold =
         (value < 20 && _lastNotifiedBatteryLevel >= 20) || (value >= 20 && _lastNotifiedBatteryLevel < 20);
     final shouldNotify =
@@ -1428,7 +1383,6 @@ class DeviceProvider extends ChangeNotifier
     _disposed = true;
     WidgetsBinding.instance.removeObserver(this);
     _bleBatteryLevelListener?.cancel();
-    _bleButtonListener?.cancel();
     _bleMuteListener?.cancel();
     _reconnectionTimer?.cancel();
     _reconnectDelayTimer?.cancel();
@@ -1746,7 +1700,6 @@ class DeviceProvider extends ChangeNotifier
     await updateChargingState();
     await initiateBleMuteListener();
     await updateMuteState();
-    await initiateBleButtonListener();
 
     {
       final prefs = SharedPreferencesUtil();
@@ -1802,8 +1755,7 @@ class DeviceProvider extends ChangeNotifier
       final log = await conn.getDiagnostics();
       if (log != null) {
         // Only add if it's a new event (different device, cause, or uptime)
-        bool isDuplicate =
-            crashLogs.isNotEmpty &&
+        bool isDuplicate = crashLogs.isNotEmpty &&
             crashLogs.first.deviceId == log.deviceId &&
             crashLogs.first.resetCause == log.resetCause &&
             crashLogs.first.uptimeSeconds == log.uptimeSeconds;
@@ -1871,8 +1823,7 @@ class DeviceProvider extends ChangeNotifier
         // only movement between two readings means anything.
         final int liveUptimeS = dropStats.currentUptimeMs ~/ 1000;
         final String liveUptimeStr = '${liveUptimeS ~/ 3600}h ${(liveUptimeS % 3600) ~/ 60}m';
-        final String dropMsg =
-            'Device SD-drop counters: blocks=${dropStats.blockDrops} '
+        final String dropMsg = 'Device SD-drop counters: blocks=${dropStats.blockDrops} '
             'streamFrames=${dropStats.streamFrameDrops} bootFrames=${dropStats.bootFrameDrops} '
             'codecFrames=${dropStats.codecFrameDrops} msgqPeak=${dropStats.msgqPeakDepth} '
             'writeFair=${dropStats.writeFairActivations} '
@@ -1905,8 +1856,7 @@ class DeviceProvider extends ChangeNotifier
         // traceable from the app log without an RTT capture. Counters are cumulative
         // since boot; only movement between two readings means anything. Skip the noise
         // when all zero (older firmware, or no priority recording has run).
-        final bool priorityActivity =
-            dropStats.priorityRecordStarts > 0 ||
+        final bool priorityActivity = dropStats.priorityRecordStarts > 0 ||
             dropStats.priorityRecordStops > 0 ||
             dropStats.markerWriteDrops > 0 ||
             dropStats.emptyBinRotations > 0 ||
@@ -1917,8 +1867,7 @@ class DeviceProvider extends ChangeNotifier
           // 0xFFFFFFFC (seEmits moves) and it's kept through the pause (pauseGateSaves
           // moves) rather than lost. emits flat = the firmware finalize path never
           // fired. pauseGateSaves is a rescue, so it is NOT a loss warning.
-          final priorityMsg =
-              'Device priority-record counters: starts=${dropStats.priorityRecordStarts} '
+          final priorityMsg = 'Device priority-record counters: starts=${dropStats.priorityRecordStarts} '
               'stops=${dropStats.priorityRecordStops} markerDrops=${dropStats.markerWriteDrops} '
               'emptyBinRotations=${dropStats.emptyBinRotations} seEmits=${dropStats.sessionEndMarkerEmits} '
               'pauseGateSaves=${dropStats.markerPauseGateSaves}';

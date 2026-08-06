@@ -883,10 +883,35 @@ struct bt_gatt_service button_service = BT_GATT_SERVICE(button_service_attr);
  * Their handlers (button_config_*_handler / haptic_config_*_handler, above) are
  * unchanged and are referenced from settings_service_attr. */
 
-void transport_notify_button_state(uint8_t state)
-{
-    bt_gatt_notify(NULL, &button_service_attr[2], &state, sizeof(state));
-}
+/* There is deliberately no button-state notify here. The firmware owns the button
+ * entirely: the FSM acts on a gesture locally, and the actions that change captured
+ * audio each leave their own inline marker for the app to parse at decode time —
+ * MARKER writes 0xFFFFFFFE (a bookmark), RECORD_START writes 0xFFFFFFF8 in auto mode
+ * (opens a priority recording), RECORD_STOP writes 0xFFFFFFFC, MUTE brackets with
+ * 0xFFFFFFFA/0xFFFFFFF9. NONE and TOGGLE_LED deliberately leave no marker: they do
+ * not affect the recording, so there is nothing for the app to reconstruct. A BLE
+ * tap event would only arrive while the phone happened to be connected, and Omi is
+ * built to run disconnected.
+ *
+ * The service itself stays registered, and is worth keeping: register_button_service()
+ * runs early in transport_start() — after the optional accel service, but ahead of
+ * haptic, speaker, settings, features, time-sync, battery, storage, diagnostics, mute
+ * and led — so dropping it would shift the handles of every one of those and cost a
+ * re-pair. It is among the most expensive services in the table to remove and free to
+ * keep.
+ *
+ * That also makes it the natural home for a future device→app push channel, which
+ * the app otherwise has no way to receive (it learns device-side state at connect
+ * or by polling). Reuse rules, in cost order:
+ *   - FREE (no handle change, no re-pair): notify a different, longer payload on the
+ *     existing 23BA7925 characteristic. The attribute table does not fix the value
+ *     length — bt_gatt_notify() may send up to ATT_MTU-3 bytes, so the 1-byte tap
+ *     code can become an N-byte struct. button_ccc_changed() already tells you when
+ *     the app subscribes.
+ *   - COSTS A RE-PAIR: adding a second characteristic to this service, since almost
+ *     everything is registered after it. Same trap as adding to Settings (see the
+ *     note on settings_service_attr), but worse — put new attributes in the service
+ *     registered LAST, as led (0080) does. */
 
 // --- Mute Service ---
 // Service UUID:    19B10070-E8F2-537E-4F6C-D104768A1214

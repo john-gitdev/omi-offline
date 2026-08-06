@@ -300,7 +300,7 @@ Default config `{0, 0, 2, 1, 3, 0}` (`settings.c`) gives the out-of-box behavior
 | **5-tap + hold (≥10s)** | *(fixed)* | Unpair — `bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY)` clears all BLE bonds; red LED blinks ×3 | 1000ms |
 
 ### Hardware Error LEDs
-The legacy `error_*()` functions in `feedback.c` log to UART/RTT only — no LED. **The one exception is a fatal SD fault**, which `set_led_state()` surfaces as a **blinking red** LED (priority 2 above; `sd_fatal_error`). It overrides stealth/mute/marker/charging and toggles every ~500 ms loop pass, so it's distinguishable from solid-red mute. This is the only visual error indicator.
+The legacy `error_*()` functions in `feedback.c` log to UART/RTT only — no LED, and nothing ever called them, so the file is now parked (see "Other parked files" below). **The one exception is a fatal SD fault**, which `set_led_state()` surfaces as a **blinking red** LED (priority 2 above; `sd_fatal_error`). It overrides stealth/mute/marker/charging and toggles every ~500 ms loop pass, so it's distinguishable from solid-red mute. This is the only visual error indicator.
 
 ### Stealth Mode Notes
 - Triple tap (default mapping) toggles `is_led_enabled`
@@ -514,6 +514,19 @@ Bug fixes already applied to `accel.c` (defensive, since the file doesn't curren
 
 ### Other parked files
 `src/lib/core/nfc.c` and `src/lib/core/speaker.c` are likewise present but not in `CMakeLists.txt` (speaker is conditionally referenced via `CONFIG_OMI_ENABLE_SPEAKER` blocks but the source isn't added to the build).
+
+`src/feedback.c` joined them (2026-08-06). All eleven `error_*()` functions had zero
+call sites while the file was still compiled into every image. Kept rather than deleted
+so the per-subsystem fault hooks can be wired up later — re-add `src/feedback.c` to
+`app_sources` in `CMakeLists.txt` to bring it back.
+
+`src/lib/core/monitor.c` is a third case and needs **no** change: it is in `CMakeLists.txt`,
+but every call site — two in `transport.c`, one in `main.c` — is behind
+`#ifdef CONFIG_OMI_ENABLE_MONITOR`, and `omi.conf` sets that to `n`. Flipping it to `y`
+turns the module back on. Note that if you do, four of the six counters
+`monitor_log_metrics()` prints (`gatt_notify`, `mic_buffer`, `broadcast_audio`,
+`broadcast_audio_failed`) have no `monitor_inc_*` call site anywhere and will read a
+permanent 0 — only `tx_queue` and `storage` are actually fed.
 
 ---
 

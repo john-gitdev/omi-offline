@@ -488,7 +488,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           _buildProfileStyleItem(
             icon: FontAwesomeIcons.download,
             title: 'Firmware',
-            chipValue: device?.firmwareRevision ?? 'oo-1.0.9',
+            chipValue: device?.firmwareRevision ?? 'unknown',
             showChevron: true,
             onTap: () async {
               provider.setOnFirmwareUpdatePage(true);
