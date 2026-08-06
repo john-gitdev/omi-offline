@@ -883,10 +883,13 @@ struct bt_gatt_service button_service = BT_GATT_SERVICE(button_service_attr);
  * Their handlers (button_config_*_handler / haptic_config_*_handler, above) are
  * unchanged and are referenced from settings_service_attr. */
 
-void transport_notify_button_state(uint8_t state)
-{
-    bt_gatt_notify(NULL, &button_service_attr[2], &state, sizeof(state));
-}
+/* There is deliberately no button-state notify here. The firmware owns the
+ * button entirely: the FSM acts on a tap locally and records it in the audio
+ * stream as an inline marker (0xFFFFFFFE tap, 0xFFFFFFF8 priority-start, …),
+ * which the app parses at decode time. Pushing tap events over BLE would only
+ * matter while the phone is connected, and Omi is built to run disconnected.
+ * The 23BA7924 service itself stays registered: removing a service shifts the
+ * handles of every service after it and costs a re-pair. */
 
 // --- Mute Service ---
 // Service UUID:    19B10070-E8F2-537E-4F6C-D104768A1214
