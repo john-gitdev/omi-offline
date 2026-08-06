@@ -131,8 +131,6 @@ extern atomic_t device_session_id;
  * Audio frames pass important=false. */
 bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t data_size, bool important);
 
-void transport_notify_button_state(uint8_t state);
-
 /* Push a notification on the BLE mute characteristic (19B10071) with the
  * current mute state. Called from the button FSM / BLE write path whenever
  * mute toggles. */
