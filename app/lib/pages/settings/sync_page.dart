@@ -1690,8 +1690,18 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final emptyRot = rel(stats.emptyBinRotations, (b) => b.emptyBinRotations);
     final seEmits = rel(stats.sessionEndMarkerEmits, (b) => b.sessionEndMarkerEmits);
     final pauseSaves = rel(stats.markerPauseGateSaves, (b) => b.markerPauseGateSaves);
-    final connFails = connBaseline == null ? stats.failedConnCount : (stats.failedConnCount - connBaseline);
-    final estabFails = estabBaseline == null ? stats.estabFailCount : (stats.estabFailCount - estabBaseline);
+    // A reading BELOW the baseline means the device's flash was wiped or re-flashed
+    // under it, so the baseline no longer describes anything. _tryRestoreBaseline drops
+    // it on that condition, but only when the page loads its saved value — a reset while
+    // this page is already open leaves the restored baseline in memory, and subtracting
+    // it would render an impossible negative count. Treat a stale baseline as absent
+    // rather than clamping to 0: falling back to the lifetime reading (which cannot be
+    // negative) gets the row its "(lifetime)" label and drops it out of the verdict,
+    // which is what a number with nothing to subtract from actually is.
+    final connBaselineUsable = connBaseline != null && stats.failedConnCount >= connBaseline;
+    final estabBaselineUsable = estabBaseline != null && stats.estabFailCount >= estabBaseline;
+    final connFails = connBaselineUsable ? stats.failedConnCount - connBaseline : stats.failedConnCount;
+    final estabFails = estabBaselineUsable ? stats.estabFailCount - estabBaseline : stats.estabFailCount;
     // Unlike every other counter here, these two are persisted to the Omi's flash and
     // re-seeded at boot (transport.c app_settings_get_conn_fail), so without a baseline
     // the number on screen is a lifetime odometer covering every boot the device has
@@ -1704,8 +1714,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // is deliberate: on a device that has never been baselined a genuine burst now reads
     // as plain info rather than red, which is the honest rendering of a number that
     // cannot distinguish the two.
-    final connFailsAreDelta = connBaseline != null;
-    final estabFailsAreDelta = estabBaseline != null;
+    final connFailsAreDelta = connBaselineUsable;
+    final estabFailsAreDelta = estabBaselineUsable;
     final connFailsFault = connFails > 0 && connFailsAreDelta;
     final estabFailsFault = estabFails > 0 && estabFailsAreDelta;
 
