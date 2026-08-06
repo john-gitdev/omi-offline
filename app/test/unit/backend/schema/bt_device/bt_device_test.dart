@@ -102,17 +102,6 @@ class MockDeviceConnection extends DeviceConnection {
   }
 
   @override
-  Future<StreamSubscription<List<int>>?> performGetBleButtonListener(
-      {required void Function(List<int> p1) onButtonReceived}) async {
-    return null;
-  }
-
-  @override
-  Future<List<int>> performGetButtonState() async {
-    return [];
-  }
-
-  @override
   Future<({bool muted, DateTime? since})?> performGetMuteState() async {
     return (muted: false, since: null);
   }
