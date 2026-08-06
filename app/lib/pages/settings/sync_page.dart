@@ -222,7 +222,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     _lastStatsElapsed = _dropClock.elapsed;
     setState(() => _dropStats = s);
     _tryRestoreBaseline(s);
-    _dropStaleConnFailBaselines(s);
+    _realignConnFailBaselines(s);
   }
 
   /// Cancel the Dart sub and stop the device pushing (CCCD=0). Assumes the caller
@@ -702,7 +702,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           _lastStatsElapsed = _dropClock.elapsed;
           setState(() => _dropStats = stats);
           _tryRestoreBaseline(stats);
-          _dropStaleConnFailBaselines(stats);
+          _realignConnFailBaselines(stats);
         },
         // Stream closed (disconnect) — the transport re-subscribes on reconnect
         // via a new controller this sub isn't attached to, so drop it and let the
@@ -742,29 +742,40 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
   }
 
-  /// Permanently drop a BLE connect-fail baseline the device has fallen below.
+  /// Pull a BLE connect-fail baseline down to a reading that has fallen below it.
   ///
-  /// [_tryRestoreBaseline] makes the same judgment, but only once, when the saved value
-  /// loads — so it cannot see a flash wipe / re-flash that lands while this page is
-  /// already open. This runs on every reading instead, and the drop must LATCH: after a
-  /// wipe the counter climbs again from zero, and a check re-evaluated per reading would
-  /// silently resurrect the baseline the moment the count passed it again, under-
-  /// reporting by its whole value and making the row fault-capable off a number that no
-  /// longer means anything. Clearing the pref alongside it means the drop also survives
-  /// reopening the page. Only ever drops a baseline, never re-derives one — re-marking
-  /// is the user's call.
-  void _dropStaleConnFailBaselines(DeviceDropStats stats) {
+  /// A reading under the baseline means the baseline can no longer describe a "since
+  /// when" — but NOT, on its own, that the device was wiped. The firmware persists these
+  /// two counters on a coalesced 10 s delayed work item (transport.c
+  /// CONN_FAIL_PERSIST_DELAY_MS), so an ordinary reboot inside that window re-seeds from
+  /// flash BELOW a value the app already read live and may have been baselined at. No
+  /// re-flash involved. Treating that as a wipe and discarding the baseline would throw
+  /// away a perfectly good one the user set moments earlier.
+  ///
+  /// Re-anchoring to the current reading covers every cause without having to tell them
+  /// apart: a persistence rollback moves the baseline down by the handful of failures
+  /// that never reached flash; a wipe, re-flash or replacement unit moves it to ~0, so
+  /// the delta becomes the whole count since that event, which is what the user wants to
+  /// see anyway. It is also self-correcting where a discard was not — the baseline can
+  /// never sit above the counter, so nothing renders negative, and nothing resurrects
+  /// when the count climbs back past where the old baseline used to be.
+  ///
+  /// Runs on every reading, because [_tryRestoreBaseline] is latched to the first one and
+  /// cannot see a rollback or wipe that lands while the page is already open. It is also
+  /// the single owner of this rule: the restore path deliberately does no clamping of its
+  /// own and leaves the correction to the call that follows it.
+  void _realignConnFailBaselines(DeviceDropStats stats) {
     final connBase = _connFailBaseline;
     final estabBase = _estabFailBaseline;
-    final connStale = connBase != null && stats.failedConnCount < connBase;
-    final estabStale = estabBase != null && stats.estabFailCount < estabBase;
-    if (!connStale && !estabStale) return;
+    final connLow = connBase != null && stats.failedConnCount < connBase;
+    final estabLow = estabBase != null && stats.estabFailCount < estabBase;
+    if (!connLow && !estabLow) return;
     final prefs = SharedPreferencesUtil();
-    if (connStale) unawaited(prefs.remove(_kBaselineConnFail));
-    if (estabStale) unawaited(prefs.remove(_kBaselineEstabFail));
+    if (connLow) unawaited(prefs.saveInt(_kBaselineConnFail, stats.failedConnCount));
+    if (estabLow) unawaited(prefs.saveInt(_kBaselineEstabFail, stats.estabFailCount));
     setState(() {
-      if (connStale) _connFailBaseline = null;
-      if (estabStale) _estabFailBaseline = null;
+      if (connLow) _connFailBaseline = stats.failedConnCount;
+      if (estabLow) _estabFailBaseline = stats.estabFailCount;
     });
   }
 
@@ -802,25 +813,22 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       }
     }
 
-    // BLE connect-fail baselines: SURVIVE reboot (firmware counters are flash-
-    // persisted). Only discard if a counter went backwards — i.e. the device's
-    // flash was wiped / re-flashed below the saved baseline.
+    // BLE connect-fail baselines: SURVIVE reboot (firmware counters are flash-persisted),
+    // so unlike the SD baseline above there is nothing to discard on a restart. Restored
+    // as saved, with no backwards check of their own — a reading below the baseline is
+    // handled by _realignConnFailBaselines, which every caller runs immediately after
+    // this and which corrects the saved value rather than dropping it. Keeping the rule
+    // in one place is deliberate: the earlier copy here inferred "wiped" from a backwards
+    // reading and deleted a valid baseline whenever a reboot beat the firmware's 10 s
+    // persist window.
     final savedConnFail = prefs.getInt(_kBaselineConnFail, defaultValue: -1);
     if (savedConnFail >= 0) {
-      if (stats.failedConnCount < savedConnFail) {
-        unawaited(prefs.remove(_kBaselineConnFail));
-      } else {
-        setState(() => _connFailBaseline = savedConnFail);
-      }
+      setState(() => _connFailBaseline = savedConnFail);
     }
 
     final savedEstabFail = prefs.getInt(_kBaselineEstabFail, defaultValue: -1);
     if (savedEstabFail >= 0) {
-      if (stats.estabFailCount < savedEstabFail) {
-        unawaited(prefs.remove(_kBaselineEstabFail));
-      } else {
-        setState(() => _estabFailBaseline = savedEstabFail);
-      }
+      setState(() => _estabFailBaseline = savedEstabFail);
     }
   }
 
@@ -1718,12 +1726,12 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final emptyRot = rel(stats.emptyBinRotations, (b) => b.emptyBinRotations);
     final seEmits = rel(stats.sessionEndMarkerEmits, (b) => b.sessionEndMarkerEmits);
     final pauseSaves = rel(stats.markerPauseGateSaves, (b) => b.markerPauseGateSaves);
-    // A reading BELOW the baseline means the device's flash was wiped or re-flashed
-    // under it, so the baseline no longer describes anything. _dropStaleConnFailBaselines
-    // latches that away on the reading that reveals it; this is the same-frame guard for
-    // the build that renders that reading, since the drop lands via setState one frame
-    // later. Do NOT make this the whole mechanism — recomputed per build it unlatches
-    // itself, resurrecting the baseline once a post-wipe counter climbs back above it.
+    // Defensive only. _realignConnFailBaselines pulls the baseline down to any reading
+    // that falls below it, so by the time a build sees the pair they agree — but it
+    // corrects via setState, and this keeps the intervening build from rendering a
+    // negative count. Do NOT grow this into the actual rule: evaluated per build it
+    // cannot latch anything, and it has no way to write the correction back, so the
+    // baseline would silently return the moment a post-wipe counter climbed past it.
     // Falling back to the lifetime value rather than clamping to 0 keeps the number
     // non-negative AND gets the row its "(lifetime)" label and exemption from the
     // verdict, which is what a delta with nothing left to subtract from actually is.
