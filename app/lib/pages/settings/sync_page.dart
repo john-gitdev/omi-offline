@@ -222,6 +222,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     _lastStatsElapsed = _dropClock.elapsed;
     setState(() => _dropStats = s);
     _tryRestoreBaseline(s);
+    _realignConnFailBaselines(s);
   }
 
   /// Cancel the Dart sub and stop the device pushing (CCCD=0). Assumes the caller
@@ -701,6 +702,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           _lastStatsElapsed = _dropClock.elapsed;
           setState(() => _dropStats = stats);
           _tryRestoreBaseline(stats);
+          _realignConnFailBaselines(stats);
         },
         // Stream closed (disconnect) — the transport re-subscribes on reconnect
         // via a new controller this sub isn't attached to, so drop it and let the
@@ -740,6 +742,43 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
   }
 
+  /// Pull a BLE connect-fail baseline down to a reading that has fallen below it.
+  ///
+  /// A reading under the baseline means the baseline can no longer describe a "since
+  /// when" — but NOT, on its own, that the device was wiped. The firmware persists these
+  /// two counters on a coalesced 10 s delayed work item (transport.c
+  /// CONN_FAIL_PERSIST_DELAY_MS), so an ordinary reboot inside that window re-seeds from
+  /// flash BELOW a value the app already read live and may have been baselined at. No
+  /// re-flash involved. Treating that as a wipe and discarding the baseline would throw
+  /// away a perfectly good one the user set moments earlier.
+  ///
+  /// Re-anchoring to the current reading covers every cause without having to tell them
+  /// apart: a persistence rollback moves the baseline down by the handful of failures
+  /// that never reached flash; a wipe, re-flash or replacement unit moves it to ~0, so
+  /// the delta becomes the whole count since that event, which is what the user wants to
+  /// see anyway. It is also self-correcting where a discard was not — the baseline can
+  /// never sit above the counter, so nothing renders negative, and nothing resurrects
+  /// when the count climbs back past where the old baseline used to be.
+  ///
+  /// Runs on every reading, because [_tryRestoreBaseline] is latched to the first one and
+  /// cannot see a rollback or wipe that lands while the page is already open. It is also
+  /// the single owner of this rule: the restore path deliberately does no clamping of its
+  /// own and leaves the correction to the call that follows it.
+  void _realignConnFailBaselines(DeviceDropStats stats) {
+    final connBase = _connFailBaseline;
+    final estabBase = _estabFailBaseline;
+    final connLow = connBase != null && stats.failedConnCount < connBase;
+    final estabLow = estabBase != null && stats.estabFailCount < estabBase;
+    if (!connLow && !estabLow) return;
+    final prefs = SharedPreferencesUtil();
+    if (connLow) unawaited(prefs.saveInt(_kBaselineConnFail, stats.failedConnCount));
+    if (estabLow) unawaited(prefs.saveInt(_kBaselineEstabFail, stats.estabFailCount));
+    setState(() {
+      if (connLow) _connFailBaseline = stats.failedConnCount;
+      if (estabLow) _estabFailBaseline = stats.estabFailCount;
+    });
+  }
+
   void _tryRestoreBaseline(DeviceDropStats stats) {
     if (_baselineRestored) return;
     _baselineRestored = true;
@@ -774,25 +813,22 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       }
     }
 
-    // BLE connect-fail baselines: SURVIVE reboot (firmware counters are flash-
-    // persisted). Only discard if a counter went backwards — i.e. the device's
-    // flash was wiped / re-flashed below the saved baseline.
+    // BLE connect-fail baselines: SURVIVE reboot (firmware counters are flash-persisted),
+    // so unlike the SD baseline above there is nothing to discard on a restart. Restored
+    // as saved, with no backwards check of their own — a reading below the baseline is
+    // handled by _realignConnFailBaselines, which every caller runs immediately after
+    // this and which corrects the saved value rather than dropping it. Keeping the rule
+    // in one place is deliberate: the earlier copy here inferred "wiped" from a backwards
+    // reading and deleted a valid baseline whenever a reboot beat the firmware's 10 s
+    // persist window.
     final savedConnFail = prefs.getInt(_kBaselineConnFail, defaultValue: -1);
     if (savedConnFail >= 0) {
-      if (stats.failedConnCount < savedConnFail) {
-        unawaited(prefs.remove(_kBaselineConnFail));
-      } else {
-        setState(() => _connFailBaseline = savedConnFail);
-      }
+      setState(() => _connFailBaseline = savedConnFail);
     }
 
     final savedEstabFail = prefs.getInt(_kBaselineEstabFail, defaultValue: -1);
     if (savedEstabFail >= 0) {
-      if (stats.estabFailCount < savedEstabFail) {
-        unawaited(prefs.remove(_kBaselineEstabFail));
-      } else {
-        setState(() => _estabFailBaseline = savedEstabFail);
-      }
+      setState(() => _estabFailBaseline = savedEstabFail);
     }
   }
 
@@ -1690,8 +1726,35 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final emptyRot = rel(stats.emptyBinRotations, (b) => b.emptyBinRotations);
     final seEmits = rel(stats.sessionEndMarkerEmits, (b) => b.sessionEndMarkerEmits);
     final pauseSaves = rel(stats.markerPauseGateSaves, (b) => b.markerPauseGateSaves);
-    final connFails = connBaseline == null ? stats.failedConnCount : (stats.failedConnCount - connBaseline);
-    final estabFails = estabBaseline == null ? stats.estabFailCount : (stats.estabFailCount - estabBaseline);
+    // Defensive only. _realignConnFailBaselines pulls the baseline down to any reading
+    // that falls below it, so by the time a build sees the pair they agree — but it
+    // corrects via setState, and this keeps the intervening build from rendering a
+    // negative count. Do NOT grow this into the actual rule: evaluated per build it
+    // cannot latch anything, and it has no way to write the correction back, so the
+    // baseline would silently return the moment a post-wipe counter climbed past it.
+    // Falling back to the lifetime value rather than clamping to 0 keeps the number
+    // non-negative AND gets the row its "(lifetime)" label and exemption from the
+    // verdict, which is what a delta with nothing left to subtract from actually is.
+    final connBaselineUsable = connBaseline != null && stats.failedConnCount >= connBaseline;
+    final estabBaselineUsable = estabBaseline != null && stats.estabFailCount >= estabBaseline;
+    final connFails = connBaselineUsable ? stats.failedConnCount - connBaseline : stats.failedConnCount;
+    final estabFails = estabBaselineUsable ? stats.estabFailCount - estabBaseline : stats.estabFailCount;
+    // Unlike every other counter here, these two are persisted to the Omi's flash and
+    // re-seeded at boot (transport.c app_settings_get_conn_fail), so without a baseline
+    // the number on screen is a lifetime odometer covering every boot the device has
+    // ever had. The firmware's own note is explicit that only their MOVEMENT
+    // discriminates and "a nonzero absolute value says nothing about the outage in front
+    // of you" — an establishment failure is an ordinary RF event (the nRF7002 shares this
+    // board), so a handful accumulates on any healthy Omi. Rendering that as a red fault
+    // meant a used device permanently reported "N BLE connect failures" with nothing
+    // wrong. They count as a fault only once a baseline makes them a delta. The trade-off
+    // is deliberate: on a device that has never been baselined a genuine burst now reads
+    // as plain info rather than red, which is the honest rendering of a number that
+    // cannot distinguish the two.
+    final connFailsAreDelta = connBaselineUsable;
+    final estabFailsAreDelta = estabBaselineUsable;
+    final connFailsFault = connFails > 0 && connFailsAreDelta;
+    final estabFailsFault = estabFails > 0 && estabFailsAreDelta;
 
     // Peak depth is the firmware's monotonic since-boot high-water mark, not an
     // incremental counter, so it is never delta-subtracted and never baselined (a
@@ -1722,7 +1785,22 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // by the firmware as since-boot and absent from the baseline snapshot, so they
     // are shown raw in both views.
     final isRing = _storageBackend == 1;
-    final ringSlow = stats.ringMaxIoMs >= 500;
+    // 1000 ms is just under the point where one slow op first becomes capable of costing
+    // audio, so below it the warn has nothing to warn about. A single op is one
+    // RING_FLUSH_CHUNK_SECTORS chunk (4 KB), and chunks never come alone: a full-stage
+    // flush issues ten of them back-to-back, during which the worker drains no audio.
+    // Ingest is ~10 of the 440 B blocks per second (20 ms Opus frames, 32 kbps VBR, + the
+    // 4 B inline header), so the 120-deep sd_msgq holds ~12 s of stall before it drops a
+    // block, putting the harm point near 12 s / 10 chunks = 1200 ms. Rounded DOWN to 1000
+    // deliberately: VBR frame sizes vary, and at the fast end of ingest (~11.6 blocks/s)
+    // the queue only holds ~10.3 s, which drags the harm point to ~1030 — so 1000 holds
+    // across the plausible range where 1200 assumes the favourable end of it, and it
+    // leaves some lead time, which is what a warn is for. The earlier 500 ms line flagged
+    // runs using under half the headroom, which is real but not actionable, and since this
+    // is a since-boot MAXIMUM that never decays, one tail event latched the warn until
+    // reboot. What actually reports lost audio is blockDrops / ringIoErrors; this row only
+    // attributes it.
+    final ringSlow = stats.ringMaxIoMs >= 1000;
     final ringErrs = stats.ringIoErrors;
 
     // "Since baseline" is derived from the block-drop count rising, not from the
@@ -1756,8 +1834,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     ];
     final memoryFlags = <String>[if (sdStackHot) 'SD worker stack high', if (codecStackHot) 'codec stack high'];
     final bleFlags = <String>[
-      if (connFails > 0) '$connFails connect fail${connFails == 1 ? '' : 's'}',
-      if (estabFails > 0) '$estabFails at establishment',
+      if (connFailsFault) '$connFails connect fail${connFails == 1 ? '' : 's'}',
+      if (estabFailsFault) '$estabFails at establishment',
     ];
 
     // The verdict. Twenty rows of mostly-zero used to leave "is anything wrong?" as
@@ -1769,8 +1847,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (codec > 0) problems.add('$codec codec drop${codec == 1 ? '' : 's'}');
     if (markerDrops > 0) problems.add('$markerDrops marker write drop${markerDrops == 1 ? '' : 's'}');
     if (isRing && ringErrs > 0) problems.add('$ringErrs NAND IO error${ringErrs == 1 ? '' : 's'}');
-    if (connFails > 0 || estabFails > 0) {
-      final n = connFails + estabFails;
+    if (connFailsFault || estabFailsFault) {
+      final n = (connFailsFault ? connFails : 0) + (estabFailsFault ? estabFails : 0);
       problems.add('$n BLE connect failure${n == 1 ? '' : 's'}');
     }
     final watches = <String>[];
@@ -1971,11 +2049,17 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
             // unconnectable" outage — if the phone logs 0x3e while this stays 0, the
             // Omi never heard the connect requests and the phone is at fault. See
             // NOTES.md "BLE: advertising but won't connect".
-            DiagStatRow('Connect failures', '$connFails', level: connFails > 0 ? DiagLevel.bad : DiagLevel.info),
+            // Both survive reboot, so the label says which span the number covers —
+            // without it a lifetime total reads as "this happened on this run".
             DiagStatRow(
-              'Died at establishment (0x3e)',
+              connFailsAreDelta ? 'Connect failures' : 'Connect failures (lifetime)',
+              '$connFails',
+              level: connFailsFault ? DiagLevel.bad : DiagLevel.info,
+            ),
+            DiagStatRow(
+              estabFailsAreDelta ? 'Died at establishment (0x3e)' : 'Died at establishment (0x3e, lifetime)',
               '$estabFails',
-              level: estabFails > 0 ? DiagLevel.bad : DiagLevel.info,
+              level: estabFailsFault ? DiagLevel.bad : DiagLevel.info,
             ),
             // Contextual, not a fault of its own: it describes whichever failure the
             // rows above are reporting, so it only appears alongside one — and it is
@@ -2095,7 +2179,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       ..writeln('stacks: sdWorker=${stats.sdWorkerStackUsed}B codec=${stats.codecStackUsed}B')
       ..writeln('ring: maxIo=${stats.ringMaxIoMs}ms(${stats.ringMaxIoOp}) ioErrors=${stats.ringIoErrors}')
       ..writeln(
-        'ble: connFail=${stats.failedConnCount} estab0x3e=${stats.estabFailCount} '
+        // "(lifetime)" is load-bearing: every other counter in this snapshot is
+        // since-boot and the header states the uptime, so these two read as having
+        // happened on this run when they in fact survive reboot and total every boot
+        // the device has had.
+        'ble: connFail=${stats.failedConnCount} estab0x3e=${stats.estabFailCount} (lifetime) '
         'lastAdv=${stats.lastFailedConnDuringSlowAdv ? 'slow' : 'fast'}',
       );
 
