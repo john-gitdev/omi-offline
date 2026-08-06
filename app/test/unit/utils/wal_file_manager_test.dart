@@ -77,7 +77,7 @@ void main() {
       );
 
       final wal2 = Wal(
-        codec: BleAudioCodec.pcm16,
+        codec: BleAudioCodec.pcm8,
         channel: 2,
         device: 'device_2',
         fileNum: 2,
@@ -104,7 +104,7 @@ void main() {
       expect(wals[0].status, WalStatus.synced);
 
       expect(wals[1].id, 'device_2-1234567891');
-      expect(wals[1].codec, BleAudioCodec.pcm16);
+      expect(wals[1].codec, BleAudioCodec.pcm8);
       expect(wals[1].storage, WalStorage.local);
     });
 
@@ -130,7 +130,7 @@ void main() {
       expect(backupFile.existsSync(), isFalse); // No backup on first save
 
       final wal2 = Wal(
-        codec: BleAudioCodec.pcm16,
+        codec: BleAudioCodec.pcm8,
         channel: 2,
         device: 'device_2',
         fileNum: 2,
@@ -194,7 +194,7 @@ void main() {
       );
 
       final wal2 = Wal(
-        codec: BleAudioCodec.pcm16,
+        codec: BleAudioCodec.pcm8,
         channel: 2,
         device: 'device_2',
         fileNum: 2,
@@ -242,7 +242,7 @@ void main() {
       );
 
       final wal2 = Wal(
-        codec: BleAudioCodec.pcm16,
+        codec: BleAudioCodec.pcm8,
         channel: 2,
         device: 'device_2',
         fileNum: 2,
