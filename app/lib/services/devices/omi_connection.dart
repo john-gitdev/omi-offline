@@ -20,8 +20,11 @@ class OmiDeviceConnection extends DeviceConnection {
   static const String batteryDetailServiceUuid = '19b10050-e8f2-537e-4f6c-d104768a1214';
   static const String batteryDetailCharacteristicUuid = '19b10051-e8f2-537e-4f6c-d104768a1214';
 
-  static const String buttonServiceUuid = '23ba7924-0000-1000-7450-346eac492e92';
-  static const String buttonTriggerCharacteristicUuid = '23ba7925-0000-1000-7450-346eac492e92';
+  // The firmware registers a button trigger service (23ba7924/…7925) but never
+  // notifies on it — taps are handled on-device and recorded as inline markers in
+  // the audio stream, which suits a recorder built to run disconnected. The app
+  // therefore doesn't subscribe to it. The service stays on the device because
+  // removing it would shift every later service's handles and force a re-pair.
 
   // Button + haptic config were consolidated into the Settings service: button
   // config = 19b10015, haptic = 19b10016. The old 23ba7926 service was retired;
@@ -571,15 +574,6 @@ class OmiDeviceConnection extends DeviceConnection {
   }
 
   @override
-  Future<List<int>> performGetButtonState() async {
-    try {
-      return await transport.readCharacteristic(buttonServiceUuid, buttonTriggerCharacteristicUuid);
-    } catch (_) {
-      return [];
-    }
-  }
-
-  @override
   Future<BleAudioCodec> performGetAudioCodec() async {
     if (_cachedAudioCodec != null) return _cachedAudioCodec!;
     try {
@@ -590,20 +584,6 @@ class OmiDeviceConnection extends DeviceConnection {
       }
     } catch (_) {}
     return _cachedAudioCodec = BleAudioCodec.pcm8;
-  }
-
-  @override
-  Future<StreamSubscription<List<int>>?> performGetBleButtonListener({
-    required void Function(List<int>) onButtonReceived,
-  }) async {
-    try {
-      final stream = await transport.getCharacteristicStream(buttonServiceUuid, buttonTriggerCharacteristicUuid);
-      return stream.listen((value) {
-        if (value.isNotEmpty) onButtonReceived(value);
-      });
-    } catch (_) {
-      return null;
-    }
   }
 
   @override
