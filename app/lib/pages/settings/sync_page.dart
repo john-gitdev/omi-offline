@@ -1692,6 +1692,22 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final pauseSaves = rel(stats.markerPauseGateSaves, (b) => b.markerPauseGateSaves);
     final connFails = connBaseline == null ? stats.failedConnCount : (stats.failedConnCount - connBaseline);
     final estabFails = estabBaseline == null ? stats.estabFailCount : (stats.estabFailCount - estabBaseline);
+    // Unlike every other counter here, these two are persisted to the Omi's flash and
+    // re-seeded at boot (transport.c app_settings_get_conn_fail), so without a baseline
+    // the number on screen is a lifetime odometer covering every boot the device has
+    // ever had. The firmware's own note is explicit that only their MOVEMENT
+    // discriminates and "a nonzero absolute value says nothing about the outage in front
+    // of you" — an establishment failure is an ordinary RF event (the nRF7002 shares this
+    // board), so a handful accumulates on any healthy Omi. Rendering that as a red fault
+    // meant a used device permanently reported "N BLE connect failures" with nothing
+    // wrong. They count as a fault only once a baseline makes them a delta. The trade-off
+    // is deliberate: on a device that has never been baselined a genuine burst now reads
+    // as plain info rather than red, which is the honest rendering of a number that
+    // cannot distinguish the two.
+    final connFailsAreDelta = connBaseline != null;
+    final estabFailsAreDelta = estabBaseline != null;
+    final connFailsFault = connFails > 0 && connFailsAreDelta;
+    final estabFailsFault = estabFails > 0 && estabFailsAreDelta;
 
     // Peak depth is the firmware's monotonic since-boot high-water mark, not an
     // incremental counter, so it is never delta-subtracted and never baselined (a
@@ -1771,8 +1787,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     ];
     final memoryFlags = <String>[if (sdStackHot) 'SD worker stack high', if (codecStackHot) 'codec stack high'];
     final bleFlags = <String>[
-      if (connFails > 0) '$connFails connect fail${connFails == 1 ? '' : 's'}',
-      if (estabFails > 0) '$estabFails at establishment',
+      if (connFailsFault) '$connFails connect fail${connFails == 1 ? '' : 's'}',
+      if (estabFailsFault) '$estabFails at establishment',
     ];
 
     // The verdict. Twenty rows of mostly-zero used to leave "is anything wrong?" as
@@ -1784,8 +1800,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (codec > 0) problems.add('$codec codec drop${codec == 1 ? '' : 's'}');
     if (markerDrops > 0) problems.add('$markerDrops marker write drop${markerDrops == 1 ? '' : 's'}');
     if (isRing && ringErrs > 0) problems.add('$ringErrs NAND IO error${ringErrs == 1 ? '' : 's'}');
-    if (connFails > 0 || estabFails > 0) {
-      final n = connFails + estabFails;
+    if (connFailsFault || estabFailsFault) {
+      final n = (connFailsFault ? connFails : 0) + (estabFailsFault ? estabFails : 0);
       problems.add('$n BLE connect failure${n == 1 ? '' : 's'}');
     }
     final watches = <String>[];
@@ -1986,11 +2002,17 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
             // unconnectable" outage — if the phone logs 0x3e while this stays 0, the
             // Omi never heard the connect requests and the phone is at fault. See
             // NOTES.md "BLE: advertising but won't connect".
-            DiagStatRow('Connect failures', '$connFails', level: connFails > 0 ? DiagLevel.bad : DiagLevel.info),
+            // Both survive reboot, so the label says which span the number covers —
+            // without it a lifetime total reads as "this happened on this run".
             DiagStatRow(
-              'Died at establishment (0x3e)',
+              connFailsAreDelta ? 'Connect failures' : 'Connect failures (lifetime)',
+              '$connFails',
+              level: connFailsFault ? DiagLevel.bad : DiagLevel.info,
+            ),
+            DiagStatRow(
+              estabFailsAreDelta ? 'Died at establishment (0x3e)' : 'Died at establishment (0x3e, lifetime)',
               '$estabFails',
-              level: estabFails > 0 ? DiagLevel.bad : DiagLevel.info,
+              level: estabFailsFault ? DiagLevel.bad : DiagLevel.info,
             ),
             // Contextual, not a fault of its own: it describes whichever failure the
             // rows above are reporting, so it only appears alongside one — and it is
@@ -2110,7 +2132,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       ..writeln('stacks: sdWorker=${stats.sdWorkerStackUsed}B codec=${stats.codecStackUsed}B')
       ..writeln('ring: maxIo=${stats.ringMaxIoMs}ms(${stats.ringMaxIoOp}) ioErrors=${stats.ringIoErrors}')
       ..writeln(
-        'ble: connFail=${stats.failedConnCount} estab0x3e=${stats.estabFailCount} '
+        // "(lifetime)" is load-bearing: every other counter in this snapshot is
+        // since-boot and the header states the uptime, so these two read as having
+        // happened on this run when they in fact survive reboot and total every boot
+        // the device has had.
+        'ble: connFail=${stats.failedConnCount} estab0x3e=${stats.estabFailCount} (lifetime) '
         'lastAdv=${stats.lastFailedConnDuringSlowAdv ? 'slow' : 'fast'}',
       );
 
