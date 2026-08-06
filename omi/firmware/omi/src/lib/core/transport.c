@@ -883,17 +883,22 @@ struct bt_gatt_service button_service = BT_GATT_SERVICE(button_service_attr);
  * Their handlers (button_config_*_handler / haptic_config_*_handler, above) are
  * unchanged and are referenced from settings_service_attr. */
 
-/* There is deliberately no button-state notify here. The firmware owns the
- * button entirely: the FSM acts on a tap locally and records it in the audio
- * stream as an inline marker (0xFFFFFFFE tap, 0xFFFFFFF8 priority-start, …),
- * which the app parses at decode time. Pushing tap events over BLE would only
- * matter while the phone is connected, and Omi is built to run disconnected.
+/* There is deliberately no button-state notify here. The firmware owns the button
+ * entirely: the FSM acts on a gesture locally, and the actions that change captured
+ * audio each leave their own inline marker for the app to parse at decode time —
+ * MARKER writes 0xFFFFFFFE (a bookmark), RECORD_START writes 0xFFFFFFF8 in auto mode
+ * (opens a priority recording), RECORD_STOP writes 0xFFFFFFFC, MUTE brackets with
+ * 0xFFFFFFFA/0xFFFFFFF9. NONE and TOGGLE_LED deliberately leave no marker: they do
+ * not affect the recording, so there is nothing for the app to reconstruct. A BLE
+ * tap event would only arrive while the phone happened to be connected, and Omi is
+ * built to run disconnected.
  *
  * The service itself stays registered, and is worth keeping: register_button_service()
- * runs at the TOP of transport_start()'s registration sequence — before settings,
- * features, storage, diagnostics, mute and led — so dropping it would shift the
- * handles of every one of them and cost a re-pair. It is the most expensive service
- * in the table to remove and free to keep.
+ * runs early in transport_start() — after the optional accel service, but ahead of
+ * haptic, speaker, settings, features, time-sync, battery, storage, diagnostics, mute
+ * and led — so dropping it would shift the handles of every one of those and cost a
+ * re-pair. It is among the most expensive services in the table to remove and free to
+ * keep.
  *
  * That also makes it the natural home for a future device→app push channel, which
  * the app otherwise has no way to receive (it learns device-side state at connect
@@ -903,9 +908,9 @@ struct bt_gatt_service button_service = BT_GATT_SERVICE(button_service_attr);
  *     length — bt_gatt_notify() may send up to ATT_MTU-3 bytes, so the 1-byte tap
  *     code can become an N-byte struct. button_ccc_changed() already tells you when
  *     the app subscribes.
- *   - COSTS A RE-PAIR: adding a second characteristic to this service, since it sits
- *     ahead of everything else. Same trap as adding to Settings (see the note on
- *     settings_service_attr), but worse — put new attributes in the service
+ *   - COSTS A RE-PAIR: adding a second characteristic to this service, since almost
+ *     everything is registered after it. Same trap as adding to Settings (see the
+ *     note on settings_service_attr), but worse — put new attributes in the service
  *     registered LAST, as led (0080) does. */
 
 // --- Mute Service ---
