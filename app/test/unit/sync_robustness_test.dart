@@ -242,10 +242,6 @@ class MockDeviceConnection implements DeviceConnection {
           {void Function(int)? onBatteryLevelChange, void Function(bool)? onChargingStateChange}) async =>
       null;
   @override
-  Future<StreamSubscription<List<int>>?> getBleButtonListener(
-          {required void Function(List<int>) onButtonReceived}) async =>
-      null;
-  @override
   Future<List<int>> getStorageList() async => [];
   @override
   Future<StreamSubscription<List<int>>?> getBleStorageBytesListener(
@@ -267,13 +263,7 @@ class MockDeviceConnection implements DeviceConnection {
           {void Function(int)? onBatteryLevelChange, void Function(bool)? onChargingStateChange}) =>
       throw UnimplementedError();
   @override
-  Future<List<int>> performGetButtonState() => throw UnimplementedError();
-  @override
   Future<BleAudioCodec> performGetAudioCodec() => throw UnimplementedError();
-  @override
-  Future<StreamSubscription<List<int>>?> performGetBleButtonListener(
-          {required void Function(List<int>) onButtonReceived}) =>
-      throw UnimplementedError();
   @override
   Future<List<int>> performGetStorageList() => throw UnimplementedError();
   @override
