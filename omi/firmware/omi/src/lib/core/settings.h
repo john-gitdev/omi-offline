@@ -257,22 +257,34 @@ void app_settings_get_haptic_config(uint8_t config[6]);
 int app_settings_arm_dfu_bond_wipe(void);
 
 /**
- * @brief Consume the one-shot DFU bond-wipe marker for this boot.
+ * @brief Whether this boot should wipe BLE bonds. Pure query — clears nothing.
  *
- * Clears the marker and returns whether the caller should wipe BLE bonds. A
- * failed clear leaves it set, so the next boot wipes again — idempotent by
- * design, since the guarantee being bought is a free key slot.
+ * Pair with @ref app_settings_clear_dfu_bond_wipe, called only after the wipe
+ * SUCCEEDS. Clearing before the wipe would let a failed bt_unpair() be skipped
+ * forever, leaving the device holding its key slot while the phone is already
+ * unbonded — the one unrecoverable state this mechanism exists to prevent.
  *
  * Also returns true on the FIRST boot of any firmware carrying this scheme, even
  * with no marker set: the flash that installed it was performed by the previous
- * image, which had no DFU_PENDING hook and so could not arm one, while the app
- * clears the phone bond on success either way. Without that the migration update
- * itself would strand every existing device in the one state the phone cannot
- * recover from.
+ * image, which had no DFU_PENDING hook and so could not arm one. On Android the
+ * app clears the phone bond on DFU success, so without this the migration update
+ * would strand the device in exactly that state. (On iOS there is no
+ * programmatic bond removal, so the phone keeps its bond and the migration wipe
+ * only frees the device side — harmless, and the direction the user can fix.)
  *
  * @return true if the caller should wipe BLE bonds, false otherwise.
  */
-bool app_settings_consume_dfu_bond_wipe(void);
+bool app_settings_dfu_bond_wipe_due(void);
+
+/**
+ * @brief Retire the DFU bond-wipe markers after a successful wipe.
+ *
+ * Clears the one-shot DFU marker and records that this firmware's scheme has
+ * been seen. Call ONLY once bt_unpair() has returned success — on failure leave
+ * both set so the next boot retries. A failed persist here is also safe: the
+ * next boot simply wipes again, which is idempotent.
+ */
+void app_settings_clear_dfu_bond_wipe(void);
 
 
 #endif // SETTINGS_H

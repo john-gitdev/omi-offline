@@ -130,24 +130,31 @@ static bool dfu_wipe_scheme_seen = false;
  * 0x10000-0x100000 — so it survives only because the erase does not reach down
  * that far. It is not outside the blast radius; it is below it.
  *
- * Verified against NCS v2.9.0 rather than assumed:
- *   trailer_sz = BOOT_MAX_IMG_SECTORS * BOOT_STATUS_STATE_COUNT * min_write_sz
- *                + (BOOT_MAX_ALIGN * 4 + BOOT_MAGIC_SZ)
- *              = 256 * 3 * 4 + (8 * 4 + 16)   = 3120 B
- * min_write_sz is flash_area_align() of the PRIMARY slot = the SoC's internal
- * flash write-block-size = 4. 3120 < 4096, so the loop takes exactly one sector
- * and the erase is 0xff000-0x100000 — clearing settings_storage by the whole
- * 0xfe000-0xff000 sector of EMPTY_0.
+ * Verified against NCS v2.9.0 rather than assumed. With N =
+ * CONFIG_BOOT_MAX_IMG_SECTORS and min_write_sz = flash_area_align() of the
+ * PRIMARY slot = the SoC's internal-flash write-block-size = 4:
  *
- * The margin is one sector, and the thing that consumes it lives in a Kconfig
- * this image cannot see: raise CONFIG_BOOT_MAX_IMG_SECTORS (mcuboot's, not
- * ours) past ~340 and the trailer needs two sectors, past ~680 and it needs
- * four — which would erase settings_storage in full on every single OTA. So
- * assert two sectors, not the one currently in use: that is still true today
- * (0xfe000 <= 0xfe000, exactly) while leaving the trailer room to double before
- * this stops being an early warning. If it ever fails, re-run the arithmetic
- * above before relaxing it — the answer is to move the partition, never to
- * widen the bound.
+ *   trailer_sz = N * BOOT_STATUS_STATE_COUNT * min_write_sz
+ *                + (BOOT_MAX_ALIGN * 4 + BOOT_MAGIC_SZ)
+ *              = N * 3 * 4 + (8 * 4 + 16)  =  12N + 48
+ *
+ * and the erase covers ceil(trailer_sz / 4096) sectors down from 0x100000:
+ *
+ *   N <=  337   1 sector   0xff000-0x100000   settings_storage untouched  <-- N=256 today (3120 B)
+ *   N <=  678   2 sectors  0xfe000-0x100000   untouched (it ends exactly at 0xfe000)
+ *   N <= 1020   3 sectors  0xfd000-0x100000   ERASES the upper half of settings_storage
+ *   N >= 1021   4 sectors  0xfc000-0x100000   erases settings_storage in full
+ *
+ * READ THIS BEFORE TRUSTING THE ASSERT. It checks the LAYOUT — that
+ * settings_storage keeps two sectors of margin below the slot top — which is
+ * necessary but NOT sufficient. It cannot check the trailer SIZE, because
+ * CONFIG_BOOT_MAX_IMG_SECTORS belongs to the mcuboot image and is not defined in
+ * this one (verified: absent from the app's autoconf.h). So raising it to 679 or
+ * beyond silently starts erasing settings_storage while this assert still
+ * passes. Two sectors is also the most the current layout can assert — the
+ * margin is exactly 0x2000 — so the bound cannot simply be widened; buying more
+ * headroom means moving the partition down. If you change that Kconfig, re-run
+ * the table above by hand. Nothing else will catch it.
  *
  * The layout is chosen dynamically by Partition Manager (boards/omi/pm_static.yml
  * is NOT applied — PM reads pm_static.yml from the application directory), which
@@ -726,15 +733,38 @@ int app_settings_arm_dfu_bond_wipe(void)
 
 
 
-bool app_settings_consume_dfu_bond_wipe(void)
+bool app_settings_dfu_bond_wipe_due(void)
 {
-    /* First boot of any firmware carrying this scheme wipes once regardless of
-     * the marker — see dfu_wipe_scheme_seen for why the marker cannot have been
-     * set by the image that performed that particular flash. Recorded before the
-     * wipe decision so a persist failure retries on the next boot rather than
-     * skipping the migration outright. */
-    bool migrate = !dfu_wipe_scheme_seen;
-    if (migrate) {
+    /* Pure query — nothing is cleared here. The markers are retired only by
+     * app_settings_clear_dfu_bond_wipe(), which the caller invokes after the
+     * wipe actually succeeds, so a failed bt_unpair() retries on the next boot
+     * instead of being silently skipped. Getting that backwards would leave the
+     * device holding its key slot with the phone already unbonded, which is the
+     * one state this whole mechanism exists to prevent.
+     *
+     * Two independent reasons to wipe: a DFU landed (dfu_bond_wipe_pending), or
+     * this is the first boot of any firmware carrying the scheme — see
+     * dfu_wipe_scheme_seen for why that flash can never have armed its own
+     * marker. */
+    return dfu_bond_wipe_pending || !dfu_wipe_scheme_seen;
+}
+
+void app_settings_clear_dfu_bond_wipe(void)
+{
+    if (dfu_bond_wipe_pending) {
+        uint8_t val = 0;
+        int err = settings_save_one("omi/dfu_bond_wipe", &val, sizeof(val));
+        if (err) {
+            /* Left set: the next boot wipes again. Idempotent and harmless — the
+             * bonds are already gone — which is the right way to fail for a
+             * marker whose only job is to guarantee a free key slot. */
+            LOG_ERR("Failed to clear dfu_bond_wipe (err %d)", err);
+        } else {
+            dfu_bond_wipe_pending = false;
+        }
+    }
+
+    if (!dfu_wipe_scheme_seen) {
         uint8_t seen = 1;
         int err = settings_save_one("omi/dfu_wipe_seen", &seen, sizeof(seen));
         if (err) {
@@ -742,23 +772,5 @@ bool app_settings_consume_dfu_bond_wipe(void)
         } else {
             dfu_wipe_scheme_seen = true;
         }
-        LOG_INF("DFU bond wipe: first boot with this scheme — wiping once to match the app");
     }
-
-    if (!dfu_bond_wipe_pending) {
-        return migrate;
-    }
-
-    /* One-shot: clear the marker before reporting. If the clear fails it stays
-     * set and the next boot wipes again — idempotent and harmless (the bonds are
-     * already gone), which is the right way to fail for a marker whose whole job
-     * is to guarantee a free key slot. */
-    uint8_t val = 0;
-    int err = settings_save_one("omi/dfu_bond_wipe", &val, sizeof(val));
-    if (err) {
-        LOG_ERR("Failed to clear dfu_bond_wipe (err %d)", err);
-    } else {
-        dfu_bond_wipe_pending = false;
-    }
-    return true;
 }
