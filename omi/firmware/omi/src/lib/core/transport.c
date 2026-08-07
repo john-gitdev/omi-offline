@@ -2888,9 +2888,23 @@ int transport_start()
         /* Return deliberately unchecked: bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY)
          * cannot fail — its only error returns are id >= CONFIG_BT_ID_MAX (0 here)
          * and a NULL addr under !CONFIG_BT_SMP (BT_ADDR_LE_ANY here, SMP on), and
-         * every other path returns 0. The diag record below reports the real
-         * post-wipe bond count, which is the check that would actually catch a
-         * key slot that somehow survived. */
+         * every other path returns 0.
+         *
+         * It does swallow one thing, and the DIAG_BOND_STATE record below does NOT
+         * catch it: bt_keys_clear() discards the result of bt_settings_delete_keys()
+         * (keys.c), so a failed *flash* delete goes unreported, and the count below
+         * comes from bt_foreach_bond() over the RAM key pool — which the same
+         * function memsets unconditionally, so it reads 0 either way.
+         *
+         * Left unguarded anyway. That unconditional memset is also why the state is
+         * self-correcting: the running device holds no keys, so it advertises
+         * unbonded and accepts a fresh pairing at once, and the app reconnects
+         * within seconds of the flash and re-keys — overwriting whatever stale
+         * record survived. Stranding the device would need an NVS that fails
+         * deletes while still serving the writes that pairing performs, plus no
+         * re-pair before the next boot. Verifying the delete means reading settings
+         * storage back on every boot: new surface for a case with no demonstrable
+         * trigger. */
         (void) bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
         LOG_INF("post-DFU unpair: DFU landed — wiped BLE bonds");
         /* Distinguishes an intentional post-update wipe from an unexplained loss:
