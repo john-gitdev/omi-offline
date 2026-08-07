@@ -5,6 +5,12 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
 
+/* Partition Manager's generated layout, for the trailer-overlap BUILD_ASSERT
+ * below. Guarded because the assert is skipped entirely without PM. */
+#if defined(CONFIG_PARTITION_MANAGER_ENABLED)
+#include <pm_config.h>
+#endif
+
 LOG_MODULE_REGISTER(app_settings, CONFIG_LOG_DEFAULT_LEVEL);
 
 // Default values if not found in flash
@@ -77,28 +83,46 @@ static uint8_t button_config[6] = {0, 2, 4, 3, 5, 0};
  * Patterns: 0=Off, 1=Single, 2=Double, 3=Triple. Default off everywhere. */
 static uint8_t haptic_config[6] = {0, 0, 0, 0, 0, 0};
 
-/* One-shot "unpair after firmware update" marker: the firmware version the
- * device was running when the app armed a post-update bond wipe
- * (CMD_ARM_POST_DFU_UNPAIR). Empty = disarmed. On boot, a running version that
- * DIFFERS from this armed value means a real update landed → wipe. Capturing the
- * version at ARM time (a deliberate, pre-flash act) means the wipe decision
- * doesn't depend on any boot-time persistence, and it's fail-closed: if arming
- * never persisted, the value stays empty and no wipe ever fires. Rides through
- * the DFU in NVS. */
-static char unpair_armed_fw[24] = {0};
+/* One-shot "wipe BLE bonds on the next boot" marker, set when mcumgr reports a
+ * firmware image has finished transferring (MGMT_EVT_OP_IMG_MGMT_DFU_PENDING,
+ * main.c) and consumed by transport_start(). A flash rewrites the MCUboot primary
+ * slot whether or not the version changed, and any bond it corrupts is
+ * unrecoverable from the phone: CONFIG_BT_MAX_PAIRED=1 plus an unset
+ * CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE means update_keys_check() refuses a fresh
+ * Just Works pairing whenever a key slot is occupied — by a valid key or by a
+ * corrupt one, it cannot tell the difference. So the device frees the slot after
+ * every flash, and the app clears its own bond on DFU success; both sides
+ * re-pair clean.
+ *
+ * Deliberately keyed on "a DFU landed", NOT on the firmware version changing. A
+ * same-version reflash writes the slot just as hard, so a version comparison
+ * would skip exactly the recovery flash a user performs *because* pairing is
+ * already broken. It also removes the arm/ACK ambiguity of the old
+ * CMD_ARM_POST_DFU_UNPAIR design: the device observes the DFU itself and infers
+ * nothing from the app.
+ *
+ * Every divergence lands on "device slot free, phone possibly stale", which the
+ * user can fix from the phone (Forget Device). The reverse — device bonded,
+ * phone wiped — needs the 5-tap gesture on the device, so it is the one outcome
+ * worth engineering against. */
+static bool dfu_bond_wipe_pending = false;
 
-/* The arm path truncates with strncpy(buf, current_fw, sizeof(buf) - 1) while
- * the consume path compares with strncmp(..., sizeof(unpair_armed_fw)) — 23
- * significant bytes written, 24 compared. A version string that doesn't fit
- * would therefore store truncated and then compare unequal against itself
- * forever, so a *failed* flash (the same version still running) would still be
- * read as "a real update landed" and wipe the bonds. The version is a
- * compile-time constant, so this is caught at build time rather than guarded at
- * runtime. If a longer version is ever wanted, widen unpair_armed_fw — don't
- * relax this. */
-BUILD_ASSERT(sizeof(CONFIG_BT_DIS_FW_REV_STR) <= sizeof(unpair_armed_fw),
-             "CONFIG_BT_DIS_FW_REV_STR must fit unpair_armed_fw including its NUL "
-             "(max 23 characters), or a failed firmware update will wipe BLE bonds.");
+/* MCUboot runs OVERWRITE_ONLY_FAST here (CONFIG_BOOT_UPGRADE_ONLY=y in
+ * sysbuild/mcuboot.conf expands to it), which erases the trailer sectors at the
+ * top of the primary slot on every update. The NVS holding the BLE bonds and
+ * every "omi/" setting must stay clear of that, or an OTA silently eats whichever
+ * keys had their live copy in the doomed sector. The layout is chosen by
+ * Partition Manager rather than pinned (there is no pm_static.yml in the
+ * application directory), so this asserts the property instead of the addresses:
+ * today settings_storage is 0xfc000–0xfe000 with EMPTY_0 covering 0xfe000–
+ * 0x100000, which clears the single 4 KB trailer sector by a comfortable margin.
+ * If a future Kconfig change moves it, the build fails here rather than the
+ * bonds failing in the field. */
+#if defined(PM_SETTINGS_STORAGE_END_ADDRESS) && defined(PM_MCUBOOT_PRIMARY_END_ADDRESS)
+BUILD_ASSERT(PM_SETTINGS_STORAGE_END_ADDRESS <= PM_MCUBOOT_PRIMARY_END_ADDRESS - 0x1000,
+             "settings_storage overlaps the MCUboot trailer sector at the top of the primary "
+             "slot: every OTA would erase BLE bonds and settings.");
+#endif
 
 
 static int settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
@@ -323,15 +347,15 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         return rc;
     }
 
-    if (settings_name_steq(name, "unpair_armed_fw", &next) && !next) {
-        if (len > sizeof(unpair_armed_fw)) {
+    if (settings_name_steq(name, "dfu_bond_wipe", &next) && !next) {
+        uint8_t stored;
+        if (len != sizeof(stored)) {
             return -EINVAL;
         }
-        memset(unpair_armed_fw, 0, sizeof(unpair_armed_fw));
-        rc = read_cb(cb_arg, unpair_armed_fw, len);
+        rc = read_cb(cb_arg, &stored, sizeof(stored));
         if (rc >= 0) {
-            unpair_armed_fw[sizeof(unpair_armed_fw) - 1] = '\0';
-            LOG_INF("Loaded unpair_armed_fw: '%s'", unpair_armed_fw);
+            dfu_bond_wipe_pending = (stored != 0);
+            LOG_INF("Loaded dfu_bond_wipe: %s", dfu_bond_wipe_pending ? "pending" : "clear");
             return 0;
         }
         return rc;
@@ -627,68 +651,49 @@ void app_settings_get_haptic_config(uint8_t config[6])
     memcpy(config, haptic_config, sizeof(haptic_config));
 }
 
-int app_settings_arm_post_dfu_unpair(bool arm, const char *current_fw)
+int app_settings_arm_dfu_bond_wipe(void)
 {
-    if (arm && (current_fw == NULL || current_fw[0] == '\0')) {
-        /* The empty string is the disarmed sentinel, so arming with no version
-         * to key on would silently no-op while reporting success. Refuse loudly
-         * rather than persist a marker that can never fire. */
-        LOG_ERR("post-DFU unpair: refusing to arm with an empty firmware version");
-        return -EINVAL;
-    }
-    char buf[sizeof(unpair_armed_fw)];
-    memset(buf, 0, sizeof(buf));
-    if (arm) {
-        /* current_fw is guaranteed non-empty here. */
-        strncpy(buf, current_fw, sizeof(buf) - 1);
-    }
-    /* buf is the empty string when disarming. */
-    /* Skip the flash write when the value isn't actually changing. The app
-     * arms/disarms this on EVERY DFU — including a disarm on every update where
-     * the "reset pairing after update" option is off — and this NVS instance is
-     * the same one that holds the BLE bond keys. Rewriting the marker to the
-     * value it already has, then rebooting for the flash moments later, is a
-     * needless write next to the bonds right before a power event (a suspected
-     * cause of bonds not surviving an update). A genuine arm/disarm — including
-     * clearing a real stale arm from an earlier failed flash — still writes. */
-    if (memcmp(buf, unpair_armed_fw, sizeof(buf)) == 0) {
-        LOG_INF("post-DFU unpair: already %s, skipping redundant flash write", arm ? "armed" : "disarmed");
+    /* Idempotent: mcumgr can notify DFU_PENDING more than once for a single
+     * update (a client that marks the image pending and then confirms it), and
+     * this NVS instance also holds the BLE bond keys. Re-writing the same value
+     * moments before the flash reboot is a needless erase cycle next to them. */
+    if (dfu_bond_wipe_pending) {
+        LOG_INF("DFU bond wipe: already pending, skipping redundant flash write");
         return 0;
     }
-    int err = settings_save_one("omi/unpair_armed_fw", buf, sizeof(buf));
+    uint8_t val = 1;
+    int err = settings_save_one("omi/dfu_bond_wipe", &val, sizeof(val));
     if (err) {
-        LOG_ERR("Failed to save unpair_armed_fw (err %d)", err);
+        /* Best-effort. A miss here means the device keeps its bond across the
+         * flash while the app clears its own on success — the phone can restore
+         * that from Forget Device, unlike the reverse. */
+        LOG_ERR("Failed to save dfu_bond_wipe (err %d)", err);
         return err;
     }
-    memcpy(unpair_armed_fw, buf, sizeof(buf));
-    if (arm) {
-        LOG_INF("post-DFU unpair armed @ '%s'", current_fw);
-    } else {
-        LOG_INF("post-DFU unpair disarmed");
-    }
+    dfu_bond_wipe_pending = true;
+    LOG_INF("DFU bond wipe armed — bonds will be cleared on the next boot");
     return 0;
 }
 
 
 
 
-bool app_settings_consume_post_dfu_unpair(const char *current_fw)
+bool app_settings_consume_dfu_bond_wipe(void)
 {
-    if (unpair_armed_fw[0] == '\0') {
-        return false; /* not armed */
+    if (!dfu_bond_wipe_pending) {
+        return false;
     }
-    bool changed = (current_fw != NULL) && strncmp(unpair_armed_fw, current_fw, sizeof(unpair_armed_fw)) != 0;
 
-    /* One-shot: clear the armed marker. If the clear fails it stays set and a
-     * later boot re-evaluates — harmless: a same-version boot returns false (no
-     * wipe), and a changed boot would at worst do a redundant idempotent wipe. */
-    char empty[sizeof(unpair_armed_fw)];
-    memset(empty, 0, sizeof(empty));
-    int err = settings_save_one("omi/unpair_armed_fw", empty, sizeof(empty));
+    /* One-shot: clear the marker before reporting. If the clear fails it stays
+     * set and the next boot wipes again — idempotent and harmless (the bonds are
+     * already gone), which is the right way to fail for a marker whose whole job
+     * is to guarantee a free key slot. */
+    uint8_t val = 0;
+    int err = settings_save_one("omi/dfu_bond_wipe", &val, sizeof(val));
     if (err) {
-        LOG_ERR("Failed to clear unpair_armed_fw (err %d)", err);
+        LOG_ERR("Failed to clear dfu_bond_wipe (err %d)", err);
     } else {
-        memset(unpair_armed_fw, 0, sizeof(unpair_armed_fw));
+        dfu_bond_wipe_pending = false;
     }
-    return changed;
+    return true;
 }
