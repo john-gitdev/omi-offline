@@ -263,6 +263,13 @@ int app_settings_arm_dfu_bond_wipe(void);
  * failed clear leaves it set, so the next boot wipes again — idempotent by
  * design, since the guarantee being bought is a free key slot.
  *
+ * Also returns true on the FIRST boot of any firmware carrying this scheme, even
+ * with no marker set: the flash that installed it was performed by the previous
+ * image, which had no DFU_PENDING hook and so could not arm one, while the app
+ * clears the phone bond on success either way. Without that the migration update
+ * itself would strand every existing device in the one state the phone cannot
+ * recover from.
+ *
  * @return true if the caller should wipe BLE bonds, false otherwise.
  */
 bool app_settings_consume_dfu_bond_wipe(void);
