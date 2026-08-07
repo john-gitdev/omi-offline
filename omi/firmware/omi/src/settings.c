@@ -122,21 +122,41 @@ static bool dfu_bond_wipe_pending = false;
  * the direction Forget Device can fix. */
 static bool dfu_wipe_scheme_seen = false;
 
-/* MCUboot runs OVERWRITE_ONLY_FAST here (CONFIG_BOOT_UPGRADE_ONLY=y in
- * sysbuild/mcuboot.conf expands to it), which erases the trailer sectors at the
- * top of the primary slot on every update. The NVS holding the BLE bonds and
- * every "omi/" setting must stay clear of that, or an OTA silently eats whichever
- * keys had their live copy in the doomed sector. The layout is chosen by
- * Partition Manager rather than pinned (there is no pm_static.yml in the
- * application directory), so this asserts the property instead of the addresses:
- * today settings_storage is 0xfc000–0xfe000 with EMPTY_0 covering 0xfe000–
- * 0x100000, which clears the single 4 KB trailer sector by a comfortable margin.
- * If a future Kconfig change moves it, the build fails here rather than the
- * bonds failing in the field. */
+/* MCUboot runs OVERWRITE_ONLY_FAST here (CONFIG_BOOT_UPGRADE_ONLY=y expands to
+ * both MCUBOOT_OVERWRITE_ONLY and _FAST, mcuboot_config.h:72-75), and its
+ * boot_copy_image() erases whole sectors downward from the TOP of the primary
+ * slot until they cover boot_trailer_sz() (loader.c:1889-1900). settings_storage
+ * sits inside that slot — 0xfc000-0xfe000, versus mcuboot_primary's
+ * 0x10000-0x100000 — so it survives only because the erase does not reach down
+ * that far. It is not outside the blast radius; it is below it.
+ *
+ * Verified against NCS v2.9.0 rather than assumed:
+ *   trailer_sz = BOOT_MAX_IMG_SECTORS * BOOT_STATUS_STATE_COUNT * min_write_sz
+ *                + (BOOT_MAX_ALIGN * 4 + BOOT_MAGIC_SZ)
+ *              = 256 * 3 * 4 + (8 * 4 + 16)   = 3120 B
+ * min_write_sz is flash_area_align() of the PRIMARY slot = the SoC's internal
+ * flash write-block-size = 4. 3120 < 4096, so the loop takes exactly one sector
+ * and the erase is 0xff000-0x100000 — clearing settings_storage by the whole
+ * 0xfe000-0xff000 sector of EMPTY_0.
+ *
+ * The margin is one sector, and the thing that consumes it lives in a Kconfig
+ * this image cannot see: raise CONFIG_BOOT_MAX_IMG_SECTORS (mcuboot's, not
+ * ours) past ~340 and the trailer needs two sectors, past ~680 and it needs
+ * four — which would erase settings_storage in full on every single OTA. So
+ * assert two sectors, not the one currently in use: that is still true today
+ * (0xfe000 <= 0xfe000, exactly) while leaving the trailer room to double before
+ * this stops being an early warning. If it ever fails, re-run the arithmetic
+ * above before relaxing it — the answer is to move the partition, never to
+ * widen the bound.
+ *
+ * The layout is chosen dynamically by Partition Manager (boards/omi/pm_static.yml
+ * is NOT applied — PM reads pm_static.yml from the application directory), which
+ * is exactly why this asserts the property rather than trusting the addresses. */
 #if defined(PM_SETTINGS_STORAGE_END_ADDRESS) && defined(PM_MCUBOOT_PRIMARY_END_ADDRESS)
-BUILD_ASSERT(PM_SETTINGS_STORAGE_END_ADDRESS <= PM_MCUBOOT_PRIMARY_END_ADDRESS - 0x1000,
-             "settings_storage overlaps the MCUboot trailer sector at the top of the primary "
-             "slot: every OTA would erase BLE bonds and settings.");
+BUILD_ASSERT(PM_SETTINGS_STORAGE_END_ADDRESS <= PM_MCUBOOT_PRIMARY_END_ADDRESS - 0x2000,
+             "settings_storage is within two sectors of the top of the MCUboot primary slot, "
+             "where the OVERWRITE_ONLY_FAST trailer erase lands: an OTA could erase BLE bonds "
+             "and settings. Move the partition; do not widen this bound.");
 #endif
 
 
