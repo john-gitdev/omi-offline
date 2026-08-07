@@ -205,8 +205,17 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   /// iOS has no programmatic bond removal, so this is Android-only; there the
   /// device still frees its own slot, which is the half that cannot be undone
   /// from the phone.
+  ///
+  /// Skipped on the legacy Nordic DFU path. That transfer goes over the Nordic
+  /// DFU/buttonless service rather than mcumgr SMP, so `DFU_PENDING` never fires
+  /// and the device cannot arm its own wipe — clearing the phone bond there
+  /// would produce precisely the unrecoverable mismatch this exists to avoid.
+  /// [isLegacySecureDFU] defaults to true and is only forced false for a local
+  /// zip, so a remote manifest that omits `is_legacy_secure_dfu` lands here; not
+  /// wiping is the correct outcome, since neither side wipes and the pairing is
+  /// simply left alone.
   Future<void> _wipePhoneBondOnSuccess(BtDevice btDevice) async {
-    if (!Platform.isAndroid) return;
+    if (!Platform.isAndroid || isLegacySecureDFU) return;
     try {
       await BleHostApi().removeBond(btDevice.id);
     } catch (e) {
