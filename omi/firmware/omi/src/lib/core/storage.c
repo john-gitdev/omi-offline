@@ -53,7 +53,11 @@ static uint32_t current_read_offset = 0;
 #define CMD_UNPAIR           0x15   // Wipe Bluetooth pairing keys
 #define CMD_REBOOT           0x16   // Cold-reboot the device (remote restart)
 #define CMD_POWER_OFF        0x17   // Power off the device (ship mode; button/charger wake)
-#define CMD_ARM_POST_DFU_UNPAIR 0x18 // [0x18, arm]: arm(1)/disarm(0) one-shot bond wipe on next new-image boot
+/* 0x18 was CMD_ARM_POST_DFU_UNPAIR — retired. The post-flash bond wipe is now
+ * armed by the device itself from the mcumgr DFU_PENDING hook (main.c), so there
+ * is nothing for the app to send. Do not reuse the opcode: an older app build
+ * still emits it, and this firmware must answer INVALID_COMMAND rather than do
+ * something unrelated. */
 
 #define INVALID_COMMAND 6
 #define FILE_NOT_FOUND 7
@@ -607,22 +611,6 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
         LOG_INF("CMD_POWER_OFF: received power-off command");
         atomic_set(&power_off_requested, 1);
         return 0xFF;  /* ACK + power-off handled by storage thread */
-    }
-
-    if (command == CMD_ARM_POST_DFU_UNPAIR) {
-        /* [0x18][arm]: arm(1)/disarm(0) the one-shot post-update bond wipe.
-         * Require the explicit arm byte — fail closed on a short/malformed write
-         * rather than silently arming a destructive wipe (the app always sends 2
-         * bytes). Arming records the current firmware version; the wipe fires on
-         * the first boot of a DIFFERENT version (see transport_start). NVS write
-         * ACK'd inline like the other config writes. */
-        if (len < 2) {
-            return INVALID_COMMAND;
-        }
-        uint8_t arm = ((uint8_t *) buf)[1] ? 1 : 0;
-        int err = app_settings_arm_post_dfu_unpair(arm, CONFIG_BT_DIS_FW_REV_STR);
-        LOG_INF("CMD_ARM_POST_DFU_UNPAIR: %s", arm ? "armed" : "disarmed");
-        return err ? 1 : 0;  /* non-zero ACK signals a persist failure to the client */
     }
 
     if (command == CMD_CLEAR_STORAGE) {

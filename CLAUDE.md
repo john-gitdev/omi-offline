@@ -178,12 +178,28 @@ Storage protocol: write commands to `storageDataStreamCharacteristicUuid` (`…8
 | `0x15` | UNPAIR | `[0x15]` (firmware `bt_unpair` — wipes the device's own BLE bonds; `sendUnpairCommand`) |
 | `0x16` | REBOOT | `[0x16]` (deferred to the storage thread: ACKs, gracefully closes the SD card (`app_sd_off()` when `is_sd_on()` — flush + unmount), then `sys_reboot(SYS_REBOOT_COLD)`; `sendRebootCommand`. Surfaced as "Reboot Omi" in Device Settings) |
 | `0x17` | POWER_OFF | `[0x17]` (deferred to the storage thread: ACKs, then `turnoff_all()` → `sys_poweroff()` — ship mode, wakes only on button/charger; `sendShutdownCommand`. Surfaced as "Shutdown Omi" in Device Settings) |
-| `0x18` | ARM_POST_DFU_UNPAIR | `[0x18, arm]` (`arm`=1 arm / 0 disarm; a short/malformed write is rejected — fail-closed on a destructive action). Arming records the **current firmware version** in NVS (`omi/unpair_armed_fw`); on boot `transport_start` (after BT bonds load) consumes the marker and runs `bt_unpair` **only when the running version differs** from the armed one — so a failed/aborted flash (same version) never wipes, and a stale arm can't fire on an ordinary reboot / the Reboot command. Fail-closed: if arming didn't persist, no version is stored and nothing wipes. Armed pre-flash by the app's "Reset pairing after update" toggle (`sendArmPostDfuUnpair`); the app gates its phone-side `removeBond` (on success) on the arm write landing. |
+| `0x18` | *(retired)* | Was ARM_POST_DFU_UNPAIR. The post-flash bond wipe is no longer app-driven — see **Post-DFU bond wipe** below. Answers `INVALID_COMMAND`; **do not reuse the opcode**, since older app builds still emit it. |
 | `0x32` | KEEP_ALIVE | `[0x32]` (added 0.14.4; prevents firmware idle-disconnect) |
 
 File indices are **cache positions** (0-based sequential) that shift after each deletion — the firmware rebuilds its file-list cache on every CMD_LIST_FILES and after every delete, so after deleting index 0, what was index 1 becomes index 0. Supplying the timestamp in CMD_READ_FILE and CMD_DELETE_FILE lets the firmware re-locate the file by timestamp if the index shifted between LIST and READ/DELETE.
 
 Audio codec ID (read from `0022`, under the Features service `0020`): the app explicitly recognises `20` = opus (80 B/frame, 50 fps) and `21` = opusFS320 (40 B/frame, 50 fps). Anything else falls back to `pcm8`. Current firmware reports `21` (`CODEC_ID` in `lib/core/config.h`). The `BleAudioCodec` enum also defines `pcm16`, `mulaw8`, `mulaw16`, `unknown` but no current code path reads those over the wire.
+
+### Post-DFU bond wipe
+
+**Every successful DFU clears the BLE bond on both sides.** Not a user option, and deliberately not conditional on the firmware version changing.
+
+- **Device**: `ota_mgmt_callback` (`main.c`) watches `MGMT_EVT_OP_IMG_MGMT_DFU_PENDING` — *"the image finished transferring"* — and persists a one-shot `omi/dfu_bond_wipe` flag. `transport_start()` consumes it on the next boot (after bonds load) and calls `bt_unpair`, emitting a forced `DIAG_BOND_STATE` / `DIAG_BOND_CAUSE_POST_DFU` record so an intentional wipe is distinguishable from an unexplained key loss.
+- **App**: `_wipePhoneBondOnSuccess` calls `removeBond` from the DFU success callbacks (Android only — iOS has no programmatic bond removal).
+
+Invariants worth preserving:
+
+- **`DFU_PENDING`, not `DFU_STARTED`/`STOPPED`.** `STARTED` also fires for an upload that then aborts, and `STOPPED` fires on both completion and abort. Only `PENDING` means "this is really going to be flashed", so only it leaves an aborted transfer's pairing untouched.
+- **Never gate the wipe on a version change.** A flash rewrites the MCUboot primary slot regardless, and an occupied key slot refuses a fresh Just Works pairing whether the key in it is valid or corrupt (`update_keys_check()` in Zephyr's `smp.c`, with `CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE` unset and `CONFIG_BT_MAX_PAIRED=1`). Version-gating skips exactly the same-version recovery reflash a user performs *because* pairing is already broken.
+- **The device must never infer this from the app.** The retired `0x18` design armed the flag over BLE and gated the phone-side wipe on the write ACK, but the firmware persisted before ACKing, so a lost ACK was indistinguishable from "never armed". The device observing its own DFU removes the inference entirely — do not reintroduce an arm command.
+- **Fail toward "device slot free, phone possibly stale."** That direction the user can fix from the phone (Forget Device, `find_devices_page.dart`). The reverse — device bonded, phone wiped — needs the 5-tap-and-hold gesture on the device, because the phone cannot re-pair over a surviving device key.
+- **Keep the first-boot migration backstop** (`omi/dfu_wipe_seen`). The flash that installs a given firmware is performed by the *previous* image, so the image introducing any change to this scheme can never have armed its own marker for that flash — while the app clears the phone bond on success regardless. A boot that has never seen the marker therefore wipes once. Removing this would strand every existing device in the unrecoverable direction on exactly one update. The same reasoning applies to any future rework here: the arming half always lags the consuming half by one flash.
+- **Not covered**: bond corruption unrelated to a DFU. No `DFU_PENDING` fires, so neither side wipes, and recovery is the 5-tap gesture. Fixing that needs `CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE=y` **plus** `CONFIG_BT_SMP_APP_PAIRING_ACCEPT=y` and a user-presence `pairing_accept` callback — both Kconfigs, see BLE_Research.md §9.
 
 ## Formatting
 

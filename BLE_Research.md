@@ -1139,8 +1139,27 @@ and lock the real phone out. The justification originally written into `omi.conf
 already pair when the device is unbonded") is true but does not cover the bonded case, which is
 exactly the case the flag opens.
 
-**Proper fix, not yet implemented** (needs a build + on-device test): keep the overwrite closed by
-default and gate it on user presence with a `bt_conn_auth_cb.pairing_accept` callback —
+**Proper fix, not yet implemented** (needs a build + on-device test). ⚠️ **The form originally
+written here does not work — verified against NCS v2.9.0 source on 2026-08-06.** It said to keep
+`CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE` unset and gate recovery on `pairing_accept` alone. But in
+the peripheral path (`smp_pairing_req`, Omi's path), `update_keys_check()` is called at
+`smp.c:3001` and returns `BT_SMP_ERR_AUTH_REQUIREMENTS` **24 lines before**
+`smp_pairing_accept_query()` at `:3025` — and its overwrite branch (`:644-652`) is a compile-time
+`IS_ENABLED(CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE)` that no runtime callback can influence. As
+written it would build, ship, and reject the pairing before the callback ever ran.
+
+The working combination needs **both** Kconfigs plus the callback:
+
+- `CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE=y` — lets `update_keys_check()` pass at all
+- `CONFIG_BT_SMP_APP_PAIRING_ACCEPT=y` — without it `pairing_accept` is never invoked
+- the callback below, which is what keeps the opened door guarded
+
+The Kconfig opens the door; the callback guards it. That is the difference from the bare
+`omi.conf` change that was reverted above, which opened it and left it unguarded.
+
+Also note what this is *for*: it is the only fix for bond corruption **not** associated with a
+DFU. Corruption during a flash is handled by the post-DFU bond wipe (see CLAUDE.md, "Post-DFU
+bond wipe"), which frees the key slot on both sides after every update.
 
 ```c
 static enum bt_security_err pairing_accept(struct bt_conn *conn,
@@ -1212,13 +1231,25 @@ and both had to be reverted. Recording them because each looks obviously correct
 until you read one specific file.
 
 **First, the framing they were built on was wrong**, and that is worth recording too.
-The arm gate is a real defect but it is **latent**: `_showResetPairingToggle = false`
-since 2026-07-23, so every flash since has sent a *disarm* and neither side can wipe.
+The arm gate is a real defect but it was **latent**: `_showResetPairingToggle = false`
+since 2026-07-23, so every flash since sent a *disarm* and neither side could wipe.
 The `Arming post-DFU unpair failed or timed out` line in the 08-02 log is a failed
 disarm — harmless — and was misread as a failed arm, which is how the arm gate got
-blamed for that day's unpairing. The real cause is the partition overlap documented
-above: one NVS sector erased per OTA, bonds landing in it roughly one flash in eight.
-Fix the gate on its own merits, not because it caused an outage.
+blamed for that day's unpairing. Fix the gate on its own merits, not because it
+caused an outage.
+
+*(This paragraph originally continued "The real cause is the partition overlap
+documented above". That attribution is **withdrawn** — see the retraction below. The
+2026-08-02 unpairing has no established cause; the partition mechanism it was pinned
+on does not occur in the layout the build actually produces. `_showResetPairingToggle`
+and the whole arm path were removed on 2026-08-06.)*
+
+> **SUPERSEDED 2026-08-06.** Dead end 1's objection was correct about the *asymmetry* but was
+> answered by removing the inference rather than by choosing a side. The device now arms its own
+> post-flash wipe from the mcumgr `DFU_PENDING` hook, so there is no arm command, no ACK to
+> misread, and no `_postDfuArmWriteOk` gate; both sides act on the same physical event. The app
+> now does wipe unconditionally on success — safely, because the device wipes too. See CLAUDE.md,
+> "Post-DFU bond wipe". Dead end 2 (the status-5 self-heal) still stands as a dead end.
 
 **Dead end 1 — "just always wipe the phone bond after a successful flash."**
 The appeal: the firmware persists the post-DFU arm to NVS *before* it ACKs, so a lost
@@ -1314,9 +1345,72 @@ different observable fates, and only one matches:
   refuses ⟹ **never self-heals**, and the only exit is wiping the device bond. Matches, and
   matches the 5-tap combo being what cleared it.
 
-Not caused by the app's post-DFU bond wipe: that path is inert (`firmware_update.dart:43`
-`_showResetPairingToggle = false`, so `wipeBonds` at :575 is always false and
-`_wipePhoneBondOnSuccess` returns early, `firmware_mixin.dart:238`). The DFU sent a *disarm*.
+Not caused by the app's post-DFU bond wipe: at the time that path was inert
+(`firmware_update.dart:43` `_showResetPairingToggle = false`, so `wipeBonds` was always false and
+`_wipePhoneBondOnSuccess` returned early). The DFU sent a *disarm*. **All three symbols were
+removed on 2026-08-06** — the wipe is now unconditional on a successful flash and armed
+device-side from the mcumgr `DFU_PENDING` hook, so do not go looking for them.
+
+> **RETRACTED 2026-08-06 — the generated partition map says otherwise.** Everything in this
+> subsection was derived from reading the DTS and `pm_static.yml`. Neither is what the build
+> actually uses. `build/omi/partitions.yml` and the generated `pm_config.h` show:
+>
+> ```
+> app:              0x10200 – 0xfc000
+> settings_storage: 0xfc000 – 0xfe000   (8 KB, 2 sectors)
+> EMPTY_0:          0xfe000 – 0x100000  (8 KB)
+> mcuboot_primary:  0x10000 – 0x100000
+> ```
+>
+> Partition Manager already carves the buffer this section proposes carving. The
+> `OVERWRITE_ONLY_FAST` trailer erase takes the top sector of the slot — `0xff000`–`0x100000` —
+> which lands in **`EMPTY_0`, not in `settings_storage`**; the body erase stops at image size,
+> far below `0xfc000`. So the NVS is untouched by an OTA and this cannot be the mechanism.
+>
+> **Note the trailer size is computed, not fixed** — and `settings_storage` is *inside*
+> `mcuboot_primary` (`0xfc000` < `0x100000`), so it survives only because the erase does not reach
+> down to it. `boot_copy_image()` erases whole sectors downward from the slot top until they cover
+> `boot_trailer_sz()` (`loader.c:1889-1900`). Verified against NCS v2.9.0:
+>
+> ```
+> trailer_sz = BOOT_MAX_IMG_SECTORS * BOOT_STATUS_STATE_COUNT * min_write_sz
+>              + (BOOT_MAX_ALIGN * 4 + BOOT_MAGIC_SZ)
+>            = 256 * 3 * 4 + (8 * 4 + 16) = 3120 B   →  one 4 KB sector
+> ```
+>
+> `min_write_sz` is `flash_area_align()` of the **primary** slot = the SoC's internal-flash
+> `write-block-size` = 4, so `trailer_sz = 12N + 48` and the erase covers `ceil(trailer_sz / 4096)`
+> sectors down from `0x100000`:
+>
+> | `CONFIG_BOOT_MAX_IMG_SECTORS` | Sectors | Erase span | Effect on `settings_storage` |
+> |---|---|---|---|
+> | ≤ 337 (**256 today**) | 1 | `0xff000`–`0x100000` | untouched |
+> | 338 – 678 | 2 | `0xfe000`–`0x100000` | untouched (it ends exactly at `0xfe000`) |
+> | 679 – 1020 | 3 | `0xfd000`–`0x100000` | **erases its upper half** |
+> | ≥ 1021 | 4 | `0xfc000`–`0x100000` | **erases it in full** |
+>
+> **The `BUILD_ASSERT` cannot catch the last two rows.** It checks the *layout* (that
+> `settings_storage` keeps two sectors of margin), which is necessary but not sufficient; it cannot
+> check the trailer *size*, because `CONFIG_BOOT_MAX_IMG_SECTORS` belongs to the mcuboot image and
+> is not defined in the app image (verified: absent from its `autoconf.h`). Two sectors is also the
+> most the current layout can assert, the margin being exactly `0x2000`. So if that Kconfig is ever
+> raised, re-run this table by hand — nothing in the build will warn you, and the fix is to move the
+> partition down, not to widen the bound.
+>
+> Two related facts worth keeping: **`boards/omi/pm_static.yml` is dead** — Partition Manager
+> reads `pm_static.yml` from the *application* config dir, not the board dir, and no
+> `PM_STATIC_YML_FILE` is set anywhere, which is why the generated map disagrees with it. And the
+> layout is therefore **dynamic**. It is anchored (`align: start: 0x4000` against the end of
+> `flash_primary`), so it does not drift as the app image grows — `app` grows toward it and would
+> fail the build on collision — but a Kconfig change to its size or alignment could move it. That
+> is now guarded by a `BUILD_ASSERT` in `settings.c` asserting `settings_storage` ends at least
+> **two** 4 KB sectors (`0x2000`) below `mcuboot_primary` — matching the table above, and the most
+> the current layout can assert — verified live by inverting it and confirming the build fails.
+> Pinning a real `pm_static.yml` was considered and rejected: it is migration risk and permanent
+> maintenance burden for a hazard the assert covers for free.
+>
+> The original (wrong) reasoning is kept below because the *mechanism* it describes is real and
+> would apply if the partition ever did move — which is exactly what the assert now prevents.
 
 **Root cause: the settings partition overlaps the MCUboot primary slot.** The board DTS the
 build actually includes (`boards/omi/omi_nrf5340_cpuapp.dts:261` →

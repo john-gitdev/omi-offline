@@ -310,8 +310,6 @@ class MockDeviceConnection implements DeviceConnection {
   @override
   Future<bool> sendShutdownCommand() => throw UnimplementedError();
   @override
-  Future<bool> sendArmPostDfuUnpair(bool arm) => throw UnimplementedError();
-  @override
   Future<void> setVadThreshold(int threshold) => throw UnimplementedError();
   @override
   Future<int?> getVadThreshold() => throw UnimplementedError();

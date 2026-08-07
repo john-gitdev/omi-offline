@@ -81,13 +81,43 @@ static enum mgmt_cb_return ota_mgmt_callback(uint32_t event, enum mgmt_cb_return
     } else if (event == MGMT_EVT_OP_IMG_MGMT_DFU_STOPPED) {
         LOG_INF("OTA Upload Stopped/Finished — Releasing SPI3 bus");
         sd_set_ota_active(false);
+    } else if (event == MGMT_EVT_OP_IMG_MGMT_DFU_PENDING) {
+        /* The image is fully transferred and marked for boot, so a flash of the
+         * MCUboot primary slot is about to happen. Arm the one-shot bond wipe now
+         * — the device learns a DFU landed from mcumgr directly rather than being
+         * told by the app, so there is no arm command to lose and no write ACK to
+         * misread. transport_start() consumes it on the next boot.
+         *
+         * PENDING rather than STARTED/STOPPED on purpose: STARTED also fires for
+         * an upload that then aborts (which must leave pairing untouched), and
+         * STOPPED fires on both completion and abort. PENDING is the only one of
+         * the three that means "this is really going to be flashed".
+         *
+         * This does write NVS shortly before the reboot, which is the pattern
+         * oo-2.7.3 removed as a suspected cause of bond loss. Harmless here: if
+         * the write corrupts a bond, the outcome is the wipe it was arming. */
+        LOG_INF("OTA image transferred — arming post-flash bond wipe");
+        /* Return ignored on purpose; app_settings_arm_dfu_bond_wipe() already
+         * LOG_ERRs a persist failure. A review asked for the failure to be
+         * handled here — by wiping bonds immediately, or by failing the DFU — on
+         * the grounds that an unarmed device plus an app that clears the phone
+         * bond gives the unrecoverable mismatch. The reasoning is right but the
+         * remedy is worse: bt_unpair() drops this link, so the reset command
+         * never lands and the DFU fails. If settings_save_one() is failing it
+         * will fail on the retry too, which turns "updates, then needs a 5-tap"
+         * into "can never update at all". Failing the DFU outright has the same
+         * shape. Nor is the trigger demonstrable: this NVS holds a handful of
+         * small keys in two GC'd sectors, so a write error means the flash
+         * hardware is already gone. Left as-is deliberately. */
+        (void) app_settings_arm_dfu_bond_wipe();
     }
     return MGMT_CB_OK;
 }
 
 static struct mgmt_callback ota_mgmt_cb = {
     .callback = ota_mgmt_callback,
-    .event_id = (MGMT_EVT_OP_IMG_MGMT_DFU_STARTED | MGMT_EVT_OP_IMG_MGMT_DFU_STOPPED),
+    .event_id = (MGMT_EVT_OP_IMG_MGMT_DFU_STARTED | MGMT_EVT_OP_IMG_MGMT_DFU_STOPPED |
+                 MGMT_EVT_OP_IMG_MGMT_DFU_PENDING),
 };
 
 atomic_t is_connected = ATOMIC_INIT(0);

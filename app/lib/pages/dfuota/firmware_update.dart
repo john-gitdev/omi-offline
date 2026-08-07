@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
 
-import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/pages/dfuota/firmware_mixin.dart';
 import 'package:omi/pages/recordings/recordings_page.dart';
@@ -27,20 +26,6 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
   bool shouldUpdate = false;
   String updateMessage = '';
   bool isLoading = false;
-
-  // Android-only: after a *successful* flash, clear the phone's BLE bond so a
-  // pairing the OTA resets doesn't strand the reconnect (the fresh re-pair
-  // re-keys the omi too). A failed flash leaves the pairing untouched. Mirrors
-  // the pref; hidden on iOS (no programmatic bond removal there).
-  bool _wipeBonds = SharedPreferencesUtil().wipeBondsOnFirmwareUpdate;
-
-  // Temporarily hidden: bonds are expected to survive a DFU (the flash never
-  // reaches the bond storage), and oo-2.7.3 removes the needless pre-flash write
-  // next to the bonds that was the suspected cause of post-update unpairing. Flip
-  // this back to true (and the pref default) to re-expose the "Reset pairing
-  // after update" control. While false the feature is fully inert regardless of
-  // any stored pref value.
-  static const bool _showResetPairingToggle = false;
 
   // Store reference to provider for safe disposal
   DeviceProvider? _deviceProvider;
@@ -532,33 +517,6 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
 
         // Action buttons
         if (shouldUpdate) ...[
-          // Android-only: clear the pairing on both sides during the flash so
-          // the device reconnects cleanly afterward. iOS can't remove a bond
-          // programmatically, so the toggle is hidden there. Also gated on
-          // _showResetPairingToggle (currently off) so the control stays hidden
-          // while bonds are expected to survive a DFU on their own.
-          if (Platform.isAndroid && _showResetPairingToggle) ...[
-            Container(
-              decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(14)),
-              child: SwitchListTile(
-                value: _wipeBonds,
-                onChanged: (v) {
-                  setState(() => _wipeBonds = v);
-                  SharedPreferencesUtil().wipeBondsOnFirmwareUpdate = v;
-                },
-                title: const Text('Reset pairing after update',
-                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500)),
-                subtitle: Text(
-                  'After a successful update, resets the Bluetooth pairing so your Omi reconnects cleanly '
-                  '(you may need to reconnect once). A failed update leaves the pairing untouched.',
-                  style: TextStyle(color: Colors.grey.shade400, fontSize: 13, height: 1.3),
-                ),
-                activeThumbColor: const Color(0xFF4ADE80),
-                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-              ),
-            ),
-            const SizedBox(height: 16),
-          ],
           // Update button
           GestureDetector(
             onTap: () async {
@@ -584,14 +542,11 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
 
               deviceProvider.setFirmwareUpdateInProgress(true);
 
-              // While the feature is hidden, force it off so a stale stored pref
-              // can't silently trigger a bond wipe on an update.
-              final wipeBonds = Platform.isAndroid && _wipeBonds && _showResetPairingToggle;
               if (widget.localZipPath != null) {
-                await startDfu(widget.device!, zipFilePath: widget.localZipPath, wipeBonds: wipeBonds);
+                await startDfu(widget.device!, zipFilePath: widget.localZipPath);
               } else {
                 await downloadFirmware();
-                await startDfu(widget.device!, wipeBonds: wipeBonds);
+                await startDfu(widget.device!);
               }
             },
             child: Container(
