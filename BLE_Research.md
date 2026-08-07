@@ -1367,6 +1367,24 @@ device-side from the mcumgr `DFU_PENDING` hook, so do not go looking for them.
 > which lands in **`EMPTY_0`, not in `settings_storage`**; the body erase stops at image size,
 > far below `0xfc000`. So the NVS is untouched by an OTA and this cannot be the mechanism.
 >
+> **Note the trailer size is computed, not fixed** — and `settings_storage` is *inside*
+> `mcuboot_primary` (`0xfc000` < `0x100000`), so it survives only because the erase does not reach
+> down to it. `boot_copy_image()` erases whole sectors downward from the slot top until they cover
+> `boot_trailer_sz()` (`loader.c:1889-1900`). Verified against NCS v2.9.0:
+>
+> ```
+> trailer_sz = BOOT_MAX_IMG_SECTORS * BOOT_STATUS_STATE_COUNT * min_write_sz
+>              + (BOOT_MAX_ALIGN * 4 + BOOT_MAGIC_SZ)
+>            = 256 * 3 * 4 + (8 * 4 + 16) = 3120 B   →  one 4 KB sector
+> ```
+>
+> `min_write_sz` is `flash_area_align()` of the **primary** slot = the SoC's internal-flash
+> `write-block-size` = 4. The margin is therefore one sector (`0xfe000`–`0xff000`). Raising
+> `CONFIG_BOOT_MAX_IMG_SECTORS` — mcuboot's Kconfig, invisible to the app image — past ~340 makes
+> the trailer need two sectors, and past ~680 four, which *would* erase `settings_storage` in full
+> on every OTA. That is what the `BUILD_ASSERT` (two sectors) exists to catch. Re-run this
+> arithmetic before ever relaxing it.
+>
 > Two related facts worth keeping: **`boards/omi/pm_static.yml` is dead** — Partition Manager
 > reads `pm_static.yml` from the *application* config dir, not the board dir, and no
 > `PM_STATIC_YML_FILE` is set anywhere, which is why the generated map disagrees with it. And the
