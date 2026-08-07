@@ -733,24 +733,27 @@ int app_settings_arm_dfu_bond_wipe(void)
 
 
 
-bool app_settings_dfu_bond_wipe_due(void)
+bool app_settings_consume_dfu_bond_wipe(void)
 {
-    /* Pure query — nothing is cleared here. The markers are retired only by
-     * app_settings_clear_dfu_bond_wipe(), which the caller invokes after the
-     * wipe actually succeeds, so a failed bt_unpair() retries on the next boot
-     * instead of being silently skipped. Getting that backwards would leave the
-     * device holding its key slot with the phone already unbonded, which is the
-     * one state this whole mechanism exists to prevent.
-     *
-     * Two independent reasons to wipe: a DFU landed (dfu_bond_wipe_pending), or
+    /* Two independent reasons to wipe: a DFU landed (dfu_bond_wipe_pending), or
      * this is the first boot of any firmware carrying the scheme — see
      * dfu_wipe_scheme_seen for why that flash can never have armed its own
-     * marker. */
-    return dfu_bond_wipe_pending || !dfu_wipe_scheme_seen;
-}
+     * marker.
+     *
+     * Both markers are retired here, BEFORE the caller's bt_unpair() runs, and
+     * that ordering is deliberate rather than an oversight. A review flagged it
+     * as "a failed unpair is never retried", but bt_unpair(BT_ID_DEFAULT,
+     * BT_ADDR_LE_ANY) cannot fail: its only error returns are id >=
+     * CONFIG_BT_ID_MAX (we pass 0) and a NULL addr under !CONFIG_BT_SMP (we pass
+     * BT_ADDR_LE_ANY, and SMP is on) — every other path falls through to
+     * return 0. Splitting this into query + explicit-clear to guard that branch
+     * was tried and reverted: it bought nothing and made the caller responsible
+     * for a second call which, if ever forgotten, wipes bonds on every boot. */
+    bool due = dfu_bond_wipe_pending || !dfu_wipe_scheme_seen;
+    if (!due) {
+        return false;
+    }
 
-void app_settings_clear_dfu_bond_wipe(void)
-{
     if (dfu_bond_wipe_pending) {
         uint8_t val = 0;
         int err = settings_save_one("omi/dfu_bond_wipe", &val, sizeof(val));
@@ -765,6 +768,7 @@ void app_settings_clear_dfu_bond_wipe(void)
     }
 
     if (!dfu_wipe_scheme_seen) {
+        LOG_INF("DFU bond wipe: first boot with this scheme — wiping once to match the app");
         uint8_t seen = 1;
         int err = settings_save_one("omi/dfu_wipe_seen", &seen, sizeof(seen));
         if (err) {
@@ -773,4 +777,6 @@ void app_settings_clear_dfu_bond_wipe(void)
             dfu_wipe_scheme_seen = true;
         }
     }
+
+    return true;
 }

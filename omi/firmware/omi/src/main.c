@@ -34,9 +34,6 @@
 #include <zephyr/mgmt/mcumgr/mgmt/callbacks.h>
 #include <zephyr/mgmt/mcumgr/grp/img_mgmt/img_mgmt_callbacks.h>
 
-/* bt_unpair(), for the fallback when the post-flash bond-wipe marker won't persist. */
-#include <zephyr/bluetooth/bluetooth.h>
-
 #include "aad.h"
 
 /* AAD is not optional in this fork — it is the whole capture policy, not the
@@ -100,28 +97,19 @@ static enum mgmt_cb_return ota_mgmt_callback(uint32_t event, enum mgmt_cb_return
          * oo-2.7.3 removed as a suspected cause of bond loss. Harmless here: if
          * the write corrupts a bond, the outcome is the wipe it was arming. */
         LOG_INF("OTA image transferred — arming post-flash bond wipe");
-        if (app_settings_arm_dfu_bond_wipe() != 0) {
-            /* The marker did not persist, so the next boot will not know to wipe
-             * — while the app clears the phone bond on DFU success regardless.
-             * That combination is the unrecoverable one (device holds its key
-             * slot, phone unbonded, no way back but the 5-tap gesture), so free
-             * the slot NOW instead of relying on state that failed to save.
-             *
-             * Safe in both outcomes. If bt_unpair() drops this link the reset
-             * command never lands and the app reports a failed DFU, so it does
-             * not wipe the phone — leaving device-unbonded/phone-bonded, which
-             * Forget Device fixes; the image is already marked pending, so the
-             * flash still happens on the next boot. If the link survives, the
-             * DFU completes and both sides end up clean as intended.
-             *
-             * Only reachable when an NVS write has already failed, i.e. a device
-             * that is degraded anyway. Trading a possibly-retried DFU for a
-             * permanently unpairable device is the right way round. */
-            int uerr = bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
-            LOG_ERR("Could not persist the post-flash bond-wipe marker; wiped bonds now instead "
-                    "(bt_unpair err %d)",
-                    uerr);
-        }
+        /* Return ignored on purpose; app_settings_arm_dfu_bond_wipe() already
+         * LOG_ERRs a persist failure. A review asked for the failure to be
+         * handled here — by wiping bonds immediately, or by failing the DFU — on
+         * the grounds that an unarmed device plus an app that clears the phone
+         * bond gives the unrecoverable mismatch. The reasoning is right but the
+         * remedy is worse: bt_unpair() drops this link, so the reset command
+         * never lands and the DFU fails. If settings_save_one() is failing it
+         * will fail on the retry too, which turns "updates, then needs a 5-tap"
+         * into "can never update at all". Failing the DFU outright has the same
+         * shape. Nor is the trigger demonstrable: this NVS holds a handful of
+         * small keys in two GC'd sectors, so a write error means the flash
+         * hardware is already gone. Left as-is deliberately. */
+        (void) app_settings_arm_dfu_bond_wipe();
     }
     return MGMT_CB_OK;
 }

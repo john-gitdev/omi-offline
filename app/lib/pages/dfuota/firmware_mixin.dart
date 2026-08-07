@@ -206,16 +206,17 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   /// device still frees its own slot, which is the half that cannot be undone
   /// from the phone.
   ///
-  /// Skipped on the legacy Nordic DFU path. That transfer goes over the Nordic
-  /// DFU/buttonless service rather than mcumgr SMP, so `DFU_PENDING` never fires
-  /// and the device cannot arm its own wipe — clearing the phone bond there
-  /// would produce precisely the unrecoverable mismatch this exists to avoid.
-  /// [isLegacySecureDFU] defaults to true and is only forced false for a local
-  /// zip, so a remote manifest that omits `is_legacy_secure_dfu` lands here; not
-  /// wiping is the correct outcome, since neither side wipes and the pairing is
-  /// simply left alone.
+  /// Not gated on the DFU transport. The legacy Nordic path would be a genuine
+  /// hazard — it goes over the Nordic DFU service rather than mcumgr SMP, so
+  /// `DFU_PENDING` never fires and the device could not arm its own wipe — but
+  /// it has no live caller: `getLatestFirmwareVersion` / `getStableFirmwareVersion`
+  /// are mocked stubs returning `{}`, so `shouldUpdateFirmware` reports no update
+  /// and the button that calls `startDfu` is never rendered. The only path that
+  /// reaches a flash is the local zip, which sets `isLegacySecureDFU = false`.
+  /// Add the gate if those stubs are ever implemented; until then it would be a
+  /// guard on an unreachable branch.
   Future<void> _wipePhoneBondOnSuccess(BtDevice btDevice) async {
-    if (!Platform.isAndroid || isLegacySecureDFU) return;
+    if (!Platform.isAndroid) return;
     try {
       await BleHostApi().removeBond(btDevice.id);
     } catch (e) {

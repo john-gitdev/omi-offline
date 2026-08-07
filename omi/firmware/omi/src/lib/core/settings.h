@@ -257,12 +257,14 @@ void app_settings_get_haptic_config(uint8_t config[6]);
 int app_settings_arm_dfu_bond_wipe(void);
 
 /**
- * @brief Whether this boot should wipe BLE bonds. Pure query — clears nothing.
+ * @brief Consume the one-shot DFU bond-wipe marker for this boot.
  *
- * Pair with @ref app_settings_clear_dfu_bond_wipe, called only after the wipe
- * SUCCEEDS. Clearing before the wipe would let a failed bt_unpair() be skipped
- * forever, leaving the device holding its key slot while the phone is already
- * unbonded — the one unrecoverable state this mechanism exists to prevent.
+ * Clears the markers and returns whether the caller should wipe BLE bonds. The
+ * clear happens before the caller's bt_unpair(), which is safe because
+ * bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY) cannot fail — see the note in
+ * settings.c before "fixing" it. A failed clear leaves the marker set, so the
+ * next boot wipes again: idempotent, and the right way to fail for a marker
+ * whose only job is to guarantee a free key slot.
  *
  * Also returns true on the FIRST boot of any firmware carrying this scheme, even
  * with no marker set: the flash that installed it was performed by the previous
@@ -274,17 +276,7 @@ int app_settings_arm_dfu_bond_wipe(void);
  *
  * @return true if the caller should wipe BLE bonds, false otherwise.
  */
-bool app_settings_dfu_bond_wipe_due(void);
-
-/**
- * @brief Retire the DFU bond-wipe markers after a successful wipe.
- *
- * Clears the one-shot DFU marker and records that this firmware's scheme has
- * been seen. Call ONLY once bt_unpair() has returned success — on failure leave
- * both set so the next boot retries. A failed persist here is also safe: the
- * next boot simply wipes again, which is idempotent.
- */
-void app_settings_clear_dfu_bond_wipe(void);
+bool app_settings_consume_dfu_bond_wipe(void);
 
 
 #endif // SETTINGS_H

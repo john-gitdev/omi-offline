@@ -2884,24 +2884,15 @@ int transport_start()
      * (update_keys_check() with CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE unset). An
      * ordinary reboot or the Reboot Omi command never sets the marker, so
      * neither can wipe. Consume is one-shot. */
-    if (app_settings_dfu_bond_wipe_due()) {
-        int uerr = bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
-        if (uerr) {
-            /* Rare, and the bad direction: the app clears its own bond on DFU
-             * success, so a surviving device key leaves the slot occupied with
-             * the phone unbonded — and a phone re-pair CANNOT re-key over it
-             * (update_keys_check() refuses a Just Works overwrite). Deliberately
-             * do NOT clear the markers here: leaving them set is what makes the
-             * next boot retry the wipe instead of skipping it forever. Until one
-             * succeeds, recovery is the 5-tap-and-hold gesture. */
-            LOG_ERR("post-DFU unpair: bt_unpair failed (err %d); device keeps its key slot — "
-                    "retrying next boot, 5-tap-and-hold to recover now",
-                    uerr);
-        } else {
-            /* Retire the markers only now that the slot is actually free. */
-            app_settings_clear_dfu_bond_wipe();
-            LOG_INF("post-DFU unpair: DFU landed — wiped BLE bonds");
-        }
+    if (app_settings_consume_dfu_bond_wipe()) {
+        /* Return deliberately unchecked: bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY)
+         * cannot fail — its only error returns are id >= CONFIG_BT_ID_MAX (0 here)
+         * and a NULL addr under !CONFIG_BT_SMP (BT_ADDR_LE_ANY here, SMP on), and
+         * every other path returns 0. The diag record below reports the real
+         * post-wipe bond count, which is the check that would actually catch a
+         * key slot that somehow survived. */
+        (void) bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
+        LOG_INF("post-DFU unpair: DFU landed — wiped BLE bonds");
         /* Distinguishes an intentional post-update wipe from an unexplained loss:
          * without this, both look identical from the phone's side. Forced for the
          * same reason as the boot-load record above — and this is the one that
