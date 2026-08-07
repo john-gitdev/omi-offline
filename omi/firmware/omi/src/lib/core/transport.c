@@ -2872,23 +2872,32 @@ int transport_start()
     diag_log_event_forced(DIAG_BOND_STATE, 0, DIAG_BOND_CAUSE_BOOT_LOAD,
                           transport_bond_count());
 
-    /* One-shot post-update bond wipe: if the app armed it before a flash (via
-     * CMD_ARM_POST_DFU_UNPAIR, which records the version at arm time), a boot on
-     * a DIFFERENT version means a real update landed — wipe every bond (now that
-     * they've been loaded above) so the device advertises unbonded and the phone
-     * (which clears its side on success) re-pairs cleanly. A failed/aborted flash
-     * leaves the SAME version, so consume returns false and nothing is wiped —
-     * an ordinary reboot or the Reboot Omi command of an armed device can't wipe.
-     * Consume is one-shot and clears the marker regardless. */
-    if (app_settings_consume_post_dfu_unpair(CONFIG_BT_DIS_FW_REV_STR)) {
+    /* One-shot post-flash bond wipe: mcumgr told us an image finished
+     * transferring before the last reboot (main.c, MGMT_EVT_OP_IMG_MGMT_DFU_
+     * PENDING), so wipe every bond — now that they've been loaded above — and
+     * advertise unbonded. The app clears its own bond on DFU success, so both
+     * sides re-pair clean.
+     *
+     * Unconditional on the version: a flash can corrupt a bond whether or not
+     * the version changed, and an occupied key slot refuses a fresh Just Works
+     * pairing regardless of whether the key in it is still valid
+     * (update_keys_check() with CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE unset). An
+     * ordinary reboot or the Reboot Omi command never sets the marker, so
+     * neither can wipe. Consume is one-shot. */
+    if (app_settings_consume_dfu_bond_wipe()) {
         int uerr = bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
         if (uerr) {
-            /* Rare. The local wipe is best-effort — the actual pairing reset is
-             * the app clearing the PHONE bond on success, which forces a fresh
-             * pair that re-keys the device anyway. Just surface it. */
-            LOG_ERR("post-DFU unpair: bt_unpair failed (err %d); phone re-pair will re-key", uerr);
+            /* Rare, and the bad direction: the app clears its own bond on DFU
+             * success, so a surviving device key leaves the slot occupied with
+             * the phone unbonded — and a phone re-pair CANNOT re-key over it
+             * (update_keys_check() refuses a Just Works overwrite). Recovery is
+             * the 5-tap-and-hold gesture. The marker is left set on a failed
+             * clear so the next boot retries this. */
+            LOG_ERR("post-DFU unpair: bt_unpair failed (err %d); device keeps its key slot — "
+                    "5-tap-and-hold to recover",
+                    uerr);
         } else {
-            LOG_INF("post-DFU unpair: firmware changed — wiped BLE bonds");
+            LOG_INF("post-DFU unpair: DFU landed — wiped BLE bonds");
         }
         /* Distinguishes an intentional post-update wipe from an unexplained loss:
          * without this, both look identical from the phone's side. Forced for the
