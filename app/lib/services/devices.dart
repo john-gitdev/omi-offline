@@ -22,6 +22,15 @@ abstract class IDeviceService {
   /// Devices found by the most recent discovery (including background scans).
   List<BtDevice> get devices;
 
+  /// Drop the cached discovery results (what Find Devices renders).
+  ///
+  /// For use when every cached entry is known to be stale — after a DFU, where the
+  /// device reboots into the new image the moment the flash lands, so anything seen
+  /// before it is either already off the air or about to drop the link. Only the
+  /// scan cache is touched: the stored pairing is untouched and [_connectToDevice]
+  /// still falls back to it, so background reconnect is unaffected.
+  void clearDiscoveredDevices();
+
   Future<DeviceConnection?> ensureConnection(String deviceId, {bool force = false, bool requiresBond = false});
 
   void subscribe(IDeviceServiceSubscription subscription, Object context);
@@ -82,6 +91,14 @@ class DeviceService implements IDeviceService {
   bool _recycling = false;
   @override
   List<BtDevice> get devices => _devices;
+
+  @override
+  void clearDiscoveredDevices() {
+    if (_devices.isEmpty) return;
+    Logger.debug('[DeviceService] clearing ${_devices.length} cached discovery result(s)');
+    _devices = [];
+    onDevices(_devices);
+  }
 
   @override
   DeviceServiceStatus get status => _status;
