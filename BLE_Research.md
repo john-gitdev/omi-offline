@@ -1404,9 +1404,10 @@ device-side from the mcumgr `DFU_PENDING` hook, so do not go looking for them.
 > `flash_primary`), so it does not drift as the app image grows — `app` grows toward it and would
 > fail the build on collision — but a Kconfig change to its size or alignment could move it. That
 > is now guarded by a `BUILD_ASSERT` in `settings.c` asserting `settings_storage` ends at least
-> one 4 KB sector below `mcuboot_primary`, verified live by inverting it and confirming the build
-> fails. Pinning a real `pm_static.yml` was considered and rejected: it is migration risk and
-> permanent maintenance burden for a hazard the assert covers for free.
+> **two** 4 KB sectors (`0x2000`) below `mcuboot_primary` — matching the table above, and the most
+> the current layout can assert — verified live by inverting it and confirming the build fails.
+> Pinning a real `pm_static.yml` was considered and rejected: it is migration risk and permanent
+> maintenance burden for a hazard the assert covers for free.
 >
 > The original (wrong) reasoning is kept below because the *mechanism* it describes is real and
 > would apply if the partition ever did move — which is exactly what the assert now prevents.
