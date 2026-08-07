@@ -2884,19 +2884,22 @@ int transport_start()
      * (update_keys_check() with CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE unset). An
      * ordinary reboot or the Reboot Omi command never sets the marker, so
      * neither can wipe. Consume is one-shot. */
-    if (app_settings_consume_dfu_bond_wipe()) {
+    if (app_settings_dfu_bond_wipe_due()) {
         int uerr = bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
         if (uerr) {
             /* Rare, and the bad direction: the app clears its own bond on DFU
              * success, so a surviving device key leaves the slot occupied with
              * the phone unbonded — and a phone re-pair CANNOT re-key over it
-             * (update_keys_check() refuses a Just Works overwrite). Recovery is
-             * the 5-tap-and-hold gesture. The marker is left set on a failed
-             * clear so the next boot retries this. */
+             * (update_keys_check() refuses a Just Works overwrite). Deliberately
+             * do NOT clear the markers here: leaving them set is what makes the
+             * next boot retry the wipe instead of skipping it forever. Until one
+             * succeeds, recovery is the 5-tap-and-hold gesture. */
             LOG_ERR("post-DFU unpair: bt_unpair failed (err %d); device keeps its key slot — "
-                    "5-tap-and-hold to recover",
+                    "retrying next boot, 5-tap-and-hold to recover now",
                     uerr);
         } else {
+            /* Retire the markers only now that the slot is actually free. */
+            app_settings_clear_dfu_bond_wipe();
             LOG_INF("post-DFU unpair: DFU landed — wiped BLE bonds");
         }
         /* Distinguishes an intentional post-update wipe from an unexplained loss:
