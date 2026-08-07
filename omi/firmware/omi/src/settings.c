@@ -107,6 +107,21 @@ static uint8_t haptic_config[6] = {0, 0, 0, 0, 0, 0};
  * worth engineering against. */
 static bool dfu_bond_wipe_pending = false;
 
+/* Set once, on the first boot of any firmware carrying the scheme above.
+ *
+ * Migration backstop. The flash that first installs this firmware is performed by
+ * the PREVIOUS image, which has no DFU_PENDING hook and therefore cannot arm
+ * dfu_bond_wipe — while an app new enough to pair with this firmware clears the
+ * phone bond on success regardless. That combination is the one unrecoverable
+ * outcome (phone unbonded, device still holding its key slot), and without this
+ * it would hit every existing device on the very update that introduces the
+ * feature. So a boot that has never seen this marker wipes once and records it.
+ *
+ * Harmless in the other two cases it also catches: a factory device has no bond
+ * to wipe, and a device flashed by an older app keeps its phone bond, which is
+ * the direction Forget Device can fix. */
+static bool dfu_wipe_scheme_seen = false;
+
 /* MCUboot runs OVERWRITE_ONLY_FAST here (CONFIG_BOOT_UPGRADE_ONLY=y in
  * sysbuild/mcuboot.conf expands to it), which erases the trailer sectors at the
  * top of the primary slot on every update. The NVS holding the BLE bonds and
@@ -356,6 +371,19 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         if (rc >= 0) {
             dfu_bond_wipe_pending = (stored != 0);
             LOG_INF("Loaded dfu_bond_wipe: %s", dfu_bond_wipe_pending ? "pending" : "clear");
+            return 0;
+        }
+        return rc;
+    }
+
+    if (settings_name_steq(name, "dfu_wipe_seen", &next) && !next) {
+        uint8_t stored;
+        if (len != sizeof(stored)) {
+            return -EINVAL;
+        }
+        rc = read_cb(cb_arg, &stored, sizeof(stored));
+        if (rc >= 0) {
+            dfu_wipe_scheme_seen = (stored != 0);
             return 0;
         }
         return rc;
@@ -680,8 +708,25 @@ int app_settings_arm_dfu_bond_wipe(void)
 
 bool app_settings_consume_dfu_bond_wipe(void)
 {
+    /* First boot of any firmware carrying this scheme wipes once regardless of
+     * the marker — see dfu_wipe_scheme_seen for why the marker cannot have been
+     * set by the image that performed that particular flash. Recorded before the
+     * wipe decision so a persist failure retries on the next boot rather than
+     * skipping the migration outright. */
+    bool migrate = !dfu_wipe_scheme_seen;
+    if (migrate) {
+        uint8_t seen = 1;
+        int err = settings_save_one("omi/dfu_wipe_seen", &seen, sizeof(seen));
+        if (err) {
+            LOG_ERR("Failed to save dfu_wipe_seen (err %d)", err);
+        } else {
+            dfu_wipe_scheme_seen = true;
+        }
+        LOG_INF("DFU bond wipe: first boot with this scheme — wiping once to match the app");
+    }
+
     if (!dfu_bond_wipe_pending) {
-        return false;
+        return migrate;
     }
 
     /* One-shot: clear the marker before reporting. If the clear fails it stays
