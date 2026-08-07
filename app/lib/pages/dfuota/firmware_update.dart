@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
@@ -7,8 +8,8 @@ import 'package:provider/provider.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/pages/dfuota/firmware_mixin.dart';
 import 'package:omi/pages/recordings/recordings_page.dart';
+import 'package:omi/pages/settings/find_devices_page.dart';
 import 'package:omi/providers/device_provider.dart';
-import 'package:omi/utils/other/temp.dart';
 import 'package:omi/widgets/dialog.dart';
 
 class FirmwareUpdate extends StatefulWidget {
@@ -280,7 +281,7 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Please restart your ${widget.device?.name ?? "Omi device"} to complete the update.',
+                  'Your ${widget.device?.name ?? "Omi device"} is restarting to finish the update.',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 15, color: Colors.grey.shade400, height: 1.4),
                 ),
@@ -301,7 +302,16 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
               onTap: () {
                 final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
                 deviceProvider.resetFirmwareUpdateState();
-                routeToPage(context, const RecordingsPage(), replace: true);
+                // The update cleared the pairing on both sides, so re-pairing is the
+                // next step every time — land the user on the scan list rather than
+                // on a home screen showing a device that can no longer connect.
+                // Reset to home first and push the scan page on top of it: replacing
+                // the whole stack with the scan page would leave it as root with
+                // nothing to pop back to. The navigator is captured up front because
+                // the stack reset unmounts this page's context.
+                final navigator = Navigator.of(context);
+                navigator.pushAndRemoveUntil(_pageRoute(const RecordingsPage()), (route) => false);
+                navigator.push(_pageRoute(const FindDevicesPage()));
               },
               child: Container(
                 width: double.infinity,
@@ -349,14 +359,24 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
     );
   }
 
-  // Shown after a successful update: an OTA can reset the device's BLE pairing, so if
-  // the firmware bond no longer matches the phone's, the device won't reconnect until
-  // the old pairing is cleared on BOTH sides. Phrased conditionally — most updates do
-  // not need this, and iOS can't clear the bond programmatically anyway.
+  /// Same platform-styled route `routeToPage` builds, but usable against a
+  /// NavigatorState captured before the stack reset (see the Done button).
+  Route<void> _pageRoute(Widget page) =>
+      Platform.isIOS ? CupertinoPageRoute<void>(builder: (c) => page) : MaterialPageRoute<void>(builder: (c) => page);
+
+  // Shown after a successful update. Every successful DFU clears the BLE pairing on
+  // both sides — the device wipes its own key slot on the reboot that follows the
+  // flash, and the app wipes the phone's (Android only; iOS has no programmatic bond
+  // removal, so there the user has to clear it by hand, hence the extra step). So
+  // re-pairing is not an "if something went wrong" fallback here, it is the normal
+  // next step, and it is why Done opens the scan list.
   Widget _buildRepairInstructions() {
-    final phoneStep = Platform.isIOS
-        ? 'On your phone: open Settings → Bluetooth, tap the ⓘ next to your Omi, and choose "Forget This Device".'
-        : 'On your phone: open Bluetooth settings, find your Omi, and choose Forget / Unpair.';
+    final steps = <String>[
+      'Wait a few seconds for your Omi to finish restarting.',
+      if (Platform.isIOS)
+        'On your phone: open Settings → Bluetooth, tap the ⓘ next to your Omi, and choose "Forget This Device".',
+      'Tap Done below, then tap your Omi in the list to pair with it again.',
+    ];
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF1C1C1E),
@@ -374,7 +394,7 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
                 SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    'Trouble reconnecting after the update?',
+                    'You need to pair again',
                     style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
                   ),
                 ),
@@ -382,14 +402,18 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
             ),
             const SizedBox(height: 8),
             Text(
-              'An update can reset the device\'s pairing. If your Omi won\'t reconnect, clear the old '
-              'pairing on both sides, then reconnect:',
+              'The update cleared the Bluetooth pairing between your Omi and this phone, so it will not '
+              'reconnect on its own. Pair it again to finish:',
               style: TextStyle(color: Colors.grey.shade400, fontSize: 14, height: 1.4),
             ),
             const SizedBox(height: 16),
-            _buildRepairStep(
-                1, 'On your Omi: tap the button 5 times, holding the last tap for 10 seconds, to clear its pairing.'),
-            _buildRepairStep(2, phoneStep),
+            for (var i = 0; i < steps.length; i++) _buildRepairStep(i + 1, steps[i]),
+            Text(
+              'Omi not in the list? Give it another few seconds and tap the refresh icon. If it still won\'t '
+              'pair, tap the button on your Omi 5 times, holding the last tap for 10 seconds, to clear its '
+              'pairing, then scan again.',
+              style: TextStyle(color: Colors.grey.shade500, fontSize: 13, height: 1.4),
+            ),
           ],
         ),
       ),
