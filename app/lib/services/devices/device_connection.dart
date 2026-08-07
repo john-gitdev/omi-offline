@@ -230,13 +230,6 @@ abstract class DeviceConnection {
   /// wakes it, so no reconnect follows.
   Future<bool> sendShutdownCommand() async => false;
 
-  /// Arms ([arm]=true) or disarms the peripheral's one-shot "unpair after the
-  /// next firmware update" flag. When armed, the first boot of a freshly-flashed
-  /// image wipes the device's own bonds and clears the flag; a failed flash
-  /// (which reverts to the old image) leaves it untouched. Sent before a flash
-  /// to match the user's opt-in.
-  Future<bool> sendArmPostDfuUnpair(bool arm) async => false;
-
   Future<BleAudioCodec?> getAudioCodec() async {
     if (await isConnected()) return performGetAudioCodec();
     return null;
