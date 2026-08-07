@@ -240,33 +240,32 @@ int app_settings_save_haptic_config(const uint8_t config[6]);
 void app_settings_get_haptic_config(uint8_t config[6]);
 
 /**
- * @brief Arm/disarm the one-shot "unpair after firmware update" marker.
+ * @brief Arm the one-shot "wipe BLE bonds on the next boot" marker.
  *
- * Arming records [current_fw] (the version running now, before the flash);
- * disarming clears it. Consumed once, on the first boot whose running version
- * DIFFERS from the armed one (see @ref app_settings_consume_post_dfu_unpair /
- * transport_start). Because the version is captured at ARM time, a failed/
- * aborted flash (same version afterward) never triggers the wipe, and it's
- * fail-closed: if arming didn't persist, no version is stored and no wipe fires.
- * The app arms this before a flash when the user opted in, and disarms otherwise.
+ * Called from the mcumgr DFU hook when an image has finished transferring
+ * (MGMT_EVT_OP_IMG_MGMT_DFU_PENDING), i.e. a flash is going to happen on the
+ * next boot. Consumed once by @ref app_settings_consume_dfu_bond_wipe from
+ * transport_start().
  *
- * @param arm true to arm, false to disarm.
- * @param current_fw Compile-time firmware version string (e.g. CONFIG_BT_DIS_FW_REV_STR).
+ * Keyed on "a DFU landed", NOT on the firmware version changing: a same-version
+ * reflash rewrites the slot just as hard, and is exactly what a user does when
+ * pairing is already broken. Idempotent — a second call while already pending
+ * skips the flash write.
+ *
  * @return 0 on success, negative error code otherwise.
  */
-int app_settings_arm_post_dfu_unpair(bool arm, const char *current_fw);
+int app_settings_arm_dfu_bond_wipe(void);
 
 /**
- * @brief Consume the one-shot post-update unpair marker for this boot.
+ * @brief Consume the one-shot DFU bond-wipe marker for this boot.
  *
- * Clears the armed marker (one-shot) and returns whether a bond wipe is due:
- * true iff it was armed AND [current_fw] differs from the armed version (a real
- * update landed). Returns false when not armed or the version is unchanged.
+ * Clears the marker and returns whether the caller should wipe BLE bonds. A
+ * failed clear leaves it set, so the next boot wipes again — idempotent by
+ * design, since the guarantee being bought is a free key slot.
  *
- * @param current_fw Compile-time firmware version string (e.g. CONFIG_BT_DIS_FW_REV_STR).
  * @return true if the caller should wipe BLE bonds, false otherwise.
  */
-bool app_settings_consume_post_dfu_unpair(const char *current_fw);
+bool app_settings_consume_dfu_bond_wipe(void);
 
 
 #endif // SETTINGS_H
