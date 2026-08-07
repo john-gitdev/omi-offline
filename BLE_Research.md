@@ -1379,11 +1379,23 @@ device-side from the mcumgr `DFU_PENDING` hook, so do not go looking for them.
 > ```
 >
 > `min_write_sz` is `flash_area_align()` of the **primary** slot = the SoC's internal-flash
-> `write-block-size` = 4. The margin is therefore one sector (`0xfe000`–`0xff000`). Raising
-> `CONFIG_BOOT_MAX_IMG_SECTORS` — mcuboot's Kconfig, invisible to the app image — past ~340 makes
-> the trailer need two sectors, and past ~680 four, which *would* erase `settings_storage` in full
-> on every OTA. That is what the `BUILD_ASSERT` (two sectors) exists to catch. Re-run this
-> arithmetic before ever relaxing it.
+> `write-block-size` = 4, so `trailer_sz = 12N + 48` and the erase covers `ceil(trailer_sz / 4096)`
+> sectors down from `0x100000`:
+>
+> | `CONFIG_BOOT_MAX_IMG_SECTORS` | Sectors | Erase span | Effect on `settings_storage` |
+> |---|---|---|---|
+> | ≤ 337 (**256 today**) | 1 | `0xff000`–`0x100000` | untouched |
+> | 338 – 678 | 2 | `0xfe000`–`0x100000` | untouched (it ends exactly at `0xfe000`) |
+> | 679 – 1020 | 3 | `0xfd000`–`0x100000` | **erases its upper half** |
+> | ≥ 1021 | 4 | `0xfc000`–`0x100000` | **erases it in full** |
+>
+> **The `BUILD_ASSERT` cannot catch the last two rows.** It checks the *layout* (that
+> `settings_storage` keeps two sectors of margin), which is necessary but not sufficient; it cannot
+> check the trailer *size*, because `CONFIG_BOOT_MAX_IMG_SECTORS` belongs to the mcuboot image and
+> is not defined in the app image (verified: absent from its `autoconf.h`). Two sectors is also the
+> most the current layout can assert, the margin being exactly `0x2000`. So if that Kconfig is ever
+> raised, re-run this table by hand — nothing in the build will warn you, and the fix is to move the
+> partition down, not to widen the bound.
 >
 > Two related facts worth keeping: **`boards/omi/pm_static.yml` is dead** — Partition Manager
 > reads `pm_static.yml` from the *application* config dir, not the board dir, and no
