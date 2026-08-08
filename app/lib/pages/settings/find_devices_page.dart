@@ -39,11 +39,19 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     // after a reboot (a firmware update, a Reboot Omi, a flat battery) tapping it can
     // only fail. Better to show nothing and scan than to show a row that lies.
     //
-    // Cleared ahead of the early returns below so deferring to a running background
-    // scan also drops the previous scan's results rather than displaying them until
-    // that one finishes. Not wrapped in setState: the scan path below rebuilds on its
-    // own, and on the deferring path the service's status change does it.
+    // Both halves have to go, since build() merges the service's cache with this
+    // page's own list. Cleared ahead of the early returns below, so a scan that
+    // defers to a running background scan — _forgetDevice's rescan reaches here
+    // ungated by isScanning — or that fails the permission gate drops the previous
+    // rows too, instead of leaving them on screen and tappable until some later scan
+    // happens to succeed.
     ServiceManager.instance().device.clearDiscoveredDevices();
+    if (_discoveredDevices.isNotEmpty) {
+      // Guarded on non-empty so the initState call, where the list is always empty,
+      // never reaches setState during the first build. Every caller is mounted:
+      // initState, both scan buttons, and _forgetDevice, which checks before calling.
+      setState(() => _discoveredDevices = []);
+    }
 
     if (ServiceManager.instance().device.status == DeviceServiceStatus.scanning) {
       // Only surface the "already scanning" notice for an explicit Scan/Refresh
