@@ -300,12 +300,21 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     // Only trust the size as an identity when it is unique in the bundle. Two images
     // of equal length would both resolve to the first, pinning the index and the
     // banked total at image 0 and running the ring 0→50 % twice — the double-count
-    // artifact this fold exists to remove. There is no image id to use instead:
-    // mcumgr's ProgressUpdate carries only (bytesSent, imageSize, date). So an
-    // ambiguous size falls through to the bytesSent heuristic, which handles
-    // equal-sized images correctly. Not observed on any bundle to date — the two
-    // cores build to different lengths (252,632 B and 175,092 B in oo-2.9.1) — but
-    // nothing pins them apart, so the lookup is constrained rather than assumed safe.
+    // artifact this fold exists to remove. An ambiguous size falls through to the
+    // bytesSent heuristic instead, which reads the transition between two equal-sized
+    // images correctly.
+    //
+    // Deliberately NOT fully solved for equal sizes *and* a skipped first image: with
+    // no regression to observe, the fallback cannot tell that upload from the first
+    // one, so the ring runs to 50 % and the state-transition snap takes it to 100.
+    // That case is unfixable here rather than merely unfixed — mcumgr's ProgressUpdate
+    // is (bytesSent, imageSize, date) with no image id, so "image 0 uploading" and
+    // "image 1 uploading, image 0 skipped" are the same two numbers; distinguishing
+    // them needs an identifier the bridge does not carry. It also needs a coincidence
+    // to reach: the cores build to different lengths (252,632 B and 175,092 B in
+    // oo-2.9.1), nothing pads them toward a common value, and no bundle has tied yet.
+    // Left alone on both counts — the degradation is 50 %→100 %, no worse than the
+    // 41 %→100 % this fold was written to fix.
     final imageIdx = _dfuImageSizes.indexOf(imageSize);
     if (imageIdx >= 0 && _dfuImageSizes.lastIndexOf(imageSize) == imageIdx) {
       installImageIndex = imageIdx;
