@@ -63,4 +63,27 @@ uint16_t aad_get_threshold(void);
 /** @brief Return true if VAD is actively recording. */
 bool aad_is_recording(void);
 
+/**
+ * @brief Reconcile the microphone against the current VAD threshold and mute state.
+ *
+ * Manual standby (threshold 32769) parks capture — nothing acoustic can start a
+ * recording there, so the PDM peripheral and both mics are pure load. Any other
+ * threshold resumes it, unless muted.
+ *
+ * Callers do not decide the mic state, they call this after changing an input to it.
+ * aad_set_threshold() / aad_start() already do; mute must, because it owns the other
+ * input. Takes mic_state_lock, so never call it holding a lock or mid-marker-write.
+ */
+void aad_apply_mic_gate(void);
+
+/**
+ * @brief Tell the VAD that capture stopped for an unknown wall-clock span.
+ *
+ * Parks the VAD (applied on the next mic frame) so the resumption takes the normal
+ * detect path and emits a 0xFFFFFFFD resume packet, which is what re-anchors the
+ * app's frame timeline across the gap; also drops the now-stale pre-roll. Call on
+ * mute, whose duration is unbounded and invisible to the frame clock.
+ */
+void aad_note_capture_gap(void);
+
 #endif /* AAD_H */
