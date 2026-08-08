@@ -86,4 +86,31 @@ void aad_apply_mic_gate(void);
  */
 void aad_note_capture_gap(void);
 
+/**
+ * @brief Mark a button interaction as in flight (or finished).
+ *
+ * An input to the mic gate. The button FSM cannot classify a press until
+ * MULTI_TAP_WINDOW has elapsed, so with the mic parked the first ~700 ms of a
+ * button-started recording would be missing. Setting this on the FSM's idle->active
+ * edge wakes the mic immediately so pre-roll has collected that span by the time the
+ * action dispatches; clearing it on the return to idle parks again unless something
+ * (a record start, a marker's force-wake) asked for capture in the meantime.
+ */
+void aad_set_mic_prearm(bool on);
+
+/**
+ * @brief Arm the idle-advertising backstop (boot, and every disconnect).
+ *
+ * Advertising is FAST after boot and after every disconnect, and only the VAD-sleep
+ * path asks for SLOW — which needs a recording to have happened. Without this a quiet
+ * device advertises fast indefinitely. Schedule-only; safe from the BT RX thread.
+ */
+void aad_note_link_idle(void);
+
+/** @brief Device uptime (ms) at the last processed mic frame. 0 if none yet. */
+uint32_t aad_last_frame_uptime_ms(void);
+
+/** @brief Total ms the VAD has held a recording open since boot (capture duty). */
+uint32_t aad_voiced_ms(void);
+
 #endif /* AAD_H */
