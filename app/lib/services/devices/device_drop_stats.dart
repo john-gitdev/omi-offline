@@ -129,6 +129,36 @@ class DeviceDropStats {
     }
   }
 
+  /// Device uptime (ms) at the last mic frame the VAD processed (offset 84; 0 on
+  /// firmware older than oo-2.9.4, or before the first frame). Against
+  /// [currentUptimeMs] this is the only direct answer to "is the mic delivering
+  /// right now" — see [micSilentForMs]. It exists because a parked or wedged mic
+  /// produces *no* event-log records at all, so a quiet log cannot distinguish
+  /// "nothing happened" from "the mic stopped".
+  final int lastMicFrameUptimeMs;
+
+  /// Total ms the VAD has held a recording open since boot (offset 88; 0 on older
+  /// firmware). Against [currentUptimeMs] this is the capture duty cycle — the
+  /// fraction of the day being encoded and written, which is what the auto-mode
+  /// threshold actually costs.
+  final int voicedMs;
+
+  /// How long the mic has been silent, or `null` when the firmware doesn't report
+  /// it (or hasn't delivered a first frame yet). Small values are normal — frames
+  /// arrive every 100 ms; minutes mean the mic is parked or stopped.
+  int? get micSilentForMs {
+    if (lastMicFrameUptimeMs == 0) return null;
+    final d = currentUptimeMs - lastMicFrameUptimeMs;
+    return d < 0 ? 0 : d;
+  }
+
+  /// Capture duty as a 0..1 fraction of uptime, or `null` when unreported.
+  double? get captureDutyFraction {
+    if (voicedMs == 0 || currentUptimeMs <= 0) return null;
+    final f = voicedMs / currentUptimeMs;
+    return f > 1.0 ? 1.0 : f;
+  }
+
   /// The firmware's SD write-queue size (`SD_REQ_QUEUE_MSGS`), used as the denominator
   /// for [msgqPeakDepth]. The firmware doesn't send this as a field; it's derived from
   /// the payload length in the parser — the 76-byte payload is only produced by the
@@ -160,6 +190,8 @@ class DeviceDropStats {
     this.codecStackUsed = 0,
     this.ringMaxIoRaw = 0,
     this.ringIoErrors = 0,
+    this.lastMicFrameUptimeMs = 0,
+    this.voicedMs = 0,
     this.sdQueueMax = 120,
     required this.readAt,
   });
