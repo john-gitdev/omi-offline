@@ -33,6 +33,27 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
   Future<void> _startScan({bool userInitiated = false}) async {
     if (_isScanning) return;
 
+    // Every row must come from a scan that ran since this page opened. The service
+    // caches its last discovery across page opens, and a device that was seen minutes
+    // ago is exactly the trap this page exists to avoid: it is still tappable, and
+    // after a reboot (a firmware update, a Reboot Omi, a flat battery) tapping it can
+    // only fail. Better to show nothing and scan than to show a row that lies.
+    //
+    // Both halves have to go, since build() merges the service's cache with this
+    // page's own list. Cleared ahead of the early returns below, so a scan that
+    // defers to a running background scan — _forgetDevice's rescan reaches here
+    // ungated by isScanning — or that fails the permission gate drops the previous
+    // rows too, instead of leaving them on screen and tappable until some later scan
+    // happens to succeed.
+    ServiceManager.instance().device.clearDiscoveredDevices();
+    // Unconditional, because either half being non-empty is enough to leave rows
+    // painted, and the service half is not observable from here — a guard on
+    // _discoveredDevices alone skips the repaint exactly when the cache was the stale
+    // one. Safe from the initState call: setState there lands on an element already
+    // marked dirty for its first build, so markNeedsBuild returns early. Every caller
+    // is mounted — initState, both scan buttons, and _forgetDevice, which checks.
+    setState(() => _discoveredDevices = []);
+
     if (ServiceManager.instance().device.status == DeviceServiceStatus.scanning) {
       // Only surface the "already scanning" notice for an explicit Scan/Refresh
       // tap. Automatic scans (page open, post-forget rescan) silently defer to
@@ -246,6 +267,8 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     // background scan (Reset Connection / periodicConnect) populates the service
     // list instead. Merge both — deduped by id — so background-scan results are
     // shown rather than leaving the page on "No devices found" after one runs.
+    // The service half can only hold results from a scan that ran since this page
+    // opened, because _startScan drops the cache first (see there).
     final mergedById = <String, BtDevice>{
       for (final d in ServiceManager.instance().device.devices) d.id: d,
       for (final d in _discoveredDevices) d.id: d,

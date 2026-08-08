@@ -85,8 +85,7 @@ static uint8_t haptic_config[6] = {0, 0, 0, 0, 0, 0};
 
 /* One-shot "wipe BLE bonds on the next boot" marker, set when mcumgr reports a
  * firmware image has finished transferring (MGMT_EVT_OP_IMG_MGMT_DFU_PENDING,
- * main.c) and consumed by transport_start(). A flash rewrites the MCUboot primary
- * slot whether or not the version changed, and any bond it corrupts is
+ * main.c) and consumed by transport_start(). A bond a flash corrupts is
  * unrecoverable from the phone: CONFIG_BT_MAX_PAIRED=1 plus an unset
  * CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE means update_keys_check() refuses a fresh
  * Just Works pairing whenever a key slot is occupied — by a valid key or by a
@@ -94,10 +93,17 @@ static uint8_t haptic_config[6] = {0, 0, 0, 0, 0, 0};
  * every flash, and the app clears its own bond on DFU success; both sides
  * re-pair clean.
  *
- * Deliberately keyed on "a DFU landed", NOT on the firmware version changing. A
- * same-version reflash writes the slot just as hard, so a version comparison
- * would skip exactly the recovery flash a user performs *because* pairing is
- * already broken. It also removes the arm/ACK ambiguity of the old
+ * Deliberately keyed on "a DFU landed", NOT on the firmware version changing.
+ * Note that a reflash does NOT necessarily rewrite this core's slot: mcumgr skips
+ * any image whose hash already matches what the device is running, so reflashing
+ * the same build sends only the net core and leaves the app slot untouched. The
+ * marker is still armed, because DFU_PENDING fires for whichever image did land
+ * and the net core cannot be skipped — the nRF5340 does not report its hash in
+ * the pre-upload image list, so mcumgr has nothing to compare and always sends
+ * it. Version-gating would therefore skip exactly the recovery flash a user
+ * performs *because* pairing is already broken, while saving nothing: the wipe
+ * costs one re-pair the user is already going through the update for. Keying on
+ * the DFU event also removes the arm/ACK ambiguity of the old
  * CMD_ARM_POST_DFU_UNPAIR design: the device observes the DFU itself and infers
  * nothing from the app.
  *

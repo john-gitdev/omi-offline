@@ -22,6 +22,15 @@ abstract class IDeviceService {
   /// Devices found by the most recent discovery (including background scans).
   List<BtDevice> get devices;
 
+  /// Drop the cached discovery results (what Find Devices renders).
+  ///
+  /// For use when every cached entry is known to be stale — after a DFU, where the
+  /// device reboots into the new image the moment the flash lands, so anything seen
+  /// before it is either already off the air or about to drop the link. Only the
+  /// scan cache is touched: the stored pairing is untouched and [_connectToDevice]
+  /// still falls back to it, so background reconnect is unaffected.
+  void clearDiscoveredDevices();
+
   Future<DeviceConnection?> ensureConnection(String deviceId, {bool force = false, bool requiresBond = false});
 
   void subscribe(IDeviceServiceSubscription subscription, Object context);
@@ -84,6 +93,14 @@ class DeviceService implements IDeviceService {
   List<BtDevice> get devices => _devices;
 
   @override
+  void clearDiscoveredDevices() {
+    if (_devices.isEmpty) return;
+    Logger.debug('[DeviceService] clearing ${_devices.length} cached discovery result(s)');
+    _devices = [];
+    onDevices(_devices);
+  }
+
+  @override
   DeviceServiceStatus get status => _status;
 
   DateTime? _firstConnectedAt;
@@ -134,7 +151,13 @@ class DeviceService implements IDeviceService {
       if (desirableDeviceId != null && desirableDeviceId.isNotEmpty) {
         await ensureConnection(desirableDeviceId, force: true);
       }
-      return _devices;
+      // A copy, not the live list. Callers keep what they are handed (FindDevicesPage
+      // holds it as _discoveredDevices and renders it), and handing out the cache made
+      // that a silent alias of it: every later mutation here — the reference swap
+      // above, _connectToDevice's add, clearDiscoveredDevices — either leaked into
+      // their view or orphaned it, with no way for them to tell which. Invalidation is
+      // the caller's own business; theirs is reset in FindDevicesPage._startScan.
+      return List<BtDevice>.of(_devices);
     } finally {
       _status = DeviceServiceStatus.ready;
       onStatusChanged(_status);
@@ -152,9 +175,14 @@ class DeviceService implements IDeviceService {
       device = _getStoredDevice(id);
       if (device != null) {
         Logger.debug('[DeviceService] Using stored device: ${device.name}');
-        if (!_devices.any((d) => d.id == device!.id)) {
-          _devices.add(device);
-        }
+        // Used for this connection only — deliberately NOT added to _devices. That
+        // list means "peripherals a scan actually heard", and Find Devices renders it
+        // directly: an entry sourced from the stored pairing is a row for a device
+        // nobody heard advertise, which the user can tap and which then fails. It came
+        // back within a second of a post-DFU reboot, where the bond is wiped but the
+        // btDevice pref survives, so the retry timer refilled the list the scan page
+        // had just cleared. Nothing needs the add — the connection is built from the
+        // local below, and a later lookup re-reads the same pref for free.
       } else {
         Logger.debug('[DeviceService] No stored device available for $id, returning');
         return;

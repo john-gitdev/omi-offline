@@ -86,6 +86,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   int _dfuCompletedBytes = 0; // bytes belonging to images already finished
   int _dfuLastBytesSent = 0;
   int _dfuLastImageSize = 0;
+  List<int> _dfuImageSizes = const []; // byte length of each image in the bundle, in order
   bool isLegacySecureDFU = true;
   List<String> otaUpdateSteps = [];
   final mcumgr.FirmwareUpdateManagerFactory? managerFactory = mcumgr.FirmwareUpdateManagerFactory();
@@ -224,6 +225,16 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     }
   }
 
+  /// Drop the cached scan results on a successful flash. The device reboots into
+  /// the new image the moment the flash lands, so every entry discovered before it
+  /// is stale — already off the air, or about to drop the link within seconds.
+  /// Clearing here means the Find Devices list the user lands on from Done can only
+  /// show peripherals seen *after* the reboot, which is also the only state in which
+  /// tapping one can re-pair (the bond was just wiped on both sides).
+  void _clearStaleScanResultsOnSuccess() {
+    ServiceManager.instance().device.clearDiscoveredDevices();
+  }
+
   Future<void> killMcuUpdateManager() async {
     // Every DFU teardown path funnels through here (success, failure, page
     // dispose, and the pre-flight kill before a fresh attempt), so cancel the
@@ -270,14 +281,45 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
 
   /// Folds the uploader's per-image progress into one monotonic 0–100 %.
   ///
-  /// A drop in `bytesSent` is the only signal the bridge gives that it moved on to
-  /// the next image, so bank the finished one there and add the running one on top.
-  /// Safe if a platform ever reports cumulative bytes against the bundle total
-  /// instead: nothing regresses, so the banked total stays 0 and the fraction is
-  /// already the overall one. Falls back to the reported image size when the bundle
-  /// total is unknown, which just restores the old per-image behaviour.
+  /// The reported `imageSize` identifies *which* bundle image is uploading, which
+  /// matters because mcumgr skips any image whose hash already matches what the
+  /// device is running: reflashing the same build sends only the net core and never
+  /// reports a byte for the app core. Denominating against the whole bundle while
+  /// one image is never sent would strand the bar partway (a same-version reflash
+  /// stops at 41 % — 175 kB of net core over a 428 kB bundle) and then jump to the
+  /// success screen. Counting every earlier image as transferred is honest: a
+  /// skipped image is already on the device, which is the reason it was skipped.
+  ///
+  /// A drop in `bytesSent` is the fallback signal that the uploader moved on, used
+  /// when the size matches no bundle image (the legacy Nordic path, which does not
+  /// populate [_dfuImageSizes], or a bridge reporting cumulative bytes — where
+  /// nothing regresses, the banked total stays 0, and the fraction is already the
+  /// overall one). Falls back to the reported image size when the bundle total is
+  /// unknown, which just restores the old per-image behaviour.
   void _applyDfuProgress(int bytesSent, int imageSize) {
-    if (bytesSent < _dfuLastBytesSent) {
+    // Only trust the size as an identity when it is unique in the bundle. Two images
+    // of equal length would both resolve to the first, pinning the index and the
+    // banked total at image 0 and running the ring 0→50 % twice — the double-count
+    // artifact this fold exists to remove. An ambiguous size falls through to the
+    // bytesSent heuristic instead, which reads the transition between two equal-sized
+    // images correctly.
+    //
+    // Deliberately NOT fully solved for equal sizes *and* a skipped first image: with
+    // no regression to observe, the fallback cannot tell that upload from the first
+    // one, so the ring runs to 50 % and the state-transition snap takes it to 100.
+    // That case is unfixable here rather than merely unfixed — mcumgr's ProgressUpdate
+    // is (bytesSent, imageSize, date) with no image id, so "image 0 uploading" and
+    // "image 1 uploading, image 0 skipped" are the same two numbers; distinguishing
+    // them needs an identifier the bridge does not carry. It also needs a coincidence
+    // to reach: the cores build to different lengths (252,632 B and 175,092 B in
+    // oo-2.9.1), nothing pads them toward a common value, and no bundle has tied yet.
+    // Left alone on both counts — the degradation is 50 %→100 %, no worse than the
+    // 41 %→100 % this fold was written to fix.
+    final imageIdx = _dfuImageSizes.indexOf(imageSize);
+    if (imageIdx >= 0 && _dfuImageSizes.lastIndexOf(imageSize) == imageIdx) {
+      installImageIndex = imageIdx;
+      _dfuCompletedBytes = _dfuImageSizes.take(imageIdx).fold<int>(0, (sum, size) => sum + size);
+    } else if (bytesSent < _dfuLastBytesSent) {
       _dfuCompletedBytes += _dfuLastImageSize;
       if (installImageIndex + 1 < installImageCount) installImageIndex++;
     }
@@ -327,7 +369,8 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     // Reset the multi-image progress fold for this attempt (a retry re-enters here).
     installImageIndex = 0;
     installImageCount = images.length;
-    _dfuTotalBytes = images.fold<int>(0, (sum, image) => sum + image.data.length);
+    _dfuImageSizes = images.map((image) => image.data.length).toList(growable: false);
+    _dfuTotalBytes = _dfuImageSizes.fold<int>(0, (sum, size) => sum + size);
     _dfuCompletedBytes = 0;
     _dfuLastBytesSent = 0;
     _dfuLastImageSize = 0;
@@ -352,6 +395,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
         killMcuUpdateManager(); // also cancels the stall watchdog
         releaseUpdateWakelocks();
         _wipePhoneBondOnSuccess(btDevice);
+        _clearStaleScanResultsOnSuccess();
         if (mounted) {
           setState(() {
             isInstalling = false;
@@ -361,6 +405,15 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       } else {
         Logger.debug('update state: $state');
         _armDfuStallWatchdog(); // advancing through stages resets the watchdog
+        // Every image has been sent by the time the upgrade moves past Upload, so
+        // top the bar off. Without this it keeps whatever fraction the last progress
+        // event left — short of 100 % whenever the final bundle image was skipped as
+        // already-present (see [_applyDfuProgress]).
+        if (state == mcumgr.FirmwareUpgradeState.test ||
+            state == mcumgr.FirmwareUpgradeState.confirm ||
+            state == mcumgr.FirmwareUpgradeState.reset) {
+          if (mounted) setState(() => installProgress = 100);
+        }
       }
     }, onError: (Object e) {
       // mcumgr surfaces DFU failures as a stream error (see DeviceUpdateManager).
@@ -449,6 +502,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
         Logger.debug('deviceAddress: $deviceAddress, onDfuCompleted');
         releaseUpdateWakelocks();
         _wipePhoneBondOnSuccess(btDevice);
+        _clearStaleScanResultsOnSuccess();
         setState(() {
           isInstalling = false;
           isInstalled = true;
