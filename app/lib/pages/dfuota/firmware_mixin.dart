@@ -297,8 +297,17 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   /// overall one). Falls back to the reported image size when the bundle total is
   /// unknown, which just restores the old per-image behaviour.
   void _applyDfuProgress(int bytesSent, int imageSize) {
+    // Only trust the size as an identity when it is unique in the bundle. Two images
+    // of equal length would both resolve to the first, pinning the index and the
+    // banked total at image 0 and running the ring 0→50 % twice — the double-count
+    // artifact this fold exists to remove. There is no image id to use instead:
+    // mcumgr's ProgressUpdate carries only (bytesSent, imageSize, date). So an
+    // ambiguous size falls through to the bytesSent heuristic, which handles
+    // equal-sized images correctly. Not observed on any bundle to date — the two
+    // cores build to different lengths (252,632 B and 175,092 B in oo-2.9.1) — but
+    // nothing pins them apart, so the lookup is constrained rather than assumed safe.
     final imageIdx = _dfuImageSizes.indexOf(imageSize);
-    if (imageIdx >= 0) {
+    if (imageIdx >= 0 && _dfuImageSizes.lastIndexOf(imageSize) == imageIdx) {
       installImageIndex = imageIdx;
       _dfuCompletedBytes = _dfuImageSizes.take(imageIdx).fold<int>(0, (sum, size) => sum + size);
     } else if (bytesSent < _dfuLastBytesSent) {
