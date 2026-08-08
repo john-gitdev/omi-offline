@@ -46,12 +46,13 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     // rows too, instead of leaving them on screen and tappable until some later scan
     // happens to succeed.
     ServiceManager.instance().device.clearDiscoveredDevices();
-    if (_discoveredDevices.isNotEmpty) {
-      // Guarded on non-empty so the initState call, where the list is always empty,
-      // never reaches setState during the first build. Every caller is mounted:
-      // initState, both scan buttons, and _forgetDevice, which checks before calling.
-      setState(() => _discoveredDevices = []);
-    }
+    // Unconditional, because either half being non-empty is enough to leave rows
+    // painted, and the service half is not observable from here — a guard on
+    // _discoveredDevices alone skips the repaint exactly when the cache was the stale
+    // one. Safe from the initState call: setState there lands on an element already
+    // marked dirty for its first build, so markNeedsBuild returns early. Every caller
+    // is mounted — initState, both scan buttons, and _forgetDevice, which checks.
+    setState(() => _discoveredDevices = []);
 
     if (ServiceManager.instance().device.status == DeviceServiceStatus.scanning) {
       // Only surface the "already scanning" notice for an explicit Scan/Refresh
