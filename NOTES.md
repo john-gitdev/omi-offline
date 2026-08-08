@@ -335,7 +335,103 @@ Battery voltage on the 150 mAh LiPo changes on the order of millivolts per minut
 
 - **BT TX power** (`CONFIG_BT_CTLR_TX_PWR_ANTENNA=8` → 0 or 4 dBm): saves power during every radio tx. Requires testing with phone in pocket/bag to confirm no audio dropouts.
 - **BLE connection interval** (7.5–15ms → 30ms): large power savings from longer radio sleep. Requires empirical validation that Opus streaming (50 fps, 80 B/frame, MTU 498) doesn't overflow buffers or cause audio gaps at the longer interval. The `update_conn_params()` in `transport.c` hardcodes the interval at runtime and would need updating alongside the Kconfig values.
-- **Disable logging in production**: `CONFIG_SERIAL=n`, `CONFIG_LOG=n` in a `release.conf` overlay. RTT logging stays on for development builds. The log processing thread and UART clock domain add baseline power draw.
+- **~~Disable logging in production~~ — DONE (`oo-2.9.3`).** `CONFIG_LOG` was already off; `CONFIG_SERIAL=n` landed in `oo-2.9.3`. See "Firmware: logging is compiled out" below for what that costs and how to get logs back.
+
+### Mic gating in manual standby (implemented, `oo-2.9.3`)
+
+At threshold `32769` (manual standby) nothing acoustic can start a recording —
+`has_voice` needs the `65535` sentinel or a button force-wake, and `avg|PCM|` cannot reach
+32769 — so the PDM peripheral, the HFXO it holds up (`&pdm0 clock-source = "PCLK32M_HFXO"`,
+requested by the dmic driver for as long as the stream runs) and both mics are pure load.
+`aad_apply_mic_gate()` (`aad.c`) parks capture there and resumes it for any other threshold.
+
+Two invariants:
+
+- **Derived, not commanded.** Every producer of "should we be recording" funnels through
+  `aad_set_threshold()` — button, BLE write, boot restore, priority safety cap — plus mute,
+  which owns the other input and therefore also calls the gate. A caller that flipped the mic
+  itself would fix its own path and leave the others wrong, two of them recording silence.
+- **dmic STOP/START, never PDM_EN.** Same mechanism mute has used forever. Nothing here drives
+  P1.4; see IDEAS.md "Mic rail (PDM_EN) is not driven by firmware".
+
+Costs the ~0.8 s pre-roll before a manual start-tap (the ring is empty when capture starts) and
+makes `DIAG_VAD_LEVEL` go quiet during standby *by design* — a zero-peak window while parked is
+expected, not a wedge.
+
+---
+
+## Firmware: logging is compiled out — how to turn it back on
+
+Since `oo-2.9.3` the build has **no logging path at all**: `CONFIG_LOG` is unset, `CONSOLE`,
+`PRINTK`, `UART_CONSOLE` are `n`, `SHELL=n`, RTT is not enabled, and `CONFIG_SERIAL=n` removes
+the UARTE driver itself.
+
+**Consequence worth remembering:** every `LOG_ERR`/`LOG_WRN` in the tree is a no-op, so failures
+that only report through them are *silent* on a shipping device — `mic_resume()`'s "START
+trigger failed", `sd_set_io_low_power`'s suspend warnings, the conn-param retry exhaustion. If
+you are chasing one of those, you need one of the paths below, or the diagnostic event log.
+
+**Prefer the event log first.** `CONFIG_OMI_DIAG_LOG` (already on) + the Debug Tools toggle gives
+timestamped on-device records over BLE with no cable and no rebuild. It answers most questions
+these logs would, and it is the only option on a device that is already in the field.
+
+### Path A — RTT (no cable beyond the debug probe, no UART, `SERIAL` stays off)
+
+In `omi/firmware/omi/omi.conf`:
+
+```
+CONFIG_LOG=y
+CONFIG_USE_SEGGER_RTT=y
+CONFIG_LOG_BACKEND_RTT=y
+CONFIG_LOG_BACKEND_UART=n
+CONFIG_LOG_DEFAULT_LEVEL=3          # 4 = DBG; the VAD/mic modules are chatty at 4
+CONFIG_SEGGER_RTT_BUFFER_SIZE_UP=4096   # default 1024 drops lines under load
+```
+
+For `printk()` as well as `LOG_*` (main.c's boot line, mcuboot-era prints):
+
+```
+CONFIG_CONSOLE=y
+CONFIG_PRINTK=y
+CONFIG_RTT_CONSOLE=y
+CONFIG_UART_CONSOLE=n
+```
+
+Read with `JLinkRTTViewer`, or `west attach`-adjacent tooling against the app core.
+
+**Deferred vs immediate.** Default is deferred: a log thread drains the buffer, so lines can be
+lost on a hard fault and timestamps lag. `CONFIG_LOG_MODE_IMMEDIATE=y` prints in the calling
+context — essential for crash-adjacent logging, but it *changes timing*, which matters here:
+several of this firmware's bugs (marker drops at the SD pause gate, the priority rotate race)
+are timing-sensitive and can vanish or move under immediate mode. Start deferred.
+
+**RAM cost.** The app core sits at ~89 % of 440 KB. RTT up-buffer (4 KB above) plus the deferred
+log buffer plus the log thread stack come out of the ~48 KB free — fine for a debug build, but
+do not ship it, and re-check `sd_msgq_peak_depth` if you leave it on while testing the audio path.
+
+### Path B — UART console (needs `SERIAL` back plus a wired adapter)
+
+```
+CONFIG_SERIAL=y
+CONFIG_CONSOLE=y
+CONFIG_PRINTK=y
+CONFIG_UART_CONSOLE=y
+CONFIG_LOG=y
+```
+
+Pins are TX **P0.3** / RX **P0.2** at 115200 (`boards/omi/omi-pinctrl.dtsi` `uart0_default`,
+`boards/omi/omi_nrf5340_cpuapp.dts` `&uart0`); `zephyr,console = &uart0` is already in the
+board's `chosen` block, so no DTS change is needed.
+
+**This is the path that costs idle current even when unused** — which is why `SERIAL=n` landed.
+With `CONFIG_SERIAL=y` Zephyr instantiates the UARTE driver for the enabled `uart0` node and
+`uarte_periph_enable()` leaves the receiver armed (`nrf_uarte_enable` + `STARTRX` with a 1-byte
+DMA buffer), holding up the 16 MHz clock domain forever whether or not anything is listening.
+
+### Other images
+
+- **Net core** (BLE controller): its own image — add log config to `omi/firmware/omi/sysbuild/ipc_radio.conf`, not `omi.conf`.
+- **MCUboot**: `omi/firmware/omi/sysbuild/mcuboot.conf` (`CONFIG_MCUBOOT_LOG_LEVEL_WRN` is already set); it needs its own console/serial symbols to actually emit.
 
 ---
 
