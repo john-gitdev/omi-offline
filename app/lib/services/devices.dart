@@ -151,7 +151,13 @@ class DeviceService implements IDeviceService {
       if (desirableDeviceId != null && desirableDeviceId.isNotEmpty) {
         await ensureConnection(desirableDeviceId, force: true);
       }
-      return _devices;
+      // A copy, not the live list. Callers keep what they are handed (FindDevicesPage
+      // holds it as _discoveredDevices and renders it), and handing out the cache made
+      // that a silent alias of it: every later mutation here — the reference swap
+      // above, _connectToDevice's add, clearDiscoveredDevices — either leaked into
+      // their view or orphaned it, with no way for them to tell which. Invalidation is
+      // the caller's own business; theirs is reset in FindDevicesPage._startScan.
+      return List<BtDevice>.of(_devices);
     } finally {
       _status = DeviceServiceStatus.ready;
       onStatusChanged(_status);
