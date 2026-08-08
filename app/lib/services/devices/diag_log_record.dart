@@ -93,48 +93,58 @@ class DiagLogRecord {
         return 'vad_level';
       case 17:
         return 'mic_power_cycle';
+      case 18:
+        return 'mic_state';
       default:
         return 'code_$code';
     }
   }
 
+  /// Legacy storage-backend tag. LittleFS was removed in `oo-2.9.0`, so current
+  /// firmware has exactly one backend and reports `0` for every record — which used
+  /// to render as "(littlefs)", naming a backend that no longer exists on every line
+  /// of the log you read during an incident. Anything other than the two known values
+  /// still shows, in case the byte is ever repurposed; `0`/`1` render as nothing.
   String get backendLabel {
     switch (backend) {
       case 0:
-        return 'littlefs';
       case 1:
-        return 'ring';
+        return '';
       default:
         return 'b$backend';
     }
   }
+
+  /// `" (tag)"` when [backendLabel] carries information, otherwise empty — so a
+  /// description reads cleanly rather than trailing an empty pair of brackets.
+  String get _backendSuffix => backendLabel.isEmpty ? '' : ' ($backendLabel)';
 
   /// Human-readable one-liner with the code's specific arg meaning. Unknown codes
   /// fall back to the raw args so a newer device still shows something useful.
   String get description {
     switch (code) {
       case 1:
-        return 'Empty bin rotation ($backendLabel) — bin closed with $arg1 B (header only)';
+        return 'Empty bin rotation$_backendSuffix — bin closed with $arg1 B (header only)';
       case 2:
-        return 'Marker write drop ($backendLabel) — lost inline marker (blockDrops=$arg1)';
+        return 'Marker write drop$_backendSuffix — lost inline marker (blockDrops=$arg1)';
       case 3:
-        return 'Marker kept at SD pause gate ($backendLabel) — block ${arg1}B';
+        return 'Marker kept at SD pause gate$_backendSuffix — block ${arg1}B';
       case 4:
-        return 'Priority recording start ($backendLabel) — session $arg1';
+        return 'Priority recording start$_backendSuffix — session $arg1';
       case 5:
-        return 'Priority recording stop ($backendLabel) — session $arg1';
+        return 'Priority recording stop$_backendSuffix — session $arg1';
       case 6:
-        return 'Session-end marker emit ($backendLabel) — session $arg1';
+        return 'Session-end marker emit$_backendSuffix — session $arg1';
       case 7:
-        return 'SD block drop ($backendLabel) — audio block lost (blockDrops=$arg1)';
+        return 'SD block drop$_backendSuffix — audio block lost (blockDrops=$arg1)';
       case 8:
         return 'Codec drop — PCM block lost before encode (codecDrops=$arg1)';
       case 9:
-        return 'Write blocked ($backendLabel) — arg0=$arg0 arg1=$arg1';
+        return 'Write blocked$_backendSuffix — arg0=$arg0 arg1=$arg1';
       case 10:
         return 'Ring IO error — arg0=$arg0 arg1=$arg1';
       case 11:
-        return 'Backend mount ($backendLabel) — arg1=$arg1';
+        return 'Backend mount$_backendSuffix — arg1=$arg1';
       case 12:
         // arg0 = cause (0 boot load / 1 post-DFU wipe / 2 button wipe), arg1 = bonds held after.
         // "0 key(s)" on a boot load with no preceding wipe is the device having silently lost
@@ -204,6 +214,30 @@ class DiagLogRecord {
         return arg0 == 1
             ? 'Mic rail power-cycled after firmware update'
             : 'Mic rail NOT cycled after update — a wedged mic would persist';
+      case 18:
+        // The mic gate opened or closed capture. arg1 = the VAD threshold at the
+        // transition, which is what decided it: 32769 = manual standby (parked),
+        // 65535 = force-capture, anything else = auto.
+        //
+        // These exist because a parked mic emits nothing at all — no frames means no
+        // vad_level window ever closes — so a gap in the log is otherwise ambiguous
+        // between "off on purpose" and "died". A `parked` record explains a gap; a
+        // gap with no `parked` before it does not.
+        switch (arg0) {
+          case 0:
+            return 'Mic parked — capture stopped (threshold $arg1)';
+          case 1:
+            return 'Mic resumed — capture started (threshold $arg1)';
+          case 2:
+            return 'Mic resume FAILED — dmic START rejected twice, NOT capturing (threshold $arg1)';
+          case 3:
+            // Distinct from a failed START: the driver said yes and the part still
+            // returned digital zero, which a real room never does. This is the wedge
+            // signature, caught at the one moment it matters.
+            return 'Mic resumed but SILENT — first frames were all zero, mic likely wedged (threshold $arg1)';
+          default:
+            return 'Mic state — arg0=$arg0 threshold=$arg1';
+        }
       default:
         return 'Event code=$code backend=$backend arg0=$arg0 arg1=$arg1';
     }
@@ -220,7 +254,7 @@ class DiagLogRecord {
       };
 
   @override
-  String toString() => '#$seq @${uptimeMs}ms $label($backendLabel) arg0=$arg0 arg1=$arg1';
+  String toString() => '#$seq @${uptimeMs}ms $label$_backendSuffix arg0=$arg0 arg1=$arg1';
 }
 
 /// A single 0x19B10063 read: the 12-byte snapshot header plus whatever full records
