@@ -171,6 +171,16 @@ class DeviceProvider extends ChangeNotifier
   int diagLogDroppedCount = 0;
   DateTime? diagLogLastPulledAt;
 
+  /// Whether the DEVICE's runtime capture gate is believed on, and when that belief
+  /// was last confirmed by a successful 0x0064 write. Distinct from the
+  /// `diagLogEnabled` pref on purpose: the push is skipped while a sync holds the
+  /// storage lock and can fail outright, so the pref alone says nothing about whether
+  /// the device is actually recording events. A snapshot that reports the pref as
+  /// "capture=true" while the device's gate is off makes an empty log look like a
+  /// quiet device instead of an un-armed one.
+  bool? diagLogGateOnDevice;
+  DateTime? diagLogGatePushedAt;
+
   void _loadCrashLogs() {
     try {
       final raw = SharedPreferencesUtil().getString(_crashLogsKey);
@@ -571,7 +581,13 @@ class DeviceProvider extends ChangeNotifier
     final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
     if (connection == null) return false;
     try {
-      return await connection.setDiagLogEnabled(SharedPreferencesUtil().diagLogEnabled);
+      final want = SharedPreferencesUtil().diagLogEnabled;
+      final ok = await connection.setDiagLogEnabled(want);
+      if (ok) {
+        diagLogGateOnDevice = want;
+        diagLogGatePushedAt = DateTime.now();
+      }
+      return ok;
     } catch (e) {
       Logger.debug('DeviceProvider: pushDiagLogEnabled failed: $e');
       return false;
@@ -594,6 +610,10 @@ class DeviceProvider extends ChangeNotifier
     diagLogRecords = result.records;
     diagLogDroppedCount = result.droppedCount;
     diagLogLastPulledAt = DateTime.now();
+    // The ack write carries the gate byte, so a completed drain is also a confirmed
+    // push — same fact, one fewer round trip.
+    diagLogGateOnDevice = SharedPreferencesUtil().diagLogEnabled;
+    diagLogGatePushedAt = diagLogLastPulledAt;
     for (final r in result.records) {
       await DebugLogManager.logEvent('device_diag_log', r.toJson());
     }
@@ -1904,6 +1924,12 @@ class DeviceProvider extends ChangeNotifier
       if (deviceFeatures != null) {
         diagLogSupported = (deviceFeatures & OmiFeatures.diagLog) != 0;
         if (diagLogSupported) {
+          // Unknown until this connection confirms it. The device's gate is volatile
+          // — a reboot while we were away clears it — and the push below is skipped
+          // outright while a sync holds the storage lock, so carrying the previous
+          // connection's belief forward is how an un-armed device ends up reported as
+          // capturing.
+          diagLogGateOnDevice = null;
           await pushDiagLogEnabled();
           if (SharedPreferencesUtil().diagLogEnabled) {
             await pullDiagLog();
