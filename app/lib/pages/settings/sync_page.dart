@@ -2178,6 +2178,16 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       )
       ..writeln('stacks: sdWorker=${stats.sdWorkerStackUsed}B codec=${stats.codecStackUsed}B')
       ..writeln('ring: maxIo=${stats.ringMaxIoMs}ms(${stats.ringMaxIoOp}) ioErrors=${stats.ringIoErrors}')
+      // Mic liveness and capture duty. silentFor answers "is the mic delivering right
+      // now" directly — frames arrive every 100 ms, so anything past a few seconds is
+      // a parked or stopped mic, and it needs no cross-referencing against event
+      // timestamps. duty is voiced time over uptime: how much of the day the VAD is
+      // holding a recording open, i.e. what the auto threshold costs.
+      ..writeln(
+        'mic: silentFor=${stats.micSilentForMs == null ? "n/a" : "${stats.micSilentForMs}ms"} '
+        'voiced=${stats.voicedMs}ms '
+        'duty=${stats.captureDutyFraction == null ? "n/a" : "${(stats.captureDutyFraction! * 100).toStringAsFixed(1)}%"}',
+      )
       ..writeln(
         // "(lifetime)" is load-bearing: every other counter in this snapshot is
         // since-boot and the header states the uptime, so these two read as having
@@ -2192,8 +2202,17 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // when records was empty threw that away. capture= records whether the log was
     // even switched on, so a silent snapshot is not misread as a quiet device.
     final records = devProvider.diagLogRecords;
+    // capture= is the DEVICE's gate, not the app's preference. They diverge whenever
+    // the 0x0064 push is skipped (a sync holds the storage lock) or fails, and the
+    // divergence is exactly what makes an empty log unreadable: pref-true + gate-off
+    // looks identical to a device with nothing to report.
+    final gate = devProvider.diagLogGateOnDevice;
+    final gateAge = devProvider.diagLogGatePushedAt == null
+        ? 'never'
+        : '${DateTime.now().difference(devProvider.diagLogGatePushedAt!).inSeconds}s ago';
     b.writeln(
-      'events: capture=${SharedPreferencesUtil().diagLogEnabled} supported=${devProvider.diagLogSupported} '
+      'events: capture=${gate ?? "unknown"} (pref=${SharedPreferencesUtil().diagLogEnabled}, confirmed $gateAge) '
+      'supported=${devProvider.diagLogSupported} '
       'held=${records.length} dropped=${devProvider.diagLogDroppedCount} (oldest first)',
     );
     for (final r in records) {
