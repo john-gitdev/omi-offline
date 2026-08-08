@@ -175,9 +175,14 @@ class DeviceService implements IDeviceService {
       device = _getStoredDevice(id);
       if (device != null) {
         Logger.debug('[DeviceService] Using stored device: ${device.name}');
-        if (!_devices.any((d) => d.id == device!.id)) {
-          _devices.add(device);
-        }
+        // Used for this connection only — deliberately NOT added to _devices. That
+        // list means "peripherals a scan actually heard", and Find Devices renders it
+        // directly: an entry sourced from the stored pairing is a row for a device
+        // nobody heard advertise, which the user can tap and which then fails. It came
+        // back within a second of a post-DFU reboot, where the bond is wiped but the
+        // btDevice pref survives, so the retry timer refilled the list the scan page
+        // had just cleared. Nothing needs the add — the connection is built from the
+        // local below, and a later lookup re-reads the same pref for free.
       } else {
         Logger.debug('[DeviceService] No stored device available for $id, returning');
         return;
