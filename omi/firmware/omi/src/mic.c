@@ -128,13 +128,13 @@ static void mic_thread_function(void *p1, void *p2, void *p3)
         if (mic_running) {
             void *buffer;
             uint32_t size;
-    
+
             int ret = dmic_read(dmic_dev, 0, &buffer, &size, READ_TIMEOUT);
             if (ret < 0) {
                 LOG_ERR("Read failed: %d", ret);
                 continue;
             }
-    
+
             LOG_DBG("Got buffer %p of %u bytes", buffer, size);
             process_audio_buffer(buffer, size);
         } else {
@@ -254,9 +254,33 @@ void mic_pause()
     k_mutex_unlock(&mic_state_lock);
 }
 
+/* True once mic_start() has resolved the dmic device. Everything that STOPs is
+ * already safe before then (it is gated on mic_running, which cannot be set yet),
+ * but the two entry points that START are not: they would hand a NULL device to
+ * dmic_trigger().
+ *
+ * The window is real and not short. transport_start() runs BEFORE mic_start() in
+ * main(), and boot_warming_sequence() sits between them waiting for the SD card —
+ * up to SD_BOOT_TIMEOUT_MS (90 s) on a faulty card. Any BLE write that reaches the
+ * mic in that window lands here: a VAD-threshold write via aad_apply_mic_gate(), or
+ * the unmute half of a mute toggle. */
+static inline bool mic_hw_ready(void)
+{
+    return dmic_dev != NULL;
+}
+
+bool mic_is_ready(void)
+{
+    return mic_hw_ready();
+}
+
 void mic_resume()
 {
     LOG_INF("Resuming microphone");
+    if (!mic_hw_ready()) {
+        LOG_WRN("mic_resume before mic_start — ignoring");
+        return;
+    }
     k_mutex_lock(&mic_state_lock, K_FOREVER);
     if (!mic_running) {
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
@@ -352,6 +376,12 @@ void mic_off()
 
 void mic_on()
 {
+    /* Same pre-mic_start() hazard as mic_resume(), plus this one would also
+     * k_thread_start() the mic thread into dmic_read(NULL). */
+    if (!mic_hw_ready()) {
+        LOG_WRN("mic_on before mic_start — ignoring");
+        return;
+    }
     k_mutex_lock(&mic_state_lock, K_FOREVER);
     if (!mic_running) {
         /* No PDM_EN restore needed: nothing drives that pin any more, so the rail is
