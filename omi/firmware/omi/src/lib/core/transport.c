@@ -416,7 +416,6 @@ static inline const char *adv_mode_name(int mode)
  * packer read it — the same cross-context exposure the advertising mode was fixed for. */
 static atomic_t last_failed_adv_slow = ATOMIC_INIT(0);
 
-
 /* Diagnostics: Priority Recording lifecycle, appended to 0x19B10062. These make a
  * lost Priority Recording traceable from the app log alone (no RTT/serial capture):
  *   priority_record_starts — a 0xFFFFFFF8 start marker write was attempted, i.e.
@@ -542,10 +541,10 @@ static inline void pack_u32_le(uint8_t *dst, uint32_t v)
     dst[3] = (uint8_t) (v >> 24);
 }
 
-/* Pack the 84-byte drop-counter payload. Shared by the read handler (0x0062)
+/* Pack the 92-byte drop-counter payload. Shared by the read handler (0x0062)
  * and the notify path (diagnostics_drops_notify) so the wire layout has exactly
  * one definition. */
-static void diagnostics_drops_pack(uint8_t payload[84])
+static void diagnostics_drops_pack(uint8_t payload[92])
 {
     uint32_t block_drops = (uint32_t) atomic_get(&storage_block_drops);
     uint32_t last_drop_ms = (uint32_t) atomic_get(&last_storage_drop_uptime_ms);
@@ -567,6 +566,13 @@ static void diagnostics_drops_pack(uint8_t payload[84])
     uint32_t codec_stack_used = codec_get_stack_used();
     uint32_t ring_max_io = sd_get_ring_max_io_ms();
     uint32_t ring_io_errs = sd_get_ring_io_errors();
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    uint32_t last_mic_frame = aad_last_frame_uptime_ms();
+    uint32_t voiced_ms = aad_voiced_ms();
+#else
+    uint32_t last_mic_frame = 0;
+    uint32_t voiced_ms = 0;
+#endif
 
     /* 84 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
      * codec_drops + sd_msgq peak depth + write-fairness activations + establishment
@@ -575,7 +581,14 @@ static void diagnostics_drops_pack(uint8_t payload[84])
      * sd_worker & codec peak stack used + ring_max_io_ms + ring_io_errors +
      * Each field is appended at the end so older
      * app builds (which read only the first
-     * 20 / 28 / 32 / 40 / 44 / 60 / 68 / 76 bytes) keep working unchanged. */
+     * 20 / 28 / 32 / 40 / 44 / 60 / 68 / 76 / 84 bytes) keep working unchanged.
+     *
+     * last_mic_frame_uptime_ms (84) + vad_voiced_ms (88): mic liveness and capture
+     * duty. The first, against now_ms, answers "is the mic delivering right now"
+     * without inferring it from the absence of event-log records -- the inference
+     * that is wrong whenever the mic is legitimately parked. The second, against
+     * now_ms, is the fraction of the day the VAD holds a recording open, i.e. what
+     * the auto threshold actually costs in encode + NAND writes. */
     pack_u32_le(payload + 0, block_drops);
     pack_u32_le(payload + 4, last_drop_ms);
     pack_u32_le(payload + 8, sd_stream_drops);
@@ -597,6 +610,8 @@ static void diagnostics_drops_pack(uint8_t payload[84])
     pack_u32_le(payload + 72, codec_stack_used);
     pack_u32_le(payload + 76, ring_max_io);
     pack_u32_le(payload + 80, ring_io_errs);
+    pack_u32_le(payload + 84, last_mic_frame);
+    pack_u32_le(payload + 88, voiced_ms);
 }
 
 static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
@@ -605,7 +620,7 @@ static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
                                               uint16_t len,
                                               uint16_t offset)
 {
-    uint8_t payload[84];
+    uint8_t payload[92];
     diagnostics_drops_pack(payload);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
 }
@@ -627,11 +642,8 @@ static atomic_t diag_notify_subscribed = ATOMIC_INIT(0);
  * directly into the ATT buffer. diag_log_drain snapshots the ring on the offset-0
  * read so a GATT Long Read returns a stable blob; we don't route through
  * bt_gatt_attr_read because the drain already handles offset addressing. */
-static ssize_t diag_log_read_handler(struct bt_conn *conn,
-                                     const struct bt_gatt_attr *attr,
-                                     void *buf,
-                                     uint16_t len,
-                                     uint16_t offset)
+static ssize_t
+diag_log_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf, uint16_t len, uint16_t offset)
 {
     ARG_UNUSED(conn);
     ARG_UNUSED(attr);
@@ -732,7 +744,7 @@ static struct bt_gatt_service diagnostics_service = BT_GATT_SERVICE(diagnostics_
  * AUTO_UPDATE_MTU makes this the rare exception, not the rule. */
 static void diagnostics_drops_notify(void)
 {
-    uint8_t payload[84];
+    uint8_t payload[92];
     diagnostics_drops_pack(payload);
     int err = bt_gatt_notify(NULL, &diagnostics_service_attr[4], payload, sizeof(payload));
     if (err && err != -ENOTCONN) {
@@ -1099,11 +1111,8 @@ static ssize_t led_boot_write_handler(struct bt_conn *conn,
     return len;
 }
 
-static ssize_t led_boot_read_handler(struct bt_conn *conn,
-                                     const struct bt_gatt_attr *attr,
-                                     void *buf,
-                                     uint16_t len,
-                                     uint16_t offset)
+static ssize_t
+led_boot_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf, uint16_t len, uint16_t offset)
 {
     uint8_t enabled = app_settings_get_led_boot_enabled() ? 1 : 0;
     LOG_INF("Reading LED-boot setting: %u", (unsigned int) enabled);
@@ -1739,10 +1748,10 @@ K_WORK_DELAYABLE_DEFINE(conn_param_recheck_work, conn_param_recheck_work_handler
  * itself processes, so an RX callback blocking on a lock held by a thread inside
  * bt_le_adv_start() would deadlock the stack. They only set atomics and (re)schedule.
  */
-#define ADV_TICK_MS 30000        /* healthy re-assert cadence */
-#define ADV_TICK_RETRY_MS 5000   /* after a failed attempt */
+#define ADV_TICK_MS 30000          /* healthy re-assert cadence */
+#define ADV_TICK_RETRY_MS 5000     /* after a failed attempt */
 #define ADV_TICK_DISCONNECT_MS 200 /* let the stack release the conn object first */
-#define ADV_TICK_MODE_MS 50      /* apply a mode request promptly */
+#define ADV_TICK_MODE_MS 50        /* apply a mode request promptly */
 
 /* Serializes the handler against transport_off()'s teardown. transport_off() closes
  * the gate, then takes this lock, which waits out a handler already inside
@@ -1941,10 +1950,12 @@ static void adv_watchdog_work_handler(struct k_work *work)
         return;
     }
     if (!ok) {
-        LOG_ERR("adv: %s failed (%d) mode=%s — retrying in %d ms", stop_err ? "stop" : "start", err,
-                adv_mode_name(desired), ADV_TICK_RETRY_MS);
-        diag_log_event(stop_err ? DIAG_ADV_STOP_FAIL : DIAG_ADV_START_FAIL, 0, (uint16_t) desired,
-                       (uint32_t) -err);
+        LOG_ERR("adv: %s failed (%d) mode=%s — retrying in %d ms",
+                stop_err ? "stop" : "start",
+                err,
+                adv_mode_name(desired),
+                ADV_TICK_RETRY_MS);
+        diag_log_event(stop_err ? DIAG_ADV_STOP_FAIL : DIAG_ADV_START_FAIL, 0, (uint16_t) desired, (uint32_t) -err);
     } else if (rescued) {
         LOG_WRN("adv: watchdog found advertising stopped — restarted (mode=%s)", adv_mode_name(desired));
         diag_log_event(DIAG_ADV_WATCHDOG_RESCUE, 0, (uint16_t) desired, 0);
@@ -2040,6 +2051,12 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
         if (atomic_get(&adv_guard_active)) {
             k_work_reschedule(&adv_watchdog_work, K_MSEC(ADV_TICK_DISCONNECT_MS));
         }
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+        /* Same backstop as the disconnect path below. This branch abandons a
+         * half-configured link without going through _transport_disconnected, so
+         * without it a setup failure is a way to end up advertising FAST forever. */
+        aad_note_link_idle();
+#endif
         return;
     }
 
@@ -2092,12 +2109,13 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
     /* A link that comes up and immediately dies with 0x3e never exchanged a
      * data-channel packet. Count it separately from failed_conn_count (see the
      * counter declarations) and record the advertising mode that was in effect —
- * this must happen before the watchdog applies the post-disconnect reset below. */
+     * this must happen before the watchdog applies the post-disconnect reset below. */
     if (err == BT_HCI_ERR_CONN_FAIL_TO_ESTAB) {
         uint32_t estab_fails = (uint32_t) atomic_inc(&estab_fail_count) + 1;
         atomic_set(&last_failed_adv_slow, (atomic_get(&adv_active_mode) == ADV_MODE_SLOW) ? 1 : 0);
         LOG_ERR("Link died at establishment (0x3e) adv_mode=%s estab_fail_count=%u",
-                adv_mode_name((int) atomic_get(&adv_active_mode)), estab_fails);
+                adv_mode_name((int) atomic_get(&adv_active_mode)),
+                estab_fails);
         k_work_schedule(&conn_fail_persist_work, K_MSEC(CONN_FAIL_PERSIST_DELAY_MS));
     }
 
@@ -2148,6 +2166,13 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
     if (atomic_get(&adv_guard_active)) {
         k_work_reschedule(&adv_watchdog_work, K_MSEC(ADV_TICK_DISCONNECT_MS));
     }
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    /* FAST above is right for the seconds after a drop — the phone is most likely to
+     * be reconnecting — but nothing brings it back down unless a recording happens to
+     * start and stop, and in manual standby the mic is parked so that never occurs.
+     * Arm the backstop. Schedule-only, as required on this thread. */
+    aad_note_link_idle();
+#endif
 }
 
 static bool _le_param_req(struct bt_conn *conn, struct bt_le_conn_param *param)
@@ -2461,11 +2486,13 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
              * marker's low16 so the app can tell priority/session-end/tap apart. */
             if (had_marker) {
                 atomic_inc(&marker_write_drops);
-                diag_log_event(DIAG_MARKER_WRITE_DROP, sd_get_active_backend(), marker_low16,
+                diag_log_event(DIAG_MARKER_WRITE_DROP,
+                               sd_get_active_backend(),
+                               marker_low16,
                                (uint32_t) atomic_get(&storage_block_drops));
             } else {
-                diag_log_event(DIAG_SD_BLOCK_DROP, sd_get_active_backend(), 0,
-                               (uint32_t) atomic_get(&storage_block_drops));
+                diag_log_event(
+                    DIAG_SD_BLOCK_DROP, sd_get_active_backend(), 0, (uint32_t) atomic_get(&storage_block_drops));
             }
             atomic_set(&last_storage_drop_uptime_ms, (atomic_val_t) k_uptime_get());
             ok = false;
@@ -2515,11 +2542,13 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
              * arg0 = the lost marker's low16 (which marker type was in the block). */
             if (had_marker) {
                 atomic_inc(&marker_write_drops);
-                diag_log_event(DIAG_MARKER_WRITE_DROP, sd_get_active_backend(), marker_low16,
+                diag_log_event(DIAG_MARKER_WRITE_DROP,
+                               sd_get_active_backend(),
+                               marker_low16,
                                (uint32_t) atomic_get(&storage_block_drops));
             } else {
-                diag_log_event(DIAG_SD_BLOCK_DROP, sd_get_active_backend(), 0,
-                               (uint32_t) atomic_get(&storage_block_drops));
+                diag_log_event(
+                    DIAG_SD_BLOCK_DROP, sd_get_active_backend(), 0, (uint32_t) atomic_get(&storage_block_drops));
             }
             atomic_set(&last_storage_drop_uptime_ms, (atomic_val_t) k_uptime_get());
             ok = false;
@@ -2629,8 +2658,7 @@ bool write_session_end_marker_to_storage(void)
     atomic_inc(&session_end_marker_emits);
     bool ok = write_marker_header_to_storage(0xFFFFFFFC, "session-end");
     /* Logged after the inner write so device_session_id is guaranteed populated. */
-    diag_log_event(DIAG_SESSION_END_MARKER_EMIT, sd_get_active_backend(), 0,
-                   (uint32_t) atomic_get(&device_session_id));
+    diag_log_event(DIAG_SESSION_END_MARKER_EMIT, sd_get_active_backend(), 0, (uint32_t) atomic_get(&device_session_id));
     return ok;
 }
 
@@ -2653,8 +2681,7 @@ bool write_priority_recording_marker_to_storage(void)
     atomic_inc(&priority_record_starts);
     bool ok = write_marker_header_to_storage(0xFFFFFFF8, "priority-record");
     /* Logged after the inner write so device_session_id is guaranteed populated. */
-    diag_log_event(DIAG_PRIORITY_RECORD_START, sd_get_active_backend(), 0,
-                   (uint32_t) atomic_get(&device_session_id));
+    diag_log_event(DIAG_PRIORITY_RECORD_START, sd_get_active_backend(), 0, (uint32_t) atomic_get(&device_session_id));
     return ok;
 }
 
@@ -2663,8 +2690,7 @@ bool write_priority_recording_marker_to_storage(void)
 void transport_note_priority_record_stop(void)
 {
     atomic_inc(&priority_record_stops);
-    diag_log_event(DIAG_PRIORITY_RECORD_STOP, sd_get_active_backend(), 0,
-                   (uint32_t) atomic_get(&device_session_id));
+    diag_log_event(DIAG_PRIORITY_RECORD_STOP, sd_get_active_backend(), 0, (uint32_t) atomic_get(&device_session_id));
 }
 #endif
 
@@ -2869,8 +2895,7 @@ int transport_start()
      * was discarded on every single boot — the reboot that produces the record also
      * closes the gate that would keep it. One event per boot into an already-allocated
      * ring. */
-    diag_log_event_forced(DIAG_BOND_STATE, 0, DIAG_BOND_CAUSE_BOOT_LOAD,
-                          transport_bond_count());
+    diag_log_event_forced(DIAG_BOND_STATE, 0, DIAG_BOND_CAUSE_BOOT_LOAD, transport_bond_count());
 
     /* One-shot post-flash bond wipe: mcumgr told us an image finished
      * transferring before the last reboot (main.c, MGMT_EVT_OP_IMG_MGMT_DFU_
@@ -2911,8 +2936,7 @@ int transport_start()
          * without this, both look identical from the phone's side. Forced for the
          * same reason as the boot-load record above — and this is the one that
          * matters most, since it is the only proof the wipe was ours. */
-        diag_log_event_forced(DIAG_BOND_STATE, 0, DIAG_BOND_CAUSE_POST_DFU,
-                              transport_bond_count());
+        diag_log_event_forced(DIAG_BOND_STATE, 0, DIAG_BOND_CAUSE_POST_DFU, transport_bond_count());
     }
 
     LOG_INF("Transport bluetooth initialized");
