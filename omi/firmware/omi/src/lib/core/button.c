@@ -10,6 +10,7 @@
 #include <zephyr/sys/poweroff.h>
 #include <zephyr/sys/reboot.h>
 
+#include "diag_log.h"
 #include "haptic.h"
 #include "imu.h"
 #include "led.h"
@@ -17,7 +18,6 @@
 #include "rtc.h"
 #include "speaker.h"
 #include "transport.h"
-#include "diag_log.h"
 #include "wdog_facade.h"
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
 #include "sd_card.h"
@@ -126,6 +126,11 @@ bool mute_apply(bool on)
         is_led_enabled = true;
         mute_since_utc_s = get_utc_time();
         mute_since_uptime_ms = (uint32_t) k_uptime_get();
+        /* A mute is an unbounded hole in the audio the frame clock cannot see, so
+         * park the VAD: the next speech after unmute then emits a 0xFFFFFFFD resume
+         * packet and the app re-anchors instead of stamping everything after the
+         * unmute early by the mute duration. Also drops the pre-mute pre-roll. */
+        aad_note_capture_gap();
         mic_pause();
     } else {
         is_led_enabled = led_state_before_mute;
@@ -138,7 +143,10 @@ bool mute_apply(bool on)
          * untouched again. The call is kept, not deleted, so restoring the cycle is
          * one edit here rather than a hunt for the right recovery point. */
         mic_reset();
-        mic_resume();
+        /* Not a bare mic_resume(): unmuting in manual standby must leave capture
+         * parked, so the mic state stays derived from (threshold, is_muted) in one
+         * place. Recursive lock, so nesting is fine. */
+        aad_apply_mic_gate();
     }
     k_mutex_unlock(&mic_state_lock);
     LOG_INF("Mute toggled: %s", on ? "ON" : "OFF");
@@ -273,7 +281,7 @@ static void priority_record_stop(void)
     if (aad_get_threshold() != 65535) {
         return;
     }
-    transport_note_priority_record_stop(); /* diagnostics: pairs with the start count (0x19B10062) */
+    transport_note_priority_record_stop();               /* diagnostics: pairs with the start count (0x19B10062) */
     uint16_t resting = app_settings_get_vad_threshold(); /* persisted auto value */
     aad_set_threshold(resting);
     /* aad_set_threshold's finalize path just parked AAD asleep, where only the
@@ -571,8 +579,7 @@ void check_button_level(struct k_work *work_item)
                 bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
                 /* Tag the deliberate wipe so a later "device came up unbonded" can be
                  * attributed to this gesture rather than to an unexplained key loss. */
-                diag_log_event(DIAG_BOND_STATE, 0, DIAG_BOND_CAUSE_BUTTON,
-                               transport_bond_count());
+                diag_log_event(DIAG_BOND_STATE, 0, DIAG_BOND_CAUSE_BUTTON, transport_bond_count());
 
                 led_off();
                 for (int i = 0; i < 3; i++) {
