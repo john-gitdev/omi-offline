@@ -1271,10 +1271,6 @@ static ssize_t settings_vad_threshold_write_handler(struct bt_conn *conn,
 
     LOG_INF("Received new VAD threshold: %u", new_threshold);
 
-    /* Capture the outgoing mode before the save overwrites it. Manual is 32769
-     * (standby) or 65535 (recording); anything lower is an auto sensitivity. */
-    const uint16_t prev_threshold = app_settings_get_vad_threshold();
-
     int err = app_settings_save_vad_threshold(new_threshold);
     if (err) {
         LOG_ERR("Failed to save VAD threshold setting: %d", err);
@@ -1283,17 +1279,19 @@ static ssize_t settings_vad_threshold_write_handler(struct bt_conn *conn,
     // Apply the threshold immediately
     aad_set_threshold(new_threshold);
 
-    /* Switching manual -> automatic hands capture back to the hardware wake line,
-     * which is exactly where a wedged mic goes unnoticed (nothing auto-records and
-     * no button press is coming to mask it). This started that mode on a freshly
-     * powered part; mic_reset() no longer power-cycles, so it currently does not.
-     * Only this direction needs it: the manual paths reset the mic on every
-     * record start/stop themselves, and an auto -> auto sensitivity tweak never
-     * changes who is driving capture. */
-    if (prev_threshold >= 32769 && new_threshold < 32769) {
-        LOG_INF("VAD threshold: manual -> automatic, resetting mic");
-        mic_reset();
-    }
+    /* No mic_reset() on the manual -> automatic switch any more. The concern was
+     * right — that direction hands capture back to acoustic detection, which is
+     * where a wedged mic goes unnoticed because nothing auto-records and no button
+     * press is coming to mask it — but the remedy never worked: since oo-2.8.5 the
+     * call is a dmic re-trigger, which does not recover a wedged part (mic.h). It
+     * only cost a STOP/START on a mic the gate has just resumed for auto mode.
+     *
+     * Detection covers it instead: entering auto mode resumes the mic through the
+     * gate, which arms the post-resume probe (DIAG_MIC_STATE_RESUMED_SILENT), and
+     * from then on the mic runs continuously so DIAG_VAD_LEVEL's zero-peak windows
+     * report a wedge that develops later. (The claim this comment used to make —
+     * that "the manual paths reset the mic on every record start/stop themselves" —
+     * is also no longer true; those call sites are gone for the same reason.) */
 
     return len;
 }
