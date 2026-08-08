@@ -22,14 +22,15 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/atomic.h>
 
+#include "imu.h"
 #include "lib/core/codec.h"
 #include "lib/core/config.h"
 #include "lib/core/diag_log.h"
+#include "lib/core/mic.h"
 #include "lib/core/sd_card.h"
-#include "lib/core/transport.h"
 #include "lib/core/settings.h"
+#include "lib/core/transport.h"
 #include "rtc.h"
-#include "imu.h"
 
 LOG_MODULE_REGISTER(aad, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -50,6 +51,10 @@ static K_SEM_DEFINE(aad_sem, 0, 1);
 /* ---- Atomic flags (ISR / cross-thread safe) ---- */
 static atomic_t wake_pending = ATOMIC_INIT(0);
 static atomic_t wake_consumed = ATOMIC_INIT(0);
+/* Set by aad_note_capture_gap(), consumed on the mic thread. Same pattern as
+ * wake_consumed: the VAD statics below belong to the mic callback, so a caller on
+ * another thread posts a request instead of writing them. */
+static atomic_t capture_gap_pending = ATOMIC_INIT(0);
 static atomic_t sd_pause_pending = ATOMIC_INIT(0); /* 1=pause, 2=resume */
 static atomic_t adv_slow_req = ATOMIC_INIT(0);
 static atomic_t adv_fast_req = ATOMIC_INIT(0);
@@ -61,7 +66,6 @@ static atomic_t adv_fast_req = ATOMIC_INIT(0);
  * can't be assumed to clobber it), making that "re-read" stale. Aligned 16-bit
  * loads/stores are atomic on this Cortex-M33, so a plain volatile is sufficient. */
 static volatile uint16_t vad_threshold = 250;
-
 
 /* ---- Force-wake (button press) ---- */
 /* Mirrored app-side as _markerProtectionWindowMs in app/lib/services/
@@ -247,6 +251,59 @@ static uint32_t avg_abs_amplitude(const int16_t *buf, size_t n)
     return (uint32_t) (sum / n);
 }
 
+/* ---- Mic gate ---- */
+
+/* Manual standby (threshold 32769) is the one state where the mic's output is
+ * provably unused: has_voice can only become true via the 65535 always-record
+ * sentinel or a button force-wake, and avg|PCM| can never reach 32769 (the largest
+ * possible mean of |int16| is 32768). So the PDM peripheral, the HFXO it holds up
+ * and both mics are pure load there, all day, in a mode that is the app default.
+ *
+ * The gate is DERIVED, never commanded. Every producer of "should we be recording"
+ * lands on aad_set_threshold() — the button, a BLE write from the app, the boot
+ * restore in aad_start(), the priority safety cap — so reconciling here covers all
+ * of them at once. A caller that flipped the mic itself would fix its own path and
+ * leave the other four wrong, two of them in the direction that records silence.
+ *
+ * THIS IS NOT THE PDM_EN RAIL. It is dmic STOP/START, the same mechanism mute has
+ * used on every toggle for the life of the project (button.c mute_apply). Nothing
+ * here touches P1.4 — see mic.c's pdm_en comment and IDEAS.md "Mic rail (PDM_EN) is
+ * not driven by firmware" for why that pin stays undriven, and do not "improve" this
+ * by power-cycling the rail.
+ *
+ * Taken under mic_state_lock because is_muted and mic_running must agree: without
+ * it, a mute landing between the read and the resume leaves capture running on a
+ * muted device (mic.h documents this exact hazard). Never called while holding a
+ * marker write — the lock must not queue behind SD I/O. */
+void aad_apply_mic_gate(void)
+{
+    k_mutex_lock(&mic_state_lock, K_FOREVER);
+    if (vad_threshold == 32769) {
+        mic_pause();
+        /* Parking leaves the same unbounded hole in the audio that a mute does, so
+         * the resumption has to re-anchor the app's timeline and drop the stale
+         * pre-roll the same way. It also stops the DIAG_VAD_LEVEL window advancing,
+         * which would otherwise close on the first frame back and report a stale
+         * zero peak — a parked mic reading as a wedged one. */
+        aad_note_capture_gap();
+    } else if (!is_muted) {
+        mic_resume();
+        /* A failed dmic START would otherwise leave manual mode recording nothing,
+         * and silently: mic_resume() reports only through LOG_ERR, and CONFIG_LOG is
+         * compiled out. One retry covers a transient failure. A persistent one still
+         * goes unreported — see NOTES.md "logging is compiled out". */
+        if (!mic_is_running()) {
+            mic_resume();
+        }
+    }
+    k_mutex_unlock(&mic_state_lock);
+}
+
+void aad_note_capture_gap(void)
+{
+    atomic_set(&capture_gap_pending, 1);
+}
+
 /* ---- WAKE pin ISR ---- */
 
 static void wake_pin_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
@@ -326,6 +383,28 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
      * Force-wake (button press) sets force_wake_until_ms; hardware acoustic
      * WAKE does not.  Don't stop an active recording on a button press — only
      * the hardware T5838 WAKE (silence → acoustic activity) needs a full reset. */
+    /* Capture stopped for an unknown wall-clock span (mute) and has just resumed.
+     * Park the VAD so the next speech takes the normal RECORDING path and emits a
+     * 0xFFFFFFFD resume packet — that packet is what re-anchors the app's frame
+     * timeline. Without it the app keeps counting 20 ms per frame straight across
+     * the gap, so everything after an unmute is stamped early by the whole mute
+     * duration (up to the next bin, whose timerStart re-anchors it anyway).
+     * preroll_reset() matters as much: the ring still holds frames from before the
+     * mute, and a re-trigger would replay that stale audio into the new recording. */
+    if (atomic_cas(&capture_gap_pending, 1, 0)) {
+        vad_is_recording = false;
+        vad_sleeping = true;
+        vad_voice_streak = 0;
+        preroll_reset();
+        /* Re-arm the diagnostic level window rather than closing a window that has
+         * been open across the gap: its peak stopped accumulating when the frames
+         * did, so a stale zero would emit as DIAG_VAD_LEVEL "silent" and read as a
+         * wedged mic. Zero means "not started"; the next frame arms it. */
+        vad_next_diag_level_ms = 0;
+        vad_diag_level_max = 0;
+        vad_diag_level_min = UINT16_MAX;
+    }
+
     if (atomic_cas(&wake_consumed, 1, 0)) {
         int64_t now_wake = k_uptime_get();
         vad_voice_streak = 0;
@@ -340,9 +419,7 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
     int64_t now = k_uptime_get();
     /* 65535 = active manual recording (always-voice); 32769 = manual standby.
      * button.c reads the threshold back to distinguish manual vs. marker taps. */
-    bool has_voice = vad_threshold == 65535
-                  || avg >= vad_threshold
-                  || now < force_wake_until_ms;
+    bool has_voice = vad_threshold == 65535 || avg >= vad_threshold || now < force_wake_until_ms;
 
     if (has_voice) {
         vad_last_voice_ms = now;
@@ -357,7 +434,7 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
                  * can recalibrate frame times after a silence gap. */
                 uint8_t vad_ts_buf[16] = {0};
                 uint32_t utc = get_utc_time();
-                uint64_t up = (uint64_t)k_uptime_get();
+                uint64_t up = (uint64_t) k_uptime_get();
                 memcpy(vad_ts_buf, &utc, 4);
                 memcpy(vad_ts_buf + 4, &up, 4);
                 /* SD writes are still paused from the silence gap. The resume
@@ -396,6 +473,11 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
                 k_sem_give(&aad_sem);
                 LOG_INF("VAD: SLEEP (silent %lld ms)", silent_ms);
                 preroll_reset();
+                /* Re-arm the gate. In manual standby this is what stops the mic
+                 * again after a marker tap's force-wake window expires — the
+                 * threshold never changed, so aad_set_threshold() will not run.
+                 * A no-op in auto mode (mic_resume on a running mic). */
+                aad_apply_mic_gate();
             }
         }
     }
@@ -481,6 +563,15 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
 void aad_force_wake(void)
 {
     force_wake_until_ms = k_uptime_get() + FORCE_WAKE_HOLD_MS;
+    /* A marker tap in manual standby force-captures for FORCE_WAKE_HOLD_MS, and the
+     * threshold does not change — so the gate would leave the mic parked and the
+     * whole window would record nothing. Resume explicitly; the VAD-sleep path
+     * re-applies the gate when the window expires. Muted stays muted. */
+    k_mutex_lock(&mic_state_lock, K_FOREVER);
+    if (!is_muted) {
+        mic_resume();
+    }
+    k_mutex_unlock(&mic_state_lock);
     atomic_set(&wake_pending, 1);
     k_sem_give(&aad_sem);
     LOG_INF("AAD: force wake (hold %d ms)", FORCE_WAKE_HOLD_MS);
@@ -515,6 +606,10 @@ int aad_start(void)
     }
 
     vad_threshold = app_settings_get_vad_threshold();
+    /* Boot restore: the threshold is persisted, so a device that was left in manual
+     * standby comes up in it and must come up with the mic parked. main() has
+     * already run mic_start() and reconciled is_muted by this point. */
+    aad_apply_mic_gate();
 
     aad_tid = k_thread_create(&aad_thread_data,
                               aad_stack,
@@ -593,6 +688,10 @@ void aad_set_threshold(uint16_t threshold)
     }
 
     LOG_INF("AAD: threshold updated to %u", vad_threshold);
+
+    /* Last, after every marker write above: the gate takes mic_state_lock, which
+     * must never be held across SD I/O. */
+    aad_apply_mic_gate();
 }
 
 uint16_t aad_get_threshold(void)
