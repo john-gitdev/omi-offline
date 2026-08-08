@@ -60,5 +60,15 @@ extern struct k_mutex mic_state_lock;
  */
 void mic_reset();
 bool mic_is_running();
+
+/**
+ * @brief True once mic_start() has resolved the dmic device.
+ *
+ * transport_start() runs before mic_start(), with boot_warming_sequence() (up to 90 s
+ * on a faulty SD) in between, so a BLE write can reach the mic before it exists.
+ * mic_resume()/mic_on() ignore calls made then; callers that would otherwise report
+ * that as a failure should ask first.
+ */
+bool mic_is_ready(void);
 void mic_set_gain(uint8_t gain_level);
 #endif
