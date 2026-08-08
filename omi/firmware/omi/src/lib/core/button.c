@@ -335,9 +335,19 @@ static bool record_start(void)
          * no-op before this change and must stay one. (already_recording is
          * otherwise dead in this branch — the else-if below only ever sees it in
          * auto mode.) */
-        if (!already_recording) {
-            mic_reset();
-        }
+        /* NO mic_reset() HERE either — removed for the same reason as the auto branch
+         * below, and pre-arm makes it worse rather than better. The mic is now already
+         * running by this point (the FSM woke it on the press edge so pre-roll could
+         * collect the ~700 ms this handler spends deciding what the press was), so the
+         * reset is no longer the no-op it would be on a parked mic: it would STOP and
+         * START a running mic and discard the in-flight block at exactly the head of
+         * the recording — throwing away part of the audio pre-arm exists to keep.
+         *
+         * THIS IS THE PLACE to restore the PDM_EN power cycle if the rail experiment
+         * ends (IDEAS.md "Mic rail (PDM_EN) is not driven by firmware", restore step
+         * 1): a manual start is the one moment the user has unambiguously asked for
+         * audio. It would need to run BEFORE the pre-arm resume, not here, so the dead
+         * samples land outside the recording. */
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
         aad_set_threshold(65535);
         app_settings_save_vad_threshold(65535);
@@ -359,20 +369,19 @@ static bool record_start(void)
      * and write 0xFFFFFFF8 as the first inline frame of the fresh bin. */
     marker_flash_color = MARKER_FLASH_RED;
     marker_flash_count = 2;
-    /* This used to start every Priority Recording on a freshly powered mic — the
-     * one moment the user has unambiguously asked for audio, so worth ~40 ms to
-     * guarantee the part is not wedged.
+    /* NO mic_reset() HERE — removed deliberately. It used to start every Priority
+     * Recording on a freshly power-cycled mic, which was worth ~40 ms at the one
+     * moment the user has unambiguously asked for audio. Since oo-2.8.5 it does not
+     * touch PDM_EN (IDEAS.md "Mic rail (PDM_EN) is not driven by firmware"), so all
+     * that remained was a dmic STOP/START on an already-running mic: it cannot rescue
+     * a wedged part — mic.h says so — and it discards the samples in flight at exactly
+     * the head of the recording. Pure cost.
      *
-     * It no longer does: mic_reset() does not touch PDM_EN any more (IDEAS.md "Mic
-     * rail (PDM_EN) is not driven by firmware"), so this is a dmic re-trigger that
-     * will NOT rescue a wedged part. Worth knowing, because a Priority Recording
-     * happening to call this is exactly what recovered the 2026-08-02 outage — that
-     * escape hatch is closed while the rail experiment runs.
-     *
-     * Kept here, still before the force-capture entry and the rotate + 0xFFFFFFF8
-     * marker, so restoring the cycle puts the dead samples outside the recording
-     * rather than at its head, as before. */
-    mic_reset();
+     * The wedge protection now comes from the gate's post-resume probe instead
+     * (DIAG_MIC_STATE_RESUMED_SILENT), which detects the failure the reset was
+     * supposed to prevent rather than blindly re-triggering against it. The manual
+     * branch above keeps its mic_reset() call as the one place to restore the power
+     * cycle from if the rail experiment ends. */
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
     /* Runtime force-capture only — NOT persisted, so a reboot mid-recording
      * returns to the auto threshold. */
@@ -541,6 +550,7 @@ static void execute_button_action(uint8_t taps, bool is_hold)
 void check_button_level(struct k_work *work_item)
 {
     bool pressed = was_pressed;
+    const button_fsm_state_t entry_state = fsm_state;
     state_timer++;
 
     switch (fsm_state) {
@@ -632,6 +642,29 @@ void check_button_level(struct k_work *work_item)
         }
         break;
     }
+
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    /* Pre-arm the mic for the whole interaction. In manual standby the mic is parked,
+     * and this handler cannot know for ~700 ms whether a press is a record-start —
+     * MULTI_TAP_WINDOW has to expire first to rule out a second tap. Waking on the
+     * press edge means pre-roll has already collected that span by the time
+     * execute_button_action() runs, so a manual recording still starts where the
+     * user's finger did instead of where the FSM caught up.
+     *
+     * The clear runs AFTER the action has dispatched (execute_button_action is called
+     * from the branches above, before the state lands on IDLE), so by then the gate
+     * sees the threshold the action set: a record-start holds the mic on, anything
+     * else parks it again. A press that starts nothing costs a few hundred ms of mic.
+     *
+     * No-op in auto mode, where the gate keeps the mic running regardless. */
+    if (entry_state == STATE_IDLE && fsm_state != STATE_IDLE) {
+        aad_set_mic_prearm(true);
+    } else if (entry_state != STATE_IDLE && fsm_state == STATE_IDLE) {
+        aad_set_mic_prearm(false);
+    }
+#else
+    ARG_UNUSED(entry_state);
+#endif
 
     // Keep polling only while an interaction is in progress.
     // Returning to STATE_IDLE lets the work item die; the GPIO interrupt
