@@ -91,10 +91,6 @@ typedef enum {
     DIAG_MIC_STATE_RESUME_FAILED = 2,  /* dmic START failed twice; the mic is NOT running */
     DIAG_MIC_STATE_RESUMED_SILENT = 3, /* START succeeded but the first frames were digital zero --
                                         * a wedged part, which a quiet room cannot produce */
-    DIAG_MIC_STATE_PARK_FAILED = 4,    /* dmic STOP failed; capture is STILL RUNNING. mic_pause()
-                                        * leaves mic_running true on an error return, so without
-                                        * this the gate would publish PARKED over a live mic --
-                                        * the precise class of lie this event exists to prevent */
 } diag_mic_state_t;
 
 /* arg0 values for DIAG_BOND_STATE. Appended-only, same discipline as the codes. */
