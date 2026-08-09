@@ -2194,7 +2194,13 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         // happened on this run when they in fact survive reboot and total every boot
         // the device has had.
         'ble: connFail=${stats.failedConnCount} estab0x3e=${stats.estabFailCount} (lifetime) '
-        'lastAdv=${stats.lastFailedConnDuringSlowAdv ? 'slow' : 'fast'}',
+        // Renamed from the ambiguous "lastAdv": this is the interval during the last
+        // FAILED connection, and it was twice misread as the live advertising mode.
+        'lastFailAdv=${stats.lastFailedConnDuringSlowAdv ? 'slow' : 'fast'} '
+        // The live one. Read over a connection, so it is the interval that was in
+        // force when the phone found the device — which is the measurement.
+        'adv=${stats.advActiveSlow ? 'slow' : 'fast'}'
+        '${stats.advActiveSlow == stats.advDesiredSlow ? '' : ' (want ${stats.advDesiredSlow ? 'slow' : 'fast'} — switch not applied)'}',
       );
 
     // Always emitted, even with nothing held: "held=0 dropped=12" is itself the
