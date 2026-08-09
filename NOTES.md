@@ -335,9 +335,9 @@ Battery voltage on the 150 mAh LiPo changes on the order of millivolts per minut
 
 - **BT TX power** (`CONFIG_BT_CTLR_TX_PWR_ANTENNA=8` → 0 or 4 dBm): saves power during every radio tx. Requires testing with phone in pocket/bag to confirm no audio dropouts.
 - **BLE connection interval** (7.5–15ms → 30ms): large power savings from longer radio sleep. Requires empirical validation that Opus streaming (50 fps, 80 B/frame, MTU 498) doesn't overflow buffers or cause audio gaps at the longer interval. The `update_conn_params()` in `transport.c` hardcodes the interval at runtime and would need updating alongside the Kconfig values.
-- **~~Disable logging in production~~ — DONE (`oo-2.9.3`).** `CONFIG_LOG` was already off; `CONFIG_SERIAL=n` landed in `oo-2.9.3`. See "Firmware: logging is compiled out" below for what that costs and how to get logs back.
+- **~~Disable logging in production~~ — DONE (`oo-2.10.0`).** `CONFIG_LOG` was already off; `CONFIG_SERIAL=n` landed in `oo-2.10.0`. See "Firmware: logging is compiled out" below for what that costs and how to get logs back.
 
-### Mic gating in manual standby (implemented, `oo-2.9.3`)
+### Mic gating in manual standby (implemented, `oo-2.10.0`)
 
 At threshold `32769` (manual standby) nothing acoustic can start a recording —
 `has_voice` needs the `65535` sentinel or a button force-wake, and `avg|PCM|` cannot reach
@@ -362,7 +362,7 @@ expected, not a wedge.
 
 ## Firmware: logging is compiled out — how to turn it back on
 
-Since `oo-2.9.3` the build has **no logging path at all**: `CONFIG_LOG` is unset, `CONSOLE`,
+Since `oo-2.10.0` the build has **no logging path at all**: `CONFIG_LOG` is unset, `CONSOLE`,
 `PRINTK`, `UART_CONSOLE` are `n`, `SHELL=n`, RTT is not enabled, and `CONFIG_SERIAL=n` removes
 the UARTE driver itself.
 
