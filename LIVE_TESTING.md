@@ -15,15 +15,24 @@ Work top to bottom — the later scenarios assume the earlier ones passed. Each 
    fault. Don't spend time diagnosing it.
 3. **Turn the event log on** — Debug Tools → Event log. Nothing below produces records without
    it, and it is off by default and cleared by every reboot.
-4. **Learn the two lines you will read constantly**, both in Debug Tools → Copy snapshot:
+4. **Where to read the mic.** Debug Tools → Diagnostics → the **Microphone** group. Three rows:
+
+   | Row | Means |
+   |---|---|
+   | **Last audio frame** | The one to watch. Frames land every 100 ms, so **under ~200 ms means the mic is delivering right now**. Seconds means parked. Minutes means stopped — and it turns amber past ten |
+   | **Capture duty** | Recorded time as a share of uptime |
+   | **Recorded since boot** | Total voiced time |
+
+   The group header summarises it without expanding: *delivering*, or *parked 4m 12s*.
+
+5. **The same readings in text**, for pasting into a report — Debug Tools → Copy snapshot:
 
    ```
    mic: silentFor=142ms voiced=18320450ms duty=81.4%
    events: capture=true (pref=true, confirmed 3s ago) supported=true held=4 dropped=0
    ```
 
-   - `silentFor` is the whole mic-health story: frames land every 100 ms, so **under ~200 ms means
-     the mic is delivering right now**. Seconds means parked. Minutes means stopped.
+   - `silentFor` is the same reading as **Last audio frame** above.
    - `capture=` is the **device's** gate, with your app preference beside it. If they disagree, the
      push was skipped (a sync holds the storage lock) — the log is not recording, whatever the
      toggle says.
