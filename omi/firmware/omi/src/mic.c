@@ -36,6 +36,12 @@ LOG_MODULE_REGISTER(mic, CONFIG_LOG_DEFAULT_LEVEL);
 K_MEM_SLAB_DEFINE_STATIC(mem_slab, MAX_BLOCK_SIZE, BLOCK_COUNT, 4);
 
 static const struct device *dmic_dev;
+/* Set only after dmic_configure() succeeds. The pointer alone is not readiness:
+ * mic_start() assigns dmic_dev before configuring, so a caller that checked the
+ * pointer could issue DMIC_TRIGGER_START against an unconfigured device in that
+ * window. Microseconds wide and it needs a BLE write to land inside it, but the
+ * flag is free and makes the guard mean what it says. */
+static volatile bool dmic_configured = false;
 static volatile mix_handler callback_func = NULL;
 static volatile bool mic_running = false;
 
@@ -206,6 +212,8 @@ int mic_start()
         return ret;
     }
 
+    dmic_configured = true;
+
     // Apply saved mic gain setting
     uint8_t saved_gain = app_settings_get_mic_gain();
     mic_set_gain(saved_gain);
@@ -266,7 +274,7 @@ void mic_pause()
  * the unmute half of a mute toggle. */
 static inline bool mic_hw_ready(void)
 {
-    return dmic_dev != NULL;
+    return dmic_dev != NULL && dmic_configured;
 }
 
 bool mic_is_ready(void)
