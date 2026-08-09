@@ -478,11 +478,38 @@ static void execute_button_action(uint8_t taps, bool is_hold)
         acted = mute_apply(!is_muted);
         break;
     case BUTTON_ACTION_MARKER:
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+        /* Manual mode: a marker does NOTHING. Not a bookmark, not an orphan EDL,
+         * nothing — the tap is swallowed here and no byte reaches the card.
+         *
+         * Manual mode defines its own boundaries: the user says start and says stop,
+         * so the recording IS the bookmark and a marker inside it adds nothing the
+         * boundaries do not already say. Leaving the action live cost more than it
+         * gave: in standby it force-captured ~60 s of audio (aad_force_wake feeds
+         * has_voice, which no mode check gated) in the one mode whose whole promise
+         * is that it records only when told to.
+         *
+         * The PERSISTED threshold, not the runtime one: an auto-mode Priority
+         * Recording holds runtime 65535 without persisting it, and a marker tapped
+         * during one is an auto-mode marker and must still work. */
+        {
+            const uint16_t resting_thr = app_settings_get_vad_threshold();
+            if (resting_thr == 32769 || resting_thr == 65535) {
+                LOG_INF("Marker ignored (manual mode)");
+                break;
+            }
+        }
+#endif
         if (!is_muted) {
-            // Always a plain white bookmark now, in any mode. The manual-mode
-            // start/stop overload was removed — explicit RECORD_START /
-            // RECORD_STOP handle recording control in both modes, which also lets
-            // a marker be dropped *during* a manual recording.
+            // A plain white bookmark, and in auto mode it also guarantees the audio
+            // around itself: aad_force_wake() below bypasses BOTH the firmware's
+            // amplitude threshold and (via the app's matching 50 s window) Silero,
+            // for ~60 s from the tap. That is the point of the action — the user
+            // cannot know whether the VAD considers the moment worth recording, so a
+            // marker asserts that it is. The guarantee is unconditional, NOT "only if
+            // it was not already recording": a tap during speech that then stops
+            // would otherwise end the recording 10 s later with the marker at its
+            // tail, which is the exact loss the window exists to prevent.
             acted = true;
             LOG_INF("Marker detected");
             marker_flash_color = MARKER_FLASH_WHITE;
