@@ -59,7 +59,18 @@ class SharedPreferencesUtil {
   // owns both and pushes the active mode's config to the firmware on connect and
   // on mode switch (the firmware keeps a single active slot). Mute is a no-op in
   // manual mode, so the manual default omits it.
-  static const List<int> defaultButtonConfigManual = [0, 2, 4, 3, 5, 0];
+  // Marker (2) is deliberately absent from the manual default: since oo-2.9.5 the
+  // firmware ignores a marker tap entirely in manual mode, so mapping it would ship
+  // a gesture that does nothing. Manual mode defines its own boundaries — the
+  // recording is the bookmark.
+  static const List<int> defaultButtonConfigManual = [0, 0, 4, 3, 5, 0];
+
+  /// The pre-0.32.10 manual default, which mapped Marker to single-tap-and-hold.
+  /// Retained for exactly one reason: [shouldPreserveExistingButtonConfig] treats a
+  /// device still holding a factory default as un-customized, and without this a
+  /// device holding the OLD default would suddenly look customized and get seeded
+  /// into the auto slot by the one-time migration.
+  static const List<int> _legacyDefaultButtonConfigManual = [0, 2, 4, 3, 5, 0];
   static const List<int> defaultButtonConfigAuto = [0, 4, 2, 1, 3, 5];
 
   List<int> get buttonConfigManual => _getButtonConfig('buttonConfigManual', defaultButtonConfigManual);
@@ -124,7 +135,10 @@ class SharedPreferencesUtil {
   /// (its config already equals the new manual default), which should keep the
   /// proper auto default instead.
   static bool shouldPreserveExistingButtonConfig(List<int>? existing) =>
-      existing != null && existing.length == 6 && !listEquals(existing, defaultButtonConfigManual);
+      existing != null &&
+      existing.length == 6 &&
+      !listEquals(existing, defaultButtonConfigManual) &&
+      !listEquals(existing, _legacyDefaultButtonConfigManual);
 
   bool get adjustmentMode => getBool('adjustmentMode', defaultValue: false);
   set adjustmentMode(bool v) => saveBool('adjustmentMode', v);
