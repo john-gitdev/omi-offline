@@ -383,7 +383,8 @@ object WedgeDiagnostics {
      * [BluetoothAdapter.getProfileConnectionState] rather than a profile proxy because it is
      * synchronous: this snapshot runs on a GATT binder thread inside the disconnect path and must
      * not wait on a service binding. The price is that it reports only *whether* a profile has a
-     * link, never to which device — [btAudioRoutes] names the ones carrying audio.
+     * link, never to which device — [btAudioDevices] names the connected endpoints, and
+     * [scoActive] / [audioActive] say whether any of them was actually carrying audio.
      */
     private fun connectedClassicProfiles(adapter: BluetoothAdapter?): JSONArray {
         val out = JSONArray()
@@ -442,6 +443,13 @@ object WedgeDiagnostics {
      *
      * The SCO half is the one worth having: SCO is a reserved periodic slot the controller cannot
      * preempt, so a call in progress over a car kit is the worst case for an LE connect initiator.
+     *
+     * The name is narrower than the reading, deliberately: an LE Audio headset on a call sets this
+     * too (`TYPE_BLE_HEADSET`), and LE Audio claims no classic SCO slot — it reserves scheduled
+     * isochronous events instead. Still a contender, but a different mechanism, so a `true` here is
+     * "a voice call was routed to Bluetooth", not "the classic-SCO worst case" specifically. Both
+     * are included because the diagnostic question is whether a call was occupying the radio.
+     *
      * `isMusicActive` is not Bluetooth-specific — it is true for speaker playback too — so it means
      * "A2DP was probably streaming" only when read together with an `a2dp` entry in
      * [btAudioDevices]. Recorded separately rather than folded into one flag for that reason.
