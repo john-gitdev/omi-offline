@@ -61,6 +61,8 @@ correctly when a bin was missing.
 | `other_le_links` | Every *other* LE link (e.g. `Instinct 2X Solar` Garmin watch) | Coexistence context |
 | `contending_le_links` | Count of the above (excludes Omi's own link) | **Diff this across wedge→recovery** — a drop is the contention signal |
 | `le_link_count` | Raw system-wide total (`contending + (omi_in_gatt?1:0)`) | Goes 1→2 when Omi rejoins |
+| `classic_profiles` | Classic (BR/EDR) profiles holding a link right now: `a2dp`, `headset` | **The LE fields above cannot see these at all** — they read the GATT list, and a car kit, headset or smart glasses connects over A2DP/HFP. Diff across wedge→recovery like `contending_le_links`. `headset` is the worse contender: SCO takes reserved periodic slots the controller cannot preempt |
+| `bt_audio_routes` | Named audio endpoints the framework has routed, e.g. `Ray-Ban Meta (a2dp)`, incl. LE Audio | Puts a *device* behind `classic_profiles`' bare profile names, which `getProfileConnectionState` cannot |
 | `screen_interactive` | Screen on at that moment | **false→true across wedge→recovery = screen-wake recovery** |
 | `doze_mode` | Device in Doze | Recovery with `doze=true` throughout = self-clear under Doze |
 | `adapter_state` | Should be `on` | An `off` between wedge and recovery ⟹ a **BT toggle** happened (see §3) |
@@ -120,7 +122,9 @@ whether it actually *cured* anything — if failures continue afterwards, the bu
   - `screen_interactive` false→true ⟹ **screen-wake** (foreground radio priority).
   - `le_link_count` 1→2 with Doze still on / screen still off ⟹ **device-return / background
     recovery alarm** landed on its own.
-  - `contending_le_links` dropped ⟹ **contention cleared**.
+  - `contending_le_links` or `classic_profiles` dropped ⟹ **contention cleared**. Check both:
+    every wedge recorded before app 0.33 listed only LE links, so a headset or car kit connecting
+    across the outage was invisible and the LE count sat flat at 1 (a watch) throughout.
 - **Unresolved** if there is no `ble_wedge_recovered` at all — the log ends with the outage still
   open. Added for Wedge 5b (76 min and still failing at the tail). Do not force these into either
   bucket: an outage that never cleared tells you nothing about what would have cleared it, and
