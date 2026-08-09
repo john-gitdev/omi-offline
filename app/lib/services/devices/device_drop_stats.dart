@@ -148,15 +148,23 @@ class DeviceDropStats {
   /// arrive every 100 ms; minutes mean the mic is parked or stopped.
   int? get micSilentForMs {
     if (lastMicFrameUptimeMs == 0) return null;
-    final d = currentUptimeMs - lastMicFrameUptimeMs;
-    return d < 0 ? 0 : d;
+    // Unsigned 32-bit delta, not a clamped subtraction. Both values are u32 device
+    // uptimes that wrap every ~49.7 days; a naive subtraction across the wrap goes
+    // negative, and clamping that to 0 reports "the mic is alive" — masking a parked
+    // or wedged mic in exactly the direction that hides a fault.
+    return (currentUptimeMs - lastMicFrameUptimeMs) & 0xFFFFFFFF;
   }
 
   /// Capture duty as a 0..1 fraction of uptime, or `null` when unreported.
   double? get captureDutyFraction {
     if (voicedMs == 0 || currentUptimeMs <= 0) return null;
-    final f = voicedMs / currentUptimeMs;
-    return f > 1.0 ? 1.0 : f;
+    // Both are u32 device counters and uptime wraps first (~49.7 days), after which
+    // voiced time exceeds it and the ratio is meaningless. Report unavailable rather
+    // than clamping to 1.0, which would state "this device records 100% of the time"
+    // — a plausible-looking number that is simply wrong. Recovering the true duty
+    // needs a wrap count the wire protocol does not carry.
+    if (voicedMs > currentUptimeMs) return null;
+    return voicedMs / currentUptimeMs;
   }
 
   /// The firmware's SD write-queue size (`SD_REQ_QUEUE_MSGS`), used as the denominator
