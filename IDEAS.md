@@ -12,6 +12,7 @@
 - [6. Offer a re-pair when an OTA eats the bond [small] [Pending]](#6-offer-a-re-pair-when-an-ota-eats-the-bond-small-pending)
 - [7. An OTA that eats `storage_backend` wipes the SD card [small] [Pending — closes itself with LittleFS removal]](#7-an-ota-that-eats-storage_backend-wipes-the-sd-card-small-pending--closes-itself-with-littlefs-removal)
 - [8. Half-connected first launch after an APK update — confirm the fix [small] [Pending — monitoring]](#8-half-connected-first-launch-after-an-apk-update--confirm-the-fix-small-pending--monitoring)
+- [9. Prompt a reboot before the uptime counter wraps [small] [Pending]](#9-prompt-a-reboot-before-the-uptime-counter-wraps-small-pending)
 
 ### LARGE
 - [4. Device-driven BLE wake (firmware + iOS) [large] [Parked — lost its primary motivation]](#4-device-driven-ble-wake-firmware--ios-large-parked--lost-its-primary-motivation)
@@ -476,6 +477,71 @@ during review parameterised that string and nearly shipped exactly that.
 - `app/android/app/src/main/kotlin/com/omi/offline/OmiBleForegroundService.kt` — `manageDevice()` shortcut
 - `app/lib/services/devices/transports/native_ble_transport.dart` — `_handleDeviceReady()`, `_hasCharacteristic()`
 - `app/lib/services/wals/sdcard_wal_sync.dart:1339` — the `definiteTransportError` match
+
+---
+
+### 9. Prompt a reboot before the uptime counter wraps [small] [Pending]
+
+The device reports uptime as a **u32 of milliseconds**, so it wraps at **49.71 days**. Several
+diagnostics are derived against it and go wrong at that point rather than merely stale:
+
+| Reading | What the wrap does to it |
+|---|---|
+| `captureDutyFraction` | voiced time now exceeds "uptime", so the ratio is meaningless. Currently returns *unavailable* — deliberately, rather than clamping to a plausible-looking 100 % |
+| `micSilentForMs` | naive subtraction goes negative; handled as an unsigned 32-bit delta since `oo-2.10.0`, but that is a repair, not a fix |
+| `msSinceLastBlockDrop` | same subtraction, same wrap, pre-existing |
+| `looksRebootedFrom` | already avoids uptime entirely and compares counters instead — precisely *because* of this wrap. The precedent is in `device_drop_stats.dart` |
+
+#### Why not fix it properly
+
+The correct fix is a wrap count carried in the wire protocol: a firmware-side counter, a new
+field in `0x0062`, and app-side reassembly into a 64-bit uptime. That is real protocol surface
+and permanent maintenance, spent on **diagnostic gauges** — nothing about recording, syncing or
+audio depends on the uptime figure. It is the wrong shape of solution for what it buys.
+
+Cubic raised the second-order version of this twice (PR #377): once for the duty guard catching
+only the first wrap. The rejection reasoning stands — `voicedMs` itself only wraps after ~49.7
+days of *voiced* time, i.e. ~60 days of unbroken uptime at this device's measured duty — but the
+underlying wrap is real, and "unreachable in practice" is a weaker answer than "cannot happen".
+
+#### The cheap answer: ask the user to reboot
+
+At **uptime > 30 days**, show a banner with a **Reboot now** button.
+
+- The command already exists and is already exposed: `CMD_REBOOT` (`0x16`) is surfaced as
+  "Reboot Omi" in Device Settings, and the firmware handles it gracefully — it ACKs, closes the
+  SD card (`app_sd_off()` → flush + unmount), then `sys_reboot(SYS_REBOOT_COLD)`. So this is a
+  banner plus a call to something already shipped, with **no protocol change at all**.
+- 30 days leaves ~20 days of margin before the wrap, so the prompt can be ignored for weeks
+  without anything breaking.
+- A device in normal use never sees it. A DFU reboots, a flat cell reboots, the watchdog
+  reboots — this branch alone shipped `oo-2.9.0` → `oo-2.10.0` inside a week. The banner is for
+  the device that quietly avoids all of those, which is the only device the wrap can reach.
+- Side benefit: a reboot also clears accumulated soft state — the volatile diag ring, the
+  runtime capture gate, every since-boot counter — and emits a fresh `DIAG_BOND_STATE` boot
+  record. A device up for 30 days is exactly one whose since-boot counters have stopped being
+  informative.
+
+#### What the banner must say
+
+Rebooting is not free, and the prompt should not pretend otherwise:
+
+- **Every since-boot counter resets**, and the diagnostic event ring is volatile RAM — a reboot
+  discards it. If someone is mid-investigation, that is the wrong moment. Offer "Not now".
+- **Do not offer it mid-recording.** In manual mode a reboot ends the current recording (the
+  persisted threshold means it resumes recording after boot, which is arguably worse — it comes
+  back recording without the user asking at that moment). Gate the button on not-currently-
+  recording, or warn.
+- Unsynced audio is safe either way: the reboot path unmounts the SD card cleanly, and the ring
+  is append-only.
+
+#### Relevant files
+
+- `app/lib/services/devices/device_drop_stats.dart` — `currentUptimeMs`, `captureDutyFraction`,
+  `micSilentForMs`, and `looksRebootedFrom`'s comment explaining why it avoids uptime
+- `app/lib/pages/settings/sync_page.dart` — where uptime is already rendered in Debug Tools
+- `omi/firmware/omi/src/lib/core/storage.c` — `CMD_REBOOT` handling
+- `app/lib/services/devices/omi_connection.dart` — `sendRebootCommand`
 
 ---
 
