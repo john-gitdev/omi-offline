@@ -550,6 +550,21 @@ static void diagnostics_drops_pack(uint8_t payload[92])
     uint32_t last_drop_ms = (uint32_t) atomic_get(&last_storage_drop_uptime_ms);
     uint32_t sd_stream_drops = sd_get_stream_dropped_frames();
     uint32_t sd_boot_drops = sd_get_boot_dropped_frames();
+    /* Mic fields FIRST, now_ms after. Both are k_uptime_get() samples and the app
+     * reports (now_ms - last_mic_frame) as an unsigned 32-bit delta, so a frame that
+     * lands between the two reads makes last_mic_frame the LARGER value and the delta
+     * wraps to ~49.7 days — a healthy mic rendered as catastrophically dead. The
+     * window is not theoretical: the reads below include two k_thread_stack_space_get()
+     * calls, which scan kilobytes of stack for the sentinel, against frames arriving
+     * every 100 ms. Sampling in this order makes now_ms >= last_mic_frame by
+     * construction. */
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    uint32_t last_mic_frame = aad_last_frame_uptime_ms();
+    uint32_t voiced_ms = aad_voiced_ms();
+#else
+    uint32_t last_mic_frame = 0;
+    uint32_t voiced_ms = 0;
+#endif
     uint32_t now_ms = (uint32_t) k_uptime_get();
     uint32_t conn_fails = (uint32_t) atomic_get(&failed_conn_count);
     uint32_t codec_drops = codec_get_dropped_frames();
@@ -566,13 +581,6 @@ static void diagnostics_drops_pack(uint8_t payload[92])
     uint32_t codec_stack_used = codec_get_stack_used();
     uint32_t ring_max_io = sd_get_ring_max_io_ms();
     uint32_t ring_io_errs = sd_get_ring_io_errors();
-#ifdef CONFIG_OMI_ENABLE_T5838_AAD
-    uint32_t last_mic_frame = aad_last_frame_uptime_ms();
-    uint32_t voiced_ms = aad_voiced_ms();
-#else
-    uint32_t last_mic_frame = 0;
-    uint32_t voiced_ms = 0;
-#endif
 
     /* 92 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
      * codec_drops + sd_msgq peak depth + write-fairness activations + establishment
@@ -1156,6 +1164,12 @@ static const struct bt_data bt_sd[] = {
     BT_DATA_BYTES(BT_DATA_UUID16_ALL, BT_UUID_16_ENCODE(BT_UUID_DIS_VAL)),
 };
 
+//   [uint32 last_mic_frame_uptime_ms] k_uptime_get() at the last processed mic frame (offset 84).
+//                                  now_ms MINUS this is "how long since the mic delivered" —
+//                                  frames land every 100 ms, so seconds means parked and
+//                                  minutes means stopped. Sampled BEFORE now_ms on purpose.
+//   [uint32 vad_voiced_ms]         total ms the VAD has held a recording open since boot
+//                                  (offset 88). Against now_ms this is the capture duty cycle.
 //
 // State and Characteristics
 //
