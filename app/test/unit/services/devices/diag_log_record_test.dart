@@ -231,8 +231,9 @@ void main() {
       // A resume that came back silent is the wedge signature — it must not be
       // confusable with a resume that simply failed to start.
       expect(rec(3, 250).description, isNot(contains('FAILED')));
-      expect(rec(4, 32769).description, contains('park'));
-      // Unknown sub-codes from newer firmware still surface their args.
+      // Unknown sub-codes from newer firmware still surface their args rather than
+      // being dropped — 4 included, which is deliberately unassigned.
+      expect(rec(4, 32769).description, contains('arg0=4'));
       expect(rec(9, 250).description, contains('arg0=9'));
     });
   });
