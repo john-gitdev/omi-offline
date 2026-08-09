@@ -236,11 +236,6 @@ class DiagLogRecord {
             // returned digital zero, which a real room never does. This is the wedge
             // signature, caught at the one moment it matters.
             return 'Mic resumed but SILENT — first frames were all zero, mic likely wedged (threshold $arg1)';
-          case 4:
-            // The dmic STOP was rejected, so capture is still running. Reported rather
-            // than published as a park, which would have been a record claiming the
-            // mic was off while it was in fact recording.
-            return 'Mic park FAILED — dmic STOP rejected, still capturing (threshold $arg1)';
           default:
             return 'Mic state — arg0=$arg0 threshold=$arg1';
         }
