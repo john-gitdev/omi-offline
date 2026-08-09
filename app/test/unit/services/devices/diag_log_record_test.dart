@@ -203,11 +203,37 @@ void main() {
       expect(r.description, contains('arg1=6'));
     });
 
-    test('backend label maps 0/1 and is generic otherwise', () {
+    test('both known backends render as nothing, unknown values still show', () {
+      // LittleFS was removed in oo-2.9.0, so the firmware reports 0 for every record
+      // and the old label named a backend that no longer exists — on every line of
+      // the log read during an incident. Both known values now render empty; an
+      // unrecognised byte still surfaces, in case it is ever repurposed.
       DiagLogRecord rec(int backend) => DiagLogRecord(seq: 1, uptimeMs: 0, code: 1, backend: backend, arg0: 0, arg1: 0);
-      expect(rec(0).backendLabel, 'littlefs');
-      expect(rec(1).backendLabel, 'ring');
+      expect(rec(0).backendLabel, '');
+      expect(rec(1).backendLabel, '');
       expect(rec(7).backendLabel, 'b7');
+      // And the description carries no empty bracket pair where the label used to be.
+      expect(rec(0).description, isNot(contains('()')));
+      expect(rec(7).description, contains('(b7)'));
+    });
+
+    test('mic_state decodes each transition, and arg1 is the threshold snapshot', () {
+      DiagLogRecord rec(int arg0, int arg1) =>
+          DiagLogRecord(seq: 1, uptimeMs: 0, code: 18, backend: 0, arg0: arg0, arg1: arg1);
+      expect(rec(0, 32769).label, 'mic_state');
+      expect(rec(0, 32769).description, contains('parked'));
+      expect(rec(1, 32769).description, contains('resumed'));
+      // A resume driven by pre-arm or a marker's force-wake happens while the
+      // threshold is still 32769, so this must NOT read as "resumed into standby".
+      expect(rec(1, 32769).description, isNot(contains('standby')));
+      expect(rec(2, 250).description, contains('FAILED'));
+      expect(rec(3, 250).description, contains('SILENT'));
+      // A resume that came back silent is the wedge signature — it must not be
+      // confusable with a resume that simply failed to start.
+      expect(rec(3, 250).description, isNot(contains('FAILED')));
+      expect(rec(4, 32769).description, contains('park'));
+      // Unknown sub-codes from newer firmware still surface their args.
+      expect(rec(9, 250).description, contains('arg0=9'));
     });
   });
 
