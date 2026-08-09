@@ -134,7 +134,14 @@ static bool vad_diag_level_was_silent = true;
  * runs ~700 ms after the user's finger goes down. Pre-roll is what puts those 700 ms
  * into the recording, so a button-started recording begins where the press did rather
  * than where the firmware caught up. 8 frames covers it with ~100 ms to spare; 4
- * would silently clip the front of every button-initiated recording. */
+ * would silently clip the front of every button-initiated recording.
+ *
+ * It does NOT cover a record action mapped to a HOLD: those dispatch at HOLD_TIME
+ * (1000 ms), so the ring has already rolled ~200 ms past the press. That is not a
+ * regression from pre-arm — before it, the mic ran continuously and the ring still
+ * held only the most recent 800 ms at dispatch, i.e. the same window — and closing it
+ * would cost ~4 more frames across BOTH this ring and the live backlog (~25 KB). Left
+ * as-is deliberately; the default configs put record actions on taps, not holds. */
 #define VAD_PREROLL_FRAMES 8
 /* Replay/backlog depth (also 0.8 s). With paced one-frame callbacks,
  * this avoids dropping transition speech while staying within RAM budget. */
@@ -383,6 +390,17 @@ void aad_apply_mic_gate(void)
 
     if (!want && running) {
         mic_pause();
+        /* mic_pause() returns early WITHOUT clearing mic_running when dmic STOP
+         * fails, so a failed stop must not be published as a park: the record would
+         * say parked over a live mic, and the idle side effects below (capture gap,
+         * slow advertising) would be applied to a device still capturing. Leave all
+         * of it undone and report the failure -- the gate re-derives from
+         * mic_is_running() every call, so the next one retries the stop. */
+        if (mic_is_running()) {
+            diag_log_event(DIAG_MIC_STATE, 0, DIAG_MIC_STATE_PARK_FAILED, vad_threshold);
+            k_mutex_unlock(&mic_state_lock);
+            return;
+        }
         /* Parking leaves the same unbounded hole in the audio that a mute does, so
          * the resumption has to re-anchor the app's timeline and drop the stale
          * pre-roll the same way. It also stops the DIAG_VAD_LEVEL window advancing,
@@ -409,8 +427,14 @@ void aad_apply_mic_gate(void)
             /* Arm the "did audio actually come back" probe. A START that returns 0
              * but yields digital silence (wedged T5838) is invisible otherwise, and
              * the cost of missing it is a whole recording of nothing. */
-            atomic_set(&mic_verify_frames, MIC_VERIFY_FRAMES);
+            /* Level first, count second: the mic thread gates on the count, so arming
+             * it last means no frame can be sampled against a level that is about to
+             * be cleared. (The reverse order could only lose one frame's OR, and a
+             * false RESUMED_SILENT would still need the next four frames to be
+             * digital zero -- i.e. a genuinely wedged part -- but the ordering costs
+             * nothing and removes the argument.) */
             atomic_set(&mic_verify_level, 0);
+            atomic_set(&mic_verify_frames, MIC_VERIFY_FRAMES);
         } else {
             diag_log_event(DIAG_MIC_STATE, 0, DIAG_MIC_STATE_RESUME_FAILED, vad_threshold);
         }
