@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# Build a flashable pair — firmware DFU zip + dev APK — and drop both in releases/.
+#
+# The gap this fills: app/build-fw.sh does NOT compile anything. It packages an
+# already-built dfu_application.zip and then deletes the build directory. So the
+# firmware half has meant either a VS Code / nRF Connect build first, or setting up
+# the Zephyr environment by hand. This does the compile too.
+#
+# Deterministic only, matching app/build.sh: no version bump, no commit, no push.
+# Version numbers come from app/pubspec.yaml and CONFIG_BT_DIS_FW_REV_STR as they
+# stand right now.
+#
+#   ./ccbuild.sh                 firmware + APK
+#   ./ccbuild.sh --fw            firmware only
+#   ./ccbuild.sh --apk           APK only
+#   ./ccbuild.sh --fw --keep-build   firmware, leaving build/ intact for incrementals
+#   ./ccbuild.sh --fw --pristine     force a fresh configure, discarding build/
+#
+# Environment overrides (all auto-detected otherwise):
+#   NCS_ROOT        default C:/ncs
+#   ZEPHYR_BASE     default the newest NCS_ROOT/v*/zephyr
+#   NCS_TOOLCHAIN   default the newest NCS_ROOT/toolchains/<hash>
+
+set -euo pipefail
+
+ROOT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+FW_DIR="$ROOT_DIR/omi/firmware/omi"
+FW_BUILD_DIR="$FW_DIR/build/omi"
+RELEASES_DIR="$ROOT_DIR/releases"
+
+DO_FW=1
+DO_APK=1
+KEEP_BUILD=0
+PRISTINE=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --fw)         DO_APK=0 ;;
+    --apk)        DO_FW=0 ;;
+    --keep-build) KEEP_BUILD=1 ;;
+    --pristine)   PRISTINE=1 ;;
+    -h|--help)    sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *)            echo "ccbuild: unknown option '$1' (try --help)" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+say() { printf '\033[1mccbuild:\033[0m %s\n' "$*"; }
+die() { printf '\033[1;31mccbuild: %s\033[0m\n' "$*" >&2; exit 1; }
+
+# cmake wants Windows-style paths (C:/…), bash gives POSIX (/c/…).
+winpath() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else echo "$1"; fi; }
+
+# ── Firmware ────────────────────────────────────────────────────────────────────
+build_firmware() {
+  local ncs="${NCS_ROOT:-/c/ncs}"
+  [[ -d "$ncs" ]] || die "NCS not found at $ncs — set NCS_ROOT to your nRF Connect SDK install."
+
+  # Newest toolchain hash, unless pinned. The hash changes with an SDK update, which
+  # is exactly why this is not hardcoded.
+  local tc="${NCS_TOOLCHAIN:-}"
+  if [[ -z "$tc" ]]; then
+    tc="$(find "$ncs/toolchains" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -1)"
+  fi
+  [[ -n "$tc" && -d "$tc" ]] || die "no toolchain under $ncs/toolchains — set NCS_TOOLCHAIN."
+
+  local zbase="${ZEPHYR_BASE:-}"
+  if [[ -z "$zbase" ]]; then
+    zbase="$(find "$ncs" -mindepth 2 -maxdepth 2 -type d -name zephyr 2>/dev/null | sort | tail -1)"
+  fi
+  [[ -n "$zbase" && -d "$zbase" ]] || die "no Zephyr tree under $ncs — set ZEPHYR_BASE."
+
+  export PATH="$tc/opt/bin:$tc/opt/bin/Scripts:$tc/opt/zephyr-sdk/arm-zephyr-eabi/bin:$tc/mingw64/bin:$tc/bin:$tc/usr/bin:$PATH"
+  export ZEPHYR_BASE="$zbase"
+  export ZEPHYR_SDK_INSTALL_DIR="$tc/opt/zephyr-sdk"
+  export ZEPHYR_TOOLCHAIN_VARIANT=zephyr
+
+  command -v west >/dev/null 2>&1 || die "west not on PATH even after toolchain setup ($tc)."
+
+  local fw_ver
+  fw_ver="$(awk -F'"' '/^CONFIG_BT_DIS_FW_REV_STR=/ {print $2; exit}' "$FW_DIR/omi.conf")"
+  say "firmware $fw_ver  (toolchain $(basename "$tc"), $(basename "$(dirname "$zbase")"))"
+
+  # BOARD_ROOT is required: the board lives one level above the app dir, and without
+  # it cmake cannot find omi/nrf5340/cpuapp and dumps the entire upstream board list.
+  local board_root; board_root="$(winpath "$ROOT_DIR/omi/firmware")"
+  local conf;       conf="$(winpath "$FW_DIR/omi.conf")"
+
+  # Kept rather than a temp file: /tmp is not writable in every shell here, and a
+  # build log you can go back to is worth more than one that deletes itself. build/
+  # is gitignored, so it never shows up as a change.
+  # An incremental build reuses whatever CMakeCache is already there — including
+  # Kconfig overrides injected on the command line by someone else. The nRF Connect
+  # VS Code extension builds into this very directory with CMAKE_BUILD_TYPE=Debug and
+  # CONFIG_DEBUG_THREAD_INFO=y, so without this check ccbuild would quietly produce a
+  # debug image and label it a clean build. That exact confusion cost a round of
+  # binary-diffing to untangle, so it fails loudly instead of silently.
+  if [[ $PRISTINE -eq 0 && -f "$FW_BUILD_DIR/CMakeCache.txt" ]]; then
+    local foreign
+    foreign="$(grep -E '^(CMAKE_BUILD_TYPE:[A-Z]*=Debug|CONFIG_[A-Z0-9_]+:UNINITIALIZED=)'                  "$FW_BUILD_DIR/CMakeCache.txt" || true)"
+    if [[ -n "$foreign" ]]; then
+      say "existing build/ was configured elsewhere (IDE?) with overrides:"
+      printf '    %s
+' $foreign
+      say "reconfiguring from scratch so the output matches omi.conf alone"
+      PRISTINE=1
+    fi
+  fi
+  if [[ $PRISTINE -eq 1 && -d "$FW_DIR/build" ]]; then
+    rm -rf "$FW_DIR/build"
+  fi
+
+  mkdir -p "$FW_DIR/build"
+  local log="$FW_DIR/build/ccbuild-last.log"
+  cd "$FW_DIR"
+  if [[ -d "$FW_BUILD_DIR" ]]; then
+    say "incremental build (build/omi exists)"
+    west build -d build/omi 2>&1 | tee "$log"
+  else
+    say "full configure + build"
+    west build -b omi/nrf5340/cpuapp -d build/omi --sysbuild -- \
+      -DBOARD_ROOT="$board_root" -DCACHED_CONF_FILE="$conf" -DCONF_FILE="$conf" 2>&1 | tee "$log"
+  fi
+  local rc=${PIPESTATUS[0]}
+  [[ $rc -eq 0 ]] || die "west build failed (exit $rc) — full log: $log"
+
+
+  # A clean build emits ~14 Kconfig warnings from upstream Zephyr/NCS that are not
+  # actionable. Anything naming a path inside this repo is ours, and new.
+  local ours
+  ours="$(grep -E "omi-offline.*(warning|error)" "$log" || true)"
+  if [[ -n "$ours" ]]; then
+    printf '\033[1;33mccbuild: warnings from repo sources — these are yours:\033[0m\n%s\n' "$ours"
+  fi
+
+  local zip="$FW_BUILD_DIR/dfu_application.zip"
+  [[ -f "$zip" ]] || die "build reported success but $zip is missing."
+
+  if [[ $KEEP_BUILD -eq 1 ]]; then
+    # Same naming as build-fw.sh, but without its rm -rf: an incremental rebuild is
+    # ~1 min against ~5 for a fresh configure, which matters while iterating.
+    local raw short
+    raw="$(unzip -p "$zip" version.txt 2>/dev/null || true)"
+    [[ -n "$raw" ]] || die "could not read version.txt from $zip"
+    short="$(echo "$raw" | tr -d '.-')"; [[ "$short" == oo* ]] || short="oo$short"
+    mkdir -p "$RELEASES_DIR"
+    cp "$zip" "$RELEASES_DIR/$short.zip"
+    say "wrote $RELEASES_DIR/$short.zip (build dir kept)"
+  else
+    bash "$ROOT_DIR/app/build-fw.sh"
+  fi
+}
+
+# ── APK ─────────────────────────────────────────────────────────────────────────
+build_apk() {
+  local app_ver
+  app_ver="$(awk '/^version:/ {print $2; exit}' "$ROOT_DIR/app/pubspec.yaml")"
+  say "app $app_ver  (flutter clean + build apk --flavor dev — several minutes)"
+  bash "$ROOT_DIR/app/build-apk.sh"
+}
+
+# ── Run ─────────────────────────────────────────────────────────────────────────
+# Firmware first: it is the half that fails fast, and the APK is the slow one. No
+# point spending ten minutes on an APK to then find the firmware would not compile.
+[[ $DO_FW  -eq 1 ]] && build_firmware
+[[ $DO_APK -eq 1 ]] && build_apk
+
+say "done — artifacts in releases/"
+ls -lh "$RELEASES_DIR" 2>/dev/null | tail -n +2 | awk '{printf "  %s  %s\n", $5, $9}'
