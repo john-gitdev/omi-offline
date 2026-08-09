@@ -163,6 +163,12 @@ class DeviceDropStats {
     // than clamping to 1.0, which would state "this device records 100% of the time"
     // — a plausible-looking number that is simply wrong. Recovering the true duty
     // needs a wrap count the wire protocol does not carry.
+    //
+    // Known and accepted: this catches the FIRST wrap only. If voicedMs later wraps
+    // too the ordering inverts and a wrong (low) figure returns — but that needs
+    // ~60 days of unbroken uptime at the duty this device actually runs, and a DFU,
+    // a flat cell or the watchdog all reboot it long before. Not worth a protocol
+    // field for a gauge.
     if (voicedMs > currentUptimeMs) return null;
     return voicedMs / currentUptimeMs;
   }
