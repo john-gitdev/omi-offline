@@ -100,11 +100,17 @@ class DiagLogRecord {
     }
   }
 
-  /// Legacy storage-backend tag. LittleFS was removed in `oo-2.9.0`, so current
-  /// firmware has exactly one backend and reports `0` for every record — which used
-  /// to render as "(littlefs)", naming a backend that no longer exists on every line
-  /// of the log you read during an incident. Anything other than the two known values
-  /// still shows, in case the byte is ever repurposed; `0`/`1` render as nothing.
+  /// Legacy storage-backend tag, and the reason it renders as nothing is stronger than
+  /// "there is only one backend now": **the byte is inconsistent across call sites**, so
+  /// it never carried information in the first place. `aad.c`, `codec.c`, `button.c` and
+  /// most of `transport.c` pass a literal `0`; `sd_card.c` passes `STORAGE_BACKEND_RING`
+  /// (1); three `transport.c` sites pass `sd_get_active_backend()`. A real 22 h capture
+  /// showed `vad_level(littlefs)` for exactly this reason — aad.c's literal 0 decoded
+  /// against a backend removed in `oo-2.9.0`, on every line of the log you read during
+  /// an incident.
+  ///
+  /// Both known values therefore render empty. Anything else still shows, in case the
+  /// byte is ever repurposed into something that means one thing everywhere.
   String get backendLabel {
     switch (backend) {
       case 0:
