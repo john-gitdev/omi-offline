@@ -101,13 +101,18 @@ class DiagLogRecord {
   }
 
   /// Legacy storage-backend tag, and the reason it renders as nothing is stronger than
-  /// "there is only one backend now": **the byte is inconsistent across call sites**, so
-  /// it never carried information in the first place. `aad.c`, `codec.c`, `button.c` and
-  /// most of `transport.c` pass a literal `0`; `sd_card.c` passes `STORAGE_BACKEND_RING`
-  /// (1); three `transport.c` sites pass `sd_get_active_backend()`. A real 22 h capture
-  /// showed `vad_level(littlefs)` for exactly this reason — aad.c's literal 0 decoded
-  /// against a backend removed in `oo-2.9.0`, on every line of the log you read during
-  /// an incident.
+  /// "there is only one backend now": **the byte reflects whatever each call site
+  /// happened to pass**, so it never carried information in the first place. Counted
+  /// across the firmware (22 emit sites):
+  ///
+  /// - literal `0` — 13 sites: `aad.c` (5), `transport.c` (5), `codec.c` (2), `button.c` (1)
+  /// - `sd_get_active_backend()` — 7 sites, all in `transport.c`
+  /// - `STORAGE_BACKEND_RING` (1) — 2 sites, both in `sd_card.c`
+  ///
+  /// So the same log interleaves records tagged 0 and 1 with no relationship to
+  /// anything. A real 22 h capture showed `vad_level(littlefs)` for exactly this
+  /// reason — aad.c's literal 0 decoded against a backend removed in `oo-2.9.0`, on
+  /// every line of the log you read during an incident.
   ///
   /// Both known values therefore render empty. Anything else still shows, in case the
   /// byte is ever repurposed into something that means one thing everywhere.
