@@ -2207,7 +2207,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // divergence is exactly what makes an empty log unreadable: pref-true + gate-off
     // looks identical to a device with nothing to report.
     final gate = devProvider.diagLogGateOnDevice;
-    final gateAge = devProvider.diagLogGatePushedAt == null
+    // An unknown gate is by definition unconfirmed: printing a timestamp beside it
+    // would attribute a previous connection's confirmation to a state we no longer
+    // know, which reads as "unknown, but verified 12s ago".
+    final gateAge = (gate == null || devProvider.diagLogGatePushedAt == null)
         ? 'never'
         : '${DateTime.now().difference(devProvider.diagLogGatePushedAt!).inSeconds}s ago';
     b.writeln(
