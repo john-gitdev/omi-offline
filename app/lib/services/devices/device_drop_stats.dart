@@ -130,7 +130,7 @@ class DeviceDropStats {
   }
 
   /// Device uptime (ms) at the last mic frame the VAD processed (offset 84; 0 on
-  /// firmware older than oo-2.9.4, or before the first frame). Against
+  /// firmware older than oo-2.10.0, or before the first frame). Against
   /// [currentUptimeMs] this is the only direct answer to "is the mic delivering
   /// right now" — see [micSilentForMs]. It exists because a parked or wedged mic
   /// produces *no* event-log records at all, so a quiet log cannot distinguish
