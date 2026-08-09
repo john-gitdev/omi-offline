@@ -610,10 +610,16 @@ class DeviceProvider extends ChangeNotifier
     diagLogRecords = result.records;
     diagLogDroppedCount = result.droppedCount;
     diagLogLastPulledAt = DateTime.now();
-    // The ack write carries the gate byte, so a completed drain is also a confirmed
-    // push — same fact, one fewer round trip.
-    diagLogGateOnDevice = SharedPreferencesUtil().diagLogEnabled;
-    diagLogGatePushedAt = diagLogLastPulledAt;
+    // The ack write carries the gate byte, so a drain that acked anything is also a
+    // confirmed push. Only then: performDrainDiagLog() breaks out of its loop BEFORE
+    // _writeDiagLogControl() when a batch holds no records, and an empty ring is the
+    // ordinary case on a routine connect — so treating every drain as confirmation
+    // would mark the gate verified on no evidence at all, which is the exact failure
+    // this field exists to remove.
+    if (result.records.isNotEmpty) {
+      diagLogGateOnDevice = SharedPreferencesUtil().diagLogEnabled;
+      diagLogGatePushedAt = diagLogLastPulledAt;
+    }
     for (final r in result.records) {
       await DebugLogManager.logEvent('device_diag_log', r.toJson());
     }
@@ -1920,16 +1926,17 @@ class DeviceProvider extends ChangeNotifier
       // The cache is deliberately NOT device-scoped: only one Omi is ever paired and
       // connected, so records can't be carried across a device switch and it isn't a
       // case worth holding code for.
+      // Unknown until THIS connection confirms it, and reset before the feature read
+      // rather than inside it: getFeaturesIfIdle() returns null whenever a sync holds
+      // the storage lock, and a reset that lives in the success branch would let the
+      // previous connection's belief survive — including a stale `true` after a reboot
+      // has cleared the device's volatile gate.
+      diagLogGateOnDevice = null;
+      diagLogGatePushedAt = null;
       final int? deviceFeatures = await conn.getFeaturesIfIdle();
       if (deviceFeatures != null) {
         diagLogSupported = (deviceFeatures & OmiFeatures.diagLog) != 0;
         if (diagLogSupported) {
-          // Unknown until this connection confirms it. The device's gate is volatile
-          // — a reboot while we were away clears it — and the push below is skipped
-          // outright while a sync holds the storage lock, so carrying the previous
-          // connection's belief forward is how an un-armed device ends up reported as
-          // capturing.
-          diagLogGateOnDevice = null;
           await pushDiagLogEnabled();
           if (SharedPreferencesUtil().diagLogEnabled) {
             await pullDiagLog();
