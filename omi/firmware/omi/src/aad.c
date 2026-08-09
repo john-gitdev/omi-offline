@@ -390,24 +390,6 @@ void aad_apply_mic_gate(void)
 
     if (!want && running) {
         mic_pause();
-        /* mic_pause() returns early WITHOUT clearing mic_running if dmic STOP fails,
-         * and a failed stop must not be published as a park: the record would say
-         * parked over a live mic and the idle side effects below (capture gap, slow
-         * advertising) would be applied to a device still capturing.
-         *
-         * NOT CURRENTLY REACHABLE, and deliberately kept anyway. dmic_nrfx_pdm_trigger()
-         * has no error return for DMIC_TRIGGER_STOP -- it discards nrfx_pdm_stop()'s
-         * result and falls through to `return 0` (NCS v2.9.0 dmic_nrfx_pdm.c:512-518) --
-         * so mic_pause() always succeeds and this branch is dead. It stays because the
-         * alternative is a correctness claim that depends on an implementation detail
-         * two layers away and invisible from here: without the check, whether this gate
-         * lies about the mic's state is decided by a switch statement in Zephyr. Six
-         * lines to not depend on that. Do not build retry machinery on top of it. */
-        if (mic_is_running()) {
-            diag_log_event(DIAG_MIC_STATE, 0, DIAG_MIC_STATE_PARK_FAILED, vad_threshold);
-            k_mutex_unlock(&mic_state_lock);
-            return;
-        }
         /* Parking leaves the same unbounded hole in the audio that a mute does, so
          * the resumption has to re-anchor the app's timeline and drop the stale
          * pre-roll the same way. It also stops the DIAG_VAD_LEVEL window advancing,
