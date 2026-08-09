@@ -76,8 +76,12 @@ typedef enum {
                                        * in the log is ambiguous between "mic off on purpose" and
                                        * "mic died" unless the transition itself is recorded.
                                        *   arg0 = diag_mic_state_t
-                                       *   arg1 = vad_threshold at the transition (32769 = manual
-                                       *          standby, 65535 = force-capture, else auto) */
+                                       *   arg1 = the vad_threshold SNAPSHOT at the transition, not
+                                       *          the cause. Do not read it as the gate reason: a
+                                       *          resume driven by button pre-arm or a marker's
+                                       *          force-wake happens while the threshold is still
+                                       *          32769, so "resumed @32769" is normal and does NOT
+                                       *          mean capture resumed into standby. */
 } diag_event_code_t;
 
 /* arg0 values for DIAG_MIC_STATE. Appended-only, same discipline as the codes. */
@@ -87,6 +91,10 @@ typedef enum {
     DIAG_MIC_STATE_RESUME_FAILED = 2,  /* dmic START failed twice; the mic is NOT running */
     DIAG_MIC_STATE_RESUMED_SILENT = 3, /* START succeeded but the first frames were digital zero --
                                         * a wedged part, which a quiet room cannot produce */
+    DIAG_MIC_STATE_PARK_FAILED = 4,    /* dmic STOP failed; capture is STILL RUNNING. mic_pause()
+                                        * leaves mic_running true on an error return, so without
+                                        * this the gate would publish PARKED over a live mic --
+                                        * the precise class of lie this event exists to prevent */
 } diag_mic_state_t;
 
 /* arg0 values for DIAG_BOND_STATE. Appended-only, same discipline as the codes. */
