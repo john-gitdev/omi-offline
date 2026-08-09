@@ -477,28 +477,30 @@ static void execute_button_action(uint8_t taps, bool is_hold)
     case BUTTON_ACTION_MUTE:
         acted = mute_apply(!is_muted);
         break;
-    case BUTTON_ACTION_MARKER:
+    case BUTTON_ACTION_MARKER: {
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
-        /* Manual mode: a marker does NOTHING. Not a bookmark, not an orphan EDL,
-         * nothing — the tap is swallowed here and no byte reaches the card.
+        /* Manual STANDBY: the tap does nothing at all. Not a bookmark, not an orphan
+         * EDL, nothing — it is swallowed here and no byte reaches the card. There is
+         * no recording to bookmark, and the alternative was worse than useless: it
+         * force-captured ~60 s of audio (aad_force_wake feeds has_voice, which no
+         * mode check gated) in the one mode whose promise is that it records only
+         * when told to.
          *
-         * Manual mode defines its own boundaries: the user says start and says stop,
-         * so the recording IS the bookmark and a marker inside it adds nothing the
-         * boundaries do not already say. Leaving the action live cost more than it
-         * gave: in standby it force-captured ~60 s of audio (aad_force_wake feeds
-         * has_voice, which no mode check gated) in the one mode whose whole promise
-         * is that it records only when told to.
+         * Manual RECORDING is different and still works — bookmarking a moment
+         * inside a long manual recording is exactly what a marker is for.
          *
-         * The PERSISTED threshold, not the runtime one: an auto-mode Priority
-         * Recording holds runtime 65535 without persisting it, and a marker tapped
-         * during one is an auto-mode marker and must still work. */
-        {
-            const uint16_t resting_thr = app_settings_get_vad_threshold();
-            if (resting_thr == 32769 || resting_thr == 65535) {
-                LOG_INF("Marker ignored (manual mode)");
-                break;
-            }
+         * The PERSISTED threshold decides, not the runtime one: 32769 is manual
+         * standby, 65535 manual recording, anything lower auto. An auto-mode Priority
+         * Recording holds runtime 65535 without persisting it, so reading the runtime
+         * value would misclassify a marker tapped during one as manual. */
+        const uint16_t resting_thr = app_settings_get_vad_threshold();
+        const bool marker_in_manual = (resting_thr == 32769 || resting_thr == 65535);
+        if (resting_thr == 32769) {
+            LOG_INF("Marker ignored (manual standby — nothing is recording)");
+            break;
         }
+#else
+        const bool marker_in_manual = false;
 #endif
         if (!is_muted) {
             // A plain white bookmark, and in auto mode it also guarantees the audio
@@ -541,12 +543,20 @@ static void execute_button_action(uint8_t taps, bool is_hold)
             write_marker_to_storage();
 #endif
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
-            aad_force_wake();
+            /* Auto mode only. In a manual recording the 65535 threshold already
+             * forces every frame, so the window would add nothing — except a bug:
+             * force_wake_until_ms outlives a stop, so a marker tapped within 50 s of
+             * pressing Stop would hold has_voice true past the stop and resume
+             * capturing in standby, for the remainder of the window. */
+            if (!marker_in_manual) {
+                aad_force_wake();
+            }
 #endif
         } else {
             LOG_INF("Marker ignored (muted)");
         }
         break;
+    }
     case BUTTON_ACTION_TOGGLE_LED:
         is_led_enabled = !is_led_enabled;
         LOG_INF("LED toggled %s", is_led_enabled ? "ON" : "OFF");

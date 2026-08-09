@@ -75,11 +75,7 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
     final m = <int, String>{
       0: 'None',
       1: _selectedManual ? 'Mute - Disabled' : 'Mute',
-      // Marker is inert in manual mode — the firmware swallows the tap (oo-2.9.5+),
-      // because manual mode's start/stop already defines the boundaries. Shown
-      // disabled rather than hidden, matching Mute, so an existing mapping is still
-      // visible instead of silently vanishing from the picker.
-      2: _selectedManual ? 'Marker - Disabled' : 'Marker',
+      2: 'Marker',
       3: 'Toggle LED',
     };
     if (_combineActive) {
@@ -659,8 +655,8 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
                   padding: const EdgeInsets.only(top: 16.0),
                   child: Text(
                     _selectedManual
-                        ? 'Marker does nothing in Manual Mode: you set the boundaries yourself with '
-                            'Start and Stop, so the recording is the bookmark.'
+                        ? 'Marker only works while a recording is running. In standby there is nothing '
+                            'to bookmark, so the tap does nothing at all.'
                         : 'Marker also keeps the mic recording for 1 minute from the tap, even if the '
                             'Omi had decided the room was quiet — so a bookmark always has audio around it.',
                     style: const TextStyle(color: Colors.white54, fontSize: 12),

@@ -48,14 +48,18 @@ bool aad_is_sleeping(void);
  * Bypasses acoustic threshold for FORCE_WAKE_HOLD_MS (50s), then resumes
  * normal VAD. Guarantees at least 60s of recording after a button tap.
  *
- * AUTO MODE ONLY in practice. The guarantee is the whole point of a marker there --
- * the user cannot know whether the VAD rates the moment as speech, so the tap
- * asserts that it does -- but it is wrong in manual mode, where it would capture
- * ~60 s in the one mode whose promise is that it records only when told to.
- * button.c therefore swallows a marker tap entirely in manual mode, leaving this
- * reachable only from the auto-mode RECORD_START path. Do NOT re-gate it on "was it
- * already recording": a tap during speech that then stops would end the recording
- * 10 s later with the marker at its tail.
+ * AUTO MODE ONLY. The guarantee is the whole point of a marker there -- the user
+ * cannot know whether the VAD rates the moment as speech, so the tap asserts that it
+ * does -- but it is wrong in manual mode both ways. In manual STANDBY it would
+ * capture ~60 s in the one mode whose promise is that it records only when told to;
+ * during a manual RECORDING it adds nothing (the 65535 threshold already forces
+ * every frame) and actively harms, because the window outlives a Stop and would
+ * resume capture in standby for its remainder. button.c therefore skips this in both
+ * manual states.
+ *
+ * Within auto mode do NOT re-gate it on "was it already recording": a tap during
+ * speech that then stops would end the recording 10 s later with the marker at its
+ * tail, which is the loss the window exists to prevent.
  */
 void aad_force_wake(void);
 
