@@ -336,7 +336,7 @@ object WedgeDiagnostics {
         }
 
         val classicProfiles = connectedClassicProfiles(adapter)
-        val audioRoutes = btAudioRoutes(context)
+        val audioDevices = btAudioDevices(context)
 
         return linkedMapOf(
             "adapter_state" to (adapter?.let { adapterStateName(it.state) } ?: "no_adapter"),
@@ -357,7 +357,11 @@ object WedgeDiagnostics {
             // dropped just before the recovery is the same signal contending_le_links carries
             // for LE, and until these existed it could not be seen at all.
             "classic_profiles" to classicProfiles,
-            "bt_audio_routes" to audioRoutes,
+            "bt_audio_devices" to audioDevices,
+            // Connected vs actually streaming — see scoActive(). An idle link and a live call are
+            // both "connected" but only one seriously competes for the controller's time.
+            "sco_active" to scoActive(context),
+            "audio_active" to audioActive(context),
             "screen_interactive" to (power?.isInteractive ?: false),
             "doze_mode" to (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) power?.isDeviceIdleMode else null),
         )
@@ -397,15 +401,22 @@ object WedgeDiagnostics {
     }
 
     /**
-     * The Bluetooth audio endpoints the audio framework currently has routed, by name — the only
-     * synchronous way to put a *device* behind [connectedClassicProfiles]'s bare profile names.
+     * The Bluetooth audio endpoints the framework has *available*, by name — the only synchronous
+     * way to put a *device* behind [connectedClassicProfiles]'s bare profile names.
+     *
+     * Available, not active: `getDevices` lists every connected endpoint that could be routed to,
+     * so a paired-and-connected headset appears here while it sits idle and while audio is coming
+     * out of the phone's own speaker. Naming this "routes" would invite exactly the misreading that
+     * matters — an idle A2DP link and one actively streaming are very different contenders for the
+     * controller's time, and only the second is a strong suspect for a failed connect. [scoActive]
+     * and [audioActive] carry that distinction; this field carries identity.
      *
      * Covers LE Audio (`TYPE_BLE_*`) as well: an LE Audio headset is a scheduling contender that
      * may never appear in the GATT list either, so reading only the classic types would reopen the
      * same blind spot one generation of hardware later. Those constants are API 31 but need no
      * version guard — they are compile-time `Int`s, and a pre-31 device simply never reports them.
      */
-    private fun btAudioRoutes(context: Context): JSONArray {
+    private fun btAudioDevices(context: Context): JSONArray {
         val out = JSONArray()
         val audio = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return out
         try {
@@ -420,9 +431,45 @@ object WedgeDiagnostics {
                 out.put("${device.productName} ($kind)")
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Cannot enumerate BT audio routes: ${e.message}")
+            Log.w(TAG, "Cannot enumerate BT audio devices: ${e.message}")
         }
         return out
+    }
+
+    /**
+     * Whether audio is actually *flowing*, which is what decides how much of the radio a connected
+     * audio device is really taking. [btAudioDevices] can only say something is connected.
+     *
+     * The SCO half is the one worth having: SCO is a reserved periodic slot the controller cannot
+     * preempt, so a call in progress over a car kit is the worst case for an LE connect initiator.
+     * `isMusicActive` is not Bluetooth-specific — it is true for speaker playback too — so it means
+     * "A2DP was probably streaming" only when read together with an `a2dp` entry in
+     * [btAudioDevices]. Recorded separately rather than folded into one flag for that reason.
+     *
+     * `getCommunicationDevice()` on API 31+, where `isBluetoothScoOn` is deprecated; the deprecated
+     * call still runs below that, since minSdk is 26 and there is no other way to ask there.
+     */
+    @Suppress("DEPRECATION")
+    private fun scoActive(context: Context): Boolean? = try {
+        val audio = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        when {
+            audio == null -> null
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> audio.communicationDevice?.type.let {
+                it == AudioDeviceInfo.TYPE_BLUETOOTH_SCO || it == AudioDeviceInfo.TYPE_BLE_HEADSET
+            }
+            else -> audio.isBluetoothScoOn
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "Cannot read SCO state: ${e.message}")
+        null
+    }
+
+    /** See [scoActive] — only meaningful alongside an `a2dp`/`le_audio` entry in [btAudioDevices]. */
+    private fun audioActive(context: Context): Boolean? = try {
+        (context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)?.isMusicActive
+    } catch (e: Exception) {
+        Log.w(TAG, "Cannot read playback state: ${e.message}")
+        null
     }
 
     /**

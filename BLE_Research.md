@@ -62,7 +62,8 @@ correctly when a bin was missing.
 | `contending_le_links` | Count of the above (excludes Omi's own link) | **Diff this across wedge→recovery** — a drop is the contention signal |
 | `le_link_count` | Raw system-wide total (`contending + (omi_in_gatt?1:0)`) | Goes 1→2 when Omi rejoins |
 | `classic_profiles` | Classic (BR/EDR) profiles holding a link right now: `a2dp`, `headset` | **The LE fields above cannot see these at all** — they read the GATT list, and a car kit, headset or smart glasses connects over A2DP/HFP. Diff across wedge→recovery like `contending_le_links`. `headset` is the worse contender: SCO takes reserved periodic slots the controller cannot preempt |
-| `bt_audio_routes` | Named audio endpoints the framework has routed, e.g. `Ray-Ban Meta (a2dp)`, incl. LE Audio | Puts a *device* behind `classic_profiles`' bare profile names, which `getProfileConnectionState` cannot |
+| `bt_audio_devices` | Named audio endpoints that are **connected and available**, e.g. `Ray-Ban Meta (a2dp)`, incl. LE Audio | Puts a *device* behind `classic_profiles`' bare profile names, which `getProfileConnectionState` cannot. **Available ≠ streaming** — an idle headset is listed while audio plays out the phone speaker |
+| `sco_active` / `audio_active` | Is audio actually flowing: SCO routed for a call / anything playing | The contention that matters. `sco_active` is the worst case (reserved slots the controller cannot preempt); `audio_active` is not BT-specific, so it implies A2DP streaming only alongside an `a2dp` entry above |
 | `screen_interactive` | Screen on at that moment | **false→true across wedge→recovery = screen-wake recovery** |
 | `doze_mode` | Device in Doze | Recovery with `doze=true` throughout = self-clear under Doze |
 | `adapter_state` | Should be `on` | An `off` between wedge and recovery ⟹ a **BT toggle** happened (see §3) |
