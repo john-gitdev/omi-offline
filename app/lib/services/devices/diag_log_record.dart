@@ -215,9 +215,10 @@ class DiagLogRecord {
             ? 'Mic rail power-cycled after firmware update'
             : 'Mic rail NOT cycled after update — a wedged mic would persist';
       case 18:
-        // The mic gate opened or closed capture. arg1 = the VAD threshold at the
-        // transition, which is what decided it: 32769 = manual standby (parked),
-        // 65535 = force-capture, anything else = auto.
+        // The mic gate opened or closed capture. arg1 is the VAD threshold SNAPSHOT at
+        // the transition, NOT the reason for it: a resume driven by button pre-arm or
+        // a marker's force-wake happens while the threshold is still 32769, so
+        // "resumed @32769" is normal and does not mean capture resumed into standby.
         //
         // These exist because a parked mic emits nothing at all — no frames means no
         // vad_level window ever closes — so a gap in the log is otherwise ambiguous
@@ -235,6 +236,11 @@ class DiagLogRecord {
             // returned digital zero, which a real room never does. This is the wedge
             // signature, caught at the one moment it matters.
             return 'Mic resumed but SILENT — first frames were all zero, mic likely wedged (threshold $arg1)';
+          case 4:
+            // The dmic STOP was rejected, so capture is still running. Reported rather
+            // than published as a park, which would have been a record claiming the
+            // mic was off while it was in fact recording.
+            return 'Mic park FAILED — dmic STOP rejected, still capturing (threshold $arg1)';
           default:
             return 'Mic state — arg0=$arg0 threshold=$arg1';
         }
