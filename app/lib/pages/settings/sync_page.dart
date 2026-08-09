@@ -1832,6 +1832,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       if (prioStarts > prioStops) 'left open',
       if (prioStops > 0 && seEmits == 0) 'no session-end',
     ];
+    // A parked mic is expected in manual standby, so a long gap is only *worth
+    // flagging* — never a fault on its own. Ten minutes is well past any legitimate
+    // pause between button interactions while still catching a mic that has stopped.
+    final int? micSilent = stats.micSilentForMs;
+    final double? duty = stats.captureDutyFraction;
+    final bool micStalled = micSilent != null && micSilent > 10 * 60 * 1000;
+    final micFlags = <String>[if (micStalled) 'no audio for ${_formatDuration(micSilent)}'];
+
     final memoryFlags = <String>[if (sdStackHot) 'SD worker stack high', if (codecStackHot) 'codec stack high'];
     final bleFlags = <String>[
       if (connFailsFault) '$connFails connect fail${connFails == 1 ? '' : 's'}',
@@ -2011,6 +2019,37 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
             DiagStatRow('Markers kept at SD pause gate', '$pauseSaves'),
           ],
         ),
+        // Mic health. Its own group because a parked mic is now a normal state, and the
+        // rest of the panel cannot distinguish "off on purpose" from "died" — that
+        // distinction is the whole reason these readings exist. silentFor is the one
+        // to watch during the manual-standby tests: it should climb while parked and
+        // sit under a couple of hundred ms whenever capture is live.
+        DiagGroup(
+          key: const ValueKey('diag-mic'),
+          title: 'Microphone',
+          allClear: micFlags.isEmpty,
+          clearSummary: micSilent == null
+              ? 'not reported'
+              : (micSilent < 1000 ? 'delivering' : 'parked ${_formatDuration(micSilent)}'),
+          alertSummary: _alertSummary(micFlags),
+          rows: [
+            // Frames land every 100 ms. Sub-second is healthy; a long gap is either a
+            // deliberate park (manual standby) or a stopped mic, and the event log's
+            // mic_state records are what tell those apart.
+            DiagStatRow(
+              'Last audio frame',
+              micSilent == null
+                  ? 'not reported'
+                  : (micSilent < 1000 ? '${micSilent}ms ago' : _formatDuration(micSilent)),
+              level: micStalled ? DiagLevel.warn : DiagLevel.info,
+            ),
+            DiagStatRow(
+              'Capture duty',
+              duty == null ? 'not reported' : '${(duty * 100).toStringAsFixed(1)}% of uptime',
+            ),
+            DiagStatRow('Recorded since boot', stats.voicedMs == 0 ? '—' : _formatDuration(stats.voicedMs)),
+          ],
+        ),
         DiagGroup(
           key: const ValueKey('diag-memory'),
           title: 'Memory',
@@ -2178,13 +2217,29 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       )
       ..writeln('stacks: sdWorker=${stats.sdWorkerStackUsed}B codec=${stats.codecStackUsed}B')
       ..writeln('ring: maxIo=${stats.ringMaxIoMs}ms(${stats.ringMaxIoOp}) ioErrors=${stats.ringIoErrors}')
+      // Mic liveness and capture duty. silentFor answers "is the mic delivering right
+      // now" directly — frames arrive every 100 ms, so anything past a few seconds is
+      // a parked or stopped mic, and it needs no cross-referencing against event
+      // timestamps. duty is voiced time over uptime: how much of the day the VAD is
+      // holding a recording open, i.e. what the auto threshold costs.
+      ..writeln(
+        'mic: silentFor=${stats.micSilentForMs == null ? "n/a" : "${stats.micSilentForMs}ms"} '
+        'voiced=${stats.voicedMs}ms '
+        'duty=${stats.captureDutyFraction == null ? "n/a" : "${(stats.captureDutyFraction! * 100).toStringAsFixed(1)}%"}',
+      )
       ..writeln(
         // "(lifetime)" is load-bearing: every other counter in this snapshot is
         // since-boot and the header states the uptime, so these two read as having
         // happened on this run when they in fact survive reboot and total every boot
         // the device has had.
         'ble: connFail=${stats.failedConnCount} estab0x3e=${stats.estabFailCount} (lifetime) '
-        'lastAdv=${stats.lastFailedConnDuringSlowAdv ? 'slow' : 'fast'}',
+        // Renamed from the ambiguous "lastAdv": this is the interval during the last
+        // FAILED connection, and it was twice misread as the live advertising mode.
+        'lastFailAdv=${stats.lastFailedConnDuringSlowAdv ? 'slow' : 'fast'} '
+        // The live one. Read over a connection, so it is the interval that was in
+        // force when the phone found the device — which is the measurement.
+        'adv=${stats.advActiveSlow ? 'slow' : 'fast'}'
+        '${stats.advActiveSlow == stats.advDesiredSlow ? '' : ' (want ${stats.advDesiredSlow ? 'slow' : 'fast'} — switch not applied)'}',
       );
 
     // Always emitted, even with nothing held: "held=0 dropped=12" is itself the
@@ -2192,8 +2247,20 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // when records was empty threw that away. capture= records whether the log was
     // even switched on, so a silent snapshot is not misread as a quiet device.
     final records = devProvider.diagLogRecords;
+    // capture= is the DEVICE's gate, not the app's preference. They diverge whenever
+    // the 0x0064 push is skipped (a sync holds the storage lock) or fails, and the
+    // divergence is exactly what makes an empty log unreadable: pref-true + gate-off
+    // looks identical to a device with nothing to report.
+    final gate = devProvider.diagLogGateOnDevice;
+    // An unknown gate is by definition unconfirmed: printing a timestamp beside it
+    // would attribute a previous connection's confirmation to a state we no longer
+    // know, which reads as "unknown, but verified 12s ago".
+    final gateAge = (gate == null || devProvider.diagLogGatePushedAt == null)
+        ? 'never'
+        : '${DateTime.now().difference(devProvider.diagLogGatePushedAt!).inSeconds}s ago';
     b.writeln(
-      'events: capture=${SharedPreferencesUtil().diagLogEnabled} supported=${devProvider.diagLogSupported} '
+      'events: capture=${gate ?? "unknown"} (pref=${SharedPreferencesUtil().diagLogEnabled}, confirmed $gateAge) '
+      'supported=${devProvider.diagLogSupported} '
       'held=${records.length} dropped=${devProvider.diagLogDroppedCount} (oldest first)',
     );
     for (final r in records) {

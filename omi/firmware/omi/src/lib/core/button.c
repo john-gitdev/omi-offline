@@ -10,6 +10,7 @@
 #include <zephyr/sys/poweroff.h>
 #include <zephyr/sys/reboot.h>
 
+#include "diag_log.h"
 #include "haptic.h"
 #include "imu.h"
 #include "led.h"
@@ -17,7 +18,6 @@
 #include "rtc.h"
 #include "speaker.h"
 #include "transport.h"
-#include "diag_log.h"
 #include "wdog_facade.h"
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
 #include "sd_card.h"
@@ -126,7 +126,18 @@ bool mute_apply(bool on)
         is_led_enabled = true;
         mute_since_utc_s = get_utc_time();
         mute_since_uptime_ms = (uint32_t) k_uptime_get();
-        mic_pause();
+        /* Through the gate rather than a direct mic_pause(), so mute is derived like
+         * every other input (mic_should_run() returns false whenever is_muted) and
+         * capture stops in exactly one place. It also makes the diagnostics
+         * symmetric: unmute already resumed via the gate and emitted a
+         * DIAG_MIC_STATE record, so a direct pause here logged resumes with no
+         * matching parks — a log that reads like the mic restarting on its own.
+         *
+         * The gate posts the capture-gap notice itself, which is what makes the next
+         * speech after unmute emit a 0xFFFFFFFD and re-anchor the app's timeline
+         * instead of stamping everything early by the mute duration, and drops the
+         * now-stale pre-mute pre-roll. */
+        aad_apply_mic_gate();
     } else {
         is_led_enabled = led_state_before_mute;
         /* Unmute was chosen as the safest recovery point for a wedged T5838: no
@@ -138,7 +149,10 @@ bool mute_apply(bool on)
          * untouched again. The call is kept, not deleted, so restoring the cycle is
          * one edit here rather than a hunt for the right recovery point. */
         mic_reset();
-        mic_resume();
+        /* Not a bare mic_resume(): unmuting in manual standby must leave capture
+         * parked, so the mic state stays derived from (threshold, is_muted) in one
+         * place. Recursive lock, so nesting is fine. */
+        aad_apply_mic_gate();
     }
     k_mutex_unlock(&mic_state_lock);
     LOG_INF("Mute toggled: %s", on ? "ON" : "OFF");
@@ -273,15 +287,20 @@ static void priority_record_stop(void)
     if (aad_get_threshold() != 65535) {
         return;
     }
-    transport_note_priority_record_stop(); /* diagnostics: pairs with the start count (0x19B10062) */
+    transport_note_priority_record_stop();               /* diagnostics: pairs with the start count (0x19B10062) */
     uint16_t resting = app_settings_get_vad_threshold(); /* persisted auto value */
     aad_set_threshold(resting);
-    /* aad_set_threshold's finalize path just parked AAD asleep, where only the
-     * hardware wake line can start another recording. Reset on the way in so we
-     * enter sleep on a known-good mic: without this a wedge that began during the
-     * recording costs up to AAD_WEDGE_RESET_MS of dead auto-capture before the
-     * watchdog notices. Free here — the recording has already ended. */
-    mic_reset();
+    /* NO mic_reset() HERE — removed. Its rationale ("enter sleep on a known-good
+     * mic ... before the watchdog notices") referenced AAD_WEDGE_RESET_MS and a
+     * watchdog that do not exist anywhere in this tree, and it could not have
+     * delivered it anyway: since oo-2.8.5 the call is a dmic re-trigger, which
+     * mic.h states does not recover a wedged part. What it did do was STOP/START a
+     * running mic (this path restores an AUTO threshold, so the gate keeps capture
+     * on) the instant VAD parks asleep, putting a discontinuity into the pre-roll
+     * that the next auto recording flushes at its head.
+     *
+     * A wedge here is caught by DIAG_VAD_LEVEL instead: auto mode keeps the mic
+     * running, so its windows keep closing and a zero peak is the signature. */
     create_new_audio_file();
     priority_record_cancel_cap();
 }
@@ -327,9 +346,19 @@ static bool record_start(void)
          * no-op before this change and must stay one. (already_recording is
          * otherwise dead in this branch — the else-if below only ever sees it in
          * auto mode.) */
-        if (!already_recording) {
-            mic_reset();
-        }
+        /* NO mic_reset() HERE either — removed for the same reason as the auto branch
+         * below, and pre-arm makes it worse rather than better. The mic is now already
+         * running by this point (the FSM woke it on the press edge so pre-roll could
+         * collect the ~700 ms this handler spends deciding what the press was), so the
+         * reset is no longer the no-op it would be on a parked mic: it would STOP and
+         * START a running mic and discard the in-flight block at exactly the head of
+         * the recording — throwing away part of the audio pre-arm exists to keep.
+         *
+         * THIS IS THE PLACE to restore the PDM_EN power cycle if the rail experiment
+         * ends (IDEAS.md "Mic rail (PDM_EN) is not driven by firmware", restore step
+         * 1): a manual start is the one moment the user has unambiguously asked for
+         * audio. It would need to run BEFORE the pre-arm resume, not here, so the dead
+         * samples land outside the recording. */
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
         aad_set_threshold(65535);
         app_settings_save_vad_threshold(65535);
@@ -351,20 +380,24 @@ static bool record_start(void)
      * and write 0xFFFFFFF8 as the first inline frame of the fresh bin. */
     marker_flash_color = MARKER_FLASH_RED;
     marker_flash_count = 2;
-    /* This used to start every Priority Recording on a freshly powered mic — the
-     * one moment the user has unambiguously asked for audio, so worth ~40 ms to
-     * guarantee the part is not wedged.
+    /* NO mic_reset() HERE — removed deliberately. It used to start every Priority
+     * Recording on a freshly power-cycled mic, which was worth ~40 ms at the one
+     * moment the user has unambiguously asked for audio. Since oo-2.8.5 it does not
+     * touch PDM_EN (IDEAS.md "Mic rail (PDM_EN) is not driven by firmware"), so all
+     * that remained was a dmic STOP/START on an already-running mic: it cannot rescue
+     * a wedged part — mic.h says so — and it discards the samples in flight at exactly
+     * the head of the recording. Pure cost.
      *
-     * It no longer does: mic_reset() does not touch PDM_EN any more (IDEAS.md "Mic
-     * rail (PDM_EN) is not driven by firmware"), so this is a dmic re-trigger that
-     * will NOT rescue a wedged part. Worth knowing, because a Priority Recording
-     * happening to call this is exactly what recovered the 2026-08-02 outage — that
-     * escape hatch is closed while the rail experiment runs.
+     * The wedge protection now comes from the gate's post-resume probe instead
+     * (DIAG_MIC_STATE_RESUMED_SILENT), which detects the failure the reset was
+     * supposed to prevent rather than blindly re-triggering against it.
      *
-     * Kept here, still before the force-capture entry and the rotate + 0xFFFFFFF8
-     * marker, so restoring the cycle puts the dead samples outside the recording
-     * rather than at its head, as before. */
-    mic_reset();
+     * mute_apply()'s unmute branch is now the SOLE remaining mic_reset() caller, and
+     * is the one place to restore the power cycle from if the rail experiment ends
+     * (IDEAS.md "Mic rail (PDM_EN) is not driven by firmware", restore step 1). It
+     * is the right one: capture is already stopped there, so the cycle costs nothing
+     * and cannot punch a hole in anything. Every other call site had the mic running
+     * and could only damage the audio it was supposed to protect. */
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
     /* Runtime force-capture only — NOT persisted, so a reboot mid-recording
      * returns to the auto threshold. */
@@ -404,9 +437,12 @@ static bool record_stop(void)
         aad_set_threshold(32769);
         app_settings_save_vad_threshold(32769);
 #endif
-        /* Manual standby is the same "entering a state only a wake can leave"
-         * boundary as priority_record_stop() — reset now that capture has ended. */
-        mic_reset();
+        /* NO mic_reset() HERE — removed, and pre-arm is why it is worse than dead.
+         * The FSM has not returned to idle yet, so mic_prearm is still set and the
+         * gate above deliberately kept capture running; the reset would therefore
+         * STOP/START a mic that the gate parks a few hundred ms later regardless.
+         * Churn on the way out of a recording, in exchange for nothing a dmic
+         * re-trigger can provide. */
         return true;
     } else if (force_recording) {
         /* Auto-mode Priority Recording stop. */
@@ -441,26 +477,60 @@ static void execute_button_action(uint8_t taps, bool is_hold)
     case BUTTON_ACTION_MUTE:
         acted = mute_apply(!is_muted);
         break;
-    case BUTTON_ACTION_MARKER:
+    case BUTTON_ACTION_MARKER: {
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+        /* Manual STANDBY: the tap does nothing at all. Not a bookmark, not an orphan
+         * EDL, nothing — it is swallowed here and no byte reaches the card. There is
+         * no recording to bookmark, and the alternative was worse than useless: it
+         * force-captured ~60 s of audio (aad_force_wake feeds has_voice, which no
+         * mode check gated) in the one mode whose promise is that it records only
+         * when told to.
+         *
+         * Manual RECORDING is different and still works — bookmarking a moment
+         * inside a long manual recording is exactly what a marker is for.
+         *
+         * The PERSISTED threshold decides, not the runtime one: 32769 is manual
+         * standby, 65535 manual recording, anything lower auto. An auto-mode Priority
+         * Recording holds runtime 65535 without persisting it, so reading the runtime
+         * value would misclassify a marker tapped during one as manual. */
+        const uint16_t resting_thr = app_settings_get_vad_threshold();
+        const bool marker_in_manual = (resting_thr == 32769 || resting_thr == 65535);
+        if (resting_thr == 32769) {
+            LOG_INF("Marker ignored (manual standby — nothing is recording)");
+            break;
+        }
+#else
+        const bool marker_in_manual = false;
+#endif
         if (!is_muted) {
-            // Always a plain white bookmark now, in any mode. The manual-mode
-            // start/stop overload was removed — explicit RECORD_START /
-            // RECORD_STOP handle recording control in both modes, which also lets
-            // a marker be dropped *during* a manual recording.
+            // A plain white bookmark, and in auto mode it also guarantees the audio
+            // around itself: aad_force_wake() below bypasses BOTH the firmware's
+            // amplitude threshold and (via the app's matching 50 s window) Silero,
+            // for ~60 s from the tap. That is the point of the action — the user
+            // cannot know whether the VAD considers the moment worth recording, so a
+            // marker asserts that it is. The guarantee is unconditional, NOT "only if
+            // it was not already recording": a tap during speech that then stops
+            // would otherwise end the recording 10 s later with the marker at its
+            // tail, which is the exact loss the window exists to prevent.
             acted = true;
             LOG_INF("Marker detected");
             marker_flash_color = MARKER_FLASH_WHITE;
             marker_flash_count = 2;
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
-            /* Recover a wedged mic here too, but ONLY while idle. Mid-recording a
-             * reset drops in-flight samples at exactly the instant the marker is
-             * meant to bookmark — the worst possible place. Idle it is free, and it
-             * is the case that matters: a marker tapped because "it isn't recording
-             * anything" is the user reporting the wedge. In the 2026-07-28 incident
-             * this tap was the first write to the card in 14.5 h. */
-            if (!aad_is_recording()) {
-                mic_reset();
-            }
+            /* NO mic_reset() HERE — removed, and replaced by something that actually
+             * works. The case this guarded is real and worth keeping in mind: a
+             * marker tapped because "it isn't recording anything" is the user
+             * reporting a wedge, and in the 2026-07-28 incident that tap was the
+             * first write to the card in 14.5 h. But a dmic re-trigger cannot clear
+             * a wedged T5838 (mic.h), so all it delivered was a hole in the audio
+             * immediately before the window the marker exists to bookmark.
+             *
+             * What replaces it is detection rather than a blind retry. In manual
+             * standby the mic is parked, so this tap resumes it through the gate,
+             * which arms the post-resume probe — a part returning digital silence
+             * now reports DIAG_MIC_STATE_RESUMED_SILENT at the exact moment the user
+             * complained. In auto mode the mic never stopped, so DIAG_VAD_LEVEL's
+             * zero-peak windows are the signature instead. Both modes covered. */
 #endif
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
             // AAD may have paused SD writes during a silence gap. A marker
@@ -473,12 +543,20 @@ static void execute_button_action(uint8_t taps, bool is_hold)
             write_marker_to_storage();
 #endif
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
-            aad_force_wake();
+            /* Auto mode only. In a manual recording the 65535 threshold already
+             * forces every frame, so the window would add nothing — except a bug:
+             * force_wake_until_ms outlives a stop, so a marker tapped within 50 s of
+             * pressing Stop would hold has_voice true past the stop and resume
+             * capturing in standby, for the remainder of the window. */
+            if (!marker_in_manual) {
+                aad_force_wake();
+            }
 #endif
         } else {
             LOG_INF("Marker ignored (muted)");
         }
         break;
+    }
     case BUTTON_ACTION_TOGGLE_LED:
         is_led_enabled = !is_led_enabled;
         LOG_INF("LED toggled %s", is_led_enabled ? "ON" : "OFF");
@@ -533,6 +611,7 @@ static void execute_button_action(uint8_t taps, bool is_hold)
 void check_button_level(struct k_work *work_item)
 {
     bool pressed = was_pressed;
+    const button_fsm_state_t entry_state = fsm_state;
     state_timer++;
 
     switch (fsm_state) {
@@ -571,8 +650,7 @@ void check_button_level(struct k_work *work_item)
                 bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
                 /* Tag the deliberate wipe so a later "device came up unbonded" can be
                  * attributed to this gesture rather than to an unexplained key loss. */
-                diag_log_event(DIAG_BOND_STATE, 0, DIAG_BOND_CAUSE_BUTTON,
-                               transport_bond_count());
+                diag_log_event(DIAG_BOND_STATE, 0, DIAG_BOND_CAUSE_BUTTON, transport_bond_count());
 
                 led_off();
                 for (int i = 0; i < 3; i++) {
@@ -625,6 +703,29 @@ void check_button_level(struct k_work *work_item)
         }
         break;
     }
+
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    /* Pre-arm the mic for the whole interaction. In manual standby the mic is parked,
+     * and this handler cannot know for ~700 ms whether a press is a record-start —
+     * MULTI_TAP_WINDOW has to expire first to rule out a second tap. Waking on the
+     * press edge means pre-roll has already collected that span by the time
+     * execute_button_action() runs, so a manual recording still starts where the
+     * user's finger did instead of where the FSM caught up.
+     *
+     * The clear runs AFTER the action has dispatched (execute_button_action is called
+     * from the branches above, before the state lands on IDLE), so by then the gate
+     * sees the threshold the action set: a record-start holds the mic on, anything
+     * else parks it again. A press that starts nothing costs a few hundred ms of mic.
+     *
+     * No-op in auto mode, where the gate keeps the mic running regardless. */
+    if (entry_state == STATE_IDLE && fsm_state != STATE_IDLE) {
+        aad_set_mic_prearm(true);
+    } else if (entry_state != STATE_IDLE && fsm_state == STATE_IDLE) {
+        aad_set_mic_prearm(false);
+    }
+#else
+    ARG_UNUSED(entry_state);
+#endif
 
     // Keep polling only while an interaction is in progress.
     // Returning to STATE_IDLE lets the work item die; the GPIO interrupt

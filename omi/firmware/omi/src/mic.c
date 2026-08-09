@@ -36,6 +36,12 @@ LOG_MODULE_REGISTER(mic, CONFIG_LOG_DEFAULT_LEVEL);
 K_MEM_SLAB_DEFINE_STATIC(mem_slab, MAX_BLOCK_SIZE, BLOCK_COUNT, 4);
 
 static const struct device *dmic_dev;
+/* Set only after dmic_configure() succeeds. The pointer alone is not readiness:
+ * mic_start() assigns dmic_dev before configuring, so a caller that checked the
+ * pointer could issue DMIC_TRIGGER_START against an unconfigured device in that
+ * window. Microseconds wide and it needs a BLE write to land inside it, but the
+ * flag is free and makes the guard mean what it says. */
+static volatile bool dmic_configured = false;
 static volatile mix_handler callback_func = NULL;
 static volatile bool mic_running = false;
 
@@ -128,13 +134,13 @@ static void mic_thread_function(void *p1, void *p2, void *p3)
         if (mic_running) {
             void *buffer;
             uint32_t size;
-    
+
             int ret = dmic_read(dmic_dev, 0, &buffer, &size, READ_TIMEOUT);
             if (ret < 0) {
                 LOG_ERR("Read failed: %d", ret);
                 continue;
             }
-    
+
             LOG_DBG("Got buffer %p of %u bytes", buffer, size);
             process_audio_buffer(buffer, size);
         } else {
@@ -206,6 +212,8 @@ int mic_start()
         return ret;
     }
 
+    dmic_configured = true;
+
     // Apply saved mic gain setting
     uint8_t saved_gain = app_settings_get_mic_gain();
     mic_set_gain(saved_gain);
@@ -254,9 +262,33 @@ void mic_pause()
     k_mutex_unlock(&mic_state_lock);
 }
 
+/* True once mic_start() has resolved the dmic device. Everything that STOPs is
+ * already safe before then (it is gated on mic_running, which cannot be set yet),
+ * but the two entry points that START are not: they would hand a NULL device to
+ * dmic_trigger().
+ *
+ * The window is real and not short. transport_start() runs BEFORE mic_start() in
+ * main(), and boot_warming_sequence() sits between them waiting for the SD card —
+ * up to SD_BOOT_TIMEOUT_MS (90 s) on a faulty card. Any BLE write that reaches the
+ * mic in that window lands here: a VAD-threshold write via aad_apply_mic_gate(), or
+ * the unmute half of a mute toggle. */
+static inline bool mic_hw_ready(void)
+{
+    return dmic_dev != NULL && dmic_configured;
+}
+
+bool mic_is_ready(void)
+{
+    return mic_hw_ready();
+}
+
 void mic_resume()
 {
     LOG_INF("Resuming microphone");
+    if (!mic_hw_ready()) {
+        LOG_WRN("mic_resume before mic_start — ignoring");
+        return;
+    }
     k_mutex_lock(&mic_state_lock, K_FOREVER);
     if (!mic_running) {
         int ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
@@ -352,6 +384,12 @@ void mic_off()
 
 void mic_on()
 {
+    /* Same pre-mic_start() hazard as mic_resume(), plus this one would also
+     * k_thread_start() the mic thread into dmic_read(NULL). */
+    if (!mic_hw_ready()) {
+        LOG_WRN("mic_on before mic_start — ignoring");
+        return;
+    }
     k_mutex_lock(&mic_state_lock, K_FOREVER);
     if (!mic_running) {
         /* No PDM_EN restore needed: nothing drives that pin any more, so the rail is

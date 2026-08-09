@@ -171,6 +171,16 @@ class DeviceProvider extends ChangeNotifier
   int diagLogDroppedCount = 0;
   DateTime? diagLogLastPulledAt;
 
+  /// Whether the DEVICE's runtime capture gate is believed on, and when that belief
+  /// was last confirmed by a successful 0x0064 write. Distinct from the
+  /// `diagLogEnabled` pref on purpose: the push is skipped while a sync holds the
+  /// storage lock and can fail outright, so the pref alone says nothing about whether
+  /// the device is actually recording events. A snapshot that reports the pref as
+  /// "capture=true" while the device's gate is off makes an empty log look like a
+  /// quiet device instead of an un-armed one.
+  bool? diagLogGateOnDevice;
+  DateTime? diagLogGatePushedAt;
+
   void _loadCrashLogs() {
     try {
       final raw = SharedPreferencesUtil().getString(_crashLogsKey);
@@ -571,7 +581,13 @@ class DeviceProvider extends ChangeNotifier
     final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
     if (connection == null) return false;
     try {
-      return await connection.setDiagLogEnabled(SharedPreferencesUtil().diagLogEnabled);
+      final want = SharedPreferencesUtil().diagLogEnabled;
+      final ok = await connection.setDiagLogEnabled(want);
+      if (ok) {
+        diagLogGateOnDevice = want;
+        diagLogGatePushedAt = DateTime.now();
+      }
+      return ok;
     } catch (e) {
       Logger.debug('DeviceProvider: pushDiagLogEnabled failed: $e');
       return false;
@@ -594,6 +610,16 @@ class DeviceProvider extends ChangeNotifier
     diagLogRecords = result.records;
     diagLogDroppedCount = result.droppedCount;
     diagLogLastPulledAt = DateTime.now();
+    // The ack write carries the gate byte, so a drain that acked anything is also a
+    // confirmed push. Only then: performDrainDiagLog() breaks out of its loop BEFORE
+    // _writeDiagLogControl() when a batch holds no records, and an empty ring is the
+    // ordinary case on a routine connect — so treating every drain as confirmation
+    // would mark the gate verified on no evidence at all, which is the exact failure
+    // this field exists to remove.
+    if (result.records.isNotEmpty) {
+      diagLogGateOnDevice = SharedPreferencesUtil().diagLogEnabled;
+      diagLogGatePushedAt = diagLogLastPulledAt;
+    }
     for (final r in result.records) {
       await DebugLogManager.logEvent('device_diag_log', r.toJson());
     }
@@ -1900,6 +1926,13 @@ class DeviceProvider extends ChangeNotifier
       // The cache is deliberately NOT device-scoped: only one Omi is ever paired and
       // connected, so records can't be carried across a device switch and it isn't a
       // case worth holding code for.
+      // Unknown until THIS connection confirms it, and reset before the feature read
+      // rather than inside it: getFeaturesIfIdle() returns null whenever a sync holds
+      // the storage lock, and a reset that lives in the success branch would let the
+      // previous connection's belief survive — including a stale `true` after a reboot
+      // has cleared the device's volatile gate.
+      diagLogGateOnDevice = null;
+      diagLogGatePushedAt = null;
       final int? deviceFeatures = await conn.getFeaturesIfIdle();
       if (deviceFeatures != null) {
         diagLogSupported = (deviceFeatures & OmiFeatures.diagLog) != 0;

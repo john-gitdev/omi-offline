@@ -129,6 +129,68 @@ class DeviceDropStats {
     }
   }
 
+  /// Device uptime (ms) at the last mic frame the VAD processed (offset 84; 0 on
+  /// firmware older than oo-2.10.0, or before the first frame). Against
+  /// [currentUptimeMs] this is the only direct answer to "is the mic delivering
+  /// right now" — see [micSilentForMs]. It exists because a parked or wedged mic
+  /// produces *no* event-log records at all, so a quiet log cannot distinguish
+  /// "nothing happened" from "the mic stopped".
+  final int lastMicFrameUptimeMs;
+
+  /// Total ms the VAD has held a recording open since boot (offset 88; 0 on older
+  /// firmware). Against [currentUptimeMs] this is the capture duty cycle — the
+  /// fraction of the day being encoded and written, which is what the auto-mode
+  /// threshold actually costs.
+  final int voicedMs;
+
+  /// How long the mic has been silent, or `null` when the firmware doesn't report
+  /// it (or hasn't delivered a first frame yet). Small values are normal — frames
+  /// arrive every 100 ms; minutes mean the mic is parked or stopped.
+  int? get micSilentForMs {
+    if (lastMicFrameUptimeMs == 0) return null;
+    // Unsigned 32-bit delta, not a clamped subtraction. Both values are u32 device
+    // uptimes that wrap every ~49.7 days; a naive subtraction across the wrap goes
+    // negative, and clamping that to 0 reports "the mic is alive" — masking a parked
+    // or wedged mic in exactly the direction that hides a fault.
+    return (currentUptimeMs - lastMicFrameUptimeMs) & 0xFFFFFFFF;
+  }
+
+  /// Capture duty as a 0..1 fraction of uptime, or `null` when unreported.
+  double? get captureDutyFraction {
+    if (voicedMs == 0 || currentUptimeMs <= 0) return null;
+    // Both are u32 device counters and uptime wraps first (~49.7 days), after which
+    // voiced time exceeds it and the ratio is meaningless. Report unavailable rather
+    // than clamping to 1.0, which would state "this device records 100% of the time"
+    // — a plausible-looking number that is simply wrong. Recovering the true duty
+    // needs a wrap count the wire protocol does not carry.
+    //
+    // Known and accepted: this catches the FIRST wrap only. If voicedMs later wraps
+    // too the ordering inverts and a wrong (low) figure returns — but that needs
+    // ~60 days of unbroken uptime at the duty this device actually runs, and a DFU,
+    // a flat cell or the watchdog all reboot it long before. Not worth a protocol
+    // field for a gauge.
+    if (voicedMs > currentUptimeMs) return null;
+    return voicedMs / currentUptimeMs;
+  }
+
+  /// Advertising interval, packed `[active u8][desired u8]` (offset 92; 0 on firmware
+  /// older than oo-2.10.0). 0 = fast (100–150 ms), 1 = slow (~1 s).
+  ///
+  /// Distinct from [lastFailedConnDuringSlowAdv] (offset 24), which is the mode during
+  /// the last *failed* connection and says nothing about the current one. Advertising
+  /// stops while connected, so the value read here is the interval that was in force
+  /// when the phone found the device — which is the only way to confirm the device
+  /// settles to the slow interval when idle.
+  final int advModesRaw;
+
+  /// True when the device was advertising on the slow (~1 s) interval.
+  bool get advActiveSlow => (advModesRaw & 0xFF) == 1;
+
+  /// True when slow is the *requested* interval. Differs from [advActiveSlow] only
+  /// when a mode switch has been asked for and the advertising watchdog has not
+  /// applied it yet — which is what a stuck switch looks like.
+  bool get advDesiredSlow => ((advModesRaw >> 8) & 0xFF) == 1;
+
   /// The firmware's SD write-queue size (`SD_REQ_QUEUE_MSGS`), used as the denominator
   /// for [msgqPeakDepth]. The firmware doesn't send this as a field; it's derived from
   /// the payload length in the parser — the 76-byte payload is only produced by the
@@ -160,6 +222,9 @@ class DeviceDropStats {
     this.codecStackUsed = 0,
     this.ringMaxIoRaw = 0,
     this.ringIoErrors = 0,
+    this.lastMicFrameUptimeMs = 0,
+    this.voicedMs = 0,
+    this.advModesRaw = 0,
     this.sdQueueMax = 120,
     required this.readAt,
   });

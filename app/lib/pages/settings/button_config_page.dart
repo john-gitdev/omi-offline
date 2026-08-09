@@ -646,6 +646,22 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
                     ],
                   ),
                 ),
+                // Marker's side effect was undisclosed until now: in auto mode it does
+                // not merely bookmark, it forces the mic to keep capturing for ~1 min
+                // regardless of what the VAD thinks. That is deliberate — you cannot
+                // know whether the Omi considered the moment worth recording, so the
+                // tap asserts that it was — but it has to be stated, not discovered.
+                Padding(
+                  padding: const EdgeInsets.only(top: 16.0),
+                  child: Text(
+                    _selectedManual
+                        ? 'Marker only works while a recording is running. In standby there is nothing '
+                            'to bookmark, so the tap does nothing at all.'
+                        : 'Marker also records for at least a minute from the tap and will continue '
+                            'automatic recording if sound is detected.',
+                    style: const TextStyle(color: Colors.white54, fontSize: 12),
+                  ),
+                ),
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 16.0),
                   child: Text(

@@ -59,6 +59,9 @@ class SharedPreferencesUtil {
   // owns both and pushes the active mode's config to the firmware on connect and
   // on mode switch (the firmware keeps a single active slot). Mute is a no-op in
   // manual mode, so the manual default omits it.
+  // Marker stays mapped in manual (single-tap-hold): it is live during a manual
+  // recording, where bookmarking a moment inside a long capture is exactly the
+  // point. It is inert only in manual STANDBY, where there is nothing to bookmark.
   static const List<int> defaultButtonConfigManual = [0, 2, 4, 3, 5, 0];
   static const List<int> defaultButtonConfigAuto = [0, 4, 2, 1, 3, 5];
 
