@@ -1832,6 +1832,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       if (prioStarts > prioStops) 'left open',
       if (prioStops > 0 && seEmits == 0) 'no session-end',
     ];
+    // A parked mic is expected in manual standby, so a long gap is only *worth
+    // flagging* — never a fault on its own. Ten minutes is well past any legitimate
+    // pause between button interactions while still catching a mic that has stopped.
+    final int? micSilent = stats.micSilentForMs;
+    final double? duty = stats.captureDutyFraction;
+    final bool micStalled = micSilent != null && micSilent > 10 * 60 * 1000;
+    final micFlags = <String>[if (micStalled) 'no audio for ${_formatDuration(micSilent)}'];
+
     final memoryFlags = <String>[if (sdStackHot) 'SD worker stack high', if (codecStackHot) 'codec stack high'];
     final bleFlags = <String>[
       if (connFailsFault) '$connFails connect fail${connFails == 1 ? '' : 's'}',
@@ -2009,6 +2017,37 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               level: prioStops > 0 && seEmits == 0 ? DiagLevel.warn : DiagLevel.info,
             ),
             DiagStatRow('Markers kept at SD pause gate', '$pauseSaves'),
+          ],
+        ),
+        // Mic health. Its own group because a parked mic is now a normal state, and the
+        // rest of the panel cannot distinguish "off on purpose" from "died" — that
+        // distinction is the whole reason these readings exist. silentFor is the one
+        // to watch during the manual-standby tests: it should climb while parked and
+        // sit under a couple of hundred ms whenever capture is live.
+        DiagGroup(
+          key: const ValueKey('diag-mic'),
+          title: 'Microphone',
+          allClear: micFlags.isEmpty,
+          clearSummary: micSilent == null
+              ? 'not reported'
+              : (micSilent < 1000 ? 'delivering' : 'parked ${_formatDuration(micSilent)}'),
+          alertSummary: _alertSummary(micFlags),
+          rows: [
+            // Frames land every 100 ms. Sub-second is healthy; a long gap is either a
+            // deliberate park (manual standby) or a stopped mic, and the event log's
+            // mic_state records are what tell those apart.
+            DiagStatRow(
+              'Last audio frame',
+              micSilent == null
+                  ? 'not reported'
+                  : (micSilent < 1000 ? '${micSilent}ms ago' : _formatDuration(micSilent)),
+              level: micStalled ? DiagLevel.warn : DiagLevel.info,
+            ),
+            DiagStatRow(
+              'Capture duty',
+              duty == null ? 'not reported' : '${(duty * 100).toStringAsFixed(1)}% of uptime',
+            ),
+            DiagStatRow('Recorded since boot', stats.voicedMs == 0 ? '—' : _formatDuration(stats.voicedMs)),
           ],
         ),
         DiagGroup(
