@@ -657,9 +657,8 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
                     _selectedManual
                         ? 'Marker only works while a recording is running. In standby there is nothing '
                             'to bookmark, so the tap does nothing at all.'
-                        : 'Marker also records for at least a minute from the tap, even if the Omi had '
-                            'decided the room was quiet — and keeps going for as long as it hears '
-                            'something, so a bookmark always has the audio around it.',
+                        : 'Marker also records for at least a minute from the tap and will continue '
+                            'automatic recording if sound is detected.',
                     style: const TextStyle(color: Colors.white54, fontSize: 12),
                   ),
                 ),
