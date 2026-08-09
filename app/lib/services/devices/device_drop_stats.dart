@@ -173,6 +173,24 @@ class DeviceDropStats {
     return voicedMs / currentUptimeMs;
   }
 
+  /// Advertising interval, packed `[active u8][desired u8]` (offset 92; 0 on firmware
+  /// older than oo-2.10.0). 0 = fast (100–150 ms), 1 = slow (~1 s).
+  ///
+  /// Distinct from [lastFailedConnDuringSlowAdv] (offset 24), which is the mode during
+  /// the last *failed* connection and says nothing about the current one. Advertising
+  /// stops while connected, so the value read here is the interval that was in force
+  /// when the phone found the device — which is the only way to confirm the device
+  /// settles to the slow interval when idle.
+  final int advModesRaw;
+
+  /// True when the device was advertising on the slow (~1 s) interval.
+  bool get advActiveSlow => (advModesRaw & 0xFF) == 1;
+
+  /// True when slow is the *requested* interval. Differs from [advActiveSlow] only
+  /// when a mode switch has been asked for and the advertising watchdog has not
+  /// applied it yet — which is what a stuck switch looks like.
+  bool get advDesiredSlow => ((advModesRaw >> 8) & 0xFF) == 1;
+
   /// The firmware's SD write-queue size (`SD_REQ_QUEUE_MSGS`), used as the denominator
   /// for [msgqPeakDepth]. The firmware doesn't send this as a field; it's derived from
   /// the payload length in the parser — the 76-byte payload is only produced by the
@@ -206,6 +224,7 @@ class DeviceDropStats {
     this.ringIoErrors = 0,
     this.lastMicFrameUptimeMs = 0,
     this.voicedMs = 0,
+    this.advModesRaw = 0,
     this.sdQueueMax = 120,
     required this.readAt,
   });
