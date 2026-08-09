@@ -10,7 +10,7 @@ Work top to bottom — the later scenarios assume the earlier ones passed. Each 
 
 1. **Install both halves.** Firmware `oo-2.10.0` and app `0.33.0`. Mixed versions degrade rather
    than break: an older firmware makes the new `mic:` line read `n/a`, and an older app ignores
-   the two appended `0x0062` fields.
+   the appended `0x0062` fields.
 2. **Expect to re-pair.** Every DFU clears the Bluetooth bond on both sides — by design, not a
    fault. Don't spend time diagnosing it.
 3. **Turn the event log on** — Debug Tools → Event log. Nothing below produces records without
@@ -224,6 +224,29 @@ see it here or nowhere.
 
 ---
 
+## 13. Advertising settles to the slow interval when idle
+
+**Do:** power-cycle the Omi in a quiet room, leave the phone away for **90 s**, then connect and
+snapshot. Repeat after leaving it idle and disconnected for a couple of minutes.
+
+| Check | Pass |
+|---|---|
+| `ble: … adv=` | `slow` |
+| A trailing `(want … — switch not applied)` | absent |
+
+`adv=` is the **live** interval, read at connect time — advertising stops while connected, so it
+reports what was in force when your phone found the device. That is exactly the question.
+
+**Fail:** `adv=fast` after 90 s of idle means the backstop never fired. `adv=fast (want slow —
+switch not applied)` is different and more interesting: the backstop *did* fire, and the
+advertising watchdog has not applied the switch.
+
+> Don't read `lastFailAdv=` for this. That is the interval during the last *failed* connection —
+> a different field, and it was misread as the live mode twice during review, which is why
+> `adv=` now exists.
+
+---
+
 ## Watch list — the next few days
 
 Check a snapshot every couple of days. Any of these is worth stopping for:
@@ -242,10 +265,6 @@ Check a snapshot every couple of days. Any of these is worth stopping for:
 
 ## What this plan cannot tell you
 
-- **Whether advertising actually slows down.** Nothing reports the live advertising mode.
-  `lastAdv` in the snapshot is `last_failed_adv_slow` — the mode during the last *failed*
-  connection — not the current one. Checking it needs a BLE scanner app and a stopwatch (slow ≈
-  1–1.2 s between adverts, fast ≈ 100–150 ms), or one more byte added to `0x0062`.
 - **Whether the post-resume probe works**, short of an actually wedged mic. It cannot be forced.
 - **Real current draw.** Everything about the battery here is inference from percentages. Four
   states on a PPK2 (auto-silent disconnected / muted / recording / syncing) would turn the whole
