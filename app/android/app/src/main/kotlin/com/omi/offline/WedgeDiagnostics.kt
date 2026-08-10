@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
@@ -12,6 +13,8 @@ import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.LocationManager
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -106,6 +109,17 @@ object WedgeDiagnostics {
 
     /** How long to listen for the peripheral's advertisements once wedged. */
     private const val PROBE_DURATION_MS = 8_000L
+
+    /**
+     * Classic profiles worth reporting in an outage snapshot, with the name each gets in the log.
+     * Audio only: A2DP and HFP/HSP are the profiles whose scheduling actually competes with an LE
+     * connect initiator. `HID_HOST` would round out the picture but its constant is hidden
+     * (`@SystemApi`), and there is no supported way to read that profile's state from an app.
+     */
+    private val CLASSIC_PROFILES: List<Pair<Int, String>> = listOf(
+        BluetoothProfile.A2DP to "a2dp",
+        BluetoothProfile.HEADSET to "headset",
+    )
 
     private val probeInFlight = AtomicBoolean(false)
     private val handler = Handler(Looper.getMainLooper())
@@ -321,6 +335,9 @@ object WedgeDiagnostics {
             false
         }
 
+        val classicProfiles = connectedClassicProfiles(adapter)
+        val audioDevices = btAudioDevices(context)
+
         return linkedMapOf(
             "adapter_state" to (adapter?.let { adapterStateName(it.state) } ?: "no_adapter"),
             // Both false means no stale link is holding the peripheral's single connection slot.
@@ -334,9 +351,133 @@ object WedgeDiagnostics {
             // field for the contention signal; le_link_count stays as the raw system-wide total.
             "contending_le_links" to otherLinks.length(),
             "le_link_count" to (otherLinks.length() + if (omiInGattList) 1 else 0),
+            // The classic (BR/EDR) half of the contention picture, which every field above is
+            // structurally blind to — see connectedClassicProfiles(). Diff both across
+            // wedge→recovery: a headset or car kit that connected just before the outage and
+            // dropped just before the recovery is the same signal contending_le_links carries
+            // for LE, and until these existed it could not be seen at all.
+            "classic_profiles" to classicProfiles,
+            "bt_audio_devices" to audioDevices,
+            // Connected vs actually streaming — see scoActive(). An idle link and a live call are
+            // both "connected" but only one seriously competes for the controller's time.
+            "sco_active" to scoActive(context),
+            "audio_active" to audioActive(context),
             "screen_interactive" to (power?.isInteractive ?: false),
             "doze_mode" to (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) power?.isDeviceIdleMode else null),
         )
+    }
+
+    /**
+     * Which classic (BR/EDR) profiles currently hold a link. [OmiBleManager.connectedLeLinks]
+     * structurally cannot see these: it reads the GATT profile list, and a car kit, a headset or a
+     * pair of smart glasses connects over A2DP/HFP, not GATT. The blind spot was load-bearing —
+     * wedge records listed one contending LE link (a watch) while the devices actually suspected of
+     * causing the outage were classic audio, so the log could neither support nor refute the
+     * suspicion.
+     *
+     * Classic audio is also the harder contender of the two to share a radio with: A2DP, and SCO
+     * especially, hold reserved periodic slots the controller schedules around, leaving an LE
+     * connect initiator whatever is left. That is the shape that produces `147` — the peer never
+     * completed the link — rather than an outright rejection.
+     *
+     * [BluetoothAdapter.getProfileConnectionState] rather than a profile proxy because it is
+     * synchronous: this snapshot runs on a GATT binder thread inside the disconnect path and must
+     * not wait on a service binding. The price is that it reports only *whether* a profile has a
+     * link, never to which device — [btAudioDevices] names the connected endpoints, and
+     * [scoActive] / [audioActive] say whether any of them was actually carrying audio.
+     */
+    private fun connectedClassicProfiles(adapter: BluetoothAdapter?): JSONArray {
+        val out = JSONArray()
+        if (adapter == null) return out
+        for ((profile, name) in CLASSIC_PROFILES) {
+            try {
+                if (adapter.getProfileConnectionState(profile) == BluetoothProfile.STATE_CONNECTED) {
+                    out.put(name)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Cannot read $name profile state: ${e.message}")
+            }
+        }
+        return out
+    }
+
+    /**
+     * The Bluetooth audio endpoints the framework has *available*, by name — the only synchronous
+     * way to put a *device* behind [connectedClassicProfiles]'s bare profile names.
+     *
+     * Available, not active: `getDevices` lists every connected endpoint that could be routed to,
+     * so a paired-and-connected headset appears here while it sits idle and while audio is coming
+     * out of the phone's own speaker. Naming this "routes" would invite exactly the misreading that
+     * matters — an idle A2DP link and one actively streaming are very different contenders for the
+     * controller's time, and only the second is a strong suspect for a failed connect. [scoActive]
+     * and [audioActive] carry that distinction; this field carries identity.
+     *
+     * Covers LE Audio (`TYPE_BLE_*`) as well: an LE Audio headset is a scheduling contender that
+     * may never appear in the GATT list either, so reading only the classic types would reopen the
+     * same blind spot one generation of hardware later. Those constants are API 31 but need no
+     * version guard — they are compile-time `Int`s, and a pre-31 device simply never reports them.
+     */
+    private fun btAudioDevices(context: Context): JSONArray {
+        val out = JSONArray()
+        val audio = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return out
+        try {
+            val devices = audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS or AudioManager.GET_DEVICES_INPUTS)
+            for (device in devices) {
+                val kind = when (device.type) {
+                    AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "a2dp"
+                    AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "sco"
+                    AudioDeviceInfo.TYPE_BLE_HEADSET, AudioDeviceInfo.TYPE_BLE_SPEAKER -> "le_audio"
+                    else -> continue
+                }
+                out.put("${device.productName} ($kind)")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Cannot enumerate BT audio devices: ${e.message}")
+        }
+        return out
+    }
+
+    /**
+     * Whether audio is actually *flowing*, which is what decides how much of the radio a connected
+     * audio device is really taking. [btAudioDevices] can only say something is connected.
+     *
+     * The SCO half is the one worth having: SCO is a reserved periodic slot the controller cannot
+     * preempt, so a call in progress over a car kit is the worst case for an LE connect initiator.
+     *
+     * The name is narrower than the reading, deliberately: an LE Audio headset on a call sets this
+     * too (`TYPE_BLE_HEADSET`), and LE Audio claims no classic SCO slot — it reserves scheduled
+     * isochronous events instead. Still a contender, but a different mechanism, so a `true` here is
+     * "a voice call was routed to Bluetooth", not "the classic-SCO worst case" specifically. Both
+     * are included because the diagnostic question is whether a call was occupying the radio.
+     *
+     * `isMusicActive` is not Bluetooth-specific — it is true for speaker playback too — so it means
+     * "A2DP was probably streaming" only when read together with an `a2dp` entry in
+     * [btAudioDevices]. Recorded separately rather than folded into one flag for that reason.
+     *
+     * `getCommunicationDevice()` on API 31+, where `isBluetoothScoOn` is deprecated; the deprecated
+     * call still runs below that, since minSdk is 26 and there is no other way to ask there.
+     */
+    @Suppress("DEPRECATION")
+    private fun scoActive(context: Context): Boolean? = try {
+        val audio = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        when {
+            audio == null -> null
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> audio.communicationDevice?.type.let {
+                it == AudioDeviceInfo.TYPE_BLUETOOTH_SCO || it == AudioDeviceInfo.TYPE_BLE_HEADSET
+            }
+            else -> audio.isBluetoothScoOn
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "Cannot read SCO state: ${e.message}")
+        null
+    }
+
+    /** See [scoActive] — only meaningful alongside an `a2dp`/`le_audio` entry in [btAudioDevices]. */
+    private fun audioActive(context: Context): Boolean? = try {
+        (context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)?.isMusicActive
+    } catch (e: Exception) {
+        Log.w(TAG, "Cannot read playback state: ${e.message}")
+        null
     }
 
     /**
