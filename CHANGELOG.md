@@ -291,6 +291,14 @@ Patch releases are rolled up into their minor version. Each section reflects the
 
 ## Firmware
 
+### oo-3.0
+
+- **Change: the radio idles between transfers instead of running flat out.** The connection was negotiated once, for the speed a file transfer needs, and stayed there for as long as it was up — waking the radio about ninety times a second even with nothing to send, which is most of the time a connection exists. It now runs at that speed only while a recording is transferring or a firmware update is being flashed, and at roughly a tenth of it otherwise.
+
+- **Fix: the Omi no longer hangs up on a phone that is still pairing.** An update deliberately clears the pairing on both sides, and until a new one is established the phone cannot send the signal that tells the Omi the link is in use — so the Omi read the silence as an idle phone and hung up, repeatedly, each time interrupting the pairing that was in progress. It now recognises an unpaired link and waits, up to a limit, so it still hangs up on a phone that has genuinely stopped talking.
+
+- **Change: the Omi waits a minute before hanging up on a quiet phone, rather than fifteen seconds.** Fifteen seconds was short enough that ordinary things — pairing, setting up a connection — kept getting caught by it, and with the radio now idling cheaply between transfers there is little to gain from being quick about it.
+
 ### oo-2.10
 
 - **Change: a marker tap does nothing while Manual Mode is idle.** It used to write a bookmark and force the microphone to capture for about a minute — in the mode whose entire promise is that it records only when you tell it to. With nothing being recorded there is nothing to bookmark, so nothing is written now: no bookmark, no empty bookmark entry, nothing. Markers tapped **during** a manual recording still work exactly as before. Automatic Mode is untouched, where that one-minute guarantee is deliberate: you can't tell whether the Omi rated the moment as speech, so the tap asserts that it did.
