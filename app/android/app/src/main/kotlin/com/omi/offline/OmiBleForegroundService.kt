@@ -53,8 +53,10 @@ class OmiBleForegroundService : Service() {
         // rebuilt (handleDisconnection closes the GATT unconditionally) before a
         // low-duty-cycle background scan could plausibly land, so it paid autoConnect's
         // slowness while never delivering its patience — and added connectGatt/closeGatt
-        // churn on top. Must stay below Dart's connect backstop; see
-        // native_ble_transport.dart _kConnectBackstop.
+        // churn on top. Must stay below Dart's connect backstop WITH ROOM FOR DISCOVERY:
+        // this timer is cancelled the instant the GATT connects, and DISCOVERY_TIMEOUT_MS
+        // runs after it, so the ready event can land ~15 s later than this value. See
+        // native_ble_transport.dart _kConnectBackstop, which is sized for the sum.
         private const val AUTO_CONNECT_TIMEOUT_MS = 45_000L
         // Mid-retry ghost-GATT purge: if a stale system link is holding the firmware's
         // single connection slot, drop it (purgeGhostGattForAddress) before reconnecting.
@@ -1224,6 +1226,25 @@ class OmiBleForegroundService : Service() {
             // reports a value consistent with this streak, not one a concurrent recovery
             // (onGattServicesDiscovered) or a later disconnect could reset/overwrite mid-read.
             lastRealStatus = managed.lastRealGattStatus
+        }
+
+        // Native has stopped its own fast loop, so no further attempt stands behind the
+        // request Dart is waiting on. Tell it so, explicitly.
+        //
+        // Dart cannot infer this from the per-attempt disconnects: it deliberately
+        // swallows 133 and -1 while a connect is pending
+        // (native_ble_transport._handleConnectionState) precisely so native's retries can
+        // run without each one being reported as a failure — and those are the two most
+        // common statuses in an outage. Without this the completer stays pending across
+        // the whole ladder and only resolves when Dart's own backstop fires, mid-ladder,
+        // declaring failure while native is still trying. The backstop is meant to cover
+        // "native said nothing at all", not to be the normal way a request ends.
+        //
+        // The string must not contain "133" or "-1", or the same filter would swallow it.
+        if (!willRetry) {
+            bleManager.mainHandler.post {
+                bleManager.flutterApi?.onPeripheralDisconnected(addr, "retry_exhausted") {}
+            }
         }
 
         if (startProbe) {
