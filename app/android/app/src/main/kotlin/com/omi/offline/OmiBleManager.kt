@@ -583,10 +583,11 @@ class OmiBleManager private constructor(private val application: Application) {
         rssiKeepAliveRunnable = null
     }
 
-    // Sends 0x32 (KEEP_ALIVE) to the storage characteristic every 5 s using
-    // WRITE_NO_RESPONSE so it bypasses the GATT command queue and never stalls
-    // an in-flight file read. Resets the firmware's 15 s idle-disconnect timer
-    // (IDLE_DISCONNECT_TIMEOUT_MS) regardless of whether a data stream is active.
+    // Sends 0x32 (KEEP_ALIVE) to the storage characteristic on [storageKeepAliveInterval]
+    // (10 s) using WRITE_NO_RESPONSE so it bypasses the GATT command queue and never
+    // stalls an in-flight file read. Resets the firmware's idle-disconnect timer
+    // (transport.c IDLE_DISCONNECT_TIMEOUT_MS, 60 s) regardless of whether a data stream
+    // is active. See the interval's own comment for why all three constants move together.
     fun startStorageKeepAlive(address: String) {
         stopStorageKeepAlive()
         val addr = address.uppercase()
