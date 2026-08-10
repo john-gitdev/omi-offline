@@ -167,6 +167,12 @@ class DeviceProvider extends ChangeNotifier
   // state (avoids the "app thinks connected, BLE actually dead" failure mode).
   Timer? _foregroundKeepAliveTimer;
   int _consecutiveKeepAliveFails = 0;
+  // Whether this link has ever carried a successful keep-alive. Arms the recycle
+  // below: rebuilding the GATT is a remedy for a link that WAS working and stopped,
+  // and says nothing useful about one that has not come up yet. Reset with the
+  // failure counter whenever the keep-alive is (re)started, so it describes the
+  // current link rather than any previous one.
+  bool _keepAliveEverSucceeded = false;
   final Debouncer _disconnectDebouncer = Debouncer(delay: const Duration(milliseconds: 500));
   final Debouncer _connectDebouncer = Debouncer(delay: const Duration(milliseconds: 1000));
   bool _isHandlingDisconnect = false;
@@ -927,12 +933,14 @@ class DeviceProvider extends ChangeNotifier
     _foregroundKeepAliveTimer?.cancel();
     if ((!_isAppInForeground && !_backgroundSyncActive) || !isConnected || connectedDevice == null) return;
     _consecutiveKeepAliveFails = 0;
+    _keepAliveEverSucceeded = false;
     _foregroundKeepAliveTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
       if (!isConnected || connectedDevice == null) return;
       final conn = await ServiceManager.instance().device.ensureConnection(connectedDevice!.id);
       final ok = (conn != null) && (await conn.sendKeepAlive());
       if (ok) {
         _consecutiveKeepAliveFails = 0;
+        _keepAliveEverSucceeded = true;
         return;
       }
       _consecutiveKeepAliveFails++;
@@ -941,8 +949,21 @@ class DeviceProvider extends ChangeNotifier
       // SENDING (the firmware resets its idle timer only on storage-char
       // activity), but never force-disconnect — that would abort an otherwise
       // healthy firmware update. The DFU layer owns connection health here.
-      if (_consecutiveKeepAliveFails >= 2 && !isFirmwareUpdateInProgress) {
-        Logger.debug('KeepAlive: 2 consecutive failures, recycling connection to resync state');
+      //
+      // _keepAliveEverSucceeded is the other half of that: recycling rebuilds a
+      // GATT, which is a remedy for a link that WAS carrying traffic and wedged.
+      // A link whose keep-alive has never once landed has not come up yet, and
+      // tearing it down is worse than waiting. The case that forced this is the
+      // reconnect after a firmware update: the update wipes the bond by design, so
+      // until a fresh pairing completes the app cannot write the storage
+      // characteristic at all (BT_GATT_PERM_WRITE_ENCRYPT) and every keep-alive
+      // fails — and the firmware now deliberately holds the link open through that
+      // window (transport.c PAIRING_GRACE_MS). Recycling into it would undo, from
+      // the phone side, exactly what the firmware is protecting. isFirmwareUpdate-
+      // InProgress does not cover it: on success that flag clears when the user
+      // taps Done, which is before the device has finished rebooting and pairing.
+      if (_consecutiveKeepAliveFails >= 2 && _keepAliveEverSucceeded && !isFirmwareUpdateInProgress) {
+        Logger.debug('KeepAlive: 2 consecutive failures on a link that was working, recycling to resync state');
         _consecutiveKeepAliveFails = 0;
         // Recycle (soft-disconnect → fresh GATT, device stays managed) rather than the
         // heavy disconnectDevice/unmanage path, which sets USER_DISCONNECTED, cancels
@@ -956,6 +977,10 @@ class DeviceProvider extends ChangeNotifier
     _foregroundKeepAliveTimer?.cancel();
     _foregroundKeepAliveTimer = null;
     _consecutiveKeepAliveFails = 0;
+    // Cleared with the counter: both describe one link, and a stale "this one was
+    // working" carried into the next link would arm the recycle before anything had
+    // proved it.
+    _keepAliveEverSucceeded = false;
   }
 
   /// Notification writer for background processing progress. Registered on
