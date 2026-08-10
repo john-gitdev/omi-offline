@@ -104,15 +104,18 @@ class OmiBleManager private constructor(private val application: Application) {
     private val rssiKeepAliveInterval = 3000L
 
     private var storageKeepAliveRunnable: Runnable? = null
-    // 5 s, not 15 s: the firmware idle-disconnect is 15 s, so a 15 s cadence left
-    // zero margin — one silently-dropped write (Android flow-control backoff) tripped
-    // the idle-drop. 5 s fits 2+ attempts inside the 15 s window, so a single missed
-    // keepalive can't disconnect us. Matches the Dart foreground keepalive cadence.
     // Paired with the firmware's idle-disconnect window (transport.c
     // IDLE_DISCONNECT_TIMEOUT_MS, 60 s) and with Dart's own keep-alive
-    // (device_provider._startForegroundKeepAlive, 10 s). All three move together: this
-    // is the tick that actually dominates GATT wake traffic, so lowering only Dart's
-    // changes nothing — six beats fit the window, so five may be missed.
+    // (device_provider._startForegroundKeepAlive, 10 s). All three move together.
+    //
+    // The margin is the point, and it is load-bearing for a reason found the hard way:
+    // a cadence equal to the idle window leaves none, and a single silently-dropped
+    // write — Android flow-control backoff will do it — was enough to trip the
+    // idle-drop. At 10 s against 60 s, six beats fit the window and five may be missed.
+    // (The previous pairing was 5 s against 15 s, three beats.)
+    //
+    // This is also the tick that actually dominates GATT wake traffic, not Dart's:
+    // there are two keep-alives, and lowering only the Dart one changes nothing.
     private val storageKeepAliveInterval = 10_000L
     private val STORAGE_SERVICE_UUID = UUID.fromString("30295780-4301-eabd-2904-2849adfeae43")
     private val STORAGE_CHAR_UUID    = UUID.fromString("30295781-4301-eabd-2904-2849adfeae43")
