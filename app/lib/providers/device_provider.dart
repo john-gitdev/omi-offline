@@ -139,8 +139,21 @@ class DeviceProvider extends ChangeNotifier
   // times more often than the timeout needed, and every beat is a GATT write that
   // wakes a radio the idle connection parameters had just been widened to let sleep
   // (transport.c CONN_PARAM_IDLE_*). 10s halves that traffic while keeping the
-  // liveness check below — two consecutive failures means the link is dead —
-  // tripping in ~20s rather than the ~40s a 20s cadence would have cost.
+  // liveness check below responsive (two failures ⇒ ~20s, versus ~40s at a 20s
+  // cadence).
+  //
+  // That check is NOT made redundant by the firmware's own 60s timeout, which is
+  // the obvious objection to it. The two cover opposite sides. The firmware's
+  // timer reclaims the DEVICE's radio from a phone that holds the link and goes
+  // quiet, and it can only fire while the firmware is still party to the link.
+  // This one covers the phone's belief: a wedged Android GATT, or a peer that is
+  // already gone with no disconnect reported. In that state the firmware is not in
+  // the connection at all — it may have hung up long ago, or be switched off — so
+  // nothing on its side will ever resolve it, and the app would sit "connected"
+  // indefinitely. Hence recycleConnection() below rather than a mere flag: the fix
+  // is to rebuild the phone's GATT, which is also what the ghost-purge path exists
+  // for. Where the two DO overlap (writes failing on a link the firmware still
+  // holds) this is simply the faster of the two.
   // Runs while the user is actively in
   // the app, during an active background sync
   // (_backgroundSyncActive) — a single large-file read sends no command for
