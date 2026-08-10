@@ -108,7 +108,12 @@ class OmiBleManager private constructor(private val application: Application) {
     // zero margin — one silently-dropped write (Android flow-control backoff) tripped
     // the idle-drop. 5 s fits 2+ attempts inside the 15 s window, so a single missed
     // keepalive can't disconnect us. Matches the Dart foreground keepalive cadence.
-    private val storageKeepAliveInterval = 5_000L
+    // Paired with the firmware's idle-disconnect window (transport.c
+    // IDLE_DISCONNECT_TIMEOUT_MS, 60 s) and with Dart's own keep-alive
+    // (device_provider._startForegroundKeepAlive, 10 s). All three move together: this
+    // is the tick that actually dominates GATT wake traffic, so lowering only Dart's
+    // changes nothing — six beats fit the window, so five may be missed.
+    private val storageKeepAliveInterval = 10_000L
     private val STORAGE_SERVICE_UUID = UUID.fromString("30295780-4301-eabd-2904-2849adfeae43")
     private val STORAGE_CHAR_UUID    = UUID.fromString("30295781-4301-eabd-2904-2849adfeae43")
 
@@ -908,11 +913,16 @@ class OmiBleManager private constructor(private val application: Application) {
                 }
                 0x02 -> { // EOT — transfer complete
                     activeDownloads.remove(address)
-                    try { fos.flush(); fos.close() } catch (_: Exception) {}
-                    mainHandler.removeCallbacks(timeoutRunnable)
-                    if (completed.compareAndSet(false, true)) {
-                        mainHandler.post { callback(Result.success(Unit)) }
-                    }
+                    // Flush, then finish through complete() like every other exit. This
+                    // branch used to inline its own teardown — same CAS, same callback —
+                    // which made complete() the funnel for FAILURES only, and left the
+                    // successful transfer (the common case) skipping whatever complete()
+                    // does. That was harmless while it only closed a stream; it stopped
+                    // being harmless when priority restoration moved there, since the link
+                    // would then stay at CONNECTION_PRIORITY_HIGH after every successful
+                    // download and never return to the idle interval.
+                    try { fos.flush() } catch (_: Exception) {}
+                    complete(Result.success(Unit))
                 }
             }
         }
