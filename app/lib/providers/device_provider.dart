@@ -742,13 +742,29 @@ class DeviceProvider extends ChangeNotifier
     // but won't connect".
     final connectFuture = ServiceManager.instance().device.ensureConnection(pairedDeviceId, force: true);
 
-    // 30s budget, matching the native transport's own device-ready timeout.
+    // Outer backstop only. The real budget is NativeBleTransport._kConnectBackstop (55 s),
+    // which is itself sized above native's per-attempt timeouts; this one exists solely so a
+    // wedged ensureConnection (e.g. the device mutex held by a stuck caller) cannot hang the
+    // sync cycle forever, and so must sit ABOVE the inner one rather than racing it. The
+    // previous value was 30 s with a comment claiming it matched native — it did not, and
+    // being shorter it fired first, which is what let a connect that had already succeeded be
+    // reported as a timeout.
     try {
-      await connectFuture.timeout(const Duration(seconds: 30));
+      await connectFuture.timeout(const Duration(seconds: 70));
       final elapsed = DateTime.now().difference(t0).inMilliseconds;
-      Logger.debug('[BLE] _scanConnectDevice: device ready after ${elapsed}ms');
       device = await _getConnectedDevice();
-      if (device != null) return device;
+      // Log the OUTCOME, not the arrival. ensureConnection completing does not mean a usable
+      // link exists: it resolved at 14:48:40Z on 2026-08-09 for a connection native had torn
+      // down two seconds earlier, and the old unconditional 'device ready' line reported that
+      // as a success immediately before returning null.
+      if (device != null) {
+        Logger.debug('[BLE] _scanConnectDevice: device ready after ${elapsed}ms');
+        return device;
+      }
+      Logger.debug(
+        '[BLE] _scanConnectDevice: connect resolved after ${elapsed}ms but no connection remains — '
+        'native reported the attempt failed while we were waiting',
+      );
     } catch (e) {
       Logger.debug(
         '[BLE] _scanConnectDevice: timed out/failed after ${DateTime.now().difference(t0).inMilliseconds}ms ($e)',
@@ -1005,14 +1021,19 @@ class DeviceProvider extends ChangeNotifier
           _armConnectSettleWatchdog();
           bool connectedThisTick = false;
           try {
-            for (int attempt = 0; attempt < 3 && !isConnected; attempt++) {
-              if (attempt > 0) await Future.delayed(const Duration(seconds: 10));
-              await scanAndConnectToDevice();
-              if (isConnected) {
-                connectedThisTick = true;
-                break;
-              }
-            }
+            // ONE request per sync window. Native owns connect and retry — it runs its own
+            // ladder (backoff 1.5→3→6→12→24 s over AUTONOMOUS_RETRY_STOP_AFTER attempts,
+            // then the recovery alarm), and manageDevice preempts a waiting backoff so this
+            // request is acted on immediately rather than queued behind it.
+            //
+            // This used to be a 3-attempt loop with 10 s gaps, which was a second retry
+            // governor layered on the first: the two shared no state, so the real attempt
+            // pattern was their product, and every iteration landed on native's guard while
+            // native was already mid-ladder. Worse, now that manageDevice preempts, a loop
+            // here would preempt the backoff on every iteration and pin the ladder near its
+            // floor — restoring the connectGatt/closeGatt churn that c4ebcbde removed.
+            await scanAndConnectToDevice();
+            connectedThisTick = isConnected;
           } finally {
             // Clear in finally so a thrown scan (TimeoutException, GATT
             // errors, permission failure) doesn't leave the flag stuck true
