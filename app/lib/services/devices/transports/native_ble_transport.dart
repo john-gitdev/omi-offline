@@ -423,7 +423,8 @@ class NativeBleTransport extends DeviceTransport {
     // erroring here instead would make connect() throw for something that immediately
     // succeeded, and push the caller through a spurious disconnected → connected
     // transition. Nothing can hang on this: a genuine disconnect fails the pending
-    // completer in _handleConnectionState, and connect() times out at 30s regardless —
+    // completer in _handleConnectionState, and connect() times out at _kConnectBackstop
+    // regardless —
     // well outside native's 15s discovery timeout, which drops a stuck link into the
     // ordinary retry path long before then.
     if (services.isEmpty) {
