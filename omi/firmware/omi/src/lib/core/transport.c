@@ -1641,14 +1641,38 @@ K_WORK_DELAYABLE_DEFINE(post_connect_work, post_connect_work_handler);
  * for 30+ s), so the link stays down until the app's next periodic sync
  * scans and connects.
  *
- * MUST stay above the app's foreground keep-alive interval (5 s, see
+ * MUST stay above the app's foreground keep-alive interval (10 s, see
  * device_provider.dart _startForegroundKeepAlive). A timeout at/below that
  * interval makes the heartbeat structurally unable to keep the link up: the
  * device idle-drops before the next keep-alive arrives, producing a permanent
  * connect/disconnect loop (BT_HCI_ERR_REMOTE_USER_TERM_CONN / gatt_status_19).
- * 15 s gives the 5 s keep-alive a 10 s margin (survives two missed beats). */
-#define IDLE_DISCONNECT_TIMEOUT_MS 15000
+ * The two are sized together — six beats inside the window, so five may be
+ * missed — so neither may be changed without the other.
+ *
+ * Raised 15 s -> 60 s. Two reasons. The first is that 15 s was tight enough that
+ * every legitimate operation which does not touch a storage characteristic needed
+ * its own exemption — there are already two below (OTA, transfer) and a third was
+ * found missing after a DFU, where the bond is deliberately wiped and the first
+ * write cannot complete until a fresh pairing does. Nothing marks activity during
+ * that pairing, so the link was dropped at 15 s and the pairing restarted, five
+ * times, before one completed. A minute swallows pairing, discovery and MTU
+ * negotiation without needing to enumerate them.
+ *
+ * The second is that the cost of waiting is now much lower: an idle link is
+ * negotiated down to 100-200 ms (see CONN_PARAM_IDLE_*) instead of the ~11.25 ms
+ * Android drives for transfers, so holding it a further 45 s is a fraction of what
+ * it used to be. This remains a backstop against a phone that holds the link and
+ * stops talking — the app's own post-sync disconnect is the normal path — and a
+ * backstop does not need to be prompt. */
+#define IDLE_DISCONNECT_TIMEOUT_MS 60000
 #define IDLE_DISCONNECT_POLL_MS 5000
+/* How long an UNENCRYPTED link is given before the ordinary idle rule applies to it
+ * anyway. Generous because the thing being waited on is a Just Works pairing on the
+ * central's schedule, and Android will retry one across several seconds; bounded
+ * because an unencrypted link that never pairs is indistinguishable from the stuck
+ * central this timer exists to shed. See the use site for why silence on an
+ * unencrypted link proves nothing. */
+#define PAIRING_GRACE_MS 180000
 
 static atomic_t last_activity_ms;
 
@@ -1657,11 +1681,94 @@ void transport_mark_activity(void)
     atomic_set(&last_activity_ms, (atomic_val_t) k_uptime_get_32());
 }
 
+/* Connection parameters are negotiated for one of two jobs, and the right values
+ * differ by an order of magnitude.
+ *
+ * TRANSFER is the historic setting: as fast as the central will go, because a file
+ * read is throughput-bound. Android drives it to ~11.25 ms via
+ * CONNECTION_PRIORITY_HIGH regardless of what we ask.
+ *
+ * IDLE is new. The link spends most of its life connected with nothing to carry —
+ * waiting out a sync window, or held open while the app is in the foreground — and
+ * it was sitting at the transfer setting the whole time, waking the radio ~89 times
+ * a second on a 150 mAh cell for no traffic at all.
+ *
+ * latency is deliberately 0 in BOTH. Slave latency would cut idle cost further, but
+ * it lets the peripheral skip connection events, so a command from the phone waits
+ * up to latency x interval before it is heard. Every interaction here is
+ * command/response (list files, read, settings), so that delay would land on the
+ * user-visible path to buy power in a state that is already cheap. 100-200 ms with
+ * no latency is ~9-18x cheaper than 11.25 ms and costs nothing in responsiveness.
+ *
+ * The central has the final say — these are requests. The app must agree, or it
+ * will simply re-assert its own priority: see OmiBleManager.applyConnectionPriority,
+ * which pairs LOW_POWER/HIGH with these two modes.
+ *
+ * If iOS ever comes back (this fork is Android-only), note that Apple rejects any
+ * request with interval_min < 15 ms outright rather than negotiating down, so the
+ * TRANSFER set would be refused and the link would silently sit at iOS's ~30 ms
+ * default. It needs an Apple-compliant fallback (12-24 units = 15-30 ms) applied
+ * when a transfer-mode request is not honored. A one-shot recheck for exactly this
+ * used to run 3 s after connect; it was removed here because connects now start in
+ * IDLE mode and the mode cannot change until the 5 s poll, which made it
+ * unreachable — not because the constraint stopped being true. */
+#define CONN_PARAM_IDLE_INTERVAL_MIN 80  /* 100 ms */
+#define CONN_PARAM_IDLE_INTERVAL_MAX 160 /* 200 ms */
+#define CONN_PARAM_IDLE_LATENCY      0
+#define CONN_PARAM_IDLE_TIMEOUT      600 /* 6 s */
+#define CONN_PARAM_XFER_INTERVAL_MIN 6   /* 7.5 ms */
+#define CONN_PARAM_XFER_INTERVAL_MAX 18  /* 22.5 ms */
+#define CONN_PARAM_XFER_LATENCY      0
+#define CONN_PARAM_XFER_TIMEOUT      600 /* 6 s */
+
+enum conn_param_mode {
+    CONN_PARAM_MODE_UNSET = 0,
+    CONN_PARAM_MODE_IDLE,
+    CONN_PARAM_MODE_TRANSFER,
+};
+
+/* Which set was last requested, so the poll below only sends an update when the
+ * mode actually changes rather than re-requesting every 5 s. Reset on disconnect so
+ * a new link always gets an explicit request. */
+static atomic_t applied_conn_param_mode = ATOMIC_INIT(CONN_PARAM_MODE_UNSET);
+
+static void apply_conn_params(struct bt_conn *conn, enum conn_param_mode mode);
+
+/* Re-request parameters if the transfer state has changed since the last request.
+ * Driven from the idle-disconnect poll rather than a hook in storage.c:
+ * storage_transfer_active() is derived state with no transition callback, and this
+ * work item is already running every 5 s for the whole life of a connection. The
+ * cost is that a transfer can spend up to one poll at idle parameters; at 200 ms
+ * that is a slower start, not a stall, and the first file read is preceded by
+ * several seconds of command/response anyway. */
+static void refresh_conn_param_mode(void)
+{
+#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+    enum conn_param_mode want = storage_transfer_active() ? CONN_PARAM_MODE_TRANSFER : CONN_PARAM_MODE_IDLE;
+#else
+    enum conn_param_mode want = CONN_PARAM_MODE_IDLE;
+#endif
+    if ((enum conn_param_mode) atomic_get(&applied_conn_param_mode) == want) {
+        return;
+    }
+    struct bt_conn *conn = get_current_connection();
+    if (!conn) {
+        return;
+    }
+    apply_conn_params(conn, want);
+    put_current_connection(conn);
+}
+
 static void idle_disconnect_work_handler(struct k_work *work)
 {
     if (!atomic_get(&is_connected)) {
         return;
     }
+
+    /* Before the exemptions below, which return early: a transfer starting is
+     * exactly when the parameters must go aggressive, and that is also the branch
+     * that stops this handler from running to the bottom. */
+    refresh_conn_param_mode();
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     /* An in-progress storage transfer is liveness on its own. A slow consumer —
@@ -1701,6 +1808,39 @@ static void idle_disconnect_work_handler(struct k_work *work)
         return;
     }
 
+    /* Third exemption, the same shape as the two above: a link where the absence of
+     * storage activity is not evidence of a phone that stopped talking.
+     *
+     * Until the link is encrypted the app physically CANNOT send the keep-alive —
+     * the storage characteristic is BT_GATT_PERM_WRITE_ENCRYPT (storage.c), so the
+     * write blocks behind pairing and nothing ever reaches transport_mark_activity().
+     * Silence here means pairing has not finished, not that the central is idle.
+     *
+     * This is what produced a post-DFU reconnect loop: the update deliberately wipes
+     * the bond on both sides, the phone reconnects unencrypted, its first write waits
+     * on a fresh Just Works pairing, and the link was dropped out from under that
+     * pairing — five times before one completed.
+     *
+     * Bounded, unlike the other two. A central that never pairs would otherwise hold
+     * the link open indefinitely, which is exactly the "phone holds it and goes
+     * silent" case this whole timer exists for. Past PAIRING_GRACE_MS the ordinary
+     * rule resumes and an unencrypted link is dropped like any other. The window is
+     * measured from last_activity_ms, which _transport_connected stamps at connect,
+     * so it is time-since-connect for a link that has never carried traffic. */
+    if (idle_ms < PAIRING_GRACE_MS) {
+        struct bt_conn *sec_conn = get_current_connection();
+        bool unencrypted = false;
+        if (sec_conn) {
+            unencrypted = (bt_conn_get_security(sec_conn) < BT_SECURITY_L2);
+            put_current_connection(sec_conn);
+        }
+        if (unencrypted) {
+            LOG_INF("Idle %u ms but link not yet encrypted — deferring disconnect for pairing", idle_ms);
+            k_work_schedule(k_work_delayable_from_work(work), K_MSEC(IDLE_DISCONNECT_POLL_MS));
+            return;
+        }
+    }
+
     /* Snapshot+null+unref under conn_mutex — same pattern as transport_off
      * (see line ~1265) so a concurrent _transport_disconnected sees NULL and
      * skips its unref of a connection we already released. */
@@ -1732,22 +1872,6 @@ K_WORK_DELAYABLE_DEFINE(idle_disconnect_work, idle_disconnect_work_handler);
 
 static void update_conn_params(struct bt_conn *conn);
 
-/* iOS-compatible connection-parameter fallback. update_conn_params() requests an
- * aggressive 7.5 ms interval; Apple rejects any request with interval_min < 15 ms
- * outright, so on iOS the link silently stays at iOS's slow default (~30 ms).
- * Android is unaffected — its central drives the interval to ~11.25 ms via
- * CONNECTION_PRIORITY_HIGH regardless of what we ask for. A few seconds after
- * connect we recheck the *actual* negotiated interval and, only if it's still
- * slow (request not honored — i.e. an iOS-like central), send one Apple-compliant
- * request. On Android the interval is already fast by then, so this no-ops and
- * Android keeps ~11.25 ms. One-shot: never rescheduled, so a compliant request
- * landing iOS at 30 ms can't loop. */
-#define CONN_PARAM_RECHECK_DELAY_MS 3000
-/* Negotiated interval (1.25 ms units) above which the aggressive request is
- * treated as not honored. Our aggressive request maxes at 18 (22.5 ms). */
-#define CONN_PARAM_FAST_MAX_INTERVAL 18
-static void conn_param_recheck_work_handler(struct k_work *work);
-K_WORK_DELAYABLE_DEFINE(conn_param_recheck_work, conn_param_recheck_work_handler);
 
 /* ── Advertising watchdog ────────────────────────────────────────────────────
  *
@@ -2124,10 +2248,6 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
     // Request aggressive connection params for higher BLE sync throughput.
     update_conn_params(current_connection);
 
-    // Recheck the negotiated interval shortly after; if the aggressive request
-    // above was rejected (iOS), retry with Apple-compliant params. See above.
-    k_work_schedule(&conn_param_recheck_work, K_MSEC(CONN_PARAM_RECHECK_DELAY_MS));
-
     k_work_schedule(&post_connect_work, K_MSEC(500));
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
@@ -2178,8 +2298,12 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
 #endif
 
     k_work_cancel_delayable(&mtu_recheck_work);
-    k_work_cancel_delayable(&conn_param_recheck_work);
     k_work_cancel_delayable(&idle_disconnect_work);
+
+    /* Parameters do not survive the link, so neither may the record of them. Left
+     * latched, the next connection would match its mode against the previous one and
+     * skip the request entirely, leaving a fresh link on whatever the central chose. */
+    atomic_set(&applied_conn_param_mode, (atomic_val_t) CONN_PARAM_MODE_UNSET);
 
     /* Reason was previously discarded. 0x13 = our own idle-disconnect (REMOTE_USER_TERM),
      * 0x08 = supervision timeout, 0x3e = died at establishment (counted above). */
@@ -2341,14 +2465,25 @@ static void update_phy(struct bt_conn *conn)
 /* Request aggressive connection parameters for higher audio throughput.
  * 7.5–15 ms interval gives ~67–133 packets/s vs ~33 at the 30 ms default. */
 #define CONN_PARAM_UPDATE_RETRIES 3
-static void update_conn_params(struct bt_conn *conn)
+/* Request [mode]'s parameters and record what was asked for. The mode is latched
+ * before the request rather than after success: a rejected request leaves the link
+ * where it was, and re-sending the same rejected values every 5 s would be a retry
+ * loop the central has already declined. refresh_conn_param_mode() will ask again
+ * the next time the transfer state actually changes. */
+static void apply_conn_params(struct bt_conn *conn, enum conn_param_mode mode)
 {
+    const bool transfer = (mode == CONN_PARAM_MODE_TRANSFER);
     struct bt_le_conn_param params = {
-        .interval_min = 6,
-        .interval_max = 18,
-        .latency = 0,
-        .timeout = 600,
+        .interval_min = transfer ? CONN_PARAM_XFER_INTERVAL_MIN : CONN_PARAM_IDLE_INTERVAL_MIN,
+        .interval_max = transfer ? CONN_PARAM_XFER_INTERVAL_MAX : CONN_PARAM_IDLE_INTERVAL_MAX,
+        .latency = transfer ? CONN_PARAM_XFER_LATENCY : CONN_PARAM_IDLE_LATENCY,
+        .timeout = transfer ? CONN_PARAM_XFER_TIMEOUT : CONN_PARAM_IDLE_TIMEOUT,
     };
+    atomic_set(&applied_conn_param_mode, (atomic_val_t) mode);
+    LOG_INF("Requesting %s connection parameters (%u-%u units)",
+            transfer ? "transfer" : "idle",
+            params.interval_min,
+            params.interval_max);
     for (int i = 0; i < CONN_PARAM_UPDATE_RETRIES; i++) {
         int err = bt_conn_le_param_update(conn, &params);
         if (!err || err == -EALREADY) {
@@ -2360,35 +2495,15 @@ static void update_conn_params(struct bt_conn *conn)
     LOG_ERR("Failed to update connection parameters after %d attempts", CONN_PARAM_UPDATE_RETRIES);
 }
 
-/* See the comment by K_WORK_DELAYABLE_DEFINE(conn_param_recheck_work) above. */
-static void conn_param_recheck_work_handler(struct k_work *work)
+static void update_conn_params(struct bt_conn *conn)
 {
-    struct bt_conn *conn = get_current_connection();
-    if (!conn) {
-        return;
-    }
-
-    struct bt_conn_info info = {0};
-    if (bt_conn_get_info(conn, &info) == 0 && info.type == BT_CONN_TYPE_LE &&
-        info.le.interval > CONN_PARAM_FAST_MAX_INTERVAL) {
-        // Aggressive request was not honored (likely an iOS central, which rejects
-        // interval_min < 15 ms). Retry once with Apple-compliant params.
-        struct bt_le_conn_param params = {
-            .interval_min = 12, // 15 ms — Apple's minimum
-            .interval_max = 24, // 30 ms
-            .latency = 0,
-            .timeout = 600, // 6 s
-        };
-        LOG_INF("Conn interval still %.2f ms after connect — requesting Apple-compliant 15-30 ms",
-                info.le.interval * 1.25);
-        int err = bt_conn_le_param_update(conn, &params);
-        if (err && err != -EALREADY) {
-            LOG_WRN("Apple-compliant conn param update failed (err %d)", err);
-        }
-    }
-
-    put_current_connection(conn);
+    /* On connect nothing is being transferred yet — the app has service discovery,
+     * capability reads and a file listing to get through first, all of which are
+     * comfortable at 200 ms. refresh_conn_param_mode() promotes to transfer
+     * parameters within one poll of a read actually starting. */
+    apply_conn_params(conn, CONN_PARAM_MODE_IDLE);
 }
+
 
 //
 // Ring Buffer
