@@ -244,7 +244,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     // applying the moment the app is backgrounded — and then nothing holds the
     // CPU. Both keep-alives (native 0x32 and Dart's timer) are Handler/Timer
     // posts on uptimeMillis, which does not advance across SoC suspend, so they
-    // stall and the firmware's 15 s idle-disconnect drops the link mid-transfer.
+    // stall and the firmware's 60 s idle-disconnect drops the link mid-transfer.
     // That is the "started a sync, pocketed the phone, got a partial" path. Take
     // the CPU wakelock too (it is reference-counted natively, and released below
     // when the last reason goes away).
