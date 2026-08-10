@@ -227,6 +227,20 @@ class OmiBleForegroundService : Service() {
         var currentGattHash: Int? = null,
         var hasEverConnected: Boolean = false,
         var pendingReconnect: Runnable? = null,
+        // Deadline (elapsedRealtime) until which [pendingReconnect] is the post-ghost-purge
+        // settle rather than an ordinary retry backoff. The two share the field (the settle
+        // sets it to keep manageDevice's guard invariant satisfied across the window), but
+        // they are not interchangeable: a backoff is a delay we are free to cut short, while
+        // the settle is waiting on the *firmware* to start advertising again after a stale
+        // link holding its single connection slot was dropped. Preempting the settle
+        // reconnects into that gap and undoes the purge it was protecting.
+        //
+        // A deadline rather than a boolean deliberately. Five separate paths cancel
+        // pendingReconnect (onGattConnected, triggerReconnection, handleDisconnection, the
+        // adapter-off sweep, the retry runnable), and a flag any of them forgot to reset
+        // would suppress every future preempt for the life of the process. This expires on
+        // its own, so the worst a missed reset can cost is the 500 ms already budgeted.
+        var postPurgeSettleUntilMs: Long = 0,
         var stabilityTimerRunnable: Runnable? = null,
         var connectionTimeoutRunnable: Runnable? = null,
         // Stale-bond recovery: when GATT disconnects with status 5 (INSUF_AUTHENTICATION)
@@ -642,6 +656,18 @@ class OmiBleForegroundService : Service() {
                 // This is safe only because Dart no longer runs a retry loop of its own
                 // (device_provider._startBackgroundSyncTimer). Reintroducing one would put
                 // a preempt on every attempt and reopen exactly that churn.
+                // ...except the post-ghost-purge settle, which is not a backoff. A stale
+                // system link holding the firmware's single connection slot was just
+                // dropped, and this delay is waiting on the firmware to get back on the
+                // air. Connecting into that gap reconnects before it is advertising and
+                // throws away the purge that made reconnection possible at all — so this
+                // one waits its 500 ms out, and the caller joins it.
+                if (existing.pendingReconnect != null &&
+                    android.os.SystemClock.elapsedRealtime() < existing.postPurgeSettleUntilMs
+                ) {
+                    Log.d(TAG, "manageDevice($addr): joining post-purge settle — not preempting")
+                    return
+                }
                 if (existing.pendingReconnect != null) {
                     Log.i(TAG, "manageDevice($addr): preempting retry backoff (retryCount=${existing.retryCount}) — connecting now")
                     existing.pendingReconnect?.let { handler.removeCallbacks(it) }
@@ -1320,11 +1346,16 @@ class OmiBleForegroundService : Service() {
                     val connectRunnable = Runnable {
                         synchronized(syncLock) {
                             managed.pendingReconnect = null
+                            managed.postPurgeSettleUntilMs = 0
                             connectToDevice(addr, "retry_${managed.retryCount}_postpurge")
                         }
                     }
-                    // Keep the guard invariant satisfied across the settle window.
+                    // Keep the guard invariant satisfied across the settle window, and mark
+                    // it as a settle so manageDevice's preempt leaves it alone — this delay
+                    // is waiting on the firmware to re-advertise, not on a backoff clock.
                     managed.pendingReconnect = connectRunnable
+                    managed.postPurgeSettleUntilMs =
+                        android.os.SystemClock.elapsedRealtime() + GHOST_PURGE_SETTLE_MS
                     handler.postDelayed(connectRunnable, GHOST_PURGE_SETTLE_MS)
                 } else {
                     connectToDevice(addr, "retry_${managed.retryCount}")
