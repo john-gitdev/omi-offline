@@ -1137,9 +1137,12 @@ class DeviceProvider extends ChangeNotifier
         // are released in the finally below.
         if (Platform.isAndroid || Platform.isIOS) BleHostApi().acquireProcessingWakeLock();
         // Keep the firmware from idle-dropping the link mid-sync. Without this a
-        // single >30s file read (large stitched/draft recordings) sends no
-        // command for the firmware's 30s idle window and dies as "Stream closed
-        // without EOT", so that file never finishes. _backgroundSyncActive is
+        // single long file read (large stitched/draft recordings) sends no command for
+        // the firmware's idle window (transport.c IDLE_DISCONNECT_TIMEOUT_MS, 60 s) and
+        // dies as "Stream closed without EOT", so that file never finishes. Belt and
+        // braces now — the firmware also defers the idle check outright while a storage
+        // transfer is active — but the keep-alive covers the gaps between reads, which
+        // that exemption does not. _backgroundSyncActive is
         // set, so this also arms the keep-alive in the background. See
         // _startForegroundKeepAlive.
         _startForegroundKeepAlive();
@@ -1204,7 +1207,8 @@ class DeviceProvider extends ChangeNotifier
         // created during processing are also captured before we drop the
         // connection. Always disconnect — even if segments remain there is no
         // point holding the link, because the keep-alive has stopped and the
-        // firmware idle-drops it within ~30s with nothing to reconnect it in the
+        // firmware idle-drops it within ~60s (transport.c IDLE_DISCONNECT_TIMEOUT_MS)
+        // with nothing to reconnect it in the
         // background. Any leftover segments are picked up by the next scheduled
         // sync (or on app open/resume when one is due).
         if (!_isAppInForeground && !isFirmwareUpdateInProgress && !_isOnFirmwareUpdatePage && isConnected) {
