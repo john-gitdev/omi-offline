@@ -1693,12 +1693,15 @@ void transport_mark_activity(void)
  * it was sitting at the transfer setting the whole time, waking the radio ~89 times
  * a second on a 150 mAh cell for no traffic at all.
  *
- * latency is deliberately 0 in BOTH. Slave latency would cut idle cost further, but
- * it lets the peripheral skip connection events, so a command from the phone waits
- * up to latency x interval before it is heard. Every interaction here is
- * command/response (list files, read, settings), so that delay would land on the
- * user-visible path to buy power in a state that is already cheap. 100-200 ms with
- * no latency is ~9-18x cheaper than 11.25 ms and costs nothing in responsiveness.
+ * latency is 0 in both AS REQUESTED, but do not read that as a guarantee: Android's
+ * CONNECTION_PRIORITY_LOW_POWER, which the app pairs with the idle set, carries a
+ * latency of 2 of its own, and the central decides. So the idle link may well end up
+ * at ~100-125 ms with 2 skipped events. That is fine — a worst-case ~330 ms before a
+ * command is heard is imperceptible for a link whose entire traffic is
+ * command/response (list files, read, settings) at human timescales. What is NOT
+ * worth doing is asking for a large latency on top of a long interval: the product
+ * of the two is the delay, and several seconds of it would be felt on the first
+ * command of every sync. The bulk of the saving is the interval, not the latency.
  *
  * The central has the final say — these are requests. The app must agree, or it
  * will simply re-assert its own priority: see OmiBleManager.applyConnectionPriority,
@@ -1732,7 +1735,7 @@ enum conn_param_mode {
  * a new link always gets an explicit request. */
 static atomic_t applied_conn_param_mode = ATOMIC_INIT(CONN_PARAM_MODE_UNSET);
 
-static void apply_conn_params(struct bt_conn *conn, enum conn_param_mode mode);
+static void apply_conn_params(struct bt_conn *conn, enum conn_param_mode mode, bool allow_retry);
 
 /* Re-request parameters if the transfer state has changed since the last request.
  * Driven from the idle-disconnect poll rather than a hook in storage.c:
@@ -1744,10 +1747,18 @@ static void apply_conn_params(struct bt_conn *conn, enum conn_param_mode mode);
 static void refresh_conn_param_mode(void)
 {
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
-    enum conn_param_mode want = storage_transfer_active() ? CONN_PARAM_MODE_TRANSFER : CONN_PARAM_MODE_IDLE;
+    /* An OTA counts as transfer, and must: storage_transfer_active() tracks the
+     * storage file read only (remaining_length / transport_started), so on its own
+     * it reads false throughout a flash — which would have this request the 100-200
+     * ms idle set in the middle of a firmware update, an order of magnitude slower
+     * than the ~11.25 ms the DFU library negotiates for itself. The two would then
+     * fight for the length of the flash, re-requesting parameters over the link
+     * carrying the image. */
+    const bool busy = storage_transfer_active() || sd_get_ota_active();
 #else
-    enum conn_param_mode want = CONN_PARAM_MODE_IDLE;
+    const bool busy = false;
 #endif
+    enum conn_param_mode want = busy ? CONN_PARAM_MODE_TRANSFER : CONN_PARAM_MODE_IDLE;
     if ((enum conn_param_mode) atomic_get(&applied_conn_param_mode) == want) {
         return;
     }
@@ -1755,7 +1766,12 @@ static void refresh_conn_param_mode(void)
     if (!conn) {
         return;
     }
-    apply_conn_params(conn, want);
+    /* No retry from here: this runs on the system workqueue, and apply_conn_params'
+     * retry loop sleeps 200 ms between attempts — up to 600 ms of a shared queue for
+     * a request the central is free to decline anyway. A miss costs nothing, because
+     * the app drives the central's own priority in step (applyConnectionPriority) and
+     * the next mode change asks again. */
+    apply_conn_params(conn, want, false);
     put_current_connection(conn);
 }
 
@@ -2470,7 +2486,7 @@ static void update_phy(struct bt_conn *conn)
  * where it was, and re-sending the same rejected values every 5 s would be a retry
  * loop the central has already declined. refresh_conn_param_mode() will ask again
  * the next time the transfer state actually changes. */
-static void apply_conn_params(struct bt_conn *conn, enum conn_param_mode mode)
+static void apply_conn_params(struct bt_conn *conn, enum conn_param_mode mode, bool allow_retry)
 {
     const bool transfer = (mode == CONN_PARAM_MODE_TRANSFER);
     struct bt_le_conn_param params = {
@@ -2484,15 +2500,20 @@ static void apply_conn_params(struct bt_conn *conn, enum conn_param_mode mode)
             transfer ? "transfer" : "idle",
             params.interval_min,
             params.interval_max);
-    for (int i = 0; i < CONN_PARAM_UPDATE_RETRIES; i++) {
+    const int attempts = allow_retry ? CONN_PARAM_UPDATE_RETRIES : 1;
+    for (int i = 0; i < attempts; i++) {
         int err = bt_conn_le_param_update(conn, &params);
         if (!err || err == -EALREADY) {
             return;
         }
         LOG_WRN("conn param update attempt %d failed (err %d)", i + 1, err);
-        k_sleep(K_MSEC(200));
+        if (i + 1 < attempts) {
+            k_sleep(K_MSEC(200));
+        }
     }
-    LOG_ERR("Failed to update connection parameters after %d attempts", CONN_PARAM_UPDATE_RETRIES);
+    if (allow_retry) {
+        LOG_ERR("Failed to update connection parameters after %d attempts", attempts);
+    }
 }
 
 static void update_conn_params(struct bt_conn *conn)
@@ -2501,7 +2522,7 @@ static void update_conn_params(struct bt_conn *conn)
      * capability reads and a file listing to get through first, all of which are
      * comfortable at 200 ms. refresh_conn_param_mode() promotes to transfer
      * parameters within one poll of a read actually starting. */
-    apply_conn_params(conn, CONN_PARAM_MODE_IDLE);
+    apply_conn_params(conn, CONN_PARAM_MODE_IDLE, true);
 }
 
 
