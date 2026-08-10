@@ -768,15 +768,25 @@ class DeviceProvider extends ChangeNotifier
     // but won't connect".
     final connectFuture = ServiceManager.instance().device.ensureConnection(pairedDeviceId, force: true);
 
-    // Outer backstop only. The real budget is NativeBleTransport._kConnectBackstop (55 s),
-    // which is itself sized above native's per-attempt timeouts; this one exists solely so a
-    // wedged ensureConnection (e.g. the device mutex held by a stuck caller) cannot hang the
-    // sync cycle forever, and so must sit ABOVE the inner one rather than racing it. The
-    // previous value was 30 s with a comment claiming it matched native — it did not, and
-    // being shorter it fired first, which is what let a connect that had already succeeded be
-    // reported as a timeout.
+    // Outer backstop only, and the outermost link in a chain that MUST stay monotonic —
+    // each guard has to sit above everything it contains, or the outer one fires first and
+    // reports a connect that is still legitimately in progress as a failure:
+    //
+    //   native direct connect        40 s   DIRECT_CONNECT_TIMEOUT_MS
+    //   native autoConnect           45 s   AUTO_CONNECT_TIMEOUT_MS
+    //     + service discovery      + 15 s   DISCOVERY_TIMEOUT_MS (starts AFTER connect)
+    //   = native worst case         ~60 s
+    //   transport backstop           75 s   NativeBleTransport._kConnectBackstop
+    //   THIS outer guard             90 s
+    //   Dart connect-settle       ~150 s   _armConnectSettleWatchdog
+    //   native connect-settle       160 s   CONNECT_SETTLE_MS
+    //
+    // This one exists solely so a wedged ensureConnection (e.g. the device mutex held by a
+    // stuck caller) cannot hang the sync cycle forever. It has been wrong twice: 30 s with
+    // a comment claiming it matched native, then 70 s after the transport moved to 75 s.
+    // Check the whole column above when changing any single value.
     try {
-      await connectFuture.timeout(const Duration(seconds: 70));
+      await connectFuture.timeout(const Duration(seconds: 90));
       final elapsed = DateTime.now().difference(t0).inMilliseconds;
       device = await _getConnectedDevice();
       // Log the OUTCOME, not the arrival. ensureConnection completing does not mean a usable
