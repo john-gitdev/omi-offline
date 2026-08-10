@@ -404,6 +404,42 @@ class OmiBleManager private constructor(private val application: Application) {
     fun connectedLeLinks(): List<BluetoothDevice> = bluetoothManager.getConnectedDevices(BluetoothProfile.GATT)
 
     /**
+     * Match the central's connection priority to what the link is actually doing:
+     * HIGH while a file transfer is in flight, LOW_POWER otherwise.
+     *
+     * This used to be an unconditional HIGH at service discovery, which pinned the link
+     * at ~11.25 ms with no slave latency for its entire life — waking the peripheral's
+     * radio ~89 times a second on a 150 mAh cell whether or not a byte was moving. Most
+     * of a connection is not transfer: discovery, capability reads, a file listing, then
+     * long stretches of nothing while the app is foregrounded.
+     *
+     * The central has the final say on connection parameters, so this has to agree with
+     * the peripheral's own request or the two fight — the firmware asks for 100-200 ms
+     * when idle and 7.5-22.5 ms during a transfer (transport.c CONN_PARAM_IDLE_* /
+     * CONN_PARAM_XFER_*). Keep the pairing intact when changing either side.
+     *
+     * Driven by [activeDownloads] rather than by transition callbacks: it is the same
+     * state the firmware keys off (storage_transfer_active) and it cannot drift, since
+     * every caller removes its session before completing it.
+     */
+    private fun applyConnectionPriority(address: String) {
+        val addr = address.uppercase()
+        val gatt = connectedGatts[addr] ?: return
+        val transferring = activeDownloads.containsKey(addr)
+        val priority = if (transferring) {
+            BluetoothGatt.CONNECTION_PRIORITY_HIGH
+        } else {
+            BluetoothGatt.CONNECTION_PRIORITY_LOW_POWER
+        }
+        try {
+            gatt.requestConnectionPriority(priority)
+            Log.i(TAG, "Connection priority for $addr -> ${if (transferring) "HIGH (transfer)" else "LOW_POWER (idle)"}")
+        } catch (e: Exception) {
+            Log.w(TAG, "requestConnectionPriority failed for $addr: ${e.message}")
+        }
+    }
+
+    /**
      * Whether the system holds a bare ACL link to [address] that the GATT profile list
      * does not show. Distinguishes "a stale link is holding the peripheral's slot" from
      * "nothing is connected and the link keeps dying at establishment".
@@ -685,7 +721,7 @@ class OmiBleManager private constructor(private val application: Application) {
                 BleService(svc.uuid.toString().lowercase(), svc.characteristics?.map { it.uuid.toString().lowercase() } ?: emptyList())
             }
             servicesDiscoveredFor.add(address)
-            gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+            applyConnectionPriority(address)
             completeCommand()
             connectionListener?.onGattServicesDiscovered(address, bleServices)
         }
@@ -746,6 +782,10 @@ class OmiBleManager private constructor(private val application: Application) {
         // is never missed if the write callback and the notification race.
         val session = StorageDownloadSession(addr, offset, outputPath, callback)
         activeDownloads[addr] = session
+        // Registered, so applyConnectionPriority now reads "transferring". Raised before
+        // CMD_READ_FILE is enqueued rather than on the first packet: the whole point is
+        // for the fast interval to be in force by the time data starts arriving.
+        applyConnectionPriority(addr)
 
         // Build CMD_READ_FILE: [0x11, fileIndex, offset 4B LE, timerStart 4B LE]
         val cmd = ByteArray(10)
@@ -881,6 +921,13 @@ class OmiBleManager private constructor(private val application: Application) {
             if (!completed.compareAndSet(false, true)) return
             mainHandler.removeCallbacks(timeoutRunnable)
             try { fos.close() } catch (_: Exception) {}
+            // The single funnel every session ends through, success or failure, guarded by
+            // the CAS above so it runs exactly once. Callers remove themselves from
+            // activeDownloads before completing, so this re-read sees the transfer gone and
+            // drops back to LOW_POWER. Deliberately not removing the entry here: a later
+            // session for the same address may already have replaced it, and evicting that
+            // would strand a live transfer at idle parameters.
+            applyConnectionPriority(address)
             mainHandler.post { callback(result) }
         }
     }
