@@ -46,7 +46,16 @@ class OmiBleForegroundService : Service() {
         // autoConnect=true attempts never time out in the framework — the accept-list
         // initiator waits forever — so those need a backstop of our own.
         private const val DIRECT_CONNECT_TIMEOUT_MS = 40_000L
-        private const val AUTO_CONNECT_TIMEOUT_MS = 30_000L
+        // Longer than the direct backstop, not shorter. These were inverted: the
+        // accept-list initiator is the one that never self-terminates, so it is the one
+        // that needs room — while a direct connect Android already gives up on at ~30 s
+        // was handed 40 s. Cutting the patient mode off at 30 s meant it was destroyed and
+        // rebuilt (handleDisconnection closes the GATT unconditionally) before a
+        // low-duty-cycle background scan could plausibly land, so it paid autoConnect's
+        // slowness while never delivering its patience — and added connectGatt/closeGatt
+        // churn on top. Must stay below Dart's connect backstop; see
+        // native_ble_transport.dart _kConnectBackstop.
+        private const val AUTO_CONNECT_TIMEOUT_MS = 45_000L
         // Mid-retry ghost-GATT purge: if a stale system link is holding the firmware's
         // single connection slot, drop it (purgeGhostGattForAddress) before reconnecting.
         // Only fires when such a link actually exists. Capped to once per
@@ -606,8 +615,40 @@ class OmiBleForegroundService : Service() {
             // and spawn a duplicate connect on top of an in-flight one.
             synchronized(syncLock) {
                 if (bond && !existing.requiresBond) existing.requiresBond = true
-                if (existing.currentGattHash != null || existing.pendingReconnect != null) {
-                    Log.d(TAG, "manageDevice($addr): skipping — gattHash=${existing.currentGattHash} pendingReconnect=${existing.pendingReconnect != null} (native already handling it)")
+                // An attempt is already on the radio: join it. Dart's device-ready completer
+                // is fulfilled by whichever attempt lands, so tearing this one down to start
+                // another gains nothing and throws away the establishment progress made so
+                // far — the phase where a link is most fragile (HCI 0x3e is declared if no
+                // data-channel packet arrives within six connection events).
+                if (existing.currentGattHash != null) {
+                    Log.d(TAG, "manageDevice($addr): joining in-flight attempt (gattHash=${existing.currentGattHash})")
+                    return
+                }
+                // Sitting out a retry backoff. Every manageDevice is an explicit "connect
+                // now" from a caller with a reason — the sync window opened, or the user
+                // opened the app — and that is information the backoff was not priced for:
+                // the phone may have just been carried back into range. Waiting out up to
+                // 30 s of backoff made the user's own tap a no-op, and Dart's connect
+                // timeout would then report the request as failed while native was still
+                // mid-ladder. Preempt the wait and attempt now.
+                //
+                // retryCount is deliberately NOT reset (so this cannot call
+                // triggerReconnection, which does): the ladder's escalation is what keeps
+                // repeated failures from churning connectGatt/closeGatt at the 1.5 s floor,
+                // which is what wedged the Android BT daemon before c4ebcbde. Preempting
+                // skips the *waiting*, not the escalation — the next failure still backs
+                // off one step further than the last.
+                //
+                // This is safe only because Dart no longer runs a retry loop of its own
+                // (device_provider._startBackgroundSyncTimer). Reintroducing one would put
+                // a preempt on every attempt and reopen exactly that churn.
+                if (existing.pendingReconnect != null) {
+                    Log.i(TAG, "manageDevice($addr): preempting retry backoff (retryCount=${existing.retryCount}) — connecting now")
+                    existing.pendingReconnect?.let { handler.removeCallbacks(it) }
+                    existing.pendingReconnect = null
+                    existing.connectionTimeoutRunnable?.let { handler.removeCallbacks(it) }
+                    existing.connectionTimeoutRunnable = null
+                    connectToDevice(addr, "preempt")
                     return
                 }
                 triggerReconnection(addr, "re-manage")
