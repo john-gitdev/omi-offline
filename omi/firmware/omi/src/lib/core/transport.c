@@ -1735,7 +1735,7 @@ enum conn_param_mode {
  * a new link always gets an explicit request. */
 static atomic_t applied_conn_param_mode = ATOMIC_INIT(CONN_PARAM_MODE_UNSET);
 
-static void apply_conn_params(struct bt_conn *conn, enum conn_param_mode mode, bool allow_retry);
+static void apply_conn_params(struct bt_conn *conn, enum conn_param_mode mode);
 
 /* Re-request parameters if the transfer state has changed since the last request.
  * Driven from the idle-disconnect poll rather than a hook in storage.c:
@@ -1766,12 +1766,7 @@ static void refresh_conn_param_mode(void)
     if (!conn) {
         return;
     }
-    /* No retry from here: this runs on the system workqueue, and apply_conn_params'
-     * retry loop sleeps 200 ms between attempts — up to 600 ms of a shared queue for
-     * a request the central is free to decline anyway. A miss costs nothing, because
-     * the app drives the central's own priority in step (applyConnectionPriority) and
-     * the next mode change asks again. */
-    apply_conn_params(conn, want, false);
+    apply_conn_params(conn, want);
     put_current_connection(conn);
 }
 
@@ -2478,15 +2473,28 @@ static void update_phy(struct bt_conn *conn)
     }
 }
 
-/* Request aggressive connection parameters for higher audio throughput.
- * 7.5–15 ms interval gives ~67–133 packets/s vs ~33 at the 30 ms default. */
-#define CONN_PARAM_UPDATE_RETRIES 3
-/* Request [mode]'s parameters and record what was asked for. The mode is latched
- * before the request rather than after success: a rejected request leaves the link
- * where it was, and re-sending the same rejected values every 5 s would be a retry
- * loop the central has already declined. refresh_conn_param_mode() will ask again
- * the next time the transfer state actually changes. */
-static void apply_conn_params(struct bt_conn *conn, enum conn_param_mode mode, bool allow_retry)
+/* Request [mode]'s parameters and record what was asked for.
+ *
+ * ONE attempt, never a retry loop, and never a sleep. This used to try three times
+ * with a 200 ms sleep between attempts, which was wrong in both of its callers:
+ *
+ *  - from _transport_connected it slept in the BT RX thread, which the comment by
+ *    the advertising watchdog spells out must "only set atomics and (re)schedule".
+ *    It was also self-defeating — bt_conn_le_param_update sends a request whose
+ *    response that same RX thread processes, so sleeping there blocks the only
+ *    thread that could deliver the answer being waited for.
+ *  - from refresh_conn_param_mode it slept on the system workqueue, holding a
+ *    shared queue for a request the central is free to decline anyway.
+ *
+ * Nothing needs the retry. The app drives the central's own priority in step
+ * (OmiBleManager.applyConnectionPriority) and the central has the final say
+ * regardless, so a declined request costs the difference between two power states
+ * on one connection, not correctness.
+ *
+ * The mode is latched before the request rather than after success, so a declined
+ * request is not re-sent on every 5 s poll — refresh_conn_param_mode() asks again
+ * the next time the transfer state actually changes, which is the natural retry. */
+static void apply_conn_params(struct bt_conn *conn, enum conn_param_mode mode)
 {
     const bool transfer = (mode == CONN_PARAM_MODE_TRANSFER);
     struct bt_le_conn_param params = {
@@ -2496,24 +2504,15 @@ static void apply_conn_params(struct bt_conn *conn, enum conn_param_mode mode, b
         .timeout = transfer ? CONN_PARAM_XFER_TIMEOUT : CONN_PARAM_IDLE_TIMEOUT,
     };
     atomic_set(&applied_conn_param_mode, (atomic_val_t) mode);
-    LOG_INF("Requesting %s connection parameters (%u-%u units)",
+    int err = bt_conn_le_param_update(conn, &params);
+    if (err && err != -EALREADY) {
+        LOG_WRN("conn param update (%s) failed (err %d)", transfer ? "transfer" : "idle", err);
+        return;
+    }
+    LOG_INF("Requested %s connection parameters (%u-%u units)",
             transfer ? "transfer" : "idle",
             params.interval_min,
             params.interval_max);
-    const int attempts = allow_retry ? CONN_PARAM_UPDATE_RETRIES : 1;
-    for (int i = 0; i < attempts; i++) {
-        int err = bt_conn_le_param_update(conn, &params);
-        if (!err || err == -EALREADY) {
-            return;
-        }
-        LOG_WRN("conn param update attempt %d failed (err %d)", i + 1, err);
-        if (i + 1 < attempts) {
-            k_sleep(K_MSEC(200));
-        }
-    }
-    if (allow_retry) {
-        LOG_ERR("Failed to update connection parameters after %d attempts", attempts);
-    }
 }
 
 static void update_conn_params(struct bt_conn *conn)
@@ -2522,7 +2521,7 @@ static void update_conn_params(struct bt_conn *conn)
      * capability reads and a file listing to get through first, all of which are
      * comfortable at 200 ms. refresh_conn_param_mode() promotes to transfer
      * parameters within one poll of a read actually starting. */
-    apply_conn_params(conn, CONN_PARAM_MODE_IDLE, true);
+    apply_conn_params(conn, CONN_PARAM_MODE_IDLE);
 }
 
 
