@@ -24,6 +24,25 @@ class NativeBleTransport extends DeviceTransport {
   // this only trips on a dead peer, surfacing it as a thrown error so the sync
   // unwinds into processing instead of hanging.
   static const Duration _gattOpTimeout = Duration(seconds: 10);
+
+  /// Backstop for a connect request, NOT the expected failure path.
+  ///
+  /// Native owns connect and retry. A failed attempt reaches us as
+  /// `onPeripheralDisconnected`, which errors the ready completer directly — so in the
+  /// normal case this timer never fires and we learn the real GATT status instead of
+  /// synthesising a timeout. It exists only for the case where native reports nothing
+  /// at all.
+  ///
+  /// It MUST stay above native's own attempt backstops
+  /// (`OmiBleForegroundService.DIRECT_CONNECT_TIMEOUT_MS` 40 s /
+  /// `AUTO_CONNECT_TIMEOUT_MS` 45 s). It used to be 30 s, with a comment claiming it
+  /// matched them; daa55517 raised native to 40 s and left the claim behind. Being the
+  /// *shorter* of the two inverted the whole contract: Dart declared a connect failed
+  /// while native was still mid-attempt, so a link that came up afterwards arrived as an
+  /// unsolicited connection rather than as the answer to the request that asked for it.
+  /// Observed 2026-08-09T14:48:40Z — native reported `connect failed` at 22 s, Dart logged
+  /// `device ready after 24139ms`, and the connection was discarded two seconds later.
+  static const Duration _kConnectBackstop = Duration(seconds: 55);
   final StreamController<DeviceTransportState> _connectionStateController =
       StreamController<DeviceTransportState>.broadcast();
 
@@ -91,12 +110,15 @@ class NativeBleTransport extends DeviceTransport {
       rethrow;
     }
 
-    Logger.debug('[NativeBleTransport] $_peripheralUuid: manageDevice sent, waiting for device-ready (30s timeout)');
+    Logger.debug(
+      '[NativeBleTransport] $_peripheralUuid: manageDevice sent, waiting for device-ready '
+      '(${_kConnectBackstop.inSeconds}s backstop)',
+    );
     final t0 = DateTime.now();
     try {
       _services = await _deviceReadyCompleter!.future.timeout(
-        const Duration(seconds: 30),
-        onTimeout: () => throw TimeoutException('Device ready timeout after 30s'),
+        _kConnectBackstop,
+        onTimeout: () => throw TimeoutException('Device ready timeout after ${_kConnectBackstop.inSeconds}s'),
       );
       _deviceReadyCompleter = null;
       final ms = DateTime.now().difference(t0).inMilliseconds;
