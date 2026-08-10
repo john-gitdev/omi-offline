@@ -132,9 +132,16 @@ class DeviceProvider extends ChangeNotifier
   // processing run. This flag keeps the acquire/release pair balanced across the
   // watchdog's several resolution paths (success, give-up, fire, dispose).
   bool _connectWakeLockHeld = false;
-  // Keep-alive: sends HEARTBEAT (0x32) to storage characteristic every 5s so
-  // the firmware doesn't trip its 15s idle-disconnect (the 5s cadence leaves a
-  // 10s margin and survives two missed beats). Runs while the user is actively in
+  // Keep-alive: sends HEARTBEAT (0x32) to storage characteristic every 10s so
+  // the firmware doesn't trip its 60s idle-disconnect (six beats fit the window, so
+  // five may be missed — a wider margin than the old 5s/15s pair, which tolerated
+  // two). Both numbers moved together: at 5s into a 60s window this fired eleven
+  // times more often than the timeout needed, and every beat is a GATT write that
+  // wakes a radio the idle connection parameters had just been widened to let sleep
+  // (transport.c CONN_PARAM_IDLE_*). 10s halves that traffic while keeping the
+  // liveness check below — two consecutive failures means the link is dead —
+  // tripping in ~20s rather than the ~40s a 20s cadence would have cost.
+  // Runs while the user is actively in
   // the app, during an active background sync
   // (_backgroundSyncActive) — a single large-file read sends no command for
   // >15s, so without an in-flight keep-alive the firmware drops the link
@@ -907,7 +914,7 @@ class DeviceProvider extends ChangeNotifier
     _foregroundKeepAliveTimer?.cancel();
     if ((!_isAppInForeground && !_backgroundSyncActive) || !isConnected || connectedDevice == null) return;
     _consecutiveKeepAliveFails = 0;
-    _foregroundKeepAliveTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+    _foregroundKeepAliveTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
       if (!isConnected || connectedDevice == null) return;
       final conn = await ServiceManager.instance().device.ensureConnection(connectedDevice!.id);
       final ok = (conn != null) && (await conn.sendKeepAlive());
