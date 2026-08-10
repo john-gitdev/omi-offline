@@ -8,6 +8,14 @@ Patch releases are rolled up into their minor version. Each section reflects the
 
 - **Change: what Marker does is now stated on the button screen, per mode.** In Manual Mode it works while a recording is running — bookmarking a moment inside a long capture — and does nothing in standby, where there is no recording to bookmark. In Automatic Mode nothing changes, but the screen now tells you the part that was never stated anywhere: a marker doesn't only bookmark, it records for at least a minute from the tap and carries on recording if it hears anything — even if the Omi had decided the room was quiet, which is the whole point, since you can't know what it decided.
 
+- **Change: the Omi's radio now idles between transfers instead of running flat out.** While connected, the link ran at the speed a file transfer needs — the radio waking about ninety times a second — for the entire time it was up, including the long stretches when nothing was being sent. It now runs at that speed only while a recording is actually transferring and drops to a far slower rate the rest of the time, which is most of it. Transfers are unaffected.
+
+- **Fix: after a firmware update, reconnecting no longer takes several failed attempts.** An update deliberately clears the Bluetooth pairing on both sides, and the Omi was hanging up on the phone partway through establishing the new one — repeatedly, because each attempt was cut off at the same point. It now waits for pairing to finish. The Omi also waits a full minute before hanging up on a quiet phone rather than fifteen seconds, which was tight enough that ordinary operations kept getting caught by it.
+
+- **Fix: opening the app during a connection outage now retries immediately instead of doing nothing.** When the Omi failed to connect, the app backed off before trying again — up to half a minute between attempts — and any request made during that wait was discarded, including opening the app yourself. So the one thing you'd naturally do when the Omi wasn't connecting was the one thing that couldn't help. Opening the app, and each scheduled sync, now interrupt the wait and try straight away. Repeated failures still slow down between attempts, which is what keeps a stuck connection from draining the battery.
+
+- **Fix: a connection that succeeded could be reported as a failure.** The app gave up waiting sooner than the Bluetooth layer underneath it did, so a device that connected a few seconds late was recorded as a timeout and the working connection was thrown away — the sync then waited for the next scheduled window. The app now waits for the real answer.
+
 - **New (dev): connection-outage records now show Bluetooth headsets, car kits and glasses, not just watches.** When the app fails to reach the Omi it writes a snapshot of what else the phone's Bluetooth radio was doing, and that snapshot only ever listed Bluetooth Low Energy links — so a car stereo, a headset or a pair of smart glasses, which connect a different way, was missing from every record. Those are the likelier culprits: audio links reserve slots on the radio that a connection attempt then has to fit around. Outage records now name the connected audio devices, and say whether audio was actually playing through them — an idle headset and a call in progress take very different amounts of the radio. A suspicion that "it can't connect after my car did" can now be checked against the log instead of guessed at.
 
 - **Fix (dev): Debug Tools said diagnostics capture was on when the Omi's log was switched off.** The "capture" reading showed the app's own preference rather than the state of the device, and the two come apart: the command that arms the log is skipped whenever a sync is holding the storage connection, and the Omi clears it on every restart. So a snapshot could report capture on while the device was recording nothing, which makes an empty log look like a device with nothing to report. It now shows the device's confirmed state, the preference alongside it, and how long ago the two were last reconciled.
@@ -282,6 +290,14 @@ Patch releases are rolled up into their minor version. Each section reflects the
 ---
 
 ## Firmware
+
+### oo-3.0
+
+- **Change: the radio idles between transfers instead of running flat out.** The connection was negotiated once, for the speed a file transfer needs, and stayed there for as long as it was up — waking the radio about ninety times a second even with nothing to send, which is most of the time a connection exists. It now runs at that speed only while a recording is transferring or a firmware update is being flashed, and at roughly a tenth of it otherwise.
+
+- **Fix: the Omi no longer hangs up on a phone that is still pairing.** An update deliberately clears the pairing on both sides, and until a new one is established the phone cannot send the signal that tells the Omi the link is in use — so the Omi read the silence as an idle phone and hung up, repeatedly, each time interrupting the pairing that was in progress. It now recognises an unpaired link and waits, up to a limit, so it still hangs up on a phone that has genuinely stopped talking.
+
+- **Change: the Omi waits a minute before hanging up on a quiet phone, rather than fifteen seconds.** Fifteen seconds was short enough that ordinary things — pairing, setting up a connection — kept getting caught by it, and with the radio now idling cheaply between transfers there is little to gain from being quick about it.
 
 ### oo-2.10
 

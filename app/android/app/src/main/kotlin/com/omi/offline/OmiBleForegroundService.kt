@@ -46,7 +46,18 @@ class OmiBleForegroundService : Service() {
         // autoConnect=true attempts never time out in the framework — the accept-list
         // initiator waits forever — so those need a backstop of our own.
         private const val DIRECT_CONNECT_TIMEOUT_MS = 40_000L
-        private const val AUTO_CONNECT_TIMEOUT_MS = 30_000L
+        // Longer than the direct backstop, not shorter. These were inverted: the
+        // accept-list initiator is the one that never self-terminates, so it is the one
+        // that needs room — while a direct connect Android already gives up on at ~30 s
+        // was handed 40 s. Cutting the patient mode off at 30 s meant it was destroyed and
+        // rebuilt (handleDisconnection closes the GATT unconditionally) before a
+        // low-duty-cycle background scan could plausibly land, so it paid autoConnect's
+        // slowness while never delivering its patience — and added connectGatt/closeGatt
+        // churn on top. Must stay below Dart's connect backstop WITH ROOM FOR DISCOVERY:
+        // this timer is cancelled the instant the GATT connects, and DISCOVERY_TIMEOUT_MS
+        // runs after it, so the ready event can land ~15 s later than this value. See
+        // native_ble_transport.dart _kConnectBackstop, which is sized for the sum.
+        private const val AUTO_CONNECT_TIMEOUT_MS = 45_000L
         // Mid-retry ghost-GATT purge: if a stale system link is holding the firmware's
         // single connection slot, drop it (purgeGhostGattForAddress) before reconnecting.
         // Only fires when such a link actually exists. Capped to once per
@@ -218,6 +229,20 @@ class OmiBleForegroundService : Service() {
         var currentGattHash: Int? = null,
         var hasEverConnected: Boolean = false,
         var pendingReconnect: Runnable? = null,
+        // Deadline (elapsedRealtime) until which [pendingReconnect] is the post-ghost-purge
+        // settle rather than an ordinary retry backoff. The two share the field (the settle
+        // sets it to keep manageDevice's guard invariant satisfied across the window), but
+        // they are not interchangeable: a backoff is a delay we are free to cut short, while
+        // the settle is waiting on the *firmware* to start advertising again after a stale
+        // link holding its single connection slot was dropped. Preempting the settle
+        // reconnects into that gap and undoes the purge it was protecting.
+        //
+        // A deadline rather than a boolean deliberately. Five separate paths cancel
+        // pendingReconnect (onGattConnected, triggerReconnection, handleDisconnection, the
+        // adapter-off sweep, the retry runnable), and a flag any of them forgot to reset
+        // would suppress every future preempt for the life of the process. This expires on
+        // its own, so the worst a missed reset can cost is the 500 ms already budgeted.
+        var postPurgeSettleUntilMs: Long = 0,
         var stabilityTimerRunnable: Runnable? = null,
         var connectionTimeoutRunnable: Runnable? = null,
         // Stale-bond recovery: when GATT disconnects with status 5 (INSUF_AUTHENTICATION)
@@ -606,8 +631,52 @@ class OmiBleForegroundService : Service() {
             // and spawn a duplicate connect on top of an in-flight one.
             synchronized(syncLock) {
                 if (bond && !existing.requiresBond) existing.requiresBond = true
-                if (existing.currentGattHash != null || existing.pendingReconnect != null) {
-                    Log.d(TAG, "manageDevice($addr): skipping — gattHash=${existing.currentGattHash} pendingReconnect=${existing.pendingReconnect != null} (native already handling it)")
+                // An attempt is already on the radio: join it. Dart's device-ready completer
+                // is fulfilled by whichever attempt lands, so tearing this one down to start
+                // another gains nothing and throws away the establishment progress made so
+                // far — the phase where a link is most fragile (HCI 0x3e is declared if no
+                // data-channel packet arrives within six connection events).
+                if (existing.currentGattHash != null) {
+                    Log.d(TAG, "manageDevice($addr): joining in-flight attempt (gattHash=${existing.currentGattHash})")
+                    return
+                }
+                // Sitting out a retry backoff. Every manageDevice is an explicit "connect
+                // now" from a caller with a reason — the sync window opened, or the user
+                // opened the app — and that is information the backoff was not priced for:
+                // the phone may have just been carried back into range. Waiting out up to
+                // 30 s of backoff made the user's own tap a no-op, and Dart's connect
+                // timeout would then report the request as failed while native was still
+                // mid-ladder. Preempt the wait and attempt now.
+                //
+                // retryCount is deliberately NOT reset (so this cannot call
+                // triggerReconnection, which does): the ladder's escalation is what keeps
+                // repeated failures from churning connectGatt/closeGatt at the 1.5 s floor,
+                // which is what wedged the Android BT daemon before c4ebcbde. Preempting
+                // skips the *waiting*, not the escalation — the next failure still backs
+                // off one step further than the last.
+                //
+                // This is safe only because Dart no longer runs a retry loop of its own
+                // (device_provider._startBackgroundSyncTimer). Reintroducing one would put
+                // a preempt on every attempt and reopen exactly that churn.
+                // ...except the post-ghost-purge settle, which is not a backoff. A stale
+                // system link holding the firmware's single connection slot was just
+                // dropped, and this delay is waiting on the firmware to get back on the
+                // air. Connecting into that gap reconnects before it is advertising and
+                // throws away the purge that made reconnection possible at all — so this
+                // one waits its 500 ms out, and the caller joins it.
+                if (existing.pendingReconnect != null &&
+                    android.os.SystemClock.elapsedRealtime() < existing.postPurgeSettleUntilMs
+                ) {
+                    Log.d(TAG, "manageDevice($addr): joining post-purge settle — not preempting")
+                    return
+                }
+                if (existing.pendingReconnect != null) {
+                    Log.i(TAG, "manageDevice($addr): preempting retry backoff (retryCount=${existing.retryCount}) — connecting now")
+                    existing.pendingReconnect?.let { handler.removeCallbacks(it) }
+                    existing.pendingReconnect = null
+                    existing.connectionTimeoutRunnable?.let { handler.removeCallbacks(it) }
+                    existing.connectionTimeoutRunnable = null
+                    connectToDevice(addr, "preempt")
                     return
                 }
                 triggerReconnection(addr, "re-manage")
@@ -1159,6 +1228,25 @@ class OmiBleForegroundService : Service() {
             lastRealStatus = managed.lastRealGattStatus
         }
 
+        // Native has stopped its own fast loop, so no further attempt stands behind the
+        // request Dart is waiting on. Tell it so, explicitly.
+        //
+        // Dart cannot infer this from the per-attempt disconnects: it deliberately
+        // swallows 133 and -1 while a connect is pending
+        // (native_ble_transport._handleConnectionState) precisely so native's retries can
+        // run without each one being reported as a failure — and those are the two most
+        // common statuses in an outage. Without this the completer stays pending across
+        // the whole ladder and only resolves when Dart's own backstop fires, mid-ladder,
+        // declaring failure while native is still trying. The backstop is meant to cover
+        // "native said nothing at all", not to be the normal way a request ends.
+        //
+        // The string must not contain "133" or "-1", or the same filter would swallow it.
+        if (!willRetry) {
+            bleManager.mainHandler.post {
+                bleManager.flutterApi?.onPeripheralDisconnected(addr, "retry_exhausted") {}
+            }
+        }
+
         if (startProbe) {
             // Snapshot the outage into the debug log now, while it is happening. An outage
             // that starts overnight is over by the time anyone can attach adb, and its most
@@ -1279,11 +1367,16 @@ class OmiBleForegroundService : Service() {
                     val connectRunnable = Runnable {
                         synchronized(syncLock) {
                             managed.pendingReconnect = null
+                            managed.postPurgeSettleUntilMs = 0
                             connectToDevice(addr, "retry_${managed.retryCount}_postpurge")
                         }
                     }
-                    // Keep the guard invariant satisfied across the settle window.
+                    // Keep the guard invariant satisfied across the settle window, and mark
+                    // it as a settle so manageDevice's preempt leaves it alone — this delay
+                    // is waiting on the firmware to re-advertise, not on a backoff clock.
                     managed.pendingReconnect = connectRunnable
+                    managed.postPurgeSettleUntilMs =
+                        android.os.SystemClock.elapsedRealtime() + GHOST_PURGE_SETTLE_MS
                     handler.postDelayed(connectRunnable, GHOST_PURGE_SETTLE_MS)
                 } else {
                     connectToDevice(addr, "retry_${managed.retryCount}")

@@ -132,9 +132,29 @@ class DeviceProvider extends ChangeNotifier
   // processing run. This flag keeps the acquire/release pair balanced across the
   // watchdog's several resolution paths (success, give-up, fire, dispose).
   bool _connectWakeLockHeld = false;
-  // Keep-alive: sends HEARTBEAT (0x32) to storage characteristic every 5s so
-  // the firmware doesn't trip its 15s idle-disconnect (the 5s cadence leaves a
-  // 10s margin and survives two missed beats). Runs while the user is actively in
+  // Keep-alive: sends HEARTBEAT (0x32) to storage characteristic every 10s so
+  // the firmware doesn't trip its 60s idle-disconnect (six beats fit the window, so
+  // five may be missed — a wider margin than the old 5s/15s pair, which tolerated
+  // two). Both numbers moved together: at 5s into a 60s window this fired eleven
+  // times more often than the timeout needed, and every beat is a GATT write that
+  // wakes a radio the idle connection parameters had just been widened to let sleep
+  // (transport.c CONN_PARAM_IDLE_*). 10s halves that traffic while keeping the
+  // liveness check below responsive (two failures ⇒ ~20s, versus ~40s at a 20s
+  // cadence).
+  //
+  // That check is NOT made redundant by the firmware's own 60s timeout, which is
+  // the obvious objection to it. The two cover opposite sides. The firmware's
+  // timer reclaims the DEVICE's radio from a phone that holds the link and goes
+  // quiet, and it can only fire while the firmware is still party to the link.
+  // This one covers the phone's belief: a wedged Android GATT, or a peer that is
+  // already gone with no disconnect reported. In that state the firmware is not in
+  // the connection at all — it may have hung up long ago, or be switched off — so
+  // nothing on its side will ever resolve it, and the app would sit "connected"
+  // indefinitely. Hence recycleConnection() below rather than a mere flag: the fix
+  // is to rebuild the phone's GATT, which is also what the ghost-purge path exists
+  // for. Where the two DO overlap (writes failing on a link the firmware still
+  // holds) this is simply the faster of the two.
+  // Runs while the user is actively in
   // the app, during an active background sync
   // (_backgroundSyncActive) — a single large-file read sends no command for
   // >15s, so without an in-flight keep-alive the firmware drops the link
@@ -147,6 +167,12 @@ class DeviceProvider extends ChangeNotifier
   // state (avoids the "app thinks connected, BLE actually dead" failure mode).
   Timer? _foregroundKeepAliveTimer;
   int _consecutiveKeepAliveFails = 0;
+  // Whether this link has ever carried a successful keep-alive. Arms the recycle
+  // below: rebuilding the GATT is a remedy for a link that WAS working and stopped,
+  // and says nothing useful about one that has not come up yet. Reset with the
+  // failure counter whenever the keep-alive is (re)started, so it describes the
+  // current link rather than any previous one.
+  bool _keepAliveEverSucceeded = false;
   final Debouncer _disconnectDebouncer = Debouncer(delay: const Duration(milliseconds: 500));
   final Debouncer _connectDebouncer = Debouncer(delay: const Duration(milliseconds: 1000));
   bool _isHandlingDisconnect = false;
@@ -742,13 +768,39 @@ class DeviceProvider extends ChangeNotifier
     // but won't connect".
     final connectFuture = ServiceManager.instance().device.ensureConnection(pairedDeviceId, force: true);
 
-    // 30s budget, matching the native transport's own device-ready timeout.
+    // Outer backstop only, and the outermost link in a chain that MUST stay monotonic —
+    // each guard has to sit above everything it contains, or the outer one fires first and
+    // reports a connect that is still legitimately in progress as a failure:
+    //
+    //   native direct connect        40 s   DIRECT_CONNECT_TIMEOUT_MS
+    //   native autoConnect           45 s   AUTO_CONNECT_TIMEOUT_MS
+    //     + service discovery      + 15 s   DISCOVERY_TIMEOUT_MS (starts AFTER connect)
+    //   = native worst case         ~60 s
+    //   transport backstop           75 s   NativeBleTransport._kConnectBackstop
+    //   THIS outer guard             90 s
+    //   Dart connect-settle       ~150 s   _armConnectSettleWatchdog
+    //   native connect-settle       160 s   CONNECT_SETTLE_MS
+    //
+    // This one exists solely so a wedged ensureConnection (e.g. the device mutex held by a
+    // stuck caller) cannot hang the sync cycle forever. It has been wrong twice: 30 s with
+    // a comment claiming it matched native, then 70 s after the transport moved to 75 s.
+    // Check the whole column above when changing any single value.
     try {
-      await connectFuture.timeout(const Duration(seconds: 30));
+      await connectFuture.timeout(const Duration(seconds: 90));
       final elapsed = DateTime.now().difference(t0).inMilliseconds;
-      Logger.debug('[BLE] _scanConnectDevice: device ready after ${elapsed}ms');
       device = await _getConnectedDevice();
-      if (device != null) return device;
+      // Log the OUTCOME, not the arrival. ensureConnection completing does not mean a usable
+      // link exists: it resolved at 14:48:40Z on 2026-08-09 for a connection native had torn
+      // down two seconds earlier, and the old unconditional 'device ready' line reported that
+      // as a success immediately before returning null.
+      if (device != null) {
+        Logger.debug('[BLE] _scanConnectDevice: device ready after ${elapsed}ms');
+        return device;
+      }
+      Logger.debug(
+        '[BLE] _scanConnectDevice: connect resolved after ${elapsed}ms but no connection remains — '
+        'native reported the attempt failed while we were waiting',
+      );
     } catch (e) {
       Logger.debug(
         '[BLE] _scanConnectDevice: timed out/failed after ${DateTime.now().difference(t0).inMilliseconds}ms ($e)',
@@ -891,12 +943,14 @@ class DeviceProvider extends ChangeNotifier
     _foregroundKeepAliveTimer?.cancel();
     if ((!_isAppInForeground && !_backgroundSyncActive) || !isConnected || connectedDevice == null) return;
     _consecutiveKeepAliveFails = 0;
-    _foregroundKeepAliveTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+    _keepAliveEverSucceeded = false;
+    _foregroundKeepAliveTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
       if (!isConnected || connectedDevice == null) return;
       final conn = await ServiceManager.instance().device.ensureConnection(connectedDevice!.id);
       final ok = (conn != null) && (await conn.sendKeepAlive());
       if (ok) {
         _consecutiveKeepAliveFails = 0;
+        _keepAliveEverSucceeded = true;
         return;
       }
       _consecutiveKeepAliveFails++;
@@ -905,8 +959,21 @@ class DeviceProvider extends ChangeNotifier
       // SENDING (the firmware resets its idle timer only on storage-char
       // activity), but never force-disconnect — that would abort an otherwise
       // healthy firmware update. The DFU layer owns connection health here.
-      if (_consecutiveKeepAliveFails >= 2 && !isFirmwareUpdateInProgress) {
-        Logger.debug('KeepAlive: 2 consecutive failures, recycling connection to resync state');
+      //
+      // _keepAliveEverSucceeded is the other half of that: recycling rebuilds a
+      // GATT, which is a remedy for a link that WAS carrying traffic and wedged.
+      // A link whose keep-alive has never once landed has not come up yet, and
+      // tearing it down is worse than waiting. The case that forced this is the
+      // reconnect after a firmware update: the update wipes the bond by design, so
+      // until a fresh pairing completes the app cannot write the storage
+      // characteristic at all (BT_GATT_PERM_WRITE_ENCRYPT) and every keep-alive
+      // fails — and the firmware now deliberately holds the link open through that
+      // window (transport.c PAIRING_GRACE_MS). Recycling into it would undo, from
+      // the phone side, exactly what the firmware is protecting. isFirmwareUpdate-
+      // InProgress does not cover it: on success that flag clears when the user
+      // taps Done, which is before the device has finished rebooting and pairing.
+      if (_consecutiveKeepAliveFails >= 2 && _keepAliveEverSucceeded && !isFirmwareUpdateInProgress) {
+        Logger.debug('KeepAlive: 2 consecutive failures on a link that was working, recycling to resync state');
         _consecutiveKeepAliveFails = 0;
         // Recycle (soft-disconnect → fresh GATT, device stays managed) rather than the
         // heavy disconnectDevice/unmanage path, which sets USER_DISCONNECTED, cancels
@@ -920,6 +987,10 @@ class DeviceProvider extends ChangeNotifier
     _foregroundKeepAliveTimer?.cancel();
     _foregroundKeepAliveTimer = null;
     _consecutiveKeepAliveFails = 0;
+    // Cleared with the counter: both describe one link, and a stale "this one was
+    // working" carried into the next link would arm the recycle before anything had
+    // proved it.
+    _keepAliveEverSucceeded = false;
   }
 
   /// Notification writer for background processing progress. Registered on
@@ -1005,14 +1076,19 @@ class DeviceProvider extends ChangeNotifier
           _armConnectSettleWatchdog();
           bool connectedThisTick = false;
           try {
-            for (int attempt = 0; attempt < 3 && !isConnected; attempt++) {
-              if (attempt > 0) await Future.delayed(const Duration(seconds: 10));
-              await scanAndConnectToDevice();
-              if (isConnected) {
-                connectedThisTick = true;
-                break;
-              }
-            }
+            // ONE request per sync window. Native owns connect and retry — it runs its own
+            // ladder (backoff 1.5→3→6→12→24 s over AUTONOMOUS_RETRY_STOP_AFTER attempts,
+            // then the recovery alarm), and manageDevice preempts a waiting backoff so this
+            // request is acted on immediately rather than queued behind it.
+            //
+            // This used to be a 3-attempt loop with 10 s gaps, which was a second retry
+            // governor layered on the first: the two shared no state, so the real attempt
+            // pattern was their product, and every iteration landed on native's guard while
+            // native was already mid-ladder. Worse, now that manageDevice preempts, a loop
+            // here would preempt the backoff on every iteration and pin the ladder near its
+            // floor — restoring the connectGatt/closeGatt churn that c4ebcbde removed.
+            await scanAndConnectToDevice();
+            connectedThisTick = isConnected;
           } finally {
             // Clear in finally so a thrown scan (TimeoutException, GATT
             // errors, permission failure) doesn't leave the flag stuck true
@@ -1061,9 +1137,12 @@ class DeviceProvider extends ChangeNotifier
         // are released in the finally below.
         if (Platform.isAndroid || Platform.isIOS) BleHostApi().acquireProcessingWakeLock();
         // Keep the firmware from idle-dropping the link mid-sync. Without this a
-        // single >30s file read (large stitched/draft recordings) sends no
-        // command for the firmware's 30s idle window and dies as "Stream closed
-        // without EOT", so that file never finishes. _backgroundSyncActive is
+        // single long file read (large stitched/draft recordings) sends no command for
+        // the firmware's idle window (transport.c IDLE_DISCONNECT_TIMEOUT_MS, 60 s) and
+        // dies as "Stream closed without EOT", so that file never finishes. Belt and
+        // braces now — the firmware also defers the idle check outright while a storage
+        // transfer is active — but the keep-alive covers the gaps between reads, which
+        // that exemption does not. _backgroundSyncActive is
         // set, so this also arms the keep-alive in the background. See
         // _startForegroundKeepAlive.
         _startForegroundKeepAlive();
@@ -1128,7 +1207,8 @@ class DeviceProvider extends ChangeNotifier
         // created during processing are also captured before we drop the
         // connection. Always disconnect — even if segments remain there is no
         // point holding the link, because the keep-alive has stopped and the
-        // firmware idle-drops it within ~30s with nothing to reconnect it in the
+        // firmware idle-drops it within ~60s (transport.c IDLE_DISCONNECT_TIMEOUT_MS)
+        // with nothing to reconnect it in the
         // background. Any leftover segments are picked up by the next scheduled
         // sync (or on app open/resume when one is due).
         if (!_isAppInForeground && !isFirmwareUpdateInProgress && !_isOnFirmwareUpdatePage && isConnected) {
@@ -1385,7 +1465,7 @@ class DeviceProvider extends ChangeNotifier
     _backgroundSyncTimer?.cancel();
     // Keep _foregroundKeepAliveTimer running: DFU uses the SMP service, not the
     // Omi storage characteristic, so transport_mark_activity() never fires during
-    // the transfer. Without the keep-alive the firmware's 15 s idle-disconnect
+    // the transfer. Without the keep-alive the firmware's 60 s idle-disconnect
     // triggers mid-DFU and kills the connection. Newer firmware also defers
     // idle-disconnect while a DFU image upload is active (sd_get_ota_active), so
     // this heartbeat is the backstop that flashes a device still running the
