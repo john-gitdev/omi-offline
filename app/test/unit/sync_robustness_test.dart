@@ -833,6 +833,38 @@ void main() {
       expect(secondResp!.isPartial, isTrue);
     }, timeout: const Timeout(Duration(seconds: 30)));
 
+    test('deleting one pre-time-sync bin keeps its id-colliding sibling tracked', () async {
+      // Wal.id is `$device-$timerStart`, and pre-time-sync segments key timerStart on
+      // UPTIME seconds, which restart at 0 each boot — so two bins recorded before the
+      // clock was ever set, in different boots, share an id while being different files
+      // (they differ by sessionId, which is why the rebuild matches those on sessionId
+      // and incompleteBinRelPaths keys on relativeBinPath). Removing by id on delete
+      // evicted the sibling too, and a WAL that is not tracked is rebuilt as `miss` at
+      // offset 0 on the next listing: a full re-download of a bin already part-fetched.
+      const sharedTs = 1010; // below kMinValidEpochForMatch — pre-time-sync
+      mockConn.files = [
+        StorageFile(index: 0, timestamp: sharedTs, size: 100, sessionId: 111),
+        StorageFile(index: 1, timestamp: sharedTs, size: 5000, sessionId: 222),
+      ];
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await pump(10);
+
+      final built = await sync.getMissingWals();
+      expect(built.length, 2, reason: 'both colliding bins are tracked to begin with');
+      expect(built.map((w) => w.id).toSet().length, 1, reason: 'and they really do share a Wal.id');
+
+      // Delete one. incompleteBinRelPaths reads the tracked WALs (plus what was
+      // persisted) WITHOUT re-listing, so it shows what the delete actually evicted.
+      await sync.deleteWal(built.firstWhere((w) => w.sessionId == 111));
+      await pump(10);
+
+      expect(
+        await sync.incompleteBinRelPaths(),
+        contains('session_222/${sharedTs}_222.bin'),
+        reason: 'the id-colliding sibling must survive its neighbour being deleted',
+      );
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
     test('a file that GREW since it was received is resumed, not skipped as already-synced', () async {
       // The `synced` carry must not swallow audio we never received. If the device
       // advertises more bytes than we hold, the file has to resume — and must NOT be
