@@ -952,13 +952,27 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<bool> performDeleteFile(StorageFile file, {int? timestamp}) async {
+    // Three very different things end up as `false` here: the firmware ACKed a non-zero
+    // result, no ACK arrived before the timeout, or the write/stream threw. The caller
+    // only sees a bool and reports all three as "firmware rejected deletion", which is
+    // wrong for two of them and sent a real investigation down the wrong path. The
+    // firmware's own delete waits up to 30 s on the SD worker and answers -ETIMEDOUT,
+    // so an ACK'd failure and a silent one mean different faults in different places.
+    // Record which one actually happened.
     try {
       final completer = Completer<bool>();
       final stream =
           await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
       final sub = stream.listen((data) {
         if (completer.isCompleted) return;
-        if (data.isNotEmpty && data[0] == 0x03) completer.complete(data.length < 2 || data[1] == 0);
+        if (data.isNotEmpty && data[0] == 0x03) {
+          final int result = data.length < 2 ? 0 : data[1];
+          if (result != 0) {
+            Logger.error('OmiConnection: CMD_DELETE_FILE index=${file.index} ts=$timestamp '
+                'ACKed failure result=$result');
+          }
+          completer.complete(result == 0);
+        }
       });
       await Future.delayed(_cccdCommandDelay);
 
@@ -976,10 +990,18 @@ class OmiDeviceConnection extends DeviceConnection {
           storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, Uint8List.fromList(cmd));
       try {
         return await completer.future.timeout(const Duration(seconds: 35));
+      } on TimeoutException {
+        // No ACK at all. The firmware's own wait is 30 s, so it should have answered
+        // -ETIMEDOUT before this fires — reaching here means the response never made it
+        // back, not that the device refused. The file may well have been deleted.
+        Logger.error('OmiConnection: CMD_DELETE_FILE index=${file.index} ts=$timestamp '
+            'timed out after 35 s with no ACK — deletion state on the device is UNKNOWN');
+        return false;
       } finally {
         await sub.cancel();
       }
-    } catch (_) {
+    } catch (e) {
+      Logger.error('OmiConnection: CMD_DELETE_FILE index=${file.index} ts=$timestamp threw: $e');
       return false;
     }
   }
