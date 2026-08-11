@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -50,6 +52,12 @@ void main() {
   late List<String> bondedIds;
   late int bondedQueryCount;
 
+  /// Held open by the one test that needs the permission request to still be in
+  /// flight while the page goes away — the real one is a system window the user can
+  /// sit in front of for as long as they like. Null in every other test, where the
+  /// answer comes back immediately.
+  Completer<void>? permissionGate;
+
   void installPlatformMocks() {
     final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
 
@@ -57,6 +65,7 @@ void main() {
     // its gate and reaches the discovery + bond-refresh path.
     messenger.setMockMethodCallHandler(permissionChannel, (call) async {
       if (call.method == 'requestPermissions') {
+        await permissionGate?.future;
         final requested = List<int>.from(call.arguments as List);
         // 1 == PermissionStatus.granted.
         return <int, int>{for (final p in requested) p: 1};
@@ -77,6 +86,7 @@ void main() {
   setUp(() async {
     bondedIds = <String>[];
     bondedQueryCount = 0;
+    permissionGate = null;
     installPlatformMocks();
     // The page reaches for the singleton in _startScan before anything else. A real
     // DeviceService that was never start()ed reports status `init`, so discover()
@@ -164,6 +174,26 @@ void main() {
 
       expect(find.text('Find Omi Devices'), findsNothing);
       expect(find.text('open find devices'), findsOneWidget);
+    });
+
+    testWidgets('a connect during the permission request does not outlive the page', (tester) async {
+      // The permission prompt is a system window, not a Flutter route, so this page
+      // stays `isCurrent` behind it and the auto-close pops it right out from under
+      // the scan that is still waiting on the answer. Whatever that scan touches
+      // afterwards is touching a disposed state.
+      final gate = Completer<void>();
+      permissionGate = gate;
+      final provider = FakeDeviceProvider();
+      await openFindDevices(tester, provider);
+
+      provider.connect(BtDevice(id: 'AA:BB:CC:DD:EE:FF', name: 'Omi', type: DeviceType.omi, rssi: 0));
+      await tester.pumpAndSettle();
+      expect(find.text('Find Omi Devices'), findsNothing, reason: 'the connect should have closed it');
+
+      gate.complete();
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull, reason: 'the answer landed after dispose and must be dropped, not used');
     });
 
     testWidgets('a connect under a dialog pops the page, not the dialog', (tester) async {
