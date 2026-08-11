@@ -551,7 +551,17 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       StorageFile(index: targetIdx, timestamp: wal.timerStart, size: 0),
     );
     if (!success) throw Exception('Firmware rejected deletion of index=$targetIdx ts=${wal.timerStart}');
-    _wals.removeWhere((w) => w.id == wal.id);
+    // Drop the WAL by PHYSICAL identity, not Wal.id. Wal.id is `$device-$timerStart`,
+    // and pre-time-sync segments key timerStart on uptime seconds, which restart at 0
+    // every boot — so two bins recorded before the clock was ever set, in different
+    // boots, can share an id while being different files (they differ by sessionId,
+    // which is why _buildWalsFromFilesLocked matches those on sessionId and
+    // incompleteBinRelPaths keys on relativeBinPath). Removing by id here evicts the
+    // colliding sibling too, losing its resume offset and strike count: it is rebuilt
+    // as `miss` at offset 0 and re-downloaded in full. relativeBinPath carries the
+    // sessionId, so it separates them. _wals holds one device, but match on device
+    // anyway — the path alone carries no device id.
+    _wals.removeWhere((w) => w.device == wal.device && w.relativeBinPath == wal.relativeBinPath);
     listener.onWalUpdated();
     // Persist after deletion so the WAL is gone from disk even if the app restarts before
     // the next natural save point. This prevents re-downloading a deleted file.
