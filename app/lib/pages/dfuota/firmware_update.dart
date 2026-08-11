@@ -94,6 +94,7 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
   @override
   void dispose() {
     killMcuUpdateManager();
+    cancelPostFlashReconnect();
     // Backstop: release the OTA screen/CPU wakelocks in case a terminal DFU
     // callback didn't fire (e.g. an MCU update failure has no explicit handler).
     releaseUpdateWakelocks();
@@ -371,11 +372,21 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
   // re-pairing is not an "if something went wrong" fallback here, it is the normal
   // next step, and it is why Done opens the scan list.
   Widget _buildRepairInstructions() {
+    // On Android the app waits for the Omi to start advertising again and then
+    // reconnects on its own (FirmwareMixin._reconnectWhenDeviceReturns), so the
+    // pairing request arrives without the user doing anything — the manual route is
+    // the fallback for when that window expires. iOS cannot clear its own bond, so
+    // there the user has to forget the device first and the manual route is the only
+    // one.
     final steps = <String>[
       'Wait a few seconds for your Omi to finish restarting.',
-      if (Platform.isIOS)
+      if (Platform.isIOS) ...[
         'On your phone: open Settings → Bluetooth, tap the ⓘ next to your Omi, and choose "Forget This Device".',
-      'Tap Done below, then tap your Omi in the list to pair with it again.',
+        'Tap Done below, then tap your Omi in the list to pair with it again.',
+      ] else ...[
+        'Accept the pairing request when it appears — your Omi reconnects on its own.',
+        'If it doesn\'t appear, tap Done below and tap your Omi in the list to pair with it again.',
+      ],
     ];
     return Container(
       decoration: BoxDecoration(
