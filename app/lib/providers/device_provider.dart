@@ -1975,29 +1975,26 @@ class DeviceProvider extends ChangeNotifier
           // fired. pauseGateSaves is a rescue, so it is NOT a loss warning.
           final priorityMsg = 'Device priority-record counters: starts=${dropStats.priorityRecordStarts} '
               'stops=${dropStats.priorityRecordStops} markerDrops=${dropStats.markerWriteDrops} '
-              'emptyBinRotations=${dropStats.emptyBinRotationsSuspect}/${dropStats.emptyBinRotations} '
-              '(lost/total) seEmits=${dropStats.sessionEndMarkerEmits} '
+              'emptyBinRotations=${dropStats.emptyBinRotations} seEmits=${dropStats.sessionEndMarkerEmits} '
               'pauseGateSaves=${dropStats.markerPauseGateSaves}';
-          // The TOTAL empty-bin count deliberately does not raise this warning — only
-          // emptyBinRotationsSuspect does. An empty bin is produced legitimately by any
-          // rotation that lands in a silent stretch: in auto mode a quiet room forwards
-          // nothing to the SD worker at all (aad.c returns early while !vad_is_recording),
-          // and the age-based rotation is only evaluated when a write arrives — so a bin
-          // opened by an explicit rotate (Force Sync's CMD_ROTATE_FILE, a priority-record
-          // boundary, a time sync) stays header-only until speech resumes, and the next
-          // rotate closes it empty. Two Force Syncs over a quiet lunch break are enough.
-          // Warning on that reports data loss where there was no data, which is worse
-          // than silent: it sends an investigation after a recording that never existed.
+          // The empty-bin count deliberately does not raise this warning. An empty bin is
+          // produced legitimately by any rotation that lands in a silent stretch: in auto
+          // mode a quiet room forwards nothing to the SD worker at all (aad.c returns
+          // early while !vad_is_recording), and the age-based rotation is only evaluated
+          // when a write arrives — so a bin opened by an explicit rotate (Force Sync's
+          // CMD_ROTATE_FILE, a priority-record boundary, a time sync) stays header-only
+          // until speech resumes, and the next rotate closes it empty. Two Force Syncs
+          // over a quiet lunch break are enough. Warning on that reports data loss where
+          // there was no data, which is worse than silent: it sends an investigation
+          // after a recording that never existed.
           //
-          // The firmware now attributes each empty bin to the rotation that caused it and
-          // counts separately the one reason that cannot happen without loss: a Priority
-          // Recording's own bin closed empty, which requires both its 0xFFFFFFF8 start
-          // marker and its force-captured audio to have been dropped. Firmware older than
-          // oo-3.0.2 reports 0 there, so those builds fall back to markerWriteDrops alone
-          // — under-reporting rather than false-alarming.
-          if (dropStats.markerWriteDrops > 0 || dropStats.emptyBinRotationsSuspect > 0) {
-            Logger.warning('$priorityMsg — possible lost Priority Recording '
-                '(marker write dropped, or a priority bin closed empty, on-device)');
+          // markerWriteDrops is the signal, and an empty bin adds nothing to it: a
+          // marker that is written force-drains its block immediately, so a bin can only
+          // be header-only if nothing was written at all — which is silence, not loss.
+          // The count is still reported above; firmware oo-3.0.2 and later say WHY each
+          // one happened in the 0x0063 event log.
+          if (dropStats.markerWriteDrops > 0) {
+            Logger.warning('$priorityMsg — possible lost Priority Recording (marker write dropped on-device)');
           } else {
             Logger.debug(priorityMsg);
           }
@@ -2006,7 +2003,6 @@ class DeviceProvider extends ChangeNotifier
             'priority_stops': dropStats.priorityRecordStops,
             'marker_write_drops': dropStats.markerWriteDrops,
             'empty_bin_rotations': dropStats.emptyBinRotations,
-            'empty_bin_rotations_suspect': dropStats.emptyBinRotationsSuspect,
             'session_end_marker_emits': dropStats.sessionEndMarkerEmits,
             'marker_pause_gate_saves': dropStats.markerPauseGateSaves,
           });
