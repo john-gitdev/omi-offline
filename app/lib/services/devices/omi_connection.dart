@@ -287,6 +287,10 @@ class OmiDeviceConnection extends DeviceConnection {
       // which reads as "fast" rather than unknown — acceptable, since the field only
       // exists to confirm the device reaches slow.
       advModesRaw: data.length >= 96 ? data.getUint32LittleEndian(92) : 0,
+      // The subset of emptyBinRotations that means audio was actually lost. The total
+      // at offset 56 counts benign silent rotations too, so it is the denominator, not
+      // the alarm — see DeviceDropStats.emptyBinRotationsSuspect.
+      emptyBinRotationsSuspect: data.length >= 100 ? data.getUint32LittleEndian(96) : 0,
       // Derived, not a wire field: the 76-byte payload is only produced by oo-2.6.2,
       // which is the build that raised SD_REQ_QUEUE_MSGS 100→120. A shorter payload is
       // older firmware still at 100. Keeps the peak-depth denominator honest.
