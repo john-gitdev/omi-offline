@@ -1977,8 +1977,23 @@ class DeviceProvider extends ChangeNotifier
               'stops=${dropStats.priorityRecordStops} markerDrops=${dropStats.markerWriteDrops} '
               'emptyBinRotations=${dropStats.emptyBinRotations} seEmits=${dropStats.sessionEndMarkerEmits} '
               'pauseGateSaves=${dropStats.markerPauseGateSaves}';
-          if (dropStats.markerWriteDrops > 0 || dropStats.emptyBinRotations > 0) {
-            Logger.warning('$priorityMsg — possible lost Priority Recording (marker/audio dropped on-device)');
+          // emptyBinRotations deliberately does NOT raise this warning. An empty bin is
+          // only a loss signal when a rotation dropped a recording's marker and audio;
+          // it is ALSO produced, legitimately, by any rotation that lands in a silent
+          // stretch. In auto mode a quiet room forwards nothing to the SD worker at all
+          // (aad.c returns early while !vad_is_recording), and the age-based rotation is
+          // only evaluated when a write arrives — so a bin opened by an explicit rotate
+          // (Force Sync's CMD_ROTATE_FILE, a priority-record boundary, a time sync) stays
+          // header-only until speech resumes, and the next explicit rotate closes it
+          // empty. Two Force Syncs over a quiet lunch break are enough. Warning on that
+          // reports data loss where there was no data, which is worse than silent: it
+          // sends an investigation after a recording that never existed.
+          //
+          // markerWriteDrops is the unambiguous signal and keeps the warning. The count
+          // is still reported below either way, and is meaningful when read ALONGSIDE
+          // priority starts/stops moving — which is how the loss case shows up.
+          if (dropStats.markerWriteDrops > 0) {
+            Logger.warning('$priorityMsg — possible lost Priority Recording (marker write dropped on-device)');
           } else {
             Logger.debug(priorityMsg);
           }
