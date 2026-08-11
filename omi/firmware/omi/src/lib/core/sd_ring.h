@@ -311,7 +311,24 @@ int sd_ring_read_segment(int index, uint32_t offset, uint8_t *buf, size_t len);
  * @brief Mark closed segment @p index as acked (phone synced+deleted) and
  *        advance the tail past all leading acked segments to reclaim space.
  *
- * @return 0 on success, negative errno / -1 on error.
+ * **A non-zero return does NOT mean nothing happened.** The in-RAM table is
+ * mutated first — the segment is flagged acked, the tail advances, leading entries
+ * are dropped — and only then is any of it persisted. So on a durability failure
+ * the segment is already gone from sd_ring_segment_count() / the BLE file list and
+ * will not come back unless the device reboots before the table reaches NAND. A
+ * caller must not report "the delete did not happen"; the honest reading is
+ * "acked, not yet durable".
+ *
+ * That asymmetry is deliberate rather than an oversight worth reversing: rolling
+ * the mutation back would need a snapshot of the whole 168-slot table plus the
+ * tail, and the recovery it would buy is already provided by segtab_dirty, which
+ * makes the next sd_ring_sync() retry the table before any cursor commit.
+ *
+ * @return 0 fully persisted.
+ *         -ENODEV / -1: nothing was acked (not mounted, or @p index out of range) —
+ *         the only returns for which the segment is genuinely untouched.
+ *         -EIO: acked in RAM, table not durable; sd_ring_sync() will retry it.
+ *         Other negative: the cursor write failed after a durable table.
  */
 int sd_ring_ack_segment(int index);
 

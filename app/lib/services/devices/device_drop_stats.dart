@@ -58,22 +58,42 @@ class DeviceDropStats {
   /// the central. Appended at offset 40; 0 on older firmware.
   final int estabFailCount;
 
-  /// Priority Recording lifecycle counters, appended at offsets 44–56 (60-byte
+  /// Priority Recording lifecycle counters, appended at offsets 44–52 (60-byte
   /// firmware); 0 on older builds. These make a lost Priority Recording traceable
   /// from the app log alone, no RTT capture:
   ///
   /// `priorityRecordStarts`: 0xFFFFFFF8 start-marker writes attempted (a priority
   /// recording opened). `priorityRecordStops`: priority recordings ended —
   /// `starts > stops` means one was left open. `markerWriteDrops`: inline markers
-  /// (start/stop/tap/mute) that failed to persist to SD. `emptyBinRotations`:
-  /// rotations that closed a bin holding no audio.
+  /// (start/stop/tap/mute) that failed to persist to SD. The empty-bin counters
+  /// that complete this group are documented on their own fields below (offsets 56
+  /// and 96), because only one of the two means anything was lost.
   ///
   /// The tell-tale for the vanished-priority-recording bug is `priorityRecordStarts`
-  /// moving while `emptyBinRotations` (and/or `markerWriteDrops`) also moves and no
-  /// high-priority recording surfaces — the marker + audio were dropped on-device.
+  /// moving while `markerWriteDrops` also moves and no high-priority recording
+  /// surfaces — the marker + audio were dropped on-device.
   final int priorityRecordStarts;
   final int priorityRecordStops;
   final int markerWriteDrops;
+
+  /// Rotations that closed a bin holding nothing but its 36-byte header.
+  ///
+  /// **This is not a loss signal**, and treating it as one produced false "lost
+  /// Priority Recording" reports. An empty bin means nothing at all reached the card
+  /// for that segment, and an ACCEPTED marker cannot be the missing part — the firmware
+  /// force-drains a marker's partial block immediately, so a marker the SD queue takes
+  /// puts the bin well past header-only. (Rejected, it stays buffered and lands in the
+  /// NEXT bin instead, leaving this one empty — that needs a full SD queue.) What is
+  /// left is a rotation that landed where
+  /// nothing was being written: in auto mode, any silent stretch. Two Force Syncs
+  /// across a quiet lunch break move this and mean nothing.
+  ///
+  /// [markerWriteDrops] is the loss signal and stands on its own. Do not read the two
+  /// together: both are boot-cumulative totals that identify no segment, so a marker
+  /// dropped in one recording and an empty bin from an idle rotation an hour later are
+  /// indistinguishable from a correlated loss. Firmware `oo-3.0.2` and later record WHY
+  /// each empty bin happened, timestamped, in the 0x0063 event log — see
+  /// `DiagLogRecord.rotateReasonLabel`. That is where correlation belongs.
   final int emptyBinRotations;
 
   /// Session-end marker (0xFFFFFFFC) emits attempted from the firmware finalize

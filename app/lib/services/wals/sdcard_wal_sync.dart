@@ -338,6 +338,58 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     return wals;
   }
 
+  /// Re-issues CMD_DELETE_FILE for every WAL this device still lists that we already
+  /// received in full, and reports whether the device's queue head is now a file the
+  /// fast path may read.
+  ///
+  /// A `synced` WAL survives a listing rebuild only when the device still advertises the
+  /// file (_buildWalsFromFilesLocked builds exclusively from the listing, and a successful
+  /// delete drops the entry), so its presence here means exactly one thing: an earlier
+  /// delete did not take. Nothing else would ever ask the device to drop those files —
+  /// the download loop skips them by status — so without this sweep they stay on the card
+  /// forever, and every sync re-reports the same stale file count.
+  ///
+  /// Re-deleting is safe and idempotent: the app sends the file's timestamp alongside the
+  /// index, and the firmware answers success for a segment that is already gone.
+  ///
+  /// Returns false when a delete failed, i.e. a file we cannot remove may still sit at
+  /// index 0 — the one position the fast path addresses.
+  Future<bool> _retryPendingDeletesLocked(DeviceConnection connection, String deviceId) async {
+    final pending = _wals.where((w) => w.storage == WalStorage.sdcard && w.status == WalStatus.synced).toList();
+    if (pending.isEmpty) return true;
+
+    Logger.warning('SDCardWalSync: ${pending.length} file(s) already received in full are still on the device '
+        '(a previous delete did not take) — retrying their deletion before syncing');
+
+    bool allDeleted = true;
+    bool anyDeleted = false;
+    for (final wal in pending) {
+      if (_isCancelled || !await connection.isConnected()) {
+        // Unknown rather than failed, but the caller can only act on certainty: an
+        // un-swept file may still hold index 0, so report the head as not clear.
+        return false;
+      }
+      try {
+        // No overrideFileNum here — unlike the download loop these are not necessarily at
+        // the head. wal.fileNum is this listing's index, and _deleteWalLocked also sends
+        // timerStart, which the firmware uses to re-locate the file when an earlier delete
+        // in this loop shifted the indices under it.
+        await _deleteWalLocked(connection, wal, skipSave: true);
+        anyDeleted = true;
+        // Settle delay: give the SD worker time to finish its metadata update before the
+        // next storage command, matching the download loop's post-delete pause.
+        await Future.delayed(const Duration(milliseconds: 200));
+      } catch (e) {
+        Logger.error('SDCardWalSync: delete retry still failing for ts=${wal.timerStart}: $e');
+        allDeleted = false;
+      }
+    }
+    if (anyDeleted) {
+      await WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
+    }
+    return allDeleted;
+  }
+
   Future<void> _updateStorageStatsLocked(DeviceConnection connection) async {
     try {
       final stats = await connection.getStorageFileStats();
@@ -419,6 +471,24 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       final walOffset =
           (isMatchValid && existing!.walOffset > 0 && existing.walOffset <= file.size) ? existing.walOffset : 0;
 
+      // A file we already received IN FULL that the device is STILL listing is one whose
+      // CMD_DELETE_FILE did not take (rejected, timed out, or the ACK was lost). Carry the
+      // `synced` status across the re-list so the download loop skips it and only the
+      // delete is retried.
+      //
+      // Without this the rebuilt WAL defaults to `miss` and the file is downloaded again —
+      // and by now the processing pass has usually consumed and pruned the local bin, so
+      // the "resume" finds nothing on disk, _reconcileResumeOffset rewinds to 0, and the
+      // whole file is re-fetched and decoded a SECOND time. That is duplicate audio, and
+      // carrying walOffset alone does not prevent it (the rewind discards it).
+      //
+      // Only safe while the device advertises no more bytes than we already hold: a file
+      // that GREW has audio we never received and must resume — and must not be deleted —
+      // so it stays `miss`. walOffset is 0 unless it carried over, so the `> 0` term also
+      // leaves a 0-byte file as `miss`; re-reading one is free and duplicates nothing.
+      final bool alreadyComplete =
+          isMatchValid && existing!.status == WalStatus.synced && walOffset > 0 && file.size <= walOffset;
+
       final newBytes = file.size - walOffset;
       final ms = (newBytes / (codec.getStorageBytesPerMinute() / 60000.0)).truncate();
       final seconds = (ms / 1000).truncate();
@@ -437,6 +507,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         timerStart: timerStart,
         sessionId: file.sessionId,
         storage: WalStorage.sdcard,
+        status: alreadyComplete ? WalStatus.synced : WalStatus.miss,
         estimatedSegments: (seconds / 60).ceil().clamp(1, 999),
       );
       if (isMatchValid && existing!.isSyncing) {
@@ -480,7 +551,17 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       StorageFile(index: targetIdx, timestamp: wal.timerStart, size: 0),
     );
     if (!success) throw Exception('Firmware rejected deletion of index=$targetIdx ts=${wal.timerStart}');
-    _wals.removeWhere((w) => w.id == wal.id);
+    // Drop the WAL by PHYSICAL identity, not Wal.id. Wal.id is `$device-$timerStart`,
+    // and pre-time-sync segments key timerStart on uptime seconds, which restart at 0
+    // every boot — so two bins recorded before the clock was ever set, in different
+    // boots, can share an id while being different files (they differ by sessionId,
+    // which is why _buildWalsFromFilesLocked matches those on sessionId and
+    // incompleteBinRelPaths keys on relativeBinPath). Removing by id here evicts the
+    // colliding sibling too, losing its resume offset and strike count: it is rebuilt
+    // as `miss` at offset 0 and re-downloaded in full. relativeBinPath carries the
+    // sessionId, so it separates them. _wals holds one device, but match on device
+    // anyway — the path alone carries no device id.
+    _wals.removeWhere((w) => w.device == wal.device && w.relativeBinPath == wal.relativeBinPath);
     listener.onWalUpdated();
     // Persist after deletion so the WAL is gone from disk even if the app restarts before
     // the next natural save point. This prevents re-downloading a deleted file.
@@ -1061,6 +1142,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     if (_isCancelled) return null;
 
+    // Retry the delete for files we already hold in full that the device is still
+    // listing (see the `synced` carry in _buildWalsFromFilesLocked). This has to run
+    // BEFORE the `miss` filter and its empty-list early return below, or a card holding
+    // nothing but already-synced files would never be drained again.
+    final bool headIsClear = await _retryPendingDeletesLocked(connection, deviceId);
+
     // The firmware sorts files ascending by timestamp: index 0 = oldest completed
     // recording, highest index = newest. The active TMP_ file is excluded from the
     // list entirely by the firmware, so no active-file filtering is needed here.
@@ -1069,6 +1156,25 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     }).toList();
 
     if (wals.isEmpty) return null;
+
+    // The fast path can only read and delete index 0, and it relies on each file it
+    // finishes being deleted so the NEXT one it wants becomes index 0. A file we already
+    // hold but could not delete still occupies its slot, so index 0 is no longer the file
+    // this loop thinks it is: it would re-read that stuck file and write it into the next
+    // WAL's bin path, under the next WAL's timestamp. Downloading nothing this cycle costs
+    // one sync interval; getting it wrong mis-attributes a recording. Same head-of-line
+    // reasoning as the poison-file drop below, which breaks rather than advance past a
+    // head it failed to remove.
+    if (!headIsClear) {
+      Logger.error('SDCardWalSync: ${wals.length} file(s) pending but an already-received file is stuck at the '
+          'head of the device queue — skipping downloads this cycle (retrying its delete next sync)');
+      await _updateStorageStatsLocked(connection);
+      return SyncLocalFilesResponse(
+        newConversationIds: [],
+        updatedConversationIds: [],
+        isPartial: true,
+      );
+    }
 
     // Ascending = oldest first.
     wals.sort((a, b) => a.fileNum.compareTo(b.fileNum));
@@ -1292,6 +1398,17 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         } catch (e) {
           Logger.error('SDCardWalSync: deletion failed for index=0 after transfer: $e');
           anyPartial = true;
+          // Persist so the `synced` status set above survives an app kill. It is the only
+          // record that this file's bytes are already on the phone; losing it re-downloads
+          // the file — and by then processing has pruned the local bin, so the resume
+          // rewinds to 0 and the audio is decoded twice.
+          await WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
+          // Stop the batch: the file we just downloaded is still at index 0, and the fast
+          // path can only address index 0. Continuing would read this same file again and
+          // write it into the NEXT wal's bin path under the next wal's timestamp. Identical
+          // reasoning to the poison-file drop above, which also refuses to advance past a
+          // head it failed to remove. The next cycle re-lists and retries the delete.
+          break;
         }
 
         final double fileDone = ((i + 1.0) / wals.length).clamp(0.0, 1.0);
@@ -1538,7 +1655,29 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       }
 
       wal.syncFailCount = 0;
-      await _deleteWalLocked(connection, wal);
+      // Mirror the fast path and record that every byte is here BEFORE asking the
+      // device to drop its copy. A rejected delete THROWS, and the catch below rewinds
+      // walOffset to the last segment boundary and marks the WAL `miss` — the right
+      // response to a failed transfer, the wrong one to a failed delete, which happens
+      // only after the whole file has landed. Left that way the next sync re-downloads
+      // a file we already hold and decodes it a second time.
+      wal.status = WalStatus.synced;
+      wal.isSyncing = false;
+      try {
+        await _deleteWalLocked(connection, wal);
+      } catch (e) {
+        // Keep the `synced` status: _buildWalsFromFilesLocked carries it across the
+        // next listing rebuild, and _retryPendingDeletesLocked reissues the delete.
+        Logger.error('SDCardWalSync: syncWal delete rejected for ts=${wal.timerStart}: $e — '
+            'keeping the WAL synced so the next sync retries the delete, not the download');
+        listener.onWalUpdated();
+        await WalFileManager.saveWals(_wals, deviceId: wal.device).catchError((_) => Future.value(false));
+        return SyncLocalFilesResponse(
+          newConversationIds: [],
+          updatedConversationIds: [],
+          isPartial: true,
+        );
+      }
     } catch (e) {
       wal.walOffset = _lastSegmentBoundaryOffset;
       wal.isSyncing = false;

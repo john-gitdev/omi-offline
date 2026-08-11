@@ -55,6 +55,43 @@ class DiagLogRecord {
     );
   }
 
+  /// Why a rotation happened, as carried in `arg0` of a `DIAG_EMPTY_BIN_ROTATION`
+  /// record. Mirror of the firmware `rotate_reason_t` — keep in sync (append-only).
+  ///
+  /// On a normal bin the reason is just context. On an EMPTY bin it is the whole
+  /// story, because the reasons are not equally interesting: most say a rotation
+  /// landed where nothing was being written (any silent stretch in auto mode), which
+  /// is routine. `priority stop` is the exception — that bin should hold at least the
+  /// recording's own markers, and an accepted marker force-drains its block
+  /// immediately, so an empty one means they never reached the card — dropped, or left
+  /// buffered by a full SD queue and carried into the next bin.
+  static String rotateReasonLabel(int reason) {
+    switch (reason) {
+      case 1:
+        return 'first bin after mount';
+      case 2:
+        return 'bin age';
+      case 3:
+        return 'BLE connect';
+      case 4:
+        return 'app rotate command';
+      case 5:
+        return 'priority recording start';
+      case 6:
+        return 'priority recording stop — markers dropped';
+      case 7:
+        return 'time sync';
+      case 8:
+        return 'storage cleared';
+      case 9:
+        return 'active bin deleted';
+      default:
+        // 0 is the firmware's own "unknown", and is also what a pre-oo-3.0.2 build
+        // sends. Both mean the same thing to a reader: nothing is claimed.
+        return 'unattributed';
+    }
+  }
+
   /// Short, stable label for the event code. Mirror of the firmware
   /// `diag_event_code_t` table — keep in sync (append-only).
   String get label {
@@ -135,7 +172,12 @@ class DiagLogRecord {
   String get description {
     switch (code) {
       case 1:
-        return 'Empty bin rotation$_backendSuffix — bin closed with $arg1 B (header only)';
+        // arg0 = the rotation that closed it (rotate_reason_t), arg1 = closing size.
+        // The reason is the only thing that says whether this bin is worth a second
+        // look: most mean a rotation landed where nothing was being written, which is
+        // routine. Firmware before oo-3.0.2 sent 0 here, which renders as
+        // "unattributed" rather than pretending to know.
+        return 'Empty bin rotation$_backendSuffix — ${rotateReasonLabel(arg0)}, closed with $arg1 B (header only)';
       case 2:
         return 'Marker write drop$_backendSuffix — lost inline marker (blockDrops=$arg1)';
       case 3:

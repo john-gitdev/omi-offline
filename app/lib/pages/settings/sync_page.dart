@@ -1828,7 +1828,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     ];
     final markerFlags = <String>[
       if (markerDrops > 0) '$markerDrops marker drops',
-      if (emptyRot > 0) '$emptyRot empty rotations',
       if (prioStarts > prioStops) 'left open',
       if (prioStops > 0 && seEmits == 0) 'no session-end',
     ];
@@ -1861,7 +1860,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
     final watches = <String>[];
     if (boot > 0) watches.add('$boot boot-window drop${boot == 1 ? '' : 's'}');
-    if (emptyRot > 0) watches.add('$emptyRot empty bin rotation${emptyRot == 1 ? '' : 's'}');
     if (prioStarts > prioStops) watches.add('priority recording left open');
     if (prioStops > 0 && seEmits == 0) watches.add('stop with no session-end marker');
     if (peakHot) watches.add('SD queue near its limit');
@@ -2006,7 +2004,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               '$markerDrops',
               level: markerDrops > 0 ? DiagLevel.bad : DiagLevel.info,
             ),
-            DiagStatRow('Empty bin rotations', '$emptyRot', level: emptyRot > 0 ? DiagLevel.warn : DiagLevel.info),
+            // Info, never a fault: an empty bin is a rotation that landed where nothing
+            // was being written. The event log says which rotation, per bin.
+            DiagStatRow('Empty bin rotations', '$emptyRot', level: DiagLevel.info),
             // Flagged when a priority stop happened but no session-end marker was
             // emitted — the finalize path never firing, the exact failure these
             // counters exist to catch. "Kept at the pause gate" is a rescue, not a

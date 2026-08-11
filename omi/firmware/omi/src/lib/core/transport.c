@@ -585,14 +585,14 @@ static void diagnostics_drops_pack(uint8_t payload[96])
     uint32_t ring_max_io = sd_get_ring_max_io_ms();
     uint32_t ring_io_errs = sd_get_ring_io_errors();
 
-    /* 92 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
+    /* 96 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
      * codec_drops + sd_msgq peak depth + write-fairness activations + establishment
      * failures + Priority Recording lifecycle (starts / stops / marker drops /
      * empty-bin rotations) + session-end emit attempts + pause-gate marker saves +
      * sd_worker & codec peak stack used + ring_max_io_ms + ring_io_errors +
      * Each field is appended at the end so older
      * app builds (which read only the first
-     * 20 / 28 / 32 / 40 / 44 / 60 / 68 / 76 / 84 bytes) keep working unchanged.
+     * 20 / 28 / 32 / 40 / 44 / 60 / 68 / 76 / 84 / 92 bytes) keep working unchanged.
      *
      * last_mic_frame_uptime_ms (84) + vad_voiced_ms (88): mic liveness and capture
      * duty. The first, against now_ms, answers "is the mic delivering right now"
@@ -607,7 +607,17 @@ static void diagnostics_drops_pack(uint8_t payload[96])
      * was misread as the live mode twice during review, which is the argument for
      * this field existing. Read at connect time it answers "what interval was this
      * device advertising on while it sat idle", which is the only way to confirm the
-     * idle-advertising backstop works. */
+     * idle-advertising backstop works.
+     *
+     * empty_bin_rotations (56) is NOT a loss signal, and was read as one for a long
+     * time. An empty bin means nothing at all reached the card for that segment, and
+     * an accepted marker always does (it force-drains a full 440 B block), so an empty
+     * bin is a rotation that landed where nothing was being written — any silent
+     * stretch in auto mode. Two Force Syncs over a quiet lunch break move it and mean
+     * nothing. marker_write_drops (52) is the loss signal and stands alone — both are
+     * boot-cumulative totals that name no segment, so reading them together invents a
+     * correlation neither carries. Per-bin cause + timing live in the 0x0063 event
+     * log's arg0. */
     pack_u32_le(payload + 0, block_drops);
     pack_u32_le(payload + 4, last_drop_ms);
     pack_u32_le(payload + 8, sd_stream_drops);

@@ -301,7 +301,7 @@ static void priority_record_stop(void)
      *
      * A wedge here is caught by DIAG_VAD_LEVEL instead: auto mode keeps the mic
      * running, so its windows keep closing and a zero peak is the signature. */
-    create_new_audio_file();
+    create_new_audio_file(ROTATE_REASON_PRIORITY_STOP);
     priority_record_cancel_cap();
 }
 #else
@@ -406,7 +406,7 @@ static bool record_start(void)
 #endif
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     sd_write_pause(false);
-    create_new_audio_file();
+    create_new_audio_file(ROTATE_REASON_PRIORITY_START);
     write_priority_recording_marker_to_storage();
 #endif
     priority_record_arm_cap();

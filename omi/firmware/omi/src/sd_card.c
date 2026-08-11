@@ -145,8 +145,35 @@ static atomic_t write_fair_activations;
  * metadata header, i.e. only the 0xFFFFFFFB header or nothing at all persisted).
  * A Priority Recording whose 0xFFFFFFF8 marker + force-captured frames were lost
  * at the rotate leaves exactly this empty-bin residue, so a nonzero delta across a
- * priority attempt is the on-device fingerprint of that loss. Read via 0x19B10062. */
+ * priority attempt is the on-device fingerprint of that loss. Read via 0x19B10062.
+ *
+ * NOT a loss signal by itself. An empty bin means NOTHING reached the card for that
+ * segment — not one audio block, not one marker. An ACCEPTED marker cannot be the
+ * missing part: write_marker_header_to_storage() force-drains its partial 440 B block
+ * immediately, so a marker the SD queue takes lands as a full block and puts the bin
+ * well past header-only. What is left is a rotation that landed where nothing was
+ * being written — in auto mode, any silent stretch. (The narrow exception: if that
+ * force-drain is REJECTED the block stays in transport.c's assembly buffer, which no
+ * rotation drains — sd_msgq holds formed blocks, not that buffer — so the marker is
+ * not lost but lands in the NEXT bin, leaving this one empty. That needs the SD queue
+ * full at the marker write, and bumps no counter of its own.)
+ * Independent of marker_write_drops:
+ * both are boot-cumulative totals naming no segment, so reading them together invents
+ * a correlation neither carries. The event log timestamps each one. */
 static atomic_t empty_bin_rotations;
+
+/* Why the rotation currently being performed was requested (rotate_reason_t). Read
+ * only by ring_create_segment(), and only when the rotation closes an empty bin.
+ * SD-worker-thread-local: every ring_create_segment() call site runs on this thread,
+ * and cross-thread requests carry their reason in sd_req_t.u.create_file.reason,
+ * which the REQ_CREATE_NEW_FILE handler copies here — so a plain byte is sufficient.
+ * Each call site sets it immediately before rotating; ring_create_segment() clears it
+ * back to UNKNOWN afterwards so a site that forgets records "unattributed" rather
+ * than inheriting the previous rotation's reason. */
+static uint8_t ring_rotate_reason = ROTATE_REASON_UNKNOWN;
+/* Reason of an explicit rotation deferred by a failed durability sync, so the write
+ * path can complete it later without losing what asked for it. */
+static uint8_t ring_pending_explicit_rotate_reason = ROTATE_REASON_UNKNOWN;
 
 /* Diagnostics: marker-bearing blocks RESCUED at the sd_write_paused gate below —
  * written through the pause instead of dropped. Before oo-2.5.9 this exact block was
@@ -788,8 +815,13 @@ static bool should_rotate_file(void)
 
     int64_t file_age_ms = k_uptime_get() - current_file_created_uptime_ms;
 
-    if (file_age_ms >= FILE_ROTATION_INTERVAL_MS)
+    /* Publish which trigger fired, for the empty-bin attribution in
+     * ring_create_segment(). Only this function can tell them apart, and only a
+     * `true` return leads to a rotation, so setting it here cannot mislabel one. */
+    if (file_age_ms >= FILE_ROTATION_INTERVAL_MS) {
+        ring_rotate_reason = ROTATE_REASON_AGE;
         return true;
+    }
 
     /* On BLE connect: rotate early if file is old enough so the app can
      * immediately download the completed recording without waiting up to
@@ -797,6 +829,7 @@ static bool should_rotate_file(void)
     if (atomic_cas(&pending_rotate_on_ble_connect, 1, 0)) {
         if (file_age_ms >= BLE_CONNECT_MIN_ROTATE_AGE_MS) {
             LOG_INF("[SD_WORK] Rotating file on BLE connect (age %lld ms)", file_age_ms);
+            ring_rotate_reason = ROTATE_REASON_BLE_CONNECT;
             return true;
         }
     }
@@ -1084,6 +1117,9 @@ void sd_worker_thread(void)
             ring_bytes_since_sync = 0;
             invalidate_file_cache();
             if (cr == 0) {
+                /* current_filename was just cleared above, so this closes nothing and
+                 * cannot count as an empty bin — attributed for consistency only. */
+                ring_rotate_reason = ROTATE_REASON_CLEAR;
                 cr = ring_create_segment();
             }
             if (req.u.clear_dir.resp) {
@@ -1112,13 +1148,18 @@ void sd_worker_thread(void)
             res = sd_ring_sync();
             if (res == 0) {
                 ring_bytes_since_sync = 0;
+                ring_rotate_reason = req.u.create_file.reason;
                 res = ring_create_segment();
             } else {
                 /* Explicit rotation could not be made durable now — mark it
                  * pending so the write path completes it BEFORE accepting more
                  * audio; otherwise this requested boundary is lost and the next
-                 * recording's audio lands in the current segment. */
+                 * recording's audio lands in the current segment. Carry the reason
+                 * with it: the deferred rotation is still this caller's boundary,
+                 * and a priority stop completed later is exactly the case whose
+                 * attribution matters most. */
                 ring_pending_explicit_rotate = true;
+                ring_pending_explicit_rotate_reason = req.u.create_file.reason;
             }
             if (req.u.create_file.resp) {
                 req.u.create_file.resp->res = res;
@@ -1175,6 +1216,35 @@ void sd_worker_thread(void)
             parse_filename_to_meta(req.u.delete_file.filename, 0, &m);
             int idx = ring_find_segment_index(m.timestamp, m.uptime_offset);
             int rc = (idx >= 0) ? sd_ring_ack_segment(idx) : 0; /* absent = already gone */
+            if (rc != 0) {
+                /* The ack STANDS in RAM (see sd_ring_ack_segment's contract) but its
+                 * table write failed, so the segment has already left the file list
+                 * while the on-disk table still lists it un-acked. That is the one
+                 * window where a reboot resurrects it and the phone downloads and
+                 * decodes the recording a second time.
+                 *
+                 * Retry the durability HERE, synchronously, because this is the last
+                 * moment it can be retried on demand: the segment is now absent from
+                 * the cache refresh_file_cache() builds (it mirrors the same closed +
+                 * un-acked list), so storage.c resolves any later CMD_DELETE_FILE for
+                 * it to FILE_NOT_FOUND and never queues another REQ_DELETE_FILE. A
+                 * retry keyed on the app re-sending the delete cannot reach this code
+                 * at all — which is exactly what an earlier version of this fix got
+                 * wrong. sd_ring_sync() rewrites the table while segtab_dirty.
+                 *
+                 * If it still fails, segtab_dirty keeps the next ordinary sync (a
+                 * rotation, a flush) retrying it; that is the residual bound, and it
+                 * is why the failure is logged rather than swallowed. */
+                int sync_rc = sd_ring_sync();
+                if (sync_rc == 0) {
+                    LOG_WRN("[SD_WORK] delete: segment table was not durable, retried OK");
+                    rc = 0;
+                } else {
+                    LOG_ERR("[SD_WORK] delete: segment acked but table NOT durable (ack=%d sync=%d) — "
+                            "a reboot before the next sync will resurrect it",
+                            rc, sync_rc);
+                }
+            }
             invalidate_file_cache();
             if (req.u.delete_file.resp) {
                 req.u.delete_file.resp->res = (rc < 0) ? rc : 0;
@@ -1237,6 +1307,7 @@ void sd_worker_thread(void)
                     }
                     ring_bytes_since_sync = 0;
                 }
+                ring_rotate_reason = ROTATE_REASON_TIME_SYNC;
                 ring_create_segment();
             }
             atomic_set(&timesync_rename_pending, 0);
@@ -1349,11 +1420,20 @@ static int ring_create_segment(void)
     }
     uint32_t sid = (uint32_t) atomic_get(&device_session_id);
 
-    /* Empty-bin diagnostic: previous segment closed holding only its header. */
+    /* Empty-bin diagnostic: previous segment closed holding only its header.
+     *
+     * Attribute it, because the count alone never says which rotation left the bin
+     * empty and they are not equally interesting: "you Force Synced twice over a quiet
+     * lunch" and "a recording boundary landed on a mic that was delivering nothing"
+     * both land here. The reason is the only thing that separates them, and it costs
+     * a byte of an event record that was already being written. */
     if (current_filename[0] != '\0' && current_file_size <= sizeof(RecordingHeader_v1_t)) {
         atomic_inc(&empty_bin_rotations);
-        diag_log_event(DIAG_EMPTY_BIN_ROTATION, STORAGE_BACKEND_RING, 0, current_file_size);
+        diag_log_event(DIAG_EMPTY_BIN_ROTATION, STORAGE_BACKEND_RING, ring_rotate_reason, current_file_size);
     }
+    /* Consume the reason: a site that fails to set one records an empty bin as
+     * unattributed rather than inheriting the previous rotation's cause. */
+    ring_rotate_reason = ROTATE_REASON_UNKNOWN;
 
     /* Pre-time-sync segments key on uptime seconds (sorts < 946684800 → shown
      * "unorganized", like LittleFS TMP files); unique per segment. */
@@ -1508,12 +1588,14 @@ static void process_write_data_req(const sd_req_t *req)
             goto ring_done;
         }
         ring_bytes_since_sync = 0;
+        ring_rotate_reason = ring_pending_explicit_rotate_reason;
         if (ring_create_segment() < 0) {
             last_write_error_uptime_ms = k_uptime_get();
             sd_write_blocked = true;
             goto ring_done;
         }
         ring_pending_explicit_rotate = false;
+        ring_pending_explicit_rotate_reason = ROTATE_REASON_UNKNOWN;
     }
 
     /* Do NOT wake the bus here, and do NOT power-cycle it per block. sd_ring's
@@ -1523,6 +1605,9 @@ static void process_write_data_req(const sd_req_t *req)
      * re-inits the SD card (tens of ms) ~12x/s, which pegged sd_msgq at 120/120 and
      * dropped audio instead of draining it. */
     if (current_filename[0] == '\0') {
+        /* Nothing open, so this rotation closes nothing and can never count as an
+         * empty bin; the reason is set only to keep the attribution honest. */
+        ring_rotate_reason = ROTATE_REASON_MOUNT;
         if (ring_create_segment() < 0) {
             last_write_error_uptime_ms = k_uptime_get();
             sd_write_blocked = true;
@@ -1531,6 +1616,8 @@ static void process_write_data_req(const sd_req_t *req)
         atomic_clear(&current_file_deleted);
     }
 
+    /* should_rotate_file() sets ring_rotate_reason itself — it is the only site that
+     * knows which of its two triggers (age vs BLE-connect) fired. */
     if (!sd_suppress_auto_rotate && should_rotate_file()) {
         /* Make the current head durable BEFORE rotating: ring_create_segment ->
          * begin_segment publishes the closing segment's length from head_abs, so if
@@ -1764,7 +1851,7 @@ void sd_notify_ble_state(bool connected)
         }
 
         if (atomic_get(&current_file_deleted)) {
-            int cr = create_new_audio_file();
+            int cr = create_new_audio_file(ROTATE_REASON_ACTIVE_DELETED);
             if (cr < 0)
                 LOG_ERR("create file on BLE disconnect failed: %d", cr);
             else
@@ -2108,7 +2195,7 @@ int clear_audio_directory(void)
     return 0;
 }
 
-int create_new_audio_file(void)
+int create_new_audio_file(uint8_t reason)
 {
 
     static struct read_resp resp;
@@ -2130,6 +2217,7 @@ int create_new_audio_file(void)
     sd_req_t req = {0};
     req.type = REQ_CREATE_NEW_FILE;
     req.u.create_file.resp = &resp;
+    req.u.create_file.reason = reason;
 
     int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000));
     if (ret) {
