@@ -30,6 +30,26 @@ uint64_t sd_get_cached_total_size(void);
 // Utility for reconstructing the BLE-facing <ts>_<sid>.txt segment name
 void build_filename_from_meta(const AudioFileMeta_t* meta, char* out_buffer, size_t max_len);
 
+/* Why a rotation is happening, recorded when it closes an EMPTY bin (one holding
+ * nothing but its 36-byte 0xFFFFFFFB header) so the benign cases can be told apart
+ * from the one that means audio was lost. Most empty bins are benign — see
+ * sd_get_empty_bin_rotations().
+ *
+ * These are WIRE VALUES: they travel as arg0 of the 0x0063 DIAG_EMPTY_BIN_ROTATION
+ * event record and are decoded by name in the app. Append only; never renumber. */
+typedef enum {
+    ROTATE_REASON_UNKNOWN = 0,
+    ROTATE_REASON_MOUNT = 1,          /* first segment after mount — closes nothing */
+    ROTATE_REASON_AGE = 2,            /* FILE_ROTATION_INTERVAL_MS, evaluated on a write */
+    ROTATE_REASON_BLE_CONNECT = 3,    /* early rotate so the app can fetch the last recording */
+    ROTATE_REASON_APP_CMD = 4,        /* CMD_ROTATE_FILE (the app's rotate-and-sync) */
+    ROTATE_REASON_PRIORITY_START = 5, /* auto-mode RECORD_START — closes the preceding auto bin */
+    ROTATE_REASON_PRIORITY_STOP = 6,  /* RECORD_STOP — closes the PRIORITY bin (empty here = loss) */
+    ROTATE_REASON_TIME_SYNC = 7,      /* rotate to a UTC-keyed segment once the clock is known */
+    ROTATE_REASON_CLEAR = 8,          /* CMD_CLEAR_STORAGE */
+    ROTATE_REASON_ACTIVE_DELETED = 9, /* the active file was deleted; reopen on BLE disconnect */
+} rotate_reason_t;
+
 /* Request types for the SD worker */
 typedef enum {
     REQ_CLEAR_AUDIO_DIR,
@@ -81,6 +101,7 @@ typedef struct {
         } clear_dir;
         struct {
             struct read_resp *resp;
+            uint8_t reason; /* rotate_reason_t — see create_new_audio_file() */
         } create_file;
         struct {
             struct file_stats_resp *resp;
@@ -173,10 +194,33 @@ uint32_t sd_get_write_fair_activations(void);
  *
  * Incremented when create_audio_file_with_timestamp() closes a file whose size is
  * at most the inline metadata header — i.e. a bin that was opened and rotated with
- * nothing (or only the 0xFFFFFFFB header) persisted. A lost Priority Recording
- * leaves exactly this residue. Monotonic since boot. Safe to call from any thread.
+ * nothing (or only the 0xFFFFFFFB header) persisted. Monotonic since boot. Safe to
+ * call from any thread.
+ *
+ * This total on its own is NOT a loss signal, and was read as one for a long time.
+ * Most empty bins are the ordinary consequence of a rotation landing in silence: in
+ * auto mode a quiet room forwards nothing to this worker at all (aad.c returns early
+ * while !vad_is_recording), and should_rotate_file() is only evaluated when a write
+ * arrives — so a bin opened by an explicit rotate (CMD_ROTATE_FILE, a priority
+ * boundary, a time sync) stays header-only until speech resumes, and whatever rotates
+ * next closes it empty. Use sd_get_empty_bin_rotations_suspect() for the subset that
+ * actually indicates lost audio.
  */
 uint32_t sd_get_empty_bin_rotations(void);
+
+/**
+ * @brief Get the number of empty-bin rotations that indicate LOST audio.
+ *
+ * The subset of sd_get_empty_bin_rotations() closed by ROTATE_REASON_PRIORITY_STOP:
+ * a Priority Recording's own bin, closed holding nothing. A priority recording runs
+ * force-captured (threshold 65535 pins has_voice, so frames flow regardless of the
+ * amplitude gate), so its bin can only be empty if the 0xFFFFFFF8 start marker AND
+ * the forced audio were both dropped — the on-device fingerprint of a lost Priority
+ * Recording. Every other reason closes a bin that was legitimately silent.
+ *
+ * Monotonic since boot. Safe to call from any thread.
+ */
+uint32_t sd_get_empty_bin_rotations_suspect(void);
 
 /**
  * @brief Get the number of marker-bearing storage blocks RESCUED at the
@@ -312,9 +356,15 @@ int clear_audio_directory(void);
  *
  * This forces creation of a new file, useful when BLE connection
  * has been active for a long time.
+ *
+ * @param reason Why this rotation is happening (rotate_reason_t). Only read when the
+ *               rotation turns out to close an EMPTY bin, where it separates the
+ *               benign silent-rotate cases from a lost Priority Recording. Pass the
+ *               true cause; ROTATE_REASON_UNKNOWN records an empty bin as
+ *               unattributed rather than misattributing it.
  * @return 0 if successful, negative errno code if error
  */
-int create_new_audio_file(void);
+int create_new_audio_file(uint8_t reason);
 
 /**
  * @brief Notify that BLE connection state has changed
