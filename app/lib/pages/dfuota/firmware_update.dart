@@ -48,6 +48,9 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
   // Store reference to provider for safe disposal
   DeviceProvider? _deviceProvider;
 
+  // Latch for [_hasRepaired] — set there and nowhere else.
+  bool _preFlashLinkGone = false;
+
   @override
   void initState() {
     var device = widget.device!;
@@ -272,6 +275,40 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
     );
   }
 
+  /// Whether `isConnected` can be read as *re-paired*, rather than as the tail of the
+  /// link the flash has just invalidated.
+  ///
+  /// The connection state alone cannot answer that. The success callback kicks off
+  /// `_releasePairingOnSuccess` unawaited and flips `isInstalled` in the same
+  /// synchronous block, so this screen's first frame is drawn before the release has
+  /// closed anything — and the disconnect it causes reaches the provider a debounce
+  /// later again. Native's own retry ladder may also have re-established the pre-DFU
+  /// link during the flash, which is the whole reason the release exists. Read bare,
+  /// such a link announces "Paired again" over a pairing that is seconds from being
+  /// wiped, and Done then drops the Find Devices fallback — while this page's dispose
+  /// cancels the rediscovery loop on the way out, so nothing is left trying to
+  /// reconnect at all.
+  ///
+  /// So require the transition, not the state: the old link has to be seen down
+  /// before a live one counts as the new one. Nothing needs to arrive for that in the
+  /// ordinary case — the device rebooted during the flash, so `isConnected` is
+  /// already false when this screen first builds and the latch closes on that frame.
+  ///
+  /// Latching from inside build is safe here because it cannot affect the frame it
+  /// runs in: it is only set on the branch that returns false, which is what an
+  /// unlatched read would have returned anyway. It changes later frames only, and
+  /// every later frame comes from a provider notification that rebuilds this Consumer
+  /// regardless. It also fails in the recoverable direction — a disconnect that never
+  /// reaches Dart at all (`unmanageDevice` no-ops for a device already unmanaged)
+  /// leaves the latch open, which keeps the instructions and the fallback up.
+  bool _hasRepaired(bool isConnected) {
+    if (!isConnected) {
+      _preFlashLinkGone = true;
+      return false;
+    }
+    return _preFlashLinkGone;
+  }
+
   Widget _buildSuccessSection() {
     // Watched, not read once. The re-pair happens in the Android system pairing
     // dialog, which the user can accept while this very page is on screen — so the
@@ -280,12 +317,12 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
     // whole page so a running install isn't rebuilt by every unrelated notification
     // the provider emits (battery, sync progress).
     //
-    // Bare `isConnected`, not a match against widget.device.id: the app carries one
-    // Omi at a time, and after a flash it is this one — the DFU does not change its
-    // address.
+    // Not matched against widget.device.id: the app carries one Omi at a time, and
+    // after a flash it is this one — the DFU does not change its address. What the
+    // link state is matched against is *when* it came up; see [_hasRepaired].
     return Consumer<DeviceProvider>(
       builder: (context, deviceProvider, _) {
-        final isReconnected = deviceProvider.isConnected;
+        final isReconnected = _hasRepaired(deviceProvider.isConnected);
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
