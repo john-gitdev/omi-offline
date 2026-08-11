@@ -294,6 +294,16 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   /// is a device that is back; dropping that to honour the bound to the second would
   /// discard a confirmed sighting and hand the user a manual re-pair they no longer
   /// need. The overshoot is one scan.
+  ///
+  /// Two races here are deliberately left alone. `removeBond()` is asynchronous —
+  /// it returns before Android's BOND_NONE lands — but nothing can reconnect until
+  /// a full 5 s scan has completed *and* the device has finished rebooting, and
+  /// either alone already dwarfs a local key delete (the service's own fallback for
+  /// a missing BOND_NONE broadcast is 3 s). And a dispose landing during
+  /// `ensureConnection` does not abort it: the flag is checked immediately before
+  /// the call with no suspension point in between, so what survives cancellation is
+  /// only a connect already under way — which completes into Find Devices, the page
+  /// Done opens to do exactly that. Aborting a pairing mid-SMP is the worse outcome.
   Future<void> _reconnectWhenDeviceReturns(BtDevice btDevice) async {
     final deadline = DateTime.now().add(_postFlashReconnectWindow);
     while (!_postFlashReconnectCancelled && DateTime.now().isBefore(deadline)) {
