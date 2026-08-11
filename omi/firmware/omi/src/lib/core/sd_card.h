@@ -197,30 +197,17 @@ uint32_t sd_get_write_fair_activations(void);
  * nothing (or only the 0xFFFFFFFB header) persisted. Monotonic since boot. Safe to
  * call from any thread.
  *
- * This total on its own is NOT a loss signal, and was read as one for a long time.
- * Most empty bins are the ordinary consequence of a rotation landing in silence: in
- * auto mode a quiet room forwards nothing to this worker at all (aad.c returns early
- * while !vad_is_recording), and should_rotate_file() is only evaluated when a write
- * arrives — so a bin opened by an explicit rotate (CMD_ROTATE_FILE, a priority
- * boundary, a time sync) stays header-only until speech resumes, and whatever rotates
- * next closes it empty. Use sd_get_empty_bin_rotations_suspect() for the subset that
- * actually indicates lost audio.
+ * NOT a loss signal on its own, and was read as one for a long time. An empty bin
+ * means nothing at all reached the card for that segment — and a marker cannot be the
+ * missing part, because write_marker_header_to_storage() force-drains its partial
+ * block, so any marker that is written puts the bin well past header-only. What is
+ * left is a rotation that landed where nothing was being written, which in auto mode
+ * is any silent stretch: CMD_ROTATE_FILE, a priority boundary or a time sync opens a
+ * bin, nobody speaks, and whatever rotates next closes it empty. Pair it with the
+ * marker-drop counter to read it as loss; the cause of each one is in the 0x0063
+ * event log (arg0 = rotate_reason_t).
  */
 uint32_t sd_get_empty_bin_rotations(void);
-
-/**
- * @brief Get the number of empty-bin rotations that indicate LOST audio.
- *
- * The subset of sd_get_empty_bin_rotations() closed by ROTATE_REASON_PRIORITY_STOP:
- * a Priority Recording's own bin, closed holding nothing. A priority recording runs
- * force-captured (threshold 65535 pins has_voice, so frames flow regardless of the
- * amplitude gate), so its bin can only be empty if the 0xFFFFFFF8 start marker AND
- * the forced audio were both dropped — the on-device fingerprint of a lost Priority
- * Recording. Every other reason closes a bin that was legitimately silent.
- *
- * Monotonic since boot. Safe to call from any thread.
- */
-uint32_t sd_get_empty_bin_rotations_suspect(void);
 
 /**
  * @brief Get the number of marker-bearing storage blocks RESCUED at the
