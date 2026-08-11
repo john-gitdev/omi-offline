@@ -611,11 +611,13 @@ static void diagnostics_drops_pack(uint8_t payload[96])
      *
      * empty_bin_rotations (56) is NOT a loss signal, and was read as one for a long
      * time. An empty bin means nothing at all reached the card for that segment, and
-     * a written marker always does (it force-drains a full 440 B block), so an empty
+     * an accepted marker always does (it force-drains a full 440 B block), so an empty
      * bin is a rotation that landed where nothing was being written — any silent
      * stretch in auto mode. Two Force Syncs over a quiet lunch break move it and mean
-     * nothing. Read it with marker_write_drops (52), which is the loss signal; the
-     * cause of each empty bin is in the 0x0063 event log's arg0. */
+     * nothing. marker_write_drops (52) is the loss signal and stands alone — both are
+     * boot-cumulative totals that name no segment, so reading them together invents a
+     * correlation neither carries. Per-bin cause + timing live in the 0x0063 event
+     * log's arg0. */
     pack_u32_le(payload + 0, block_drops);
     pack_u32_le(payload + 4, last_drop_ms);
     pack_u32_le(payload + 8, sd_stream_drops);
