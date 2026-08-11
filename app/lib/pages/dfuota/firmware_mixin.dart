@@ -183,9 +183,37 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     return startMCUDfu(btDevice, fileInAssets: fileInAssets, zipFilePath: zipFilePath);
   }
 
-  /// On a SUCCESSFUL flash, clear the phone's stored bond so the next reconnect
-  /// re-pairs cleanly. Only called from the success callbacks — a failed flash
-  /// never reaches here and leaves the pairing untouched.
+  /// On a SUCCESSFUL flash, release the device and clear the phone's stored bond
+  /// so the next connect re-pairs cleanly. Only called from the success callbacks —
+  /// a failed flash never reaches here and leaves the pairing untouched.
+  ///
+  /// **Release before wiping — the two sides do not wipe at the same moment.** The
+  /// phone clears its key here, the instant mcumgr reports success; the device
+  /// clears its own in `transport_start()` on the *next boot*, which is still
+  /// seconds away (it has to finish resetting and swapping first). In between the
+  /// pairing is asymmetric — phone unbonded, device still holding the old key — and
+  /// a connect made in that window CANNOT succeed: the firmware pins
+  /// CONFIG_BT_MAX_PAIRED=1 with CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE unset, so
+  /// update_keys_check() refuses a fresh Just Works pairing while its one key slot
+  /// is occupied. The user gets a system pairing dialog that is doomed before it is
+  /// drawn.
+  ///
+  /// Something connects in that window unless we stop it. Dart's own reconnect
+  /// paths are gated on `isFirmwareUpdateInProgress`, but reconnection is owned by
+  /// the native layer and native is gated on nothing: the link drop at the end of
+  /// the flash feeds `handleRetryLogic`, whose backoff starts at 1.5 s.
+  /// `unmanageDevice` is what stops it — it cancels the pending reconnect and the
+  /// recovery alarm, closes the GATT, and records `user_disconnected`, which the
+  /// alarm and worker reconnect paths both check. Nothing reconnects then until an
+  /// explicit `manageDevice`, i.e. until the user taps the device in Find Devices
+  /// (where Done already lands them), by which time the device has rebooted and
+  /// freed its slot.
+  ///
+  /// The two steps take separate try/catch blocks rather than sharing one. If the
+  /// release throws we still want the wipe: that fails toward "device slot free,
+  /// phone possibly stale", which the user can clear with Forget Device. Skipping
+  /// the wipe because the release failed would fail the other way, which they
+  /// cannot.
   ///
   /// Unconditional on Android, with no pre-flash handshake and nothing to opt
   /// into. The device arms its own wipe from the mcumgr DFU_PENDING hook, so both
@@ -216,8 +244,13 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   /// reaches a flash is the local zip, which sets `isLegacySecureDFU = false`.
   /// Add the gate if those stubs are ever implemented; until then it would be a
   /// guard on an unreachable branch.
-  Future<void> _wipePhoneBondOnSuccess(BtDevice btDevice) async {
+  Future<void> _releasePairingOnSuccess(BtDevice btDevice) async {
     if (!Platform.isAndroid) return;
+    try {
+      await BleHostApi().unmanageDevice(btDevice.id);
+    } catch (e) {
+      Logger.debug('Post-update device release failed: $e');
+    }
     try {
       await BleHostApi().removeBond(btDevice.id);
     } catch (e) {
@@ -394,7 +427,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
         Logger.debug('update success');
         killMcuUpdateManager(); // also cancels the stall watchdog
         releaseUpdateWakelocks();
-        _wipePhoneBondOnSuccess(btDevice);
+        _releasePairingOnSuccess(btDevice);
         _clearStaleScanResultsOnSuccess();
         if (mounted) {
           setState(() {
@@ -501,7 +534,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       onDfuCompleted: (deviceAddress) {
         Logger.debug('deviceAddress: $deviceAddress, onDfuCompleted');
         releaseUpdateWakelocks();
-        _wipePhoneBondOnSuccess(btDevice);
+        _releasePairingOnSuccess(btDevice);
         _clearStaleScanResultsOnSuccess();
         setState(() {
           isInstalling = false;
