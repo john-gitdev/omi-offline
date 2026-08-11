@@ -1645,7 +1645,29 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       }
 
       wal.syncFailCount = 0;
-      await _deleteWalLocked(connection, wal);
+      // Mirror the fast path and record that every byte is here BEFORE asking the
+      // device to drop its copy. A rejected delete THROWS, and the catch below rewinds
+      // walOffset to the last segment boundary and marks the WAL `miss` — the right
+      // response to a failed transfer, the wrong one to a failed delete, which happens
+      // only after the whole file has landed. Left that way the next sync re-downloads
+      // a file we already hold and decodes it a second time.
+      wal.status = WalStatus.synced;
+      wal.isSyncing = false;
+      try {
+        await _deleteWalLocked(connection, wal);
+      } catch (e) {
+        // Keep the `synced` status: _buildWalsFromFilesLocked carries it across the
+        // next listing rebuild, and _retryPendingDeletesLocked reissues the delete.
+        Logger.error('SDCardWalSync: syncWal delete rejected for ts=${wal.timerStart}: $e — '
+            'keeping the WAL synced so the next sync retries the delete, not the download');
+        listener.onWalUpdated();
+        await WalFileManager.saveWals(_wals, deviceId: wal.device).catchError((_) => Future.value(false));
+        return SyncLocalFilesResponse(
+          newConversationIds: [],
+          updatedConversationIds: [],
+          isPartial: true,
+        );
+      }
     } catch (e) {
       wal.walOffset = _lastSegmentBoundaryOffset;
       wal.isSyncing = false;
