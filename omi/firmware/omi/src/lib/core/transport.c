@@ -469,7 +469,7 @@ static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_ha
 //   uptime_seconds: how long the PREVIOUS session ran before it ended (crash or clean shutdown)
 //
 // Characteristic B:   19B10062-E8F2-537E-4F6C-D104768A1214
-// Returns 96 bytes LE (fields appended over time; older apps read a prefix):
+// Returns 100 bytes LE (fields appended over time; older apps read a prefix):
 //   [uint32 storage_block_drops]   storage_block_drops since boot (each = ~5 Opus frames lost)
 //   [uint32 last_drop_uptime_ms]   k_uptime_get() at the most recent block drop (0 = none)
 //   [uint32 sd_stream_drops]       stat_dropped_frames from sd_card.c (queue-full audio frame drops)
@@ -761,11 +761,11 @@ static struct bt_gatt_attr diagnostics_service_attr[] = {
 
 static struct bt_gatt_service diagnostics_service = BT_GATT_SERVICE(diagnostics_service_attr);
 
-/* Notify the 96-byte drop payload to every subscribed client. The value
+/* Notify the 100-byte drop payload to every subscribed client. The value
  * attribute is index 4: [0]=service, [1]/[2]=0x0061 decl/value,
  * [3]/[4]=0x0062 decl/value, [5]=CCC.
  *
- * A 96-byte notification needs ATT_MTU >= 99; on a link that never negotiated up
+ * A 100-byte notification needs ATT_MTU >= 103; on a link that never negotiated up
  * from the 23-byte default bt_gatt_notify returns -EMSGSIZE and the update is lost.
  * This is a *live* convenience path — the same payload is always available via a
  * plain READ (ATT read-blob is not MTU-bounded), which is the app's fallback — so we
