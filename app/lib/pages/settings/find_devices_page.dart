@@ -25,16 +25,21 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
   List<BtDevice> _discoveredDevices = [];
   bool _isScanning = false;
 
-  // Bond state per device id, filled in by [_refreshBondStates]. A missing entry
-  // means "not asked yet" and renders as unbonded: the mark is an indicator, so a
-  // row that appears a frame ahead of its answer costs nothing.
-  final Map<String, bool> _bondedById = {};
-  bool _bondQueryInFlight = false;
+  // Ids the OS holds a pairing key for, filled in by [_refreshBondStates]. Empty
+  // until the first answer lands, which renders every row unbonded: the mark is an
+  // indicator, so a row that appears a frame ahead of its answer costs nothing.
+  Set<String> _bondedIds = {};
+  // Bumped per query so a slow answer cannot overwrite a newer one. Two can be in
+  // flight — a scan settling while a connect lands — and the later-*started* query
+  // is the one that saw the newer device list, not necessarily the one that returns
+  // last.
+  int _bondQueryGeneration = 0;
 
   // Held so the listener can be removed in dispose — build() reads the provider
   // through watch() as before, which is what repaints the marks.
   DeviceProvider? _deviceProvider;
   bool _closing = false;
+  bool _wasConnected = false;
 
   @override
   void initState() {
@@ -72,13 +77,19 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
   /// accepted from the system dialog, not from this page, so nothing here would
   /// otherwise dismiss it.
   ///
-  /// Also refresh the bond marks: a connect is the one event that changes them, and
-  /// a connect that races the close (or one to a device we never rendered) leaves
-  /// the list on screen.
+  /// Also refresh the bond marks, but only on the transition: a connect is the one
+  /// event that moves them, while the provider notifies on plenty that doesn't
+  /// (battery, sync progress, connecting status). The close attempt is *not*
+  /// transition-gated — it has to be retried on every notification, because the one
+  /// that arrives while a dialog covers this page is declined below and there may
+  /// never be another transition to trigger it.
   void _onDeviceProviderChanged() {
     if (_closing || !mounted) return;
-    if (_deviceProvider?.isConnected != true) return;
-    unawaited(_refreshBondStates());
+    final isConnected = _deviceProvider?.isConnected ?? false;
+    final justConnected = isConnected && !_wasConnected;
+    _wasConnected = isConnected;
+    if (!isConnected) return;
+    if (justConnected) unawaited(_refreshBondStates());
     _closePage();
   }
 
@@ -89,51 +100,45 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     // that path closes both routes itself, and sets _closing before it does.
     final route = ModalRoute.of(context);
     if (route == null || !route.isCurrent) return;
+    final navigator = Navigator.of(context);
+    // Defensive: this page is always pushed onto something (Settings, the
+    // recordings page, or the home route the update screen resets to before
+    // pushing it), but popping a lone route would leave a blank navigator, which
+    // is a worse failure than staying put.
+    if (!navigator.canPop()) return;
     _closing = true;
-    Navigator.of(context).pop();
+    navigator.pop();
   }
 
-  /// Ask the OS which of the listed devices it holds a pairing key for.
+  /// Ask the OS which devices it holds a pairing key for.
   ///
   /// The stored preference cannot answer this. It still names the device after a
   /// DFU wipes the bond — which is exactly when this page is open — so gating the
-  /// mark on it would promise a pairing that no longer exists. `isDeviceBonded`
-  /// reads `BluetoothDevice.bondState`, a local lookup that touches neither the
-  /// radio nor the link a sync may be using.
+  /// mark on it would promise a pairing that no longer exists.
+  /// `getBondedDeviceIds` enumerates `BluetoothAdapter.bondedDevices`, a local
+  /// lookup that touches neither the radio nor the link a sync may be using, and
+  /// returns them uppercased to match the ids native hands out.
   ///
-  /// Called after a scan settles and on a connect, the only two moments the answer
-  /// can change while this page is up: nothing else here pairs or unpairs, and
-  /// _forgetDevice ends in a rescan.
+  /// Called at the top of every scan and on a connect. Between them those cover
+  /// every moment the answer can move while this page is up: only a pairing or an
+  /// unpairing changes it, this page's own unpair (_forgetDevice) ends in a rescan,
+  /// and one made outside the app is picked up by the Refresh button.
   Future<void> _refreshBondStates() async {
-    if (!Platform.isAndroid) return;
-    // The provider notifies on far more than connection changes (battery, sync
-    // progress), and every one of those reaches _onDeviceProviderChanged while the
-    // link is up. One pass at a time is plenty for a value only a connect moves.
-    if (_bondQueryInFlight) return;
-    _bondQueryInFlight = true;
-    final ids = <String>{
-      for (final d in ServiceManager.instance().device.devices) d.id,
-      for (final d in _discoveredDevices) d.id,
-    };
-    final bonded = <String, bool>{};
+    final generation = ++_bondQueryGeneration;
+    Set<String> bonded;
     try {
-      for (final id in ids) {
-        try {
-          bonded[id] = await BleHostApi().isDeviceBonded(id);
-        } catch (e) {
-          Logger.debug('FindDevicesPage: bond state for $id unavailable: $e');
-          bonded[id] = false;
-        }
-      }
-    } finally {
-      _bondQueryInFlight = false;
+      bonded = (await BleHostApi().getBondedDeviceIds()).map((id) => id.toUpperCase()).toSet();
+    } catch (e) {
+      // No platform guard: the call itself is the platform check. Bluetooth off, the
+      // permission not granted yet, or a platform with no implementation at all (iOS)
+      // all land here, and all mean the same thing — no marks rather than wrong ones.
+      Logger.debug('FindDevicesPage: bonded device list unavailable: $e');
+      bonded = {};
     }
-    if (!mounted) return;
-    setState(() {
-      _bondedById
-        ..clear()
-        ..addAll(bonded);
-    });
+    // A query started later has already published a fresher answer — drop this one
+    // rather than winding the marks back.
+    if (!mounted || generation != _bondQueryGeneration) return;
+    setState(() => _bondedIds = bonded);
   }
 
   Future<void> _startScan({bool userInitiated = false}) async {
@@ -152,9 +157,13 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     // rows too, instead of leaving them on screen and tappable until some later scan
     // happens to succeed.
     ServiceManager.instance().device.clearDiscoveredDevices();
-    // The marks go with the rows they annotate — a stale entry would otherwise be
-    // waiting to decorate the next scan's row for the same id.
-    _bondedById.clear();
+    // Refreshed here, alongside the cache drop and for the same reason: ahead of the
+    // early returns below, so every route in gets it — page open, the Scan/Refresh
+    // buttons, and _forgetDevice's rescan, which is the one that just unpaired and
+    // would otherwise leave its own mark up whenever a background scan makes it
+    // return early. The bonded set is the OS's, not this scan's, so it does not wait
+    // on the scan finishing.
+    unawaited(_refreshBondStates());
     // Unconditional, because either half being non-empty is enough to leave rows
     // painted, and the service half is not observable from here — a guard on
     // _discoveredDevices alone skips the repaint exactly when the cache was the stale
@@ -219,7 +228,6 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
         setState(() {
           _discoveredDevices = devices;
         });
-        await _refreshBondStates();
       }
     } catch (e) {
       Logger.error('FindDevicesPage: Error scanning for devices: $e');
@@ -370,29 +378,6 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     _startScan();
   }
 
-  /// Row trailing mark: green check = connected, grey check = the OS holds a
-  /// pairing key for it but the link is down, chevron = a stranger.
-  ///
-  /// The grey one is the useful case on this page. Several Omis in a room look
-  /// identical apart from a MAC address nobody has memorised, and after a firmware
-  /// update the paired one is *specifically* the one that has gone unbonded — so a
-  /// mark that says "you have paired with this one before" is what picks it out.
-  Widget _buildDeviceStatusIcon({required bool isConnected, required bool isBonded}) {
-    if (isConnected) {
-      return const Tooltip(
-        message: 'Connected',
-        child: Icon(Icons.check_circle, color: Color(0xFF4ADE80)),
-      );
-    }
-    if (isBonded) {
-      return Tooltip(
-        message: 'Paired — not connected',
-        child: Icon(Icons.check_circle, color: Colors.grey.shade600),
-      );
-    }
-    return const Icon(Icons.chevron_right, color: Colors.grey);
-  }
-
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<DeviceProvider>();
@@ -507,7 +492,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
                               final device = displayDevices[index];
                               final isConnectedDevice =
                                   provider.isConnected && provider.connectedDevice?.id == device.id;
-                              final isBonded = _bondedById[device.id] ?? false;
+                              final isBonded = _bondedIds.contains(device.id.toUpperCase());
                               return Card(
                                 color: const Color(0xFF1C1C1E),
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -526,7 +511,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
                                     device.id,
                                     style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
                                   ),
-                                  trailing: _buildDeviceStatusIcon(
+                                  trailing: DeviceStatusIcon(
                                     isConnected: isConnectedDevice,
                                     isBonded: isBonded,
                                   ),
@@ -561,5 +546,39 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
         ],
       ),
     );
+  }
+}
+
+/// Row trailing mark: green check = connected, grey check = the OS holds a pairing
+/// key for it but the link is down, chevron = a stranger.
+///
+/// The grey one is the useful case on this page. Several Omis in a room look
+/// identical apart from a MAC address nobody has memorised, and after a firmware
+/// update the paired one is *specifically* the one that has gone unbonded — so a
+/// mark that says "you have paired with this one before" is what picks it out.
+///
+/// `isConnected` wins when both are set, which is the normal state of a live link
+/// (connected devices are also bonded) — never render the weaker of the two facts.
+class DeviceStatusIcon extends StatelessWidget {
+  final bool isConnected;
+  final bool isBonded;
+
+  const DeviceStatusIcon({super.key, required this.isConnected, required this.isBonded});
+
+  @override
+  Widget build(BuildContext context) {
+    if (isConnected) {
+      return const Tooltip(
+        message: 'Connected',
+        child: Icon(Icons.check_circle, color: Color(0xFF4ADE80)),
+      );
+    }
+    if (isBonded) {
+      return Tooltip(
+        message: 'Paired — not connected',
+        child: Icon(Icons.check_circle, color: Colors.grey.shade600),
+      );
+    }
+    return const Icon(Icons.chevron_right, color: Colors.grey);
   }
 }
