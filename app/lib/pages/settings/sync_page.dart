@@ -1726,7 +1726,13 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final emptyRot = rel(stats.emptyBinRotations, (b) => b.emptyBinRotations);
     // The subset that means audio was lost. The total counts benign rotations that
     // landed in silence — the common case — so only this drives a problem/fault.
-    final emptyRotLost = rel(stats.emptyBinRotationsSuspect, (b) => b.emptyBinRotationsSuspect);
+    // Clamped to the total so the subset invariant survives a STALE baseline: one
+    // saved before this counter existed back-fills the missing key with 0, so the
+    // suspect delta reads absolute while the total delta is relative. Unclamped that
+    // renders "3 lost / 1 total", or a row showing '0' while the verdict flags a loss.
+    // Clamping under-reports rather than inventing a loss, which is the direction this
+    // whole change is about; a baseline reset restores the true figure.
+    final emptyRotLost = rel(stats.emptyBinRotationsSuspect, (b) => b.emptyBinRotationsSuspect).clamp(0, emptyRot);
     final seEmits = rel(stats.sessionEndMarkerEmits, (b) => b.sessionEndMarkerEmits);
     final pauseSaves = rel(stats.markerPauseGateSaves, (b) => b.markerPauseGateSaves);
     // Defensive only. _realignConnFailBaselines pulls the baseline down to any reading
