@@ -58,15 +58,16 @@ class DeviceDropStats {
   /// the central. Appended at offset 40; 0 on older firmware.
   final int estabFailCount;
 
-  /// Priority Recording lifecycle counters, appended at offsets 44–56 (60-byte
+  /// Priority Recording lifecycle counters, appended at offsets 44–52 (60-byte
   /// firmware); 0 on older builds. These make a lost Priority Recording traceable
   /// from the app log alone, no RTT capture:
   ///
   /// `priorityRecordStarts`: 0xFFFFFFF8 start-marker writes attempted (a priority
   /// recording opened). `priorityRecordStops`: priority recordings ended —
   /// `starts > stops` means one was left open. `markerWriteDrops`: inline markers
-  /// (start/stop/tap/mute) that failed to persist to SD. `emptyBinRotations`:
-  /// rotations that closed a bin holding no audio.
+  /// (start/stop/tap/mute) that failed to persist to SD. The empty-bin counters
+  /// that complete this group are documented on their own fields below (offsets 56
+  /// and 96), because only one of the two means anything was lost.
   ///
   /// The tell-tale for the vanished-priority-recording bug is `priorityRecordStarts`
   /// moving while `markerWriteDrops` (or [emptyBinRotationsSuspect]) also moves and
