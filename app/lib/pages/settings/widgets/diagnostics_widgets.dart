@@ -452,10 +452,17 @@ DiagLevel diagEventLevel(DiagLogRecord r) {
     case 13: // adv_start_fail
     case 15: // adv_stop_fail
       return DiagLevel.bad;
-    case 1: // empty_bin_rotation
     case 9: // write_blocked
     case 14: // adv_watchdog_rescue
       return DiagLevel.warn;
+    // empty_bin_rotation — graded on arg0 (the rotation reason), not the code. A
+    // rotation landing in a silent stretch closes an empty bin by design and is not
+    // worth a colour; only reason 6 (a Priority Recording's own bin, which captures
+    // unconditionally) means audio was lost. Reason 0 is an older firmware that did
+    // not attribute it, so it stays a warning rather than being graded either way.
+    case 1:
+      if (r.arg0 == 6) return DiagLevel.bad;
+      return r.arg0 == 0 ? DiagLevel.warn : DiagLevel.info;
     case 12: // bond_state — arg0 cause, arg1 keys held after
       if (r.arg0 == 0) return r.arg1 == 0 ? DiagLevel.bad : DiagLevel.info;
       // A wipe that left keys behind did not take.
