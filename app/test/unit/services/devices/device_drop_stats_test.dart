@@ -90,6 +90,7 @@ void main() {
         priorityRecordStops: 6,
         markerWriteDrops: 5,
         emptyBinRotations: 4,
+        emptyBinRotationsSuspect: 1,
         sessionEndMarkerEmits: 3,
         markerPauseGateSaves: 2,
         readAt: DateTime.now(),
@@ -107,6 +108,9 @@ void main() {
       expect(restored.priorityRecordStops, 6);
       expect(restored.markerWriteDrops, 5);
       expect(restored.emptyBinRotations, 4);
+      // The lost-audio subset baselines like every other monotonic counter; without
+      // it a reset would keep re-reporting pre-reset losses as new ones.
+      expect(restored.emptyBinRotationsSuspect, 1);
       expect(restored.sessionEndMarkerEmits, 3);
       expect(restored.markerPauseGateSaves, 2);
       // Advertising watchdog rescues: a monotonic event counter, so it baselines
