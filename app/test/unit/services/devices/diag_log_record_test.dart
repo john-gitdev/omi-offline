@@ -290,16 +290,15 @@ void main() {
     DiagLogRecord rec(int arg0, {int arg1 = 36}) =>
         DiagLogRecord.fromBytes(encodeRecord(seq: 1, uptimeMs: 1, code: 1, backend: 0, arg0: arg0, arg1: arg1), 0)!;
 
-    test('a priority-stop rotation is the only reason that names lost audio', () {
-      // The distinction the whole split exists for. A Priority Recording captures
-      // unconditionally, so its own bin cannot close empty unless the start marker and
-      // the forced frames were both dropped. Every other reason closes a bin that was
-      // legitimately silent, which a rotation landing in a quiet stretch produces by
-      // design — reporting those as loss sends an investigation after audio that never
-      // existed.
-      expect(rec(6).description, contains('AUDIO LOST'));
+    test('only a priority-stop rotation reads as a fault on an empty bin', () {
+      // The distinction the attribution exists for. Most reasons say a rotation landed
+      // where nothing was being written — routine, and reporting it as loss sends an
+      // investigation after audio that never existed. A priority stop is different: its
+      // bin should hold the recording's own markers, and a written marker force-drains
+      // its block, so an empty one means they were dropped.
+      expect(rec(6).description, contains('markers dropped'));
       for (final benign in [1, 2, 3, 4, 5, 7, 8, 9]) {
-        expect(rec(benign).description, isNot(contains('LOST')), reason: 'reason $benign is benign');
+        expect(rec(benign).description, isNot(contains('dropped')), reason: 'reason \$benign is routine');
       }
     });
 
