@@ -207,6 +207,19 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
       return;
     }
 
+    // The page can be gone by the time the answer lands. The permission prompt is a
+    // system window, not a Flutter route, so this page stays `isCurrent` behind it and
+    // a connect arriving meanwhile still runs _closePage and pops it — and on Android
+    // the request does not return until the user has answered, which can be a long
+    // way after that. Every setState past this point would then land on a disposed
+    // state; the ones inside the scan below already check, this one did not.
+    // The page can be gone by the time the answer lands. The permission prompt is a
+    // system window, not a Flutter route, so this page stays `isCurrent` behind it and
+    // a connect arriving meanwhile still runs _closePage and pops it — and on Android
+    // the request does not return until the user has answered, which can be a long
+    // way after that. Every setState past this point would then land on a disposed
+    // state; the ones inside the scan below already check, this one did not.
+    if (!mounted) return;
     setState(() {
       _isScanning = true;
       _discoveredDevices = [];
