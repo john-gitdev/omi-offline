@@ -70,23 +70,25 @@ class DeviceDropStats {
   /// and 96), because only one of the two means anything was lost.
   ///
   /// The tell-tale for the vanished-priority-recording bug is `priorityRecordStarts`
-  /// moving while `markerWriteDrops` (or [emptyBinRotationsSuspect]) also moves and
-  /// no high-priority recording surfaces — the marker + audio were dropped on-device.
+  /// moving while `markerWriteDrops` also moves and no high-priority recording
+  /// surfaces — the marker + audio were dropped on-device.
   final int priorityRecordStarts;
   final int priorityRecordStops;
   final int markerWriteDrops;
 
   /// Rotations that closed a bin holding nothing but its 36-byte header.
   ///
-  /// **This total is not a loss signal**, and treating it as one produced false
-  /// "lost Priority Recording" reports. Most empty bins are ordinary: in auto mode a
-  /// silent room forwards nothing to the firmware's SD worker at all, and the
-  /// age-based rotation is only evaluated when a write arrives — so a bin opened by
-  /// an explicit rotate (the app's own CMD_ROTATE_FILE, a priority boundary, a time
-  /// sync) stays header-only until speech resumes, and whatever rotates next closes
-  /// it empty. Two Force Syncs across a quiet stretch move this and mean nothing.
+  /// **This is not a loss signal**, and treating it as one produced false "lost
+  /// Priority Recording" reports. An empty bin means nothing at all reached the card
+  /// for that segment, and a marker cannot be the missing part — the firmware
+  /// force-drains a marker's partial block immediately, so any marker that is written
+  /// puts the bin well past header-only. What is left is a rotation that landed where
+  /// nothing was being written: in auto mode, any silent stretch. Two Force Syncs
+  /// across a quiet lunch break move this and mean nothing.
   ///
-  /// Use it as the denominator for [emptyBinRotationsSuspect].
+  /// [markerWriteDrops] is the loss signal. Firmware `oo-3.0.2` and later also record
+  /// WHY each empty bin happened, in the 0x0063 event log — see
+  /// `DiagLogRecord.rotateReasonLabel`.
   final int emptyBinRotations;
 
   /// Session-end marker (0xFFFFFFFC) emits attempted from the firmware finalize
@@ -204,17 +206,6 @@ class DeviceDropStats {
   /// applied it yet — which is what a stuck switch looks like.
   bool get advDesiredSlow => ((advModesRaw >> 8) & 0xFF) == 1;
 
-  /// The subset of [emptyBinRotations] that actually means audio was lost: a Priority
-  /// Recording's own bin, closed holding nothing (offset 96; 0 on firmware older than
-  /// oo-3.0.2).
-  ///
-  /// A priority recording runs force-captured — the firmware pins its threshold at
-  /// 65535, so frames flow regardless of the amplitude gate — which is why its bin can
-  /// only be empty if the 0xFFFFFFF8 start marker AND the forced audio were both
-  /// dropped. Every other rotation reason closes a bin that was legitimately silent,
-  /// so this is the field to alarm on; [emptyBinRotations] is the denominator.
-  final int emptyBinRotationsSuspect;
-
   /// The firmware's SD write-queue size (`SD_REQ_QUEUE_MSGS`), used as the denominator
   /// for [msgqPeakDepth]. The firmware doesn't send this as a field; it's derived from
   /// the payload length in the parser — the 76-byte payload is only produced by the
@@ -240,7 +231,6 @@ class DeviceDropStats {
     this.priorityRecordStops = 0,
     this.markerWriteDrops = 0,
     this.emptyBinRotations = 0,
-    this.emptyBinRotationsSuspect = 0,
     this.sessionEndMarkerEmits = 0,
     this.markerPauseGateSaves = 0,
     this.sdWorkerStackUsed = 0,
@@ -280,7 +270,6 @@ class DeviceDropStats {
         'priorityRecordStops': priorityRecordStops,
         'markerWriteDrops': markerWriteDrops,
         'emptyBinRotations': emptyBinRotations,
-        'emptyBinRotationsSuspect': emptyBinRotationsSuspect,
         'sessionEndMarkerEmits': sessionEndMarkerEmits,
         'markerPauseGateSaves': markerPauseGateSaves,
         'currentUptimeMs': currentUptimeMs,
@@ -307,7 +296,6 @@ class DeviceDropStats {
         priorityRecordStops: g('priorityRecordStops'),
         markerWriteDrops: g('markerWriteDrops'),
         emptyBinRotations: g('emptyBinRotations'),
-        emptyBinRotationsSuspect: g('emptyBinRotationsSuspect'),
         sessionEndMarkerEmits: g('sessionEndMarkerEmits'),
         markerPauseGateSaves: g('markerPauseGateSaves'),
         readAt: DateTime.now(),
@@ -344,7 +332,6 @@ class DeviceDropStats {
       priorityRecordStops < baseline.priorityRecordStops ||
       markerWriteDrops < baseline.markerWriteDrops ||
       emptyBinRotations < baseline.emptyBinRotations ||
-      emptyBinRotationsSuspect < baseline.emptyBinRotationsSuspect ||
       sessionEndMarkerEmits < baseline.sessionEndMarkerEmits ||
       markerPauseGateSaves < baseline.markerPauseGateSaves;
 }
