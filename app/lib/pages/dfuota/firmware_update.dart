@@ -413,8 +413,16 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
             ),
             const SizedBox(height: 8),
             Text(
-              'The update cleared the Bluetooth pairing between your Omi and this phone, so it will not '
-              'reconnect on its own. Pair it again to finish:',
+              // Platform-split for the same reason the steps are: on Android the app
+              // reconnects by itself once it hears the Omi advertising again, so
+              // "it will not reconnect on its own" — true on iOS, where the bond can
+              // only be cleared by hand — would contradict the step right below it.
+              Platform.isIOS
+                  ? 'The update cleared the Bluetooth pairing between your Omi and this phone, so it will not '
+                      'reconnect on its own. Pair it again to finish:'
+                  : 'The update cleared the Bluetooth pairing between your Omi and this phone. The app '
+                      'reconnects as soon as your Omi is back, so all that is left is to accept the pairing '
+                      'request:',
               style: TextStyle(color: Colors.grey.shade400, fontSize: 14, height: 1.4),
             ),
             const SizedBox(height: 16),

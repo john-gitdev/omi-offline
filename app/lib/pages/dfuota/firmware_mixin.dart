@@ -288,6 +288,12 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   ///
   /// `requiresBond: true` matches what tapping the device in Find Devices does — the
   /// known-good re-pair path, and the one this hands back to if the window expires.
+  ///
+  /// The deadline gates whether another scan *starts*, deliberately not whether a
+  /// sighting is acted on. A scan that straddles it still ran, and a device it heard
+  /// is a device that is back; dropping that to honour the bound to the second would
+  /// discard a confirmed sighting and hand the user a manual re-pair they no longer
+  /// need. The overshoot is one scan.
   Future<void> _reconnectWhenDeviceReturns(BtDevice btDevice) async {
     final deadline = DateTime.now().add(_postFlashReconnectWindow);
     while (!_postFlashReconnectCancelled && DateTime.now().isBefore(deadline)) {
@@ -303,11 +309,16 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     Logger.debug('Post-update: device did not return in time — leaving the re-pair to Find Devices');
   }
 
-  /// Stop the post-flash rediscovery loop. Called from the page's dispose so
-  /// leaving the update screen doesn't leave a scan running behind Find Devices,
-  /// which starts its own the moment Done lands the user there — and concurrent
-  /// `discover()` calls return empty (see `DeviceService.discover`), so the two
-  /// would take turns blanking each other.
+  /// Stop the post-flash rediscovery loop: no further scan, and no reconnect out of
+  /// one already in flight. Called from the page's dispose, so leaving the update
+  /// screen ends the loop rather than reconnecting behind the user's back.
+  ///
+  /// It cannot abort a scan already running — the flag is read where the loop next
+  /// touches it, after `discover()` returns — and it does not need to. Find Devices
+  /// opens by dropping the cache and then *defers* to a scan already in progress
+  /// instead of starting its own (`_startScan`), and when ours lands, the status
+  /// change notifies `DeviceProvider` and the page merges the service's results into
+  /// its list. So the tail of our scan feeds the page it would otherwise have raced.
   void cancelPostFlashReconnect() => _postFlashReconnectCancelled = true;
 
   /// Drop the cached scan results on a successful flash. The device reboots into
