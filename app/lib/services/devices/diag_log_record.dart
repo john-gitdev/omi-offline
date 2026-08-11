@@ -55,6 +55,41 @@ class DiagLogRecord {
     );
   }
 
+  /// Why a rotation happened, as carried in `arg0` of a `DIAG_EMPTY_BIN_ROTATION`
+  /// record. Mirror of the firmware `rotate_reason_t` — keep in sync (append-only).
+  ///
+  /// Only `priority stop` implies lost audio: a Priority Recording captures
+  /// unconditionally, so its own bin cannot close empty unless both the start marker
+  /// and the forced frames were dropped. Every other reason closes a bin that was
+  /// legitimately silent — the common case, since a rotation landing in a quiet
+  /// stretch produces an empty bin by design.
+  static String rotateReasonLabel(int reason) {
+    switch (reason) {
+      case 1:
+        return 'first bin after mount';
+      case 2:
+        return 'bin age';
+      case 3:
+        return 'BLE connect';
+      case 4:
+        return 'app rotate command';
+      case 5:
+        return 'priority recording start';
+      case 6:
+        return 'priority recording stop — AUDIO LOST';
+      case 7:
+        return 'time sync';
+      case 8:
+        return 'storage cleared';
+      case 9:
+        return 'active bin deleted';
+      default:
+        // 0 is the firmware's own "unknown", and is also what a pre-oo-3.0.2 build
+        // sends. Both mean the same thing to a reader: nothing is claimed.
+        return 'unattributed';
+    }
+  }
+
   /// Short, stable label for the event code. Mirror of the firmware
   /// `diag_event_code_t` table — keep in sync (append-only).
   String get label {
@@ -135,7 +170,13 @@ class DiagLogRecord {
   String get description {
     switch (code) {
       case 1:
-        return 'Empty bin rotation$_backendSuffix — bin closed with $arg1 B (header only)';
+        // arg0 = the rotation that closed it (rotate_reason_t), arg1 = closing size.
+        // The reason is what separates a benign empty bin from a lost recording: only
+        // a Priority Recording's own bin (priority stop) can be empty without loss
+        // having occurred, because it captures unconditionally. Everything else closes
+        // a bin that was legitimately silent. Firmware before oo-3.0.2 sent 0 here,
+        // which renders as "unattributed" rather than pretending to know.
+        return 'Empty bin rotation$_backendSuffix — ${rotateReasonLabel(arg0)}, closed with $arg1 B (header only)';
       case 2:
         return 'Marker write drop$_backendSuffix — lost inline marker (blockDrops=$arg1)';
       case 3:
