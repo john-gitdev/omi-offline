@@ -19,6 +19,23 @@ class FirmwareUpdate extends StatefulWidget {
 
   const FirmwareUpdate({super.key, this.device, this.isRollback = false, this.localZipPath});
 
+  /// The stack Done leaves behind, bottom first.
+  ///
+  /// Home is always the base: the update reset the pairing, so keeping the screens
+  /// the user came in through would leave them pointed at a device that no longer
+  /// answers on the old key. The scan list goes on top only while the re-pair has
+  /// *not* happened — once it has, that page is one the user cannot act on (every
+  /// route into it is gated on being disconnected, and it closes itself on connect),
+  /// so pushing it would only make them dismiss it.
+  ///
+  /// Split out from the button so the branch can be asserted without standing up
+  /// either destination page.
+  @visibleForTesting
+  static List<Widget> postUpdateDestinations({required bool isReconnected}) => [
+        const RecordingsPage(),
+        if (!isReconnected) const FindDevicesPage(),
+      ];
+
   @override
   State<FirmwareUpdate> createState() => _FirmwareUpdateState();
 }
@@ -321,22 +338,15 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
                   borderRadius: BorderRadius.circular(14),
                   onTap: () {
                     deviceProvider.resetFirmwareUpdateState();
-                    // Reset to home first: replacing the whole stack with anything else
-                    // would leave that page as root with nothing to pop back to. The
-                    // navigator is captured up front because the stack reset unmounts
-                    // this page's context.
+                    // The navigator is captured up front because the stack reset
+                    // below unmounts this page's context.
                     final navigator = Navigator.of(context);
-                    navigator.pushAndRemoveUntil(_pageRoute(const RecordingsPage()), (route) => false);
-                    // The update cleared the pairing on both sides, so re-pairing is
-                    // normally the next step — land the user on the scan list rather
-                    // than on a home screen showing a device that can no longer
-                    // connect. Unless it already happened: if the pairing request was
-                    // accepted while this page was up, the scan list is a page the
-                    // user cannot act on (every route into it is gated on being
-                    // disconnected, and it closes itself on connect), so pushing it
-                    // would only make them dismiss it. Home is the destination then.
-                    if (!isReconnected) {
-                      navigator.push(_pageRoute(const FindDevicesPage()));
+                    final destinations = FirmwareUpdate.postUpdateDestinations(isReconnected: isReconnected);
+                    // The first goes on as the new root — replacing the whole stack
+                    // with a later one would leave it with nothing to pop back to.
+                    navigator.pushAndRemoveUntil(_pageRoute(destinations.first), (route) => false);
+                    for (final destination in destinations.skip(1)) {
+                      navigator.push(_pageRoute(destination));
                     }
                   },
                   child: Container(
