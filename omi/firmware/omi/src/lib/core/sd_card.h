@@ -199,13 +199,22 @@ uint32_t sd_get_write_fair_activations(void);
  *
  * NOT a loss signal on its own, and was read as one for a long time. An empty bin
  * means nothing at all reached the card for that segment — and a marker cannot be the
- * missing part, because write_marker_header_to_storage() force-drains its partial
- * block, so any marker that is written puts the bin well past header-only. What is
+ * missing part once ACCEPTED, because write_marker_header_to_storage() force-drains
+ * its partial block, so a marker the SD queue takes puts the bin well past
+ * header-only. (If that drain is rejected the block stays in transport.c's assembly
+ * buffer, which no rotation drains, so the marker lands in the NEXT bin and leaves
+ * this one empty — needs a full SD queue, and bumps no counter of its own.) What is
  * left is a rotation that landed where nothing was being written, which in auto mode
  * is any silent stretch: CMD_ROTATE_FILE, a priority boundary or a time sync opens a
- * bin, nobody speaks, and whatever rotates next closes it empty. Pair it with the
- * marker-drop counter to read it as loss; the cause of each one is in the 0x0063
- * event log (arg0 = rotate_reason_t).
+ * bin, nobody speaks, and whatever rotates next closes it empty.
+ *
+ * Do NOT read it against the marker-drop counter either. Both are free-running totals
+ * since boot that name no segment, so a marker dropped in one recording and an empty
+ * bin from an idle rotation an hour later look exactly like a correlated loss. They
+ * are independent: the marker-drop counter (0x19B10062 offset 52, owned by transport.c)
+ * stands on its own as the loss signal,
+ * and per-segment correlation is what the 0x0063 event log is for (arg0 =
+ * rotate_reason_t, with a timestamp on every record).
  */
 uint32_t sd_get_empty_bin_rotations(void);
 
