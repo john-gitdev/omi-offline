@@ -34,6 +34,13 @@ class FakeDeviceProvider extends ChangeNotifier implements DeviceProvider {
     notifyListeners();
   }
 
+  /// The release closing the pre-DFU link, which reaches the provider a debounce
+  /// after the flash reported success.
+  void dropLink() {
+    isConnected = false;
+    notifyListeners();
+  }
+
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
@@ -92,6 +99,63 @@ void main() {
           reason: 'telling a connected user to pair again is the defect this exists for');
       expect(find.text('Paired again'), findsOneWidget);
       expect(find.textContaining('is paired again and connected'), findsOneWidget);
+    });
+
+    testWidgets('a link still up when the flash lands is not read as a re-pair', (tester) async {
+      // _releasePairingOnSuccess runs unawaited and isInstalled flips in the same
+      // synchronous block, so the first frame of this screen can be drawn over the
+      // pre-DFU link — native's retry ladder keeps re-establishing it during the
+      // flash, which is what the release exists to stop. Reading that as "re-paired"
+      // would congratulate the user on a pairing that is about to be wiped.
+      final provider = FakeDeviceProvider()..isConnected = true;
+      await pumpInstalledScreen(tester, provider);
+
+      expect(find.text('Paired again'), findsNothing, reason: 'nothing has been re-paired yet');
+      expect(find.text('You need to pair again'), findsOneWidget);
+    });
+
+    testWidgets('the re-pair registers once the old link has gone first', (tester) async {
+      final provider = FakeDeviceProvider()..isConnected = true;
+      await pumpInstalledScreen(tester, provider);
+
+      provider.dropLink(); // the release lands
+      await tester.pumpAndSettle();
+      provider.reconnect(); // and the user accepts the pairing request
+      await tester.pumpAndSettle();
+
+      expect(find.text('Paired again'), findsOneWidget);
+      expect(find.text('You need to pair again'), findsNothing);
+    });
+
+    testWidgets('Done keeps the fallback while only the old link is up', (tester) async {
+      // The consequential half: Done skipping the scan list is not recoverable on its
+      // own, because this page's dispose cancels the post-flash rediscovery loop with
+      // it — a user sent straight home has nothing left trying to reconnect.
+      final observer = _RecordingObserver();
+      final provider = FakeDeviceProvider()..isConnected = true;
+
+      await tester.pumpWidget(
+        ChangeNotifierProvider<DeviceProvider>.value(
+          value: provider,
+          child: MaterialApp(
+            navigatorObservers: [observer],
+            home: FirmwareUpdate(device: device),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      (tester.state(find.byType(FirmwareUpdate)) as FirmwareMixin).isInstalled = true;
+      tester.element(find.byType(FirmwareUpdate)).markNeedsBuild();
+      await tester.pumpAndSettle();
+
+      final builderContext = tester.element(find.byType(FirmwareUpdate));
+      observer.pushed.clear();
+      await tester.ensureVisible(find.text('Done'));
+      await tester.tap(find.text('Done'));
+
+      expect(observer.pushedPages(builderContext), [isA<RecordingsPage>(), isA<FindDevicesPage>()]);
+
+      await tester.pumpWidget(const SizedBox());
     });
 
     testWidgets('Done pushes exactly the destinations for the current state', (tester) async {
