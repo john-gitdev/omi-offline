@@ -147,12 +147,14 @@ static atomic_t write_fair_activations;
  * at the rotate leaves exactly this empty-bin residue, so a nonzero delta across a
  * priority attempt is the on-device fingerprint of that loss. Read via 0x19B10062.
  *
- * The TOTAL is not a loss signal by itself — most empty bins are a rotation landing
- * in silence, which in auto mode forwards nothing here at all. empty_bin_rotations_
- * suspect counts only the subset that means audio was lost (a priority bin closed
- * empty); see sd_get_empty_bin_rotations_suspect(). */
+ * NOT a loss signal by itself. An empty bin means NOTHING reached the card for that
+ * segment — not one audio block, not one marker. A marker cannot be the missing
+ * part: write_marker_header_to_storage() force-drains its partial 440 B block
+ * immediately, so a marker that is written at all lands as a full block and puts the
+ * bin well past header-only. What is left is a rotation that landed where nothing was
+ * being written — in auto mode, any silent stretch. Pair it with marker_write_drops
+ * to read it as loss; alone it is routine. */
 static atomic_t empty_bin_rotations;
-static atomic_t empty_bin_rotations_suspect;
 
 /* Why the rotation currently being performed was requested (rotate_reason_t). Read
  * only by ring_create_segment(), and only when the rotation closes an empty bin.
@@ -1207,7 +1209,27 @@ void sd_worker_thread(void)
             AudioFileMeta_t m;
             parse_filename_to_meta(req.u.delete_file.filename, 0, &m);
             int idx = ring_find_segment_index(m.timestamp, m.uptime_offset);
-            int rc = (idx >= 0) ? sd_ring_ack_segment(idx) : 0; /* absent = already gone */
+            int rc;
+            if (idx >= 0) {
+                rc = sd_ring_ack_segment(idx);
+            } else {
+                /* Absent from the closed+un-acked list. Usually it is simply already
+                 * gone. But sd_ring_ack_segment() acks in RAM BEFORE persisting and
+                 * reports a durability failure afterwards (see its contract), so this
+                 * also covers a previous attempt that the app was told had failed: the
+                 * segment left the list, the table did not reach NAND, and a reboot in
+                 * that window resurrects it — which is the path that ends in the phone
+                 * downloading and decoding the recording a second time.
+                 *
+                 * The app retries a refused delete rather than re-downloading, so use
+                 * that retry to finish the job: sd_ring_sync() rewrites the table when
+                 * segtab_dirty and is a cheap no-op otherwise. Reporting success over a
+                 * table that never landed is what made the failure invisible. */
+                rc = sd_ring_sync();
+                if (rc != 0) {
+                    LOG_ERR("[SD_WORK] delete retry: segment gone but table still not durable: %d", rc);
+                }
+            }
             invalidate_file_cache();
             if (req.u.delete_file.resp) {
                 req.u.delete_file.resp->res = (rc < 0) ? rc : 0;
@@ -1327,11 +1349,6 @@ uint32_t sd_get_empty_bin_rotations(void)
     return (uint32_t)atomic_get(&empty_bin_rotations);
 }
 
-uint32_t sd_get_empty_bin_rotations_suspect(void)
-{
-    return (uint32_t)atomic_get(&empty_bin_rotations_suspect);
-}
-
 uint32_t sd_get_marker_pause_gate_saves(void)
 {
     return (uint32_t)atomic_get(&marker_pause_gate_saves);
@@ -1390,17 +1407,13 @@ static int ring_create_segment(void)
 
     /* Empty-bin diagnostic: previous segment closed holding only its header.
      *
-     * Attribute it. Most empty bins are benign — a rotation that landed in a silent
-     * stretch, where auto mode forwarded nothing here to begin with — and counting
-     * those as loss reports missing audio that never existed. The one reason that
-     * does mean loss is PRIORITY_STOP: a Priority Recording runs force-captured, so
-     * its own bin can only be empty if the 0xFFFFFFF8 marker and the forced frames
-     * were both dropped. Split that out; keep the total for the denominator. */
+     * Attribute it, because the count alone never says which rotation left the bin
+     * empty and they are not equally interesting: "you Force Synced twice over a quiet
+     * lunch" and "a recording boundary landed on a mic that was delivering nothing"
+     * both land here. The reason is the only thing that separates them, and it costs
+     * a byte of an event record that was already being written. */
     if (current_filename[0] != '\0' && current_file_size <= sizeof(RecordingHeader_v1_t)) {
         atomic_inc(&empty_bin_rotations);
-        if (ring_rotate_reason == ROTATE_REASON_PRIORITY_STOP) {
-            atomic_inc(&empty_bin_rotations_suspect);
-        }
         diag_log_event(DIAG_EMPTY_BIN_ROTATION, STORAGE_BACKEND_RING, ring_rotate_reason, current_file_size);
     }
     /* Consume the reason: a site that fails to set one records an empty bin as
