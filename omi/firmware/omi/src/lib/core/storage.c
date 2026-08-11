@@ -944,7 +944,7 @@ void storage_write(void)
              * It blocks until the SD worker has completed the rotation, so the ACK
              * is only sent after the old file is fully sealed and the new one is open.
              * The app can safely call CMD_LIST_FILES immediately after the ACK. */
-            int ret = create_new_audio_file();
+            int ret = create_new_audio_file(ROTATE_REASON_APP_CMD);
             if (conn) {
                 uint8_t result = (ret >= 0) ? 0 : 1;
                 uint8_t ack[2] = {PACKET_ACK, result};
