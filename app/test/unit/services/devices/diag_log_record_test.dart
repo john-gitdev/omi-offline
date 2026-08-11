@@ -285,4 +285,38 @@ void main() {
       expect(DiagLogSnapshot.parse(List.filled(11, 0)), isNull);
     });
   });
+
+  group('empty-bin rotation attribution', () {
+    DiagLogRecord rec(int arg0, {int arg1 = 36}) =>
+        DiagLogRecord.fromBytes(encodeRecord(seq: 1, uptimeMs: 1, code: 1, backend: 0, arg0: arg0, arg1: arg1), 0)!;
+
+    test('a priority-stop rotation is the only reason that names lost audio', () {
+      // The distinction the whole split exists for. A Priority Recording captures
+      // unconditionally, so its own bin cannot close empty unless the start marker and
+      // the forced frames were both dropped. Every other reason closes a bin that was
+      // legitimately silent, which a rotation landing in a quiet stretch produces by
+      // design — reporting those as loss sends an investigation after audio that never
+      // existed.
+      expect(rec(6).description, contains('AUDIO LOST'));
+      for (final benign in [1, 2, 3, 4, 5, 7, 8, 9]) {
+        expect(rec(benign).description, isNot(contains('LOST')), reason: 'reason $benign is benign');
+      }
+    });
+
+    test('the reason is named, and the closing size still reported', () {
+      expect(rec(4).description, contains('app rotate command'));
+      expect(rec(4, arg1: 36).description, contains('36 B'));
+    });
+
+    test('firmware predating the attribution claims nothing', () {
+      // arg0 == 0 is both the firmware's own "unknown" and what every build before
+      // oo-3.0.2 sends. Neither may be rendered as a cause.
+      expect(rec(0).description, contains('unattributed'));
+      expect(rec(0).description, isNot(contains('LOST')));
+    });
+
+    test('an unknown future reason degrades to unattributed rather than mislabelling', () {
+      expect(rec(99).description, contains('unattributed'));
+    });
+  });
 }
