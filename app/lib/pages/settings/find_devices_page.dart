@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -24,10 +25,115 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
   List<BtDevice> _discoveredDevices = [];
   bool _isScanning = false;
 
+  // Bond state per device id, filled in by [_refreshBondStates]. A missing entry
+  // means "not asked yet" and renders as unbonded: the mark is an indicator, so a
+  // row that appears a frame ahead of its answer costs nothing.
+  final Map<String, bool> _bondedById = {};
+  bool _bondQueryInFlight = false;
+
+  // Held so the listener can be removed in dispose — build() reads the provider
+  // through watch() as before, which is what repaints the marks.
+  DeviceProvider? _deviceProvider;
+  bool _closing = false;
+
   @override
   void initState() {
     super.initState();
     _startScan();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final provider = Provider.of<DeviceProvider>(context, listen: false);
+    if (identical(provider, _deviceProvider)) return;
+    _deviceProvider?.removeListener(_onDeviceProviderChanged);
+    _deviceProvider = provider..addListener(_onDeviceProviderChanged);
+    // Cover a page opened onto an already-live link — the listener alone would sit
+    // until the provider happened to notify about something else. Post-frame because
+    // popping is illegal mid-build, and because the route has to have been built
+    // before it can be popped.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _onDeviceProviderChanged());
+  }
+
+  @override
+  void dispose() {
+    _deviceProvider?.removeListener(_onDeviceProviderChanged);
+    super.dispose();
+  }
+
+  /// Close this page the moment an Omi is connected, however that happened.
+  ///
+  /// Nothing here is reachable while connected — every route in (the drawer item,
+  /// the recordings-page bluetooth icon, the Connect Omi button) is gated on being
+  /// disconnected — so a connected user left sitting on the scan list is stranded on
+  /// a page they could not have opened. The case that needs it is the post-update
+  /// one: Done lands the user here to accept the pairing request, and the request is
+  /// accepted from the system dialog, not from this page, so nothing here would
+  /// otherwise dismiss it.
+  ///
+  /// Also refresh the bond marks: a connect is the one event that changes them, and
+  /// a connect that races the close (or one to a device we never rendered) leaves
+  /// the list on screen.
+  void _onDeviceProviderChanged() {
+    if (_closing || !mounted) return;
+    if (_deviceProvider?.isConnected != true) return;
+    unawaited(_refreshBondStates());
+    _closePage();
+  }
+
+  void _closePage() {
+    if (_closing || !mounted) return;
+    // A tap-initiated connect stacks a loading dialog on top of this page, and
+    // popping now would take the dialog instead of us. Deferring loses nothing:
+    // that path closes both routes itself, and sets _closing before it does.
+    final route = ModalRoute.of(context);
+    if (route == null || !route.isCurrent) return;
+    _closing = true;
+    Navigator.of(context).pop();
+  }
+
+  /// Ask the OS which of the listed devices it holds a pairing key for.
+  ///
+  /// The stored preference cannot answer this. It still names the device after a
+  /// DFU wipes the bond — which is exactly when this page is open — so gating the
+  /// mark on it would promise a pairing that no longer exists. `isDeviceBonded`
+  /// reads `BluetoothDevice.bondState`, a local lookup that touches neither the
+  /// radio nor the link a sync may be using.
+  ///
+  /// Called after a scan settles and on a connect, the only two moments the answer
+  /// can change while this page is up: nothing else here pairs or unpairs, and
+  /// _forgetDevice ends in a rescan.
+  Future<void> _refreshBondStates() async {
+    if (!Platform.isAndroid) return;
+    // The provider notifies on far more than connection changes (battery, sync
+    // progress), and every one of those reaches _onDeviceProviderChanged while the
+    // link is up. One pass at a time is plenty for a value only a connect moves.
+    if (_bondQueryInFlight) return;
+    _bondQueryInFlight = true;
+    final ids = <String>{
+      for (final d in ServiceManager.instance().device.devices) d.id,
+      for (final d in _discoveredDevices) d.id,
+    };
+    final bonded = <String, bool>{};
+    try {
+      for (final id in ids) {
+        try {
+          bonded[id] = await BleHostApi().isDeviceBonded(id);
+        } catch (e) {
+          Logger.debug('FindDevicesPage: bond state for $id unavailable: $e');
+          bonded[id] = false;
+        }
+      }
+    } finally {
+      _bondQueryInFlight = false;
+    }
+    if (!mounted) return;
+    setState(() {
+      _bondedById
+        ..clear()
+        ..addAll(bonded);
+    });
   }
 
   Future<void> _startScan({bool userInitiated = false}) async {
@@ -46,6 +152,9 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     // rows too, instead of leaving them on screen and tappable until some later scan
     // happens to succeed.
     ServiceManager.instance().device.clearDiscoveredDevices();
+    // The marks go with the rows they annotate — a stale entry would otherwise be
+    // waiting to decorate the next scan's row for the same id.
+    _bondedById.clear();
     // Unconditional, because either half being non-empty is enough to leave rows
     // painted, and the service half is not observable from here — a guard on
     // _discoveredDevices alone skips the repaint exactly when the cache was the stale
@@ -110,6 +219,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
         setState(() {
           _discoveredDevices = devices;
         });
+        await _refreshBondStates();
       }
     } catch (e) {
       Logger.error('FindDevicesPage: Error scanning for devices: $e');
@@ -195,6 +305,10 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
       SharedPreferencesUtil().btDevice = device;
 
       if (mounted) {
+        // Claim the close before making it, so the connection-state listener —
+        // which fires from setIsConnected during ensureConnection — doesn't pop a
+        // second route behind these two.
+        _closing = true;
         Navigator.of(context).pop(); // Close loading dialog
         Navigator.of(context).pop(); // Go back to settings
         ScaffoldMessenger.of(context).showSnackBar(
@@ -254,6 +368,29 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
       const SnackBar(content: Text('Device forgotten — scan to reconnect')),
     );
     _startScan();
+  }
+
+  /// Row trailing mark: green check = connected, grey check = the OS holds a
+  /// pairing key for it but the link is down, chevron = a stranger.
+  ///
+  /// The grey one is the useful case on this page. Several Omis in a room look
+  /// identical apart from a MAC address nobody has memorised, and after a firmware
+  /// update the paired one is *specifically* the one that has gone unbonded — so a
+  /// mark that says "you have paired with this one before" is what picks it out.
+  Widget _buildDeviceStatusIcon({required bool isConnected, required bool isBonded}) {
+    if (isConnected) {
+      return const Tooltip(
+        message: 'Connected',
+        child: Icon(Icons.check_circle, color: Color(0xFF4ADE80)),
+      );
+    }
+    if (isBonded) {
+      return Tooltip(
+        message: 'Paired — not connected',
+        child: Icon(Icons.check_circle, color: Colors.grey.shade600),
+      );
+    }
+    return const Icon(Icons.chevron_right, color: Colors.grey);
   }
 
   @override
@@ -368,6 +505,9 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
                             itemCount: displayDevices.length,
                             itemBuilder: (context, index) {
                               final device = displayDevices[index];
+                              final isConnectedDevice =
+                                  provider.isConnected && provider.connectedDevice?.id == device.id;
+                              final isBonded = _bondedById[device.id] ?? false;
                               return Card(
                                 color: const Color(0xFF1C1C1E),
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -386,7 +526,10 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
                                     device.id,
                                     style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
                                   ),
-                                  trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+                                  trailing: _buildDeviceStatusIcon(
+                                    isConnected: isConnectedDevice,
+                                    isBonded: isBonded,
+                                  ),
                                   onTap: () => _connectToDevice(device),
                                 ),
                               );
