@@ -239,7 +239,7 @@ class OmiDeviceConnection extends DeviceConnection {
 
   /// Parse the drop-counter payload (0x0062). Shared by the on-demand read and
   /// the notify listener. Appended fields default to 0/false on shorter payloads
-  /// from older firmware (length grew 20→28→32→40→44→60→68→76→84→92→96 B). Returns null on a
+  /// from older firmware (length grew 20→28→32→40→44→60→68→76→84→92→96→100 B). Returns null on a
   /// too-short read (tells us nothing) rather than a false all-zero reading.
   static DeviceDropStats? _parseDropStats(List<int> data) {
     if (data.length < 20) return null;
