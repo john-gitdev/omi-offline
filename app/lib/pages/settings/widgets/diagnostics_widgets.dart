@@ -457,9 +457,10 @@ DiagLevel diagEventLevel(DiagLogRecord r) {
       return DiagLevel.warn;
     // empty_bin_rotation — graded on arg0 (the rotation reason), not the code. A
     // rotation landing in a silent stretch closes an empty bin by design and is not
-    // worth a colour; only reason 6 (a Priority Recording's own bin, which captures
-    // unconditionally) means audio was lost. Reason 0 is an older firmware that did
-    // not attribute it, so it stays a warning rather than being graded either way.
+    // worth a colour. Reason 6 is: that bin should hold the recording's own markers,
+    // and a written marker force-drains its block, so an empty one means they were
+    // dropped. Reason 0 is an older firmware that did not attribute it, so it stays a
+    // warning rather than being graded either way.
     case 1:
       if (r.arg0 == 6) return DiagLevel.bad;
       return r.arg0 == 0 ? DiagLevel.warn : DiagLevel.info;
