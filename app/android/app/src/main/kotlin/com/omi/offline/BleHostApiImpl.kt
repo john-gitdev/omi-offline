@@ -151,6 +151,25 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
         return bleManager.isPeripheralConnected(uuid)
     }
 
+    /**
+     * Bond state straight from the OS — no GATT, no radio traffic — so Find Devices can
+     * mark the paired Omi per row without touching the link a sync may be using.
+     *
+     * BOND_BONDING counts as not bonded: the key is not usable until BOND_BONDED lands,
+     * and the row is only an indicator, so claiming a pairing that may still fail is the
+     * worse error. Anything that throws (BLUETOOTH_CONNECT denied, a malformed address,
+     * Bluetooth off) answers false for the same reason.
+     */
+    override fun isDeviceBonded(uuid: String): Boolean {
+        return try {
+            val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter() ?: return false
+            adapter.getRemoteDevice(uuid).bondState == android.bluetooth.BluetoothDevice.BOND_BONDED
+        } catch (e: Exception) {
+            Log.w(TAG, "isDeviceBonded($uuid) failed: ${e.message}")
+            false
+        }
+    }
+
     override fun hasCompanionDeviceAssociation(): Boolean {
         val cm = companionManager ?: return false
         return cm.getMacAddresses().isNotEmpty()
