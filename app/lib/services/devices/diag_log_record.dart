@@ -62,8 +62,9 @@ class DiagLogRecord {
   /// story, because the reasons are not equally interesting: most say a rotation
   /// landed where nothing was being written (any silent stretch in auto mode), which
   /// is routine. `priority stop` is the exception — that bin should hold at least the
-  /// recording's own markers, and a marker that is written force-drains its block
-  /// immediately, so an empty one means the markers were dropped.
+  /// recording's own markers, and an accepted marker force-drains its block
+  /// immediately, so an empty one means they never reached the card — dropped, or left
+  /// buffered by a full SD queue and carried into the next bin.
   static String rotateReasonLabel(int reason) {
     switch (reason) {
       case 1:
