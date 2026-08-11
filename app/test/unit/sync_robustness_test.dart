@@ -66,6 +66,10 @@ int globalWriteCount = 0;
 int globalRequestedOffset = 0;
 List<int> globalDeletedTimestamps = [];
 
+/// Timestamps for which the mock firmware answers CMD_DELETE_FILE with a failure.
+/// Everything else is deleted for real, so the mock's file listing tracks the device's.
+Set<int> globalRejectDeleteTimestamps = {};
+
 class MockDeviceConnection implements DeviceConnection {
   final StreamController<List<int>> _controller = StreamController<List<int>>.broadcast();
   final _writeWaiters = <MapEntry<int, Completer<void>>>[];
@@ -137,7 +141,7 @@ class MockDeviceConnection implements DeviceConnection {
   @override
   Future<bool> deleteFile(StorageFile file, {int? timestamp}) async {
     globalDeletedTimestamps.add(file.timestamp);
-    return true;
+    return !globalRejectDeleteTimestamps.contains(file.timestamp);
   }
 
   List<StorageFile> files = [];
@@ -471,6 +475,8 @@ void main() {
         );
 
     setUp(() async {
+      globalRejectDeleteTimestamps = {};
+      globalDeletedTimestamps = [];
       mockConn = MockDeviceConnection();
       sync = SDCardWalSyncImpl(
         MockWalSyncListener(),
@@ -731,6 +737,140 @@ void main() {
       // it prunes every bin it decodes, and pruning this one strands the resume —
       // the tail would be appended to a recreated (empty) file, scrambling the bin.
       expect(await sync.incompleteBinRelPaths(), contains('$ts/${ts}_0.bin'));
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    // A refused CMD_DELETE_FILE leaves a file we already hold in full sitting on the
+    // card. These three pin what may and may not follow from that.
+    test('a refused delete does not become a re-download (duplicate audio) next sync', () async {
+      // Field case, 2026-08-10: the whole file arrived, the delete came back a failure,
+      // and the processing pass then consumed and pruned the local bin. Before the
+      // `synced` carry the rebuilt WAL defaulted to `miss`, the resume found no bin on
+      // disk, rewound to 0, and the entire file was fetched and decoded a SECOND time.
+      final ts = (DateTime.now().millisecondsSinceEpoch ~/ 1000) + 1000;
+      globalRejectDeleteTimestamps = {ts};
+      globalDeletedTimestamps = [];
+      globalWriteCount = 0;
+
+      // Native-like: walOffset tracks the physical bin, which is what makes a pruned
+      // bin rewind the resume offset to 0. That rewind is the duplicate's mechanism.
+      final nativeLike = SDCardWalSyncImpl(
+        MockWalSyncListener(),
+        connectionProvider: (_) async => mockConn,
+        inactivityTimeout: const Duration(seconds: 1),
+        reconcileResumeOffsets: true,
+      );
+      mockConn.files = [StorageFile(index: 1, timestamp: ts, size: 10)];
+      await nativeLike.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await pump(10);
+
+      final first = nativeLike.syncAll();
+      await mockConn.waitForWrite(1);
+      await pump(10);
+      mockConn.add(ackPacket(0x00));
+      await pump();
+      mockConn.add(dataPacket(0, List<int>.filled(10, 0xAB)));
+      await pump();
+      mockConn.add(eotPacket());
+      await pump(10);
+      final firstResp = await first;
+      expect(firstResp!.isPartial, isTrue, reason: 'a refused delete leaves the card un-drained');
+      expect(globalDeletedTimestamps, equals([ts]));
+      expect(globalWriteCount, equals(1));
+
+      // Processing decodes the bin and deletes it — it prunes every bin it consumes.
+      final bin = File('${tempDir.path}/raw_segments/$ts/${ts}_0.bin');
+      expect(await bin.exists(), isTrue);
+      await bin.delete();
+
+      // The device still lists the file, because the delete never took.
+      globalDeletedTimestamps = [];
+      final second = nativeLike.syncAll();
+      await pump(20);
+      await second;
+
+      expect(globalWriteCount, equals(1), reason: 'the file must not be read a second time');
+      expect(globalDeletedTimestamps, equals([ts]), reason: 'only the delete is retried');
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('a file whose delete was refused blocks the head instead of mis-attributing the next', () async {
+      // The fast path can only read and delete index 0, and relies on each finished file
+      // being removed so the next one becomes index 0. A file that would not delete still
+      // holds that slot, so carrying on would re-read IT and store the bytes under the
+      // NEXT file's timestamp and bin path.
+      final tsA = (DateTime.now().millisecondsSinceEpoch ~/ 1000) + 2000;
+      final tsB = tsA + 300;
+      globalRejectDeleteTimestamps = {tsA};
+      globalDeletedTimestamps = [];
+      globalWriteCount = 0;
+      mockConn.files = [
+        StorageFile(index: 1, timestamp: tsA, size: 10),
+        StorageFile(index: 2, timestamp: tsB, size: 10),
+      ];
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await pump(10);
+
+      final first = sync.syncAll();
+      await mockConn.waitForWrite(1);
+      await pump(10);
+      mockConn.add(ackPacket(0x00));
+      await pump();
+      mockConn.add(dataPacket(0, List<int>.filled(10, 0xAB)));
+      await pump();
+      mockConn.add(eotPacket());
+      await pump(10);
+      final firstResp = await first;
+      expect(globalWriteCount, equals(1), reason: 'B must not be read while A still holds index 0');
+      expect(firstResp!.isPartial, isTrue);
+
+      // Next cycle: the sweep retries A's delete, fails again, and must still refuse to
+      // download B rather than read whatever is at index 0.
+      globalDeletedTimestamps = [];
+      final second = sync.syncAll();
+      await pump(20);
+      final secondResp = await second;
+      expect(globalWriteCount, equals(1));
+      expect(globalDeletedTimestamps, equals([tsA]));
+      expect(secondResp!.isPartial, isTrue);
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('a file that GREW since it was received is resumed, not skipped as already-synced', () async {
+      // The `synced` carry must not swallow audio we never received. If the device
+      // advertises more bytes than we hold, the file has to resume — and must NOT be
+      // deleted, or the tail is lost.
+      final ts = (DateTime.now().millisecondsSinceEpoch ~/ 1000) + 3000;
+      globalRejectDeleteTimestamps = {ts};
+      globalDeletedTimestamps = [];
+      globalWriteCount = 0;
+      mockConn.files = [StorageFile(index: 1, timestamp: ts, size: 10)];
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await pump(10);
+
+      final first = sync.syncAll();
+      await mockConn.waitForWrite(1);
+      await pump(10);
+      mockConn.add(ackPacket(0x00));
+      await pump();
+      mockConn.add(dataPacket(0, List<int>.filled(10, 0xAB)));
+      await pump();
+      mockConn.add(eotPacket());
+      await pump(10);
+      await first;
+
+      mockConn.files = [StorageFile(index: 1, timestamp: ts, size: 30)];
+      globalWriteCount = 0;
+      globalRequestedOffset = -1;
+      globalDeletedTimestamps = [];
+
+      final second = sync.syncAll();
+      await mockConn.waitForWrite(2);
+      await pump(10);
+      expect(globalWriteCount, equals(1), reason: 'the unreceived tail must still be fetched');
+      expect(globalRequestedOffset, equals(10), reason: 'resume from what we already hold');
+      expect(globalDeletedTimestamps, isEmpty, reason: 'a grown file must not be deleted as synced');
+
+      sync.cancelSync();
+      await pump(10);
+      await second;
     }, timeout: const Timeout(Duration(seconds: 30)));
 
     // The invariant these three protect: the app must NEVER ask the device to
