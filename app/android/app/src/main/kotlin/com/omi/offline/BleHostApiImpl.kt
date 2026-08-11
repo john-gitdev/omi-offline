@@ -152,21 +152,32 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
     }
 
     /**
-     * Bond state straight from the OS — no GATT, no radio traffic — so Find Devices can
-     * mark the paired Omi per row without touching the link a sync may be using.
+     * The bonded set straight from the OS — no GATT, no radio traffic — so Find Devices
+     * can mark the paired Omi without touching the link a sync may be using.
      *
-     * BOND_BONDING counts as not bonded: the key is not usable until BOND_BONDED lands,
-     * and the row is only an indicator, so claiming a pairing that may still fail is the
-     * worse error. Anything that throws (BLUETOOTH_CONNECT denied, a malformed address,
-     * Bluetooth off) answers false for the same reason.
+     * Enumerated rather than looked up per address on purpose. getRemoteDevice() rejects
+     * a lowercase MAC outright (checkBluetoothAddress wants uppercase hex) and assumes a
+     * PUBLIC address type, which is not what this device advertises — see
+     * OmiBleManager.remoteLeDevice, which reaches for ADDRESS_TYPE_RANDOM on API 34+.
+     * bondedDevices sidesteps both: it is the authoritative list, and matching it the way
+     * the rest of this module matches addresses (uppercased) needs no assumption about
+     * the address type at all.
+     *
+     * Only BOND_BONDED is reported. BOND_BONDING is a key that is not usable yet, and the
+     * caller is an indicator, so claiming a pairing that may still fail is the worse
+     * error. Anything that throws (BLUETOOTH_CONNECT denied, Bluetooth off) answers empty
+     * for the same reason.
      */
-    override fun isDeviceBonded(uuid: String): Boolean {
+    override fun getBondedDeviceIds(): List<String> {
         return try {
-            val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter() ?: return false
-            adapter.getRemoteDevice(uuid).bondState == android.bluetooth.BluetoothDevice.BOND_BONDED
+            val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter() ?: return emptyList()
+            adapter.bondedDevices
+                ?.filter { it.bondState == android.bluetooth.BluetoothDevice.BOND_BONDED }
+                ?.map { it.address.uppercase() }
+                ?: emptyList()
         } catch (e: Exception) {
-            Log.w(TAG, "isDeviceBonded($uuid) failed: ${e.message}")
-            false
+            Log.w(TAG, "getBondedDeviceIds failed: ${e.message}")
+            emptyList()
         }
     }
 

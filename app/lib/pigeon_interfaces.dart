@@ -91,15 +91,17 @@ abstract class BleHostApi {
   @SwiftFunction('isPeripheralConnected(uuid:)')
   bool isPeripheralConnected(String uuid);
 
-  /// (Android only) Whether the OS currently holds a pairing key for this
-  /// address. Asked per row by Find Devices, which distinguishes "this is the
-  /// Omi you are paired to" from "this is some Omi in range" — the stored
-  /// preference cannot answer that, since it still names the device after a DFU
-  /// wipes the bond. Reads BluetoothDevice.bondState, so it is a cheap local
-  /// lookup with no radio traffic. iOS returns false (CoreBluetooth exposes no
-  /// bond state).
-  @SwiftFunction('isDeviceBonded(uuid:)')
-  bool isDeviceBonded(String uuid);
+  /// (Android only) Addresses the OS currently holds a pairing key for,
+  /// uppercased to match the ids native hands out everywhere else.
+  ///
+  /// Find Devices asks so it can mark which row is the Omi this phone is paired
+  /// to — the stored preference cannot answer that, since it still names the
+  /// device after a DFU wipes the bond. The whole set rather than a per-address
+  /// query: it is one IPC instead of one per row, and normalizing the address is
+  /// then native's job rather than every caller's. A local lookup, no radio
+  /// traffic. iOS returns empty (CoreBluetooth exposes no bond state).
+  @SwiftFunction('getBondedDeviceIds()')
+  List<String> getBondedDeviceIds();
 
   /// (Android only) Check if any CompanionDeviceManager association exists.
   @SwiftFunction('hasCompanionDeviceAssociation()')
