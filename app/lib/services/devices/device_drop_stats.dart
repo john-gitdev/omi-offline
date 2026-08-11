@@ -80,15 +80,20 @@ class DeviceDropStats {
   ///
   /// **This is not a loss signal**, and treating it as one produced false "lost
   /// Priority Recording" reports. An empty bin means nothing at all reached the card
-  /// for that segment, and a marker cannot be the missing part — the firmware
-  /// force-drains a marker's partial block immediately, so any marker that is written
-  /// puts the bin well past header-only. What is left is a rotation that landed where
+  /// for that segment, and an ACCEPTED marker cannot be the missing part — the firmware
+  /// force-drains a marker's partial block immediately, so a marker the SD queue takes
+  /// puts the bin well past header-only. (Rejected, it stays buffered and lands in the
+  /// NEXT bin instead, leaving this one empty — that needs a full SD queue.) What is
+  /// left is a rotation that landed where
   /// nothing was being written: in auto mode, any silent stretch. Two Force Syncs
   /// across a quiet lunch break move this and mean nothing.
   ///
-  /// [markerWriteDrops] is the loss signal. Firmware `oo-3.0.2` and later also record
-  /// WHY each empty bin happened, in the 0x0063 event log — see
-  /// `DiagLogRecord.rotateReasonLabel`.
+  /// [markerWriteDrops] is the loss signal and stands on its own. Do not read the two
+  /// together: both are boot-cumulative totals that identify no segment, so a marker
+  /// dropped in one recording and an empty bin from an idle rotation an hour later are
+  /// indistinguishable from a correlated loss. Firmware `oo-3.0.2` and later record WHY
+  /// each empty bin happened, timestamped, in the 0x0063 event log — see
+  /// `DiagLogRecord.rotateReasonLabel`. That is where correlation belongs.
   final int emptyBinRotations;
 
   /// Session-end marker (0xFFFFFFFC) emits attempted from the firmware finalize
