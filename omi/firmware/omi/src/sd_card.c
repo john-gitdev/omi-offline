@@ -148,12 +148,18 @@ static atomic_t write_fair_activations;
  * priority attempt is the on-device fingerprint of that loss. Read via 0x19B10062.
  *
  * NOT a loss signal by itself. An empty bin means NOTHING reached the card for that
- * segment — not one audio block, not one marker. A marker cannot be the missing
- * part: write_marker_header_to_storage() force-drains its partial 440 B block
- * immediately, so a marker that is written at all lands as a full block and puts the
- * bin well past header-only. What is left is a rotation that landed where nothing was
- * being written — in auto mode, any silent stretch. Pair it with marker_write_drops
- * to read it as loss; alone it is routine. */
+ * segment — not one audio block, not one marker. An ACCEPTED marker cannot be the
+ * missing part: write_marker_header_to_storage() force-drains its partial 440 B block
+ * immediately, so a marker the SD queue takes lands as a full block and puts the bin
+ * well past header-only. What is left is a rotation that landed where nothing was
+ * being written — in auto mode, any silent stretch. (The narrow exception: if that
+ * force-drain is REJECTED the block stays in transport.c's assembly buffer, which no
+ * rotation drains — sd_msgq holds formed blocks, not that buffer — so the marker is
+ * not lost but lands in the NEXT bin, leaving this one empty. That needs the SD queue
+ * full at the marker write, and bumps no counter of its own.)
+ * Independent of marker_write_drops:
+ * both are boot-cumulative totals naming no segment, so reading them together invents
+ * a correlation neither carries. The event log timestamps each one. */
 static atomic_t empty_bin_rotations;
 
 /* Why the rotation currently being performed was requested (rotate_reason_t). Read
@@ -1209,25 +1215,34 @@ void sd_worker_thread(void)
             AudioFileMeta_t m;
             parse_filename_to_meta(req.u.delete_file.filename, 0, &m);
             int idx = ring_find_segment_index(m.timestamp, m.uptime_offset);
-            int rc;
-            if (idx >= 0) {
-                rc = sd_ring_ack_segment(idx);
-            } else {
-                /* Absent from the closed+un-acked list. Usually it is simply already
-                 * gone. But sd_ring_ack_segment() acks in RAM BEFORE persisting and
-                 * reports a durability failure afterwards (see its contract), so this
-                 * also covers a previous attempt that the app was told had failed: the
-                 * segment left the list, the table did not reach NAND, and a reboot in
-                 * that window resurrects it — which is the path that ends in the phone
-                 * downloading and decoding the recording a second time.
+            int rc = (idx >= 0) ? sd_ring_ack_segment(idx) : 0; /* absent = already gone */
+            if (rc != 0) {
+                /* The ack STANDS in RAM (see sd_ring_ack_segment's contract) but its
+                 * table write failed, so the segment has already left the file list
+                 * while the on-disk table still lists it un-acked. That is the one
+                 * window where a reboot resurrects it and the phone downloads and
+                 * decodes the recording a second time.
                  *
-                 * The app retries a refused delete rather than re-downloading, so use
-                 * that retry to finish the job: sd_ring_sync() rewrites the table when
-                 * segtab_dirty and is a cheap no-op otherwise. Reporting success over a
-                 * table that never landed is what made the failure invisible. */
-                rc = sd_ring_sync();
-                if (rc != 0) {
-                    LOG_ERR("[SD_WORK] delete retry: segment gone but table still not durable: %d", rc);
+                 * Retry the durability HERE, synchronously, because this is the last
+                 * moment it can be retried on demand: the segment is now absent from
+                 * the cache refresh_file_cache() builds (it mirrors the same closed +
+                 * un-acked list), so storage.c resolves any later CMD_DELETE_FILE for
+                 * it to FILE_NOT_FOUND and never queues another REQ_DELETE_FILE. A
+                 * retry keyed on the app re-sending the delete cannot reach this code
+                 * at all — which is exactly what an earlier version of this fix got
+                 * wrong. sd_ring_sync() rewrites the table while segtab_dirty.
+                 *
+                 * If it still fails, segtab_dirty keeps the next ordinary sync (a
+                 * rotation, a flush) retrying it; that is the residual bound, and it
+                 * is why the failure is logged rather than swallowed. */
+                int sync_rc = sd_ring_sync();
+                if (sync_rc == 0) {
+                    LOG_WRN("[SD_WORK] delete: segment table was not durable, retried OK");
+                    rc = 0;
+                } else {
+                    LOG_ERR("[SD_WORK] delete: segment acked but table NOT durable (ack=%d sync=%d) — "
+                            "a reboot before the next sync will resurrect it",
+                            rc, sync_rc);
                 }
             }
             invalidate_file_cache();
