@@ -102,6 +102,16 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   bool _dfuTerminated = false;
   String? installErrorMessage;
 
+  // Post-flash rediscovery (see [_reconnectWhenDeviceReturns]). The window is
+  // generous because the reboot is not one reset: the app core swaps its image and
+  // then applies the net core, and how long that takes depends on what the bundle
+  // actually changed. Expiring is not a failure — it just hands the re-pair back to
+  // Find Devices, where Done lands the user anyway.
+  static const Duration _postFlashReconnectWindow = Duration(minutes: 2);
+  static const Duration _postFlashScanTimeout = Duration(seconds: 5);
+  static const Duration _postFlashScanGap = Duration(seconds: 2);
+  bool _postFlashReconnectCancelled = false;
+
   /// Process ZIP file and return firmware image list
   Future<List<mcumgr.Image>> processZipFile(Uint8List zipFileData) async {
     // Create temporary directory
@@ -205,9 +215,9 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   /// `unmanageDevice` is what stops it — it cancels the pending reconnect and the
   /// recovery alarm, closes the GATT, and records `user_disconnected`, which the
   /// alarm and worker reconnect paths both check. Nothing reconnects then until an
-  /// explicit `manageDevice`, i.e. until the user taps the device in Find Devices
-  /// (where Done already lands them), by which time the device has rebooted and
-  /// freed its slot.
+  /// explicit `manageDevice`, which [_reconnectWhenDeviceReturns] issues once it has
+  /// actually heard the device advertising again. The pairing dialog still appears
+  /// on its own; it appears at a moment the device can accept it.
   ///
   /// The two steps take separate try/catch blocks rather than sharing one. If the
   /// release throws we still want the wipe: that fails toward "device slot free,
@@ -256,7 +266,49 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     } catch (e) {
       Logger.debug('Post-update phone bond wipe failed: $e');
     }
+    unawaited(_reconnectWhenDeviceReturns(btDevice));
   }
+
+  /// Reconnect once the device is back on the air — and not one moment before.
+  ///
+  /// [_releasePairingOnSuccess] stops the reconnect ladder precisely because a
+  /// connect during the reboot forces a pairing the firmware must refuse. On its
+  /// own that leaves the re-pair to a user tap in Find Devices: correct, but it
+  /// makes the user do it. This does it for them at the one moment it can work.
+  ///
+  /// **An advertisement is the signal, not a timer.** The wait is not a fixed cost
+  /// — the swap plus a net-core update takes as long as it takes — so a delay long
+  /// enough to be safe would be pure dead time on most flashes and still wrong on
+  /// the slow ones. A sighting is trustworthy here because
+  /// [_clearStaleScanResultsOnSuccess] emptied the cache first and each `discover()`
+  /// replaces it wholesale: anything seen from here on is a peripheral heard *after*
+  /// the flash landed, which means it has finished booting, run `transport_start()`
+  /// (freeing its one key slot) and started advertising. Exactly the state in which
+  /// a pairing request can succeed.
+  ///
+  /// `requiresBond: true` matches what tapping the device in Find Devices does — the
+  /// known-good re-pair path, and the one this hands back to if the window expires.
+  Future<void> _reconnectWhenDeviceReturns(BtDevice btDevice) async {
+    final deadline = DateTime.now().add(_postFlashReconnectWindow);
+    while (!_postFlashReconnectCancelled && DateTime.now().isBefore(deadline)) {
+      final seen = await ServiceManager.instance().device.discover(timeout: _postFlashScanTimeout.inSeconds);
+      if (_postFlashReconnectCancelled) return;
+      if (seen.any((device) => device.id == btDevice.id)) {
+        Logger.debug('Post-update: device is advertising again — reconnecting');
+        await ServiceManager.instance().device.ensureConnection(btDevice.id, force: true, requiresBond: true);
+        return;
+      }
+      await Future.delayed(_postFlashScanGap);
+    }
+    Logger.debug('Post-update: device did not return in time — leaving the re-pair to Find Devices');
+  }
+
+  /// Stop the post-flash rediscovery loop. Called from the page's dispose so
+  /// leaving the update screen doesn't leave a scan running behind Find Devices,
+  /// which starts its own the moment Done lands the user there — and concurrent
+  /// `discover()` calls return empty (see `DeviceService.discover`), so the two
+  /// would take turns blanking each other.
+  void cancelPostFlashReconnect() => _postFlashReconnectCancelled = true;
 
   /// Drop the cached scan results on a successful flash. The device reboots into
   /// the new image the moment the flash lands, so every entry discovered before it
