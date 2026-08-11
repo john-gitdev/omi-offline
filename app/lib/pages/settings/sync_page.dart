@@ -1724,6 +1724,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final prioStops = rel(stats.priorityRecordStops, (b) => b.priorityRecordStops);
     final markerDrops = rel(stats.markerWriteDrops, (b) => b.markerWriteDrops);
     final emptyRot = rel(stats.emptyBinRotations, (b) => b.emptyBinRotations);
+    // The subset that means audio was lost. The total counts benign rotations that
+    // landed in silence — the common case — so only this drives a problem/fault.
+    final emptyRotLost = rel(stats.emptyBinRotationsSuspect, (b) => b.emptyBinRotationsSuspect);
     final seEmits = rel(stats.sessionEndMarkerEmits, (b) => b.sessionEndMarkerEmits);
     final pauseSaves = rel(stats.markerPauseGateSaves, (b) => b.markerPauseGateSaves);
     // Defensive only. _realignConnFailBaselines pulls the baseline down to any reading
@@ -1828,7 +1831,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     ];
     final markerFlags = <String>[
       if (markerDrops > 0) '$markerDrops marker drops',
-      if (emptyRot > 0) '$emptyRot empty rotations',
+      if (emptyRotLost > 0) '$emptyRotLost lost priority bins',
       if (prioStarts > prioStops) 'left open',
       if (prioStops > 0 && seEmits == 0) 'no session-end',
     ];
@@ -1861,7 +1864,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
     final watches = <String>[];
     if (boot > 0) watches.add('$boot boot-window drop${boot == 1 ? '' : 's'}');
-    if (emptyRot > 0) watches.add('$emptyRot empty bin rotation${emptyRot == 1 ? '' : 's'}');
+    if (emptyRotLost > 0) {
+      problems.add('$emptyRotLost priority recording${emptyRotLost == 1 ? '' : 's'} lost to an empty bin');
+    }
     if (prioStarts > prioStops) watches.add('priority recording left open');
     if (prioStops > 0 && seEmits == 0) watches.add('stop with no session-end marker');
     if (peakHot) watches.add('SD queue near its limit');
@@ -2006,7 +2011,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               '$markerDrops',
               level: markerDrops > 0 ? DiagLevel.bad : DiagLevel.info,
             ),
-            DiagStatRow('Empty bin rotations', '$emptyRot', level: emptyRot > 0 ? DiagLevel.warn : DiagLevel.info),
+            DiagStatRow('Empty bin rotations', emptyRot > 0 ? '$emptyRotLost lost / $emptyRot total' : '0',
+                level: emptyRotLost > 0 ? DiagLevel.bad : DiagLevel.info),
             // Flagged when a priority stop happened but no session-end marker was
             // emitted — the finalize path never firing, the exact failure these
             // counters exist to catch. "Kept at the pause gate" is a rescue, not a
@@ -2212,7 +2218,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       ..writeln('queue: peak=${stats.msgqPeakDepth}/${stats.sdQueueMax} writeFair=${stats.writeFairActivations}')
       ..writeln(
         'markers: starts=${stats.priorityRecordStarts} stops=${stats.priorityRecordStops} '
-        'drops=${stats.markerWriteDrops} emptyRot=${stats.emptyBinRotations} '
+        'drops=${stats.markerWriteDrops} '
+        'emptyRot=${stats.emptyBinRotationsSuspect}/${stats.emptyBinRotations} '
         'seEmits=${stats.sessionEndMarkerEmits} pauseSaves=${stats.markerPauseGateSaves}',
       )
       ..writeln('stacks: sdWorker=${stats.sdWorkerStackUsed}B codec=${stats.codecStackUsed}B')
