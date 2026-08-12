@@ -503,7 +503,7 @@ class OmiBleManager private constructor(private val application: Application) {
         enqueueCommand("read $serviceUuid:$charUuid") {
             if (gatt.readCharacteristic(characteristic) == false) {
                 readCompletions.remove(key)?.invoke(Result.failure(Exception("Rejected")))
-                completeCommand(gatt)
+                completeCommand()
             }
         }
     }
@@ -536,9 +536,9 @@ class OmiBleManager private constructor(private val application: Application) {
             }
             if (result != BluetoothStatusCodes.SUCCESS) {
                 writeCompletions.remove(key)?.invoke(Result.failure(Exception("Rejected: $result")))
-                completeCommand(gatt)
+                completeCommand()
             } else if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) {
-                completeCommand(gatt)
+                completeCommand()
             }
         }
         if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) completion(Result.success(Unit))
@@ -553,7 +553,7 @@ class OmiBleManager private constructor(private val application: Application) {
             gatt.setCharacteristicNotification(characteristic, true)
             if (descriptor != null) {
                 writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-            } else completeCommand(gatt)
+            } else completeCommand()
         }
     }
 
@@ -566,7 +566,7 @@ class OmiBleManager private constructor(private val application: Application) {
             gatt.setCharacteristicNotification(characteristic, false)
             if (descriptor != null) {
                 writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE)
-            } else completeCommand(gatt)
+            } else completeCommand()
         }
     }
 
@@ -775,40 +775,17 @@ class OmiBleManager private constructor(private val application: Application) {
         beginCommandTiming(cmd.label)
         mainHandler.post(cmd.run)
     }
-    /**
-     * Retire the in-flight command — but only for a callback from the link it was issued on.
-     *
-     * [gatt] is required rather than defaulted, because the identity check below is the whole
-     * point: a caller that cannot say which link it speaks for cannot be told from a late one.
-     */
-    @Synchronized fun completeCommand(gatt: BluetoothGatt) {
-        // Callbacks outlive the link they belong to. A with-response write on a dropping
-        // connection can deliver onCharacteristicWrite after [cleanupPeripheral] has reset the
-        // pipeline *and* the next connection has posted its first command — at which point
-        // [isProcessingCommand] is true again, raised by that new command. The flag alone
-        // therefore cannot tell the two apart, and the dead link's callback polls the new
-        // link's command off the queue, stranding the reconnect on a pipeline nothing
-        // advances. That is the failure this parameter exists to stop.
+    @Synchronized fun completeCommand() {
+        // A callback for a command [resetCommandPipeline] already abandoned — the teardown
+        // ran while it was mid-flight, so there is nothing of ours at the head to retire.
+        // Returning is what stops it polling the *next* connection's command off the queue;
+        // without it, a late failure path from the dead link silently eats the new link's
+        // first command and clears the in-flight flag under it.
         //
-        // The retired BluetoothGatt is what distinguishes them. [connectedGatts] holds only
-        // the live instance for an address — `closeGatt` and the reconnect path each drop it
-        // alongside a [cleanupPeripheral] — so an instance that is not the one registered
-        // there belongs to a link we have finished with, and none of it is ours to retire.
-        if (connectedGatts[gatt.device.address.uppercase()] !== gatt) {
-            // Recorded rather than dropped in silence: if this ever coincides with a stalled
-            // pipeline it is the first thing to look at, and a wedge is precisely when nobody
-            // has adb attached.
-            WedgeDiagnostics.captureGattCommand(
-                application, "stale-callback", inFlightLabel ?: "idle",
-                if (inFlightLabel != null) commandAgeMs() else 0L, gattQueue.size,
-            )
-            return
-        }
-        // Past the identity check this is the ordinary "is anything in flight" test. Nothing
-        // legitimate reaches here with the flag down: [processNextCommand] only posts a
-        // command once it has raised it, so a queue head seen while it is `false` has not
-        // been sent, and polling it would discard an unsent command rather than retire a
-        // finished one.
+        // Nothing legitimate reaches here with the flag down: [processNextCommand] only
+        // posts a command once it has raised it, so a queue head seen while it is `false`
+        // has not been sent, and polling it would discard an unsent command rather than
+        // retire a finished one.
         if (!isProcessingCommand) return
         endCommandTiming("recovered")
         gattQueue.poll()
@@ -829,7 +806,7 @@ class OmiBleManager private constructor(private val application: Application) {
         }
         if (!success) {
             Log.e(TAG, "writeDescriptor failed for ${descriptor.uuid}")
-            completeCommand(gatt)
+            completeCommand()
         }
     }
 
@@ -878,7 +855,7 @@ class OmiBleManager private constructor(private val application: Application) {
                     if (!gatt.discoverServices()) {
                         mainHandler.removeCallbacks(discoveryTimeout)
                         discoveryTimeouts.remove(address)
-                        completeCommand(gatt)
+                        completeCommand()
                     }
                 }
                 connectionListener?.onGattConnected(address, gatt)
@@ -888,7 +865,7 @@ class OmiBleManager private constructor(private val application: Application) {
             }
         }
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
-            completeCommand(gatt)
+            completeCommand()
             connectionListener?.onMtuChanged(gatt.device.address.uppercase(), mtu, status)
         }
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
@@ -896,13 +873,13 @@ class OmiBleManager private constructor(private val application: Application) {
 
             discoveryTimeouts.remove(address)?.let { mainHandler.removeCallbacks(it) }
 
-            if (servicesDiscoveredFor.contains(address) || status != BluetoothGatt.GATT_SUCCESS) { completeCommand(gatt); return }
+            if (servicesDiscoveredFor.contains(address) || status != BluetoothGatt.GATT_SUCCESS) { completeCommand(); return }
             val bleServices = gatt.services.map { svc ->
                 BleService(svc.uuid.toString().lowercase(), svc.characteristics?.map { it.uuid.toString().lowercase() } ?: emptyList())
             }
             servicesDiscoveredFor.add(address)
             applyConnectionPriority(address)
-            completeCommand(gatt)
+            completeCommand()
             connectionListener?.onGattServicesDiscovered(address, bleServices)
         }
         override fun onCharacteristicChanged(gatt: BluetoothGatt, char: BluetoothGattCharacteristic, value: ByteArray) {
@@ -915,7 +892,7 @@ class OmiBleManager private constructor(private val application: Application) {
             val key = "${gatt.device.address.uppercase()}:${char.service.uuid}:${char.uuid}".lowercase()
             val res = if (status == BluetoothGatt.GATT_SUCCESS) Result.success(value) else Result.failure(Exception("Error $status"))
             readCompletions.remove(key)?.invoke(res)
-            completeCommand(gatt)
+            completeCommand()
         }
         @Suppress("DEPRECATION") override fun onCharacteristicRead(gatt: BluetoothGatt, char: BluetoothGattCharacteristic, status: Int) {
             onCharacteristicRead(gatt, char, char.value ?: ByteArray(0), status)
@@ -924,9 +901,9 @@ class OmiBleManager private constructor(private val application: Application) {
             val key = "${gatt.device.address.uppercase()}:${char.service.uuid}:${char.uuid}".lowercase()
             val res = if (status == BluetoothGatt.GATT_SUCCESS) Result.success(Unit) else Result.failure(Exception("Error $status"))
             writeCompletions.remove(key)?.invoke(res)
-            completeCommand(gatt)
+            completeCommand()
         }
-        override fun onDescriptorWrite(gatt: BluetoothGatt, desc: BluetoothGattDescriptor, status: Int) { completeCommand(gatt) }
+        override fun onDescriptorWrite(gatt: BluetoothGatt, desc: BluetoothGattDescriptor, status: Int) { completeCommand() }
     }
 
     // ── Native storage file download ──
@@ -1000,7 +977,7 @@ class OmiBleManager private constructor(private val application: Application) {
                 activeDownloads.remove(addr)
                 session.complete(Result.failure(Exception("Could not start SD card read")))
             }
-            if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) completeCommand(gatt)
+            if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) completeCommand()
         }
     }
 
