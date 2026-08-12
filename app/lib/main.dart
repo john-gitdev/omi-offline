@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/pages/recordings/recordings_page.dart';
 import 'package:omi/backend/preferences.dart';
@@ -24,6 +25,12 @@ void main() async {
 
   initOpus(await opus_flutter.load());
   await SharedPreferencesUtil.init();
+  // Version stamp, first thing after prefs are up so it heads the launch's log
+  // lines. Firmware is the last-read value (nothing is connected yet); the
+  // connect that follows confirms it with a device_version line of its own.
+  unawaited(DebugLogManager.logAppStart(
+    lastKnownFirmware: SharedPreferencesUtil().btDevice.firmwareRevision,
+  ));
   await SyncNotification.requestPermissions();
   await ServiceManager.init();
   await ServiceManager.instance().start();
