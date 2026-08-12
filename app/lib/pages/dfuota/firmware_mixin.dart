@@ -228,6 +228,27 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   /// the wipe because the release failed would fail the other way, which they
   /// cannot.
   ///
+  /// The rediscovery loop is armed **unconditionally**, and deliberately not gated
+  /// on either step having succeeded. Taking the two failures in turn:
+  ///
+  /// - **The release threw.** Native's ladder was never stopped, so it is already
+  ///   reconnecting into the reboot — that is the damage, and it is done whether or
+  ///   not we go on to scan. [reconnectWhenDeviceReturns] cannot add to it: it
+  ///   scans, and the only connect it makes is after a sighting, which by
+  ///   definition is a device that has finished booting. If the wipe then succeeded,
+  ///   the pairing state is in fact exactly right, and skipping the automatic path
+  ///   would cost the user a manual tap for nothing.
+  /// - **The wipe threw.** The phone's key is stale, so the connect will likely
+  ///   fail — but the fallback makes the identical call. Tapping the device in Find
+  ///   Devices is `ensureConnection(force: true, requiresBond: true)`, the same one
+  ///   this issues. Gating on the wipe would replace a failed automatic attempt with
+  ///   a failed manual one, not with a working one.
+  ///
+  /// And the fallback is already reached in both cases without any gate here: a
+  /// reconnect that does not land leaves `_hasRepaired` false on the success screen,
+  /// so Done pushes `FindDevicesPage` — where Reset Connection is what actually
+  /// clears a stale phone bond.
+  ///
   /// Unconditional on Android, with no pre-flash handshake and nothing to opt
   /// into. The device arms its own wipe from the mcumgr DFU_PENDING hook, so both
   /// sides act on the same physical event (an image finished transferring) rather
