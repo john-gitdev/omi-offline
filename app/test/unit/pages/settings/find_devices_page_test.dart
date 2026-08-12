@@ -234,6 +234,17 @@ void main() {
 
       expect(bondedQueryCount, greaterThan(0), reason: 'the marks cannot render without this answer');
     });
+
+    testWidgets('it asks again once the scan is over', (tester) async {
+      // The opening query is the one most likely to answer wrong — it can run before
+      // the permission its answer needs has been granted, and before an unpair the
+      // user just asked for has landed. Both are settled by the end of a scan, so an
+      // answer that is never revisited is an answer that stays wrong for the visit.
+      final provider = FakeDeviceProvider();
+      await openFindDevices(tester, provider);
+
+      expect(bondedQueryCount, greaterThan(1), reason: 'one query, taken before the scan, is the stale one');
+    });
   });
 
   group('DeviceStatusIcon', () {
