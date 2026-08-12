@@ -82,7 +82,8 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   ///
   /// The timeout is a backstop, not a budget: a read that wedges must not leave
   /// the page on a spinner forever. Falling through renders whatever did land,
-  /// which is the pre-gate behaviour.
+  /// and anything still in flight repaints when it arrives (see the tail of
+  /// [_loadDeviceSettings]) — which together is the pre-gate behaviour.
   Future<void> _loadAll() async {
     final provider = context.read<DeviceProvider>();
     try {
@@ -113,8 +114,10 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   }
 
   /// Reads the capability bitfield and then each supported setting. Fields are
-  /// assigned straight through with no [setState] — nothing is on screen until
-  /// [_loadAll] lifts the gate, and a failed read simply leaves the default.
+  /// assigned straight through with no per-read [setState] — nothing is on
+  /// screen while the gate is closed — and a failed read simply leaves the
+  /// default. One repaint at the end covers the case where the gate opened
+  /// first; see the comment there.
   Future<void> _loadDeviceSettings() async {
     if (!mounted) return;
     final deviceProvider = context.read<DeviceProvider>();
@@ -172,6 +175,15 @@ class _DeviceSettingsState extends State<DeviceSettings> {
       if (!mounted) return;
       if (cap != null) _priorityRecordCap = cap;
     }
+
+    // The gate can already be open: [_loadAll] times out at 15 s, while a wedged
+    // GATT read self-times-out at 10 s and returns empty — so the features retry
+    // loop above can run to ~21 s on its own and land the capability bits after
+    // the sections have rendered without them. Nothing else would repaint that:
+    // the assignments here are deliberately setState-free, and the parallel
+    // refreshStorageStats() returns without notifying when a sync is in progress.
+    // Repaint once so a late arrival still shows, as it did before the gate.
+    if (mounted && !_isLoading) setState(() {});
   }
 
   void _updateDimRatio(double value) async {
