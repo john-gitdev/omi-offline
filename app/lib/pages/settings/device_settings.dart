@@ -29,14 +29,18 @@ class DeviceSettings extends StatefulWidget {
 }
 
 class _DeviceSettingsState extends State<DeviceSettings> {
+  // Every read this page makes — DIS info, the capability bitfield, each
+  // firmware-owned setting, storage stats — is gated behind this one flag so
+  // the Customization / Device Info / Hardware sections appear together
+  // instead of popping in row by row as each BLE read lands.
+  bool _isLoading = true;
+
   double _dimRatio = 100.0;
-  bool _isDimRatioLoaded = false;
   bool? _hasDimmingFeature;
 
   // LED service (0x0080) settings. Both are firmware-owned — there is no local
   // pref — so they're read on open and written straight through on toggle. One
   // capability gate covers both, since they ship in the same firmware.
-  bool _isLedServiceLoaded = false;
   bool? _hasLedServiceFeature;
 
   // Solid-blue "connected to phone" indicator.
@@ -49,15 +53,12 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   bool _ledBootBusy = false;
 
   double _micGain = 5.0;
-  bool _isMicGainLoaded = false;
   bool? _hasMicGainFeature;
 
   late double _vadThreshold;
-  bool _isVadThresholdLoaded = false;
   bool? _hasVadThresholdFeature;
 
   late int _priorityRecordCap; // minutes; 0 = no cap
-  bool _isPriorityCapLoaded = false;
   bool? _hasPriorityCapFeature;
 
   Timer? _debounce;
@@ -66,20 +67,46 @@ class _DeviceSettingsState extends State<DeviceSettings> {
 
   bool _isWiping = false;
 
+  // Set once the user changes any setting here, which stops the initial load
+  // from applying values read before that change. See [_applyLoaded].
+  bool _userChangedSetting = false;
+
   @override
   void initState() {
     _vadThreshold = SharedPreferencesUtil().autoVadThreshold.toDouble();
     _priorityRecordCap = SharedPreferencesUtil().priorityRecordMaxMinutes;
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      final provider = context.read<DeviceProvider>();
-      await provider.getDeviceInfo();
-      // Battery level comes from the BLE notification listener set up on connect.
-      // Calling updateBatteryLevel() would try to READ the detail characteristic,
-      // which is notify-only (GATT_READ_NOT_PERMITTED). Skip it here.
-      _loadInitialDimRatio();
-      provider.refreshStorageStats();
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadAll());
     super.initState();
+  }
+
+  /// Runs every read the page's sections depend on, then lifts [_isLoading] once
+  /// — one rebuild with everything in place. Same order and concurrency as
+  /// before (DIS first, then settings + storage stats together) so the BLE
+  /// traffic is unchanged; only the UI gating differs.
+  ///
+  /// The timeout is a backstop, not a budget: a read that wedges must not leave
+  /// the page on a spinner forever. Falling through renders whatever did land,
+  /// and anything still in flight paints as it arrives (see [_applyLoaded]) —
+  /// which together is the pre-gate behaviour.
+  Future<void> _loadAll() async {
+    final provider = context.read<DeviceProvider>();
+    try {
+      await _loadDeviceData(provider).timeout(const Duration(seconds: 15));
+    } catch (e) {
+      Logger.debug('DeviceSettings: initial load did not complete — $e');
+    }
+    if (mounted) setState(() => _isLoading = false);
+  }
+
+  Future<void> _loadDeviceData(DeviceProvider provider) async {
+    await provider.getDeviceInfo();
+    // Battery level comes from the BLE notification listener set up on connect.
+    // Calling updateBatteryLevel() would try to READ the detail characteristic,
+    // which is notify-only (GATT_READ_NOT_PERMITTED). Skip it here.
+    await Future.wait([
+      _loadDeviceSettings(),
+      provider.refreshStorageStats(),
+    ]);
   }
 
   @override
@@ -90,125 +117,95 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     super.dispose();
   }
 
-  void _loadInitialDimRatio() async {
+  /// Applies one value from the initial load.
+  ///
+  /// While the gate is closed nothing is on screen, so the assignment stands
+  /// alone. Once it is open — [_loadAll]'s 15 s backstop can fire mid-chain,
+  /// and a wedged GATT read self-times-out at 10 s — each arrival has to paint
+  /// itself: the reads below are serial, so one slow read would otherwise hold
+  /// an already-landed value off screen for up to its own timeout.
+  ///
+  /// Skipped once the user has changed something. Rows are only tappable after
+  /// the gate opens, so on the normal path this never applies; on the backstop
+  /// path a row can be edited while its own read is still in flight, and that
+  /// read completes holding the pre-edit value.
+  void _applyLoaded(VoidCallback assign) {
+    if (!mounted || _userChangedSetting) return;
+    if (_isLoading) {
+      assign();
+    } else {
+      setState(assign);
+    }
+  }
+
+  /// Applies a change the user made, and hands them the page: see [_applyLoaded].
+  void _applyUserChange(VoidCallback assign) {
+    _userChangedSetting = true;
+    setState(assign);
+  }
+
+  /// Reads the capability bitfield and then each supported setting. Every value
+  /// lands through [_applyLoaded]; a failed read simply leaves the default.
+  Future<void> _loadDeviceSettings() async {
     if (!mounted) return;
     final deviceProvider = context.read<DeviceProvider>();
     final pairedDevice = deviceProvider.pairedDevice;
-    if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
-      var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
-      if (connection != null) {
-        var features = await connection.getFeatures();
-        // Retry up to 2 more times if the first read fails (transient GATT error
-        // on a degraded but still-connected link returns 0 instead of the real flags).
-        for (int i = 0; i < 2 && features == 0 && mounted; i++) {
-          await Future.delayed(const Duration(milliseconds: 600));
-          features = await connection.getFeatures();
-        }
-        final hasDimming = OmiFeatures.hasFeature(features, OmiFeatures.ledDimming);
-        final hasMicGain = OmiFeatures.hasFeature(features, OmiFeatures.micGain);
-        final hasVadThreshold = OmiFeatures.hasFeature(features, OmiFeatures.vadThreshold);
-        final hasPriorityCap = OmiFeatures.hasFeature(features, OmiFeatures.priorityRecordCap);
-        final hasLedService = OmiFeatures.hasFeature(features, OmiFeatures.ledService);
+    if (pairedDevice == null || pairedDevice.id.isEmpty) return;
 
-        if (!mounted) return;
-        setState(() {
-          _hasDimmingFeature = hasDimming;
-          _hasMicGainFeature = hasMicGain;
-          _hasVadThresholdFeature = hasVadThreshold;
-          _hasPriorityCapFeature = hasPriorityCap;
-          _hasLedServiceFeature = hasLedService;
-        });
+    var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
+    if (connection == null) return;
 
-        if (!hasDimming) {
-          setState(() {
-            _isDimRatioLoaded = true;
-          });
-        } else {
-          var ratio = await connection.getLedDimRatio();
-          if (ratio != null && mounted) {
-            setState(() {
-              _dimRatio = ratio.toDouble();
-              _isDimRatioLoaded = true;
-            });
-          } else if (mounted) {
-            setState(() {
-              _isDimRatioLoaded = true; // Loaded, but no value, use default
-            });
-          }
-        }
+    var features = await connection.getFeatures();
+    // Retry up to 2 more times if the first read fails (transient GATT error
+    // on a degraded but still-connected link returns 0 instead of the real flags).
+    for (int i = 0; i < 2 && features == 0 && mounted; i++) {
+      await Future.delayed(const Duration(milliseconds: 600));
+      features = await connection.getFeatures();
+    }
+    if (!mounted) return;
 
-        if (!hasLedService) {
-          setState(() {
-            _isLedServiceLoaded = true;
-          });
-        } else {
-          var enabled = await connection.getConnectedLed();
-          var ledBoot = await connection.getLedBootEnabled();
-          if (mounted) {
-            setState(() {
-              // A failed read leaves the default — matches the firmware defaults
-              // (connected indicator on, LEDs off at boot).
-              if (enabled != null) _connectedLed = enabled;
-              if (ledBoot != null) _ledBootEnabled = ledBoot;
-              _isLedServiceLoaded = true;
-            });
-          }
-        }
+    _applyLoaded(() {
+      _hasDimmingFeature = OmiFeatures.hasFeature(features, OmiFeatures.ledDimming);
+      _hasMicGainFeature = OmiFeatures.hasFeature(features, OmiFeatures.micGain);
+      _hasVadThresholdFeature = OmiFeatures.hasFeature(features, OmiFeatures.vadThreshold);
+      _hasPriorityCapFeature = OmiFeatures.hasFeature(features, OmiFeatures.priorityRecordCap);
+      _hasLedServiceFeature = OmiFeatures.hasFeature(features, OmiFeatures.ledService);
+    });
 
-        if (!hasMicGain) {
-          setState(() {
-            _isMicGainLoaded = true;
-          });
-        } else {
-          var gain = await connection.getMicGain();
-          if (gain != null && mounted) {
-            setState(() {
-              _micGain = gain.toDouble();
-              _isMicGainLoaded = true;
-            });
-          } else if (mounted) {
-            setState(() {
-              _isMicGainLoaded = true; // Loaded, but no value, use default
-            });
-          }
-        }
+    if (_hasDimmingFeature == true) {
+      final ratio = await connection.getLedDimRatio();
+      if (!mounted) return;
+      if (ratio != null) _applyLoaded(() => _dimRatio = ratio.toDouble());
+    }
 
-        if (!hasVadThreshold) {
-          setState(() {
-            _isVadThresholdLoaded = true;
-          });
-        } else {
-          var threshold = await connection.getVadThreshold();
-          if (threshold != null && mounted) {
-            setState(() {
-              _vadThreshold = threshold.toDouble();
-              _isVadThresholdLoaded = true;
-            });
-          } else if (mounted) {
-            setState(() {
-              _isVadThresholdLoaded = true; // Loaded, but no value, use default
-            });
-          }
-        }
+    if (_hasLedServiceFeature == true) {
+      // A failed read leaves the default — matches the firmware defaults
+      // (connected indicator on, LEDs off at boot).
+      final enabled = await connection.getConnectedLed();
+      if (!mounted) return;
+      if (enabled != null) _applyLoaded(() => _connectedLed = enabled);
 
-        if (!hasPriorityCap) {
-          setState(() {
-            _isPriorityCapLoaded = true;
-          });
-        } else {
-          var cap = await connection.getPriorityRecordCap();
-          if (cap != null && mounted) {
-            setState(() {
-              _priorityRecordCap = cap;
-              _isPriorityCapLoaded = true;
-            });
-          } else if (mounted) {
-            setState(() {
-              _isPriorityCapLoaded = true; // Loaded, but no value, use default
-            });
-          }
-        }
-      }
+      final ledBoot = await connection.getLedBootEnabled();
+      if (!mounted) return;
+      if (ledBoot != null) _applyLoaded(() => _ledBootEnabled = ledBoot);
+    }
+
+    if (_hasMicGainFeature == true) {
+      final gain = await connection.getMicGain();
+      if (!mounted) return;
+      if (gain != null) _applyLoaded(() => _micGain = gain.toDouble());
+    }
+
+    if (_hasVadThresholdFeature == true) {
+      final threshold = await connection.getVadThreshold();
+      if (!mounted) return;
+      if (threshold != null) _applyLoaded(() => _vadThreshold = threshold.toDouble());
+    }
+
+    if (_hasPriorityCapFeature == true) {
+      final cap = await connection.getPriorityRecordCap();
+      if (!mounted) return;
+      if (cap != null) _applyLoaded(() => _priorityRecordCap = cap);
     }
   }
 
@@ -232,7 +229,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     _connectedLedBusy = true;
 
     final previous = _connectedLed;
-    setState(() => _connectedLed = enabled);
+    _applyUserChange(() => _connectedLed = enabled);
 
     bool ok = false;
     try {
@@ -250,7 +247,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     }
     if (!mounted || ok) return;
 
-    setState(() => _connectedLed = previous);
+    _applyUserChange(() => _connectedLed = previous);
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Could not reach your Omi — try again.')),
     );
@@ -263,7 +260,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     _ledBootBusy = true;
 
     final previous = _ledBootEnabled;
-    setState(() => _ledBootEnabled = enabled);
+    _applyUserChange(() => _ledBootEnabled = enabled);
 
     bool ok = false;
     try {
@@ -281,7 +278,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     }
     if (!mounted || ok) return;
 
-    setState(() => _ledBootEnabled = previous);
+    _applyUserChange(() => _ledBootEnabled = previous);
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Could not reach your Omi — try again.')),
     );
@@ -308,7 +305,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
 
   void _updatePriorityCap(int minutes) async {
     SharedPreferencesUtil().priorityRecordMaxMinutes = minutes;
-    setState(() => _priorityRecordCap = minutes);
+    _applyUserChange(() => _priorityRecordCap = minutes);
     // Capture the messenger + provider before the async gap. The cap is armed
     // device-side at the start of a Priority Recording, so changing it never
     // affects one already in progress — surface that so it isn't surprising.
@@ -706,9 +703,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         divisions: 100,
                         onChanged: (double value) {
                           setSheetState(() {});
-                          setState(() {
-                            _dimRatio = value;
-                          });
+                          _applyUserChange(() => _dimRatio = value);
                           _debounce?.cancel();
                           _debounce = Timer(const Duration(milliseconds: 300), () {
                             _updateDimRatio(value);
@@ -814,9 +809,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         divisions: 8,
                         onChanged: (double value) {
                           setSheetState(() {});
-                          setState(() {
-                            _micGain = value;
-                          });
+                          _applyUserChange(() => _micGain = value);
                           _micGainDebounce?.cancel();
                           _micGainDebounce = Timer(const Duration(milliseconds: 300), () {
                             _updateMicGain(value);
@@ -842,7 +835,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         Expanded(
                           child: _buildPresetButton('Quiet', 2, currentLevel, () {
                             setSheetState(() {});
-                            setState(() => _micGain = 2.0);
+                            _applyUserChange(() => _micGain = 2.0);
                             _updateMicGain(2.0);
                           }),
                         ),
@@ -850,7 +843,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         Expanded(
                           child: _buildPresetButton('Normal', 4, currentLevel, () {
                             setSheetState(() {});
-                            setState(() => _micGain = 4.0);
+                            _applyUserChange(() => _micGain = 4.0);
                             _updateMicGain(4.0);
                           }),
                         ),
@@ -858,7 +851,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         Expanded(
                           child: _buildPresetButton('High', 6, currentLevel, () {
                             setSheetState(() {});
-                            setState(() => _micGain = 6.0);
+                            _applyUserChange(() => _micGain = 6.0);
                             _updateMicGain(6.0);
                           }),
                         ),
@@ -922,7 +915,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
 
             void setValue(int raw) {
               setSheetState(() {});
-              setState(() => _vadThreshold = raw.toDouble());
+              _applyUserChange(() => _vadThreshold = raw.toDouble());
               _updateVadThreshold(raw.toDouble());
             }
 
@@ -976,7 +969,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         divisions: 20,
                         onChanged: (double value) {
                           setSheetState(() {});
-                          setState(() => _vadThreshold = value);
+                          _applyUserChange(() => _vadThreshold = value);
                           _vadThresholdDebounce?.cancel();
                           _vadThresholdDebounce = Timer(const Duration(milliseconds: 300), () {
                             _updateVadThreshold(_vadThreshold);
@@ -1117,7 +1110,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
       child: Column(
         children: [
           // LED Brightness
-          if (_isDimRatioLoaded && _hasDimmingFeature == true) ...[
+          if (_hasDimmingFeature == true) ...[
             _buildProfileStyleItem(
               icon: FontAwesomeIcons.lightbulb,
               title: 'LED Brightness',
@@ -1126,7 +1119,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             ),
           ],
           // LED master gate + the solid-blue "phone is connected" indicator.
-          if (_isLedServiceLoaded && _hasLedServiceFeature == true) ...[
+          if (_hasLedServiceFeature == true) ...[
             const Divider(height: 1, color: Color(0xFF3C3C43)),
             _buildSwitchItem(
               icon: FontAwesomeIcons.powerOff,
@@ -1152,7 +1145,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             ),
           ],
           // Mic Gain
-          if (_isMicGainLoaded && _hasMicGainFeature == true) ...[
+          if (_hasMicGainFeature == true) ...[
             const Divider(height: 1, color: Color(0xFF3C3C43)),
             _buildProfileStyleItem(
               icon: FontAwesomeIcons.microphone,
@@ -1162,7 +1155,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             ),
           ],
           // AAD Sensitivity (hidden in manual mode — recording is tap-triggered, not voice-activated)
-          if (_isVadThresholdLoaded && _hasVadThresholdFeature == true && !SharedPreferencesUtil().manualMode) ...[
+          if (_hasVadThresholdFeature == true && !SharedPreferencesUtil().manualMode) ...[
             const Divider(height: 1, color: Color(0xFF3C3C43)),
             _buildProfileStyleItem(
               icon: FontAwesomeIcons.earListen,
@@ -1172,7 +1165,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             ),
           ],
           // Priority Recording Cap (auto mode only — Priority Recording is an auto-mode action)
-          if (_isPriorityCapLoaded && _hasPriorityCapFeature == true && !SharedPreferencesUtil().manualMode) ...[
+          if (_hasPriorityCapFeature == true && !SharedPreferencesUtil().manualMode) ...[
             const Divider(height: 1, color: Color(0xFF3C3C43)),
             _buildProfileStyleItem(
               icon: FontAwesomeIcons.stopwatch,
@@ -1422,6 +1415,26 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     );
   }
 
+  /// Stand-in for the Customization / Device Info / Hardware sections while
+  /// their reads are in flight, so they can appear together rather than one
+  /// row at a time.
+  Widget _buildLoadingPlaceholder() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 48),
+      child: Column(
+        children: [
+          const SizedBox(
+            width: 22,
+            height: 22,
+            child: CircularProgressIndicator(strokeWidth: 2.5, color: Color(0xFF8E8E93)),
+          ),
+          const SizedBox(height: 14),
+          Text('Loading…', style: TextStyle(color: Colors.grey.shade500, fontSize: 15)),
+        ],
+      ),
+    );
+  }
+
   Widget _buildDeviceHeader(BtDevice? device, bool isConnected) {
     return Center(
       child: Column(
@@ -1501,16 +1514,20 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                   const SizedBox(height: 32),
                 ],
                 if (provider.isConnected) ...[
-                  const SizedBox(height: 16),
-                  _buildSectionHeader('Customization'),
-                  _buildCustomizationSection(),
-                  const SizedBox(height: 32),
-                  _buildSectionHeader('Device Info'),
-                  _buildDeviceInfoSection(provider.pairedDevice, provider),
-                  const SizedBox(height: 32),
-                  _buildSectionHeader('Hardware'),
-                  _buildHardwareInfoSection(provider.pairedDevice),
-                  const SizedBox(height: 32),
+                  if (_isLoading)
+                    _buildLoadingPlaceholder()
+                  else ...[
+                    const SizedBox(height: 16),
+                    _buildSectionHeader('Customization'),
+                    _buildCustomizationSection(),
+                    const SizedBox(height: 32),
+                    _buildSectionHeader('Device Info'),
+                    _buildDeviceInfoSection(provider.pairedDevice, provider),
+                    const SizedBox(height: 32),
+                    _buildSectionHeader('Hardware'),
+                    _buildHardwareInfoSection(provider.pairedDevice),
+                    const SizedBox(height: 32),
+                  ],
                 ],
                 _buildActionsSection(provider),
                 const SizedBox(height: 48),
