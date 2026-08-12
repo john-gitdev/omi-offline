@@ -4,6 +4,9 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart' as archive;
+// Only the platform symbols: an unrestricted foundation import re-exports
+// dart:typed_data and makes the Uint8List import above look redundant.
+import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/widgets.dart';
 
 import 'package:flutter_archive/flutter_archive.dart';
@@ -102,7 +105,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   bool _dfuTerminated = false;
   String? installErrorMessage;
 
-  // Post-flash rediscovery (see [_reconnectWhenDeviceReturns]). The window is
+  // Post-flash rediscovery (see [reconnectWhenDeviceReturns]). The window is
   // generous because the reboot is not one reset: the app core swaps its image and
   // then applies the net core, and how long that takes depends on what the bundle
   // actually changed. Expiring is not a failure — it just hands the re-pair back to
@@ -215,7 +218,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   /// `unmanageDevice` is what stops it — it cancels the pending reconnect and the
   /// recovery alarm, closes the GATT, and records `user_disconnected`, which the
   /// alarm and worker reconnect paths both check. Nothing reconnects then until an
-  /// explicit `manageDevice`, which [_reconnectWhenDeviceReturns] issues once it has
+  /// explicit `manageDevice`, which [reconnectWhenDeviceReturns] issues once it has
   /// actually heard the device advertising again. The pairing dialog still appears
   /// on its own; it appears at a moment the device can accept it.
   ///
@@ -243,7 +246,12 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   ///
   /// iOS has no programmatic bond removal, so this is Android-only; there the
   /// device still frees its own slot, which is the half that cannot be undone
-  /// from the phone.
+  /// from the phone. The gate reads `defaultTargetPlatform` rather than
+  /// `Platform.isAndroid` (which the wakelock helpers above still use, since
+  /// nothing needs to drive those): identical on a real device, but a host test
+  /// runs on neither mobile platform, and this is the one method here whose whole
+  /// body is behind the gate. `debugDefaultTargetPlatformOverride` is debug-only,
+  /// so a release build is unaffected either way.
   ///
   /// Not gated on the DFU transport. The legacy Nordic path would be a genuine
   /// hazard — it goes over the Nordic DFU service rather than mcumgr SMP, so
@@ -254,8 +262,9 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   /// reaches a flash is the local zip, which sets `isLegacySecureDFU = false`.
   /// Add the gate if those stubs are ever implemented; until then it would be a
   /// guard on an unreachable branch.
-  Future<void> _releasePairingOnSuccess(BtDevice btDevice) async {
-    if (!Platform.isAndroid) return;
+  @visibleForTesting
+  Future<void> releasePairingOnSuccess(BtDevice btDevice) async {
+    if (defaultTargetPlatform != TargetPlatform.android) return;
     try {
       await BleHostApi().unmanageDevice(btDevice.id);
     } catch (e) {
@@ -266,12 +275,12 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     } catch (e) {
       Logger.debug('Post-update phone bond wipe failed: $e');
     }
-    unawaited(_reconnectWhenDeviceReturns(btDevice));
+    unawaited(reconnectWhenDeviceReturns(btDevice));
   }
 
   /// Reconnect once the device is back on the air — and not one moment before.
   ///
-  /// [_releasePairingOnSuccess] stops the reconnect ladder precisely because a
+  /// [releasePairingOnSuccess] stops the reconnect ladder precisely because a
   /// connect during the reboot forces a pairing the firmware must refuse. On its
   /// own that leaves the re-pair to a user tap in Find Devices: correct, but it
   /// makes the user do it. This does it for them at the one moment it can work.
@@ -304,8 +313,14 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   /// the call with no suspension point in between, so what survives cancellation is
   /// only a connect already under way — which completes into Find Devices, the page
   /// Done opens to do exactly that. Aborting a pairing mid-SMP is the worse outcome.
-  Future<void> _reconnectWhenDeviceReturns(BtDevice btDevice) async {
-    final deadline = DateTime.now().add(_postFlashReconnectWindow);
+  ///
+  /// [window] exists so the bound can be asserted without a two-minute test; every
+  /// caller outside a test takes the default. It is the only injectable here — the
+  /// scan itself runs against the real DeviceService, so what the tests drive is the
+  /// actual discover-then-connect sequence rather than a description of it.
+  @visibleForTesting
+  Future<void> reconnectWhenDeviceReturns(BtDevice btDevice, {Duration window = _postFlashReconnectWindow}) async {
+    final deadline = DateTime.now().add(window);
     while (!_postFlashReconnectCancelled && DateTime.now().isBefore(deadline)) {
       final seen = await ServiceManager.instance().device.discover(timeout: _postFlashScanTimeout.inSeconds);
       if (_postFlashReconnectCancelled) return;
@@ -500,7 +515,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
         Logger.debug('update success');
         killMcuUpdateManager(); // also cancels the stall watchdog
         releaseUpdateWakelocks();
-        _releasePairingOnSuccess(btDevice);
+        releasePairingOnSuccess(btDevice);
         _clearStaleScanResultsOnSuccess();
         if (mounted) {
           setState(() {
@@ -607,7 +622,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       onDfuCompleted: (deviceAddress) {
         Logger.debug('deviceAddress: $deviceAddress, onDfuCompleted');
         releaseUpdateWakelocks();
-        _releasePairingOnSuccess(btDevice);
+        releasePairingOnSuccess(btDevice);
         _clearStaleScanResultsOnSuccess();
         setState(() {
           isInstalling = false;
