@@ -67,6 +67,10 @@ class _DeviceSettingsState extends State<DeviceSettings> {
 
   bool _isWiping = false;
 
+  // Set once the user changes any setting here, which stops the initial load
+  // from applying values read before that change. See [_applyLoaded].
+  bool _userChangedSetting = false;
+
   @override
   void initState() {
     _vadThreshold = SharedPreferencesUtil().autoVadThreshold.toDouble();
@@ -82,8 +86,8 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   ///
   /// The timeout is a backstop, not a budget: a read that wedges must not leave
   /// the page on a spinner forever. Falling through renders whatever did land,
-  /// and anything still in flight repaints when it arrives (see the tail of
-  /// [_loadDeviceSettings]) — which together is the pre-gate behaviour.
+  /// and anything still in flight paints as it arrives (see [_applyLoaded]) —
+  /// which together is the pre-gate behaviour.
   Future<void> _loadAll() async {
     final provider = context.read<DeviceProvider>();
     try {
@@ -113,11 +117,35 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     super.dispose();
   }
 
-  /// Reads the capability bitfield and then each supported setting. Fields are
-  /// assigned straight through with no per-read [setState] — nothing is on
-  /// screen while the gate is closed — and a failed read simply leaves the
-  /// default. One repaint at the end covers the case where the gate opened
-  /// first; see the comment there.
+  /// Applies one value from the initial load.
+  ///
+  /// While the gate is closed nothing is on screen, so the assignment stands
+  /// alone. Once it is open — [_loadAll]'s 15 s backstop can fire mid-chain,
+  /// and a wedged GATT read self-times-out at 10 s — each arrival has to paint
+  /// itself: the reads below are serial, so one slow read would otherwise hold
+  /// an already-landed value off screen for up to its own timeout.
+  ///
+  /// Skipped once the user has changed something. Rows are only tappable after
+  /// the gate opens, so on the normal path this never applies; on the backstop
+  /// path a row can be edited while its own read is still in flight, and that
+  /// read completes holding the pre-edit value.
+  void _applyLoaded(VoidCallback assign) {
+    if (!mounted || _userChangedSetting) return;
+    if (_isLoading) {
+      assign();
+    } else {
+      setState(assign);
+    }
+  }
+
+  /// Applies a change the user made, and hands them the page: see [_applyLoaded].
+  void _applyUserChange(VoidCallback assign) {
+    _userChangedSetting = true;
+    setState(assign);
+  }
+
+  /// Reads the capability bitfield and then each supported setting. Every value
+  /// lands through [_applyLoaded]; a failed read simply leaves the default.
   Future<void> _loadDeviceSettings() async {
     if (!mounted) return;
     final deviceProvider = context.read<DeviceProvider>();
@@ -136,54 +164,49 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     }
     if (!mounted) return;
 
-    _hasDimmingFeature = OmiFeatures.hasFeature(features, OmiFeatures.ledDimming);
-    _hasMicGainFeature = OmiFeatures.hasFeature(features, OmiFeatures.micGain);
-    _hasVadThresholdFeature = OmiFeatures.hasFeature(features, OmiFeatures.vadThreshold);
-    _hasPriorityCapFeature = OmiFeatures.hasFeature(features, OmiFeatures.priorityRecordCap);
-    _hasLedServiceFeature = OmiFeatures.hasFeature(features, OmiFeatures.ledService);
+    _applyLoaded(() {
+      _hasDimmingFeature = OmiFeatures.hasFeature(features, OmiFeatures.ledDimming);
+      _hasMicGainFeature = OmiFeatures.hasFeature(features, OmiFeatures.micGain);
+      _hasVadThresholdFeature = OmiFeatures.hasFeature(features, OmiFeatures.vadThreshold);
+      _hasPriorityCapFeature = OmiFeatures.hasFeature(features, OmiFeatures.priorityRecordCap);
+      _hasLedServiceFeature = OmiFeatures.hasFeature(features, OmiFeatures.ledService);
+    });
 
     if (_hasDimmingFeature == true) {
-      var ratio = await connection.getLedDimRatio();
+      final ratio = await connection.getLedDimRatio();
       if (!mounted) return;
-      if (ratio != null) _dimRatio = ratio.toDouble();
+      if (ratio != null) _applyLoaded(() => _dimRatio = ratio.toDouble());
     }
 
     if (_hasLedServiceFeature == true) {
-      var enabled = await connection.getConnectedLed();
-      var ledBoot = await connection.getLedBootEnabled();
-      if (!mounted) return;
       // A failed read leaves the default — matches the firmware defaults
       // (connected indicator on, LEDs off at boot).
-      if (enabled != null) _connectedLed = enabled;
-      if (ledBoot != null) _ledBootEnabled = ledBoot;
+      final enabled = await connection.getConnectedLed();
+      if (!mounted) return;
+      if (enabled != null) _applyLoaded(() => _connectedLed = enabled);
+
+      final ledBoot = await connection.getLedBootEnabled();
+      if (!mounted) return;
+      if (ledBoot != null) _applyLoaded(() => _ledBootEnabled = ledBoot);
     }
 
     if (_hasMicGainFeature == true) {
-      var gain = await connection.getMicGain();
+      final gain = await connection.getMicGain();
       if (!mounted) return;
-      if (gain != null) _micGain = gain.toDouble();
+      if (gain != null) _applyLoaded(() => _micGain = gain.toDouble());
     }
 
     if (_hasVadThresholdFeature == true) {
-      var threshold = await connection.getVadThreshold();
+      final threshold = await connection.getVadThreshold();
       if (!mounted) return;
-      if (threshold != null) _vadThreshold = threshold.toDouble();
+      if (threshold != null) _applyLoaded(() => _vadThreshold = threshold.toDouble());
     }
 
     if (_hasPriorityCapFeature == true) {
-      var cap = await connection.getPriorityRecordCap();
+      final cap = await connection.getPriorityRecordCap();
       if (!mounted) return;
-      if (cap != null) _priorityRecordCap = cap;
+      if (cap != null) _applyLoaded(() => _priorityRecordCap = cap);
     }
-
-    // The gate can already be open: [_loadAll] times out at 15 s, while a wedged
-    // GATT read self-times-out at 10 s and returns empty — so the features retry
-    // loop above can run to ~21 s on its own and land the capability bits after
-    // the sections have rendered without them. Nothing else would repaint that:
-    // the assignments here are deliberately setState-free, and the parallel
-    // refreshStorageStats() returns without notifying when a sync is in progress.
-    // Repaint once so a late arrival still shows, as it did before the gate.
-    if (mounted && !_isLoading) setState(() {});
   }
 
   void _updateDimRatio(double value) async {
@@ -206,7 +229,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     _connectedLedBusy = true;
 
     final previous = _connectedLed;
-    setState(() => _connectedLed = enabled);
+    _applyUserChange(() => _connectedLed = enabled);
 
     bool ok = false;
     try {
@@ -224,7 +247,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     }
     if (!mounted || ok) return;
 
-    setState(() => _connectedLed = previous);
+    _applyUserChange(() => _connectedLed = previous);
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Could not reach your Omi — try again.')),
     );
@@ -237,7 +260,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     _ledBootBusy = true;
 
     final previous = _ledBootEnabled;
-    setState(() => _ledBootEnabled = enabled);
+    _applyUserChange(() => _ledBootEnabled = enabled);
 
     bool ok = false;
     try {
@@ -255,7 +278,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     }
     if (!mounted || ok) return;
 
-    setState(() => _ledBootEnabled = previous);
+    _applyUserChange(() => _ledBootEnabled = previous);
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Could not reach your Omi — try again.')),
     );
@@ -282,7 +305,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
 
   void _updatePriorityCap(int minutes) async {
     SharedPreferencesUtil().priorityRecordMaxMinutes = minutes;
-    setState(() => _priorityRecordCap = minutes);
+    _applyUserChange(() => _priorityRecordCap = minutes);
     // Capture the messenger + provider before the async gap. The cap is armed
     // device-side at the start of a Priority Recording, so changing it never
     // affects one already in progress — surface that so it isn't surprising.
@@ -680,9 +703,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         divisions: 100,
                         onChanged: (double value) {
                           setSheetState(() {});
-                          setState(() {
-                            _dimRatio = value;
-                          });
+                          _applyUserChange(() => _dimRatio = value);
                           _debounce?.cancel();
                           _debounce = Timer(const Duration(milliseconds: 300), () {
                             _updateDimRatio(value);
@@ -788,9 +809,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         divisions: 8,
                         onChanged: (double value) {
                           setSheetState(() {});
-                          setState(() {
-                            _micGain = value;
-                          });
+                          _applyUserChange(() => _micGain = value);
                           _micGainDebounce?.cancel();
                           _micGainDebounce = Timer(const Duration(milliseconds: 300), () {
                             _updateMicGain(value);
@@ -816,7 +835,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         Expanded(
                           child: _buildPresetButton('Quiet', 2, currentLevel, () {
                             setSheetState(() {});
-                            setState(() => _micGain = 2.0);
+                            _applyUserChange(() => _micGain = 2.0);
                             _updateMicGain(2.0);
                           }),
                         ),
@@ -824,7 +843,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         Expanded(
                           child: _buildPresetButton('Normal', 4, currentLevel, () {
                             setSheetState(() {});
-                            setState(() => _micGain = 4.0);
+                            _applyUserChange(() => _micGain = 4.0);
                             _updateMicGain(4.0);
                           }),
                         ),
@@ -832,7 +851,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         Expanded(
                           child: _buildPresetButton('High', 6, currentLevel, () {
                             setSheetState(() {});
-                            setState(() => _micGain = 6.0);
+                            _applyUserChange(() => _micGain = 6.0);
                             _updateMicGain(6.0);
                           }),
                         ),
@@ -896,7 +915,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
 
             void setValue(int raw) {
               setSheetState(() {});
-              setState(() => _vadThreshold = raw.toDouble());
+              _applyUserChange(() => _vadThreshold = raw.toDouble());
               _updateVadThreshold(raw.toDouble());
             }
 
@@ -950,7 +969,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         divisions: 20,
                         onChanged: (double value) {
                           setSheetState(() {});
-                          setState(() => _vadThreshold = value);
+                          _applyUserChange(() => _vadThreshold = value);
                           _vadThresholdDebounce?.cancel();
                           _vadThresholdDebounce = Timer(const Duration(milliseconds: 300), () {
                             _updateVadThreshold(_vadThreshold);
