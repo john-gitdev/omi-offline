@@ -587,16 +587,30 @@ class OmiBleManager private constructor(private val application: Application) {
     }
 
     // Sends 0x32 (KEEP_ALIVE) to the storage characteristic on [storageKeepAliveInterval]
-    // (10 s) using WRITE_NO_RESPONSE so it bypasses the GATT command queue and never
-    // stalls an in-flight file read. Resets the firmware's idle-disconnect timer
-    // (transport.c IDLE_DISCONNECT_TIMEOUT_MS, 60 s) regardless of whether a data stream
-    // is active. See the interval's own comment for why all three constants move together.
+    // (10 s) using WRITE_NO_RESPONSE so it bypasses the GATT command queue. Resets the
+    // firmware's idle-disconnect timer (transport.c IDLE_DISCONNECT_TIMEOUT_MS, 60 s)
+    // across an idle connection; it is skipped while a transfer is active, since the
+    // firmware exempts those from the idle check anyway (see the runnable below). Bypassing
+    // the queue is what lets it beat during other GATT work — and the reason it must stand
+    // down for a transfer, whose stream shares this characteristic. See the interval's own
+    // comment for why all three constants move together.
     fun startStorageKeepAlive(address: String) {
         stopStorageKeepAlive()
         val addr = address.uppercase()
         val runnable = object : Runnable {
             override fun run() {
-                sendStorageKeepAliveNoResponse(addr)
+                // Skipped while a file transfer is in flight — the same guard Dart's
+                // keep-alive has always had (DeviceConnection.sendKeepAlive's isStorageBusy
+                // check) and which this backstop, added later for background throttling,
+                // never inherited. Safe because the firmware exempts an active transfer from
+                // its idle-disconnect entirely (transport.c storage_transfer_active()), so
+                // nothing needs to beat here; the transfer's own traffic is the liveness.
+                // Two reasons it must not: this write bypasses gattQueue, so it races the
+                // read stream it shares a characteristic with; and the firmware ACKs it on
+                // that same characteristic, which is what used to keep StorageDownload-
+                // Session's inactivity watchdog permanently re-armed. Keep reposting so the
+                // beat resumes the moment the transfer ends.
+                if (!activeDownloads.containsKey(addr)) sendStorageKeepAliveNoResponse(addr)
                 mainHandler.postDelayed(this, storageKeepAliveInterval)
             }
         }
@@ -843,26 +857,60 @@ class OmiBleManager private constructor(private val application: Application) {
         private val fos: java.io.FileOutputStream
         private val completed = java.util.concurrent.atomic.AtomicBoolean(false)
         private var hasReceivedStartAck = false
+        // Selects which inactivity window applies (see [timeoutMs]). Distinct from
+        // hasReceivedStartAck, which the keep-alive's ACK can also set — that flag says
+        // "the stream is open", this one says "the device is actually delivering".
+        // Volatile: written on the binder thread (onPacket), read on main when the
+        // timeout fires. The functional read — picking the delay — happens on the binder
+        // thread, so only the message text depends on the cross-thread one, but there is
+        // no reason to leave that unsynchronised.
+        @Volatile private var hasReceivedData = false
 
-        // Inactivity timeout: 15 s reset on each packet
+        // Inactivity timeout: armed at init, re-armed only by DATA — see [rearmTimeout].
+        // Keep the "Transfer stalled" prefix: syncAll's retry loop matches on it
+        // (sdcard_wal_sync.dart) to retry the file in place rather than fail the sync.
         private val timeoutRunnable = Runnable {
             activeDownloads.remove(address)
-            complete(Result.failure(Exception("Transfer stalled: 15s inactivity timeout")))
+            complete(Result.failure(Exception("Transfer stalled: ${timeoutMs() / 1000}s inactivity timeout")))
+        }
+
+        /**
+         * Only *payload* traffic counts as liveness. ACKs must never re-arm this.
+         *
+         * The keep-alive (0x32, [storageKeepAliveInterval]) is answered by the firmware
+         * with a PACKET_ACK notification on this same characteristic (storage.c
+         * storage_write_handler → STORAGE_NOTIFY), which lands here as a 0x03 packet.
+         * Re-arming on every packet meant a 10 s ACK cadence perpetually reset a 15 s
+         * watchdog: a transfer that died mid-file could never time out, downloadStorage-
+         * File never completed, and since Dart awaits it with no timeout of its own the
+         * sync hung until the 60 s pipeline watchdog force-recovered — by recycling the
+         * GATT, which turned a stalled file into a dropped connection and a partial sync.
+         *
+         * Two windows, because the two phases have different expectations:
+         *  - START (30 s): CMD_READ_FILE sent, no payload yet. The firmware still has to
+         *    open + seek the file, and an SD op can block for ~10 s under write pressure
+         *    (storage.c's own CMD_LIST_FILES guard waits that long), so this is
+         *    deliberately looser than the stream window. Never re-armed — one window for
+         *    the whole setup phase — which keeps the worst case at 30 s, comfortably
+         *    inside the 60 s Dart watchdog so native still owns this failure.
+         *  - STREAM (15 s): unchanged from before, re-armed per DATA packet.
+         */
+        private fun timeoutMs(): Long = if (hasReceivedData) 15_000L else 30_000L
+
+        private fun rearmTimeout() {
+            mainHandler.removeCallbacks(timeoutRunnable)
+            mainHandler.postDelayed(timeoutRunnable, timeoutMs())
         }
 
         init {
             val file = java.io.File(outputPath)
             file.parentFile?.mkdirs()
             fos = java.io.FileOutputStream(file, startOffset > 0)
-            mainHandler.postDelayed(timeoutRunnable, 15_000L)
+            rearmTimeout()
         }
 
         fun onPacket(value: ByteArray) {
             if (completed.get() || value.isEmpty()) return
-
-            // Reset inactivity watchdog on every received packet
-            mainHandler.removeCallbacks(timeoutRunnable)
-            mainHandler.postDelayed(timeoutRunnable, 15_000L)
 
             when (value[0].toInt() and 0xFF) {
                 0x03 -> { // ACK
@@ -877,6 +925,10 @@ class OmiBleManager private constructor(private val application: Application) {
                 }
                 0x01 -> { // DATA
                     if (!hasReceivedStartAck || value.size < 5) return
+                    // Payload in hand: this is the only thing that counts as liveness, and
+                    // it also narrows the window from the START grace to the STREAM one.
+                    hasReceivedData = true
+                    rearmTimeout()
                     val incoming = (value[1].toLong() and 0xFF) or
                         ((value[2].toLong() and 0xFF) shl 8) or
                         ((value[3].toLong() and 0xFF) shl 16) or
