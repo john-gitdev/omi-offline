@@ -535,6 +535,43 @@ class BleHostApi {
     }
   }
 
+  /// (Android only) Addresses the OS currently holds a pairing key for,
+  /// uppercased to match the ids native hands out everywhere else.
+  ///
+  /// Find Devices asks so it can mark which row is the Omi this phone is paired
+  /// to — the stored preference cannot answer that, since it still names the
+  /// device after a DFU wipes the bond. The whole set rather than a per-address
+  /// query: it is one IPC instead of one per row, and normalizing the address is
+  /// then native's job rather than every caller's. A local lookup, no radio
+  /// traffic. iOS returns empty (CoreBluetooth exposes no bond state).
+  Future<List<String>> getBondedDeviceIds() async {
+    final String pigeonVar_channelName =
+        'dev.flutter.pigeon.omi_pigeon.BleHostApi.getBondedDeviceIds$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final List<Object?>? pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else if (pigeonVar_replyList[0] == null) {
+      throw PlatformException(
+        code: 'null-error',
+        message: 'Host platform returned null value for non-null return value.',
+      );
+    } else {
+      return (pigeonVar_replyList[0] as List<Object?>?)!.cast<String>();
+    }
+  }
+
   /// (Android only) Check if any CompanionDeviceManager association exists.
   Future<bool> hasCompanionDeviceAssociation() async {
     final String pigeonVar_channelName =

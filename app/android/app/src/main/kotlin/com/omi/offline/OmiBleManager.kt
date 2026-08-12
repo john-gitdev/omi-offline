@@ -93,7 +93,7 @@ class OmiBleManager private constructor(private val application: Application) {
     private var scanCallback: ScanCallback? = null
     private var scanTimeoutRunnable: Runnable? = null
 
-    private val gattQueue: ConcurrentLinkedQueue<Runnable> = ConcurrentLinkedQueue()
+    private val gattQueue: ConcurrentLinkedQueue<GattCommand> = ConcurrentLinkedQueue()
     @Volatile
     private var isProcessingCommand = false
 
@@ -498,7 +498,9 @@ class OmiBleManager private constructor(private val application: Application) {
         }
         val key = "$addr:$serviceUuid:$charUuid".lowercase()
         readCompletions[key] = completion
-        enqueueCommand {
+        // Label mirrors NativeBleTransport's own timeout line (`read <service>:<char>`) so a
+        // Dart give-up and the native truth about the same operation grep together.
+        enqueueCommand("read $serviceUuid:$charUuid") {
             if (gatt.readCharacteristic(characteristic) == false) {
                 readCompletions.remove(key)?.invoke(Result.failure(Exception("Rejected")))
                 completeCommand()
@@ -521,7 +523,7 @@ class OmiBleManager private constructor(private val application: Application) {
         val key = "$addr:$serviceUuid:$charUuid".lowercase()
         if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) writeCompletions[key] = completion
 
-        enqueueCommand {
+        enqueueCommand("write $serviceUuid:$charUuid") {
             val result = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
                 val r = gatt.writeCharacteristic(characteristic, data, writeType)
                 if (r != BluetoothStatusCodes.SUCCESS) Log.e(TAG, "writeCharacteristic returned $r for $key")
@@ -547,7 +549,7 @@ class OmiBleManager private constructor(private val application: Application) {
         val gatt = connectedGatts[addr] ?: return
         val characteristic = findCharacteristic(gatt, serviceUuid, charUuid) ?: return
         val descriptor = characteristic.getDescriptor(CCCD_UUID)
-        enqueueCommand {
+        enqueueCommand("subscribe $serviceUuid:$charUuid") {
             gatt.setCharacteristicNotification(characteristic, true)
             if (descriptor != null) {
                 writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
@@ -560,7 +562,7 @@ class OmiBleManager private constructor(private val application: Application) {
         val gatt = connectedGatts[addr] ?: return
         val characteristic = findCharacteristic(gatt, serviceUuid, charUuid) ?: return
         val descriptor = characteristic.getDescriptor(CCCD_UUID)
-        enqueueCommand {
+        enqueueCommand("unsubscribe $serviceUuid:$charUuid") {
             gatt.setCharacteristicNotification(characteristic, false)
             if (descriptor != null) {
                 writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE)
@@ -587,16 +589,30 @@ class OmiBleManager private constructor(private val application: Application) {
     }
 
     // Sends 0x32 (KEEP_ALIVE) to the storage characteristic on [storageKeepAliveInterval]
-    // (10 s) using WRITE_NO_RESPONSE so it bypasses the GATT command queue and never
-    // stalls an in-flight file read. Resets the firmware's idle-disconnect timer
-    // (transport.c IDLE_DISCONNECT_TIMEOUT_MS, 60 s) regardless of whether a data stream
-    // is active. See the interval's own comment for why all three constants move together.
+    // (10 s) using WRITE_NO_RESPONSE so it bypasses the GATT command queue. Resets the
+    // firmware's idle-disconnect timer (transport.c IDLE_DISCONNECT_TIMEOUT_MS, 60 s)
+    // across an idle connection; it is skipped while a transfer is active, since the
+    // firmware exempts those from the idle check anyway (see the runnable below). Bypassing
+    // the queue is what lets it beat during other GATT work — and the reason it must stand
+    // down for a transfer, whose stream shares this characteristic. See the interval's own
+    // comment for why all three constants move together.
     fun startStorageKeepAlive(address: String) {
         stopStorageKeepAlive()
         val addr = address.uppercase()
         val runnable = object : Runnable {
             override fun run() {
-                sendStorageKeepAliveNoResponse(addr)
+                // Skipped while a file transfer is in flight — the same guard Dart's
+                // keep-alive has always had (DeviceConnection.sendKeepAlive's isStorageBusy
+                // check) and which this backstop, added later for background throttling,
+                // never inherited. Safe because the firmware exempts an active transfer from
+                // its idle-disconnect entirely (transport.c storage_transfer_active()), so
+                // nothing needs to beat here; the transfer's own traffic is the liveness.
+                // Two reasons it must not: this write bypasses gattQueue, so it races the
+                // read stream it shares a characteristic with; and the firmware ACKs it on
+                // that same characteristic, which is what used to keep StorageDownload-
+                // Session's inactivity watchdog permanently re-armed. Keep reposting so the
+                // beat resumes the moment the transfer ends.
+                if (!activeDownloads.containsKey(addr)) sendStorageKeepAliveNoResponse(addr)
                 mainHandler.postDelayed(this, storageKeepAliveInterval)
             }
         }
@@ -637,14 +653,105 @@ class OmiBleManager private constructor(private val application: Application) {
         }
     }
 
-    @Synchronized fun enqueueCommand(command: Runnable) { gattQueue.add(command); processNextCommand() }
+    /**
+     * A queued GATT operation and the label it reports itself under in the debug log.
+     * [label] is required rather than defaulted: an unlabelled command is invisible in
+     * exactly the situation this instrumentation exists for.
+     */
+    private class GattCommand(val label: String, val run: Runnable)
+
+    // ── Command-pipeline stall instrumentation (log-only) ──
+    //
+    // The pipeline is single-in-flight: processNextCommand posts one command and nothing
+    // else moves until completeCommand() runs, which only a GATT callback (or
+    // cleanupPeripheral, on teardown) triggers. So an operation whose callback never
+    // arrives silently parks every later command — a subscribe, a CMD_READ_FILE — for the
+    // life of the connection, while the link still reports connected.
+    //
+    // Dart cannot see this. Its 10 s _gattOpTimeout abandons the Dart future only; native
+    // is never told, so "timed out" there covers both a genuinely wedged pipeline and one
+    // that was merely slow and recovered a second later. Those want opposite fixes.
+    //
+    // Written through WedgeDiagnostics so the lines land in the app's own debug log rather
+    // than logcat — a wedge usually happens with the app backgrounded, where reaching for
+    // adb after the fact is exactly what does not work.
+    private var inFlightLabel: String? = null
+    private var inFlightSinceMs = 0L
+    private var inFlightWarnCount = 0
+    // First warning at Dart's give-up point so the two lines bracket each other in the log;
+    // then a slower repeat, which is enough to show it is still stuck without flooding.
+    private val commandStallWarnMs = 10_000L
+    private val commandStallRepeatMs = 30_000L
+    private val commandStallWatchdog = Runnable { reportCommandStall() }
+
+    /**
+     * True wall clock (elapsedRealtime), so a reported age is never quietly short by the
+     * time the SoC spent asleep. The watchdog's own scheduling is uptime-based, as all
+     * Handler posts are, so it simply does not fire across a suspend — the age it prints on
+     * the other side is still correct.
+     */
+    private fun commandAgeMs(): Long = android.os.SystemClock.elapsedRealtime() - inFlightSinceMs
+
+    @Synchronized private fun reportCommandStall() {
+        val label = inFlightLabel ?: return
+        inFlightWarnCount++
+        val age = commandAgeMs()
+        val behind = (gattQueue.size - 1).coerceAtLeast(0)
+        Log.w(TAG, "GATT command '$label' outstanding ${age}ms, $behind queued behind — " +
+            "its callback has not arrived; nothing else in the pipeline can be sent until it does")
+        WedgeDiagnostics.captureGattCommand(application, "stalled", label, age, behind)
+        mainHandler.postDelayed(commandStallWatchdog, commandStallRepeatMs)
+    }
+
+    /** Arms the stall watchdog for the command just posted. Caller holds the monitor. */
+    private fun beginCommandTiming(label: String) {
+        inFlightLabel = label
+        inFlightSinceMs = android.os.SystemClock.elapsedRealtime()
+        inFlightWarnCount = 0
+        mainHandler.removeCallbacks(commandStallWatchdog)
+        mainHandler.postDelayed(commandStallWatchdog, commandStallWarnMs)
+    }
+
+    /**
+     * Closes out the in-flight command's timing. [outcome] is "recovered" when a callback
+     * finally arrived and "abandoned" when the peripheral was torn down with it still
+     * outstanding. Only reports when the command had already been warned about, so a
+     * healthy pipeline writes nothing at all. Caller holds the monitor (see
+     * [abandonInFlightCommand] for the teardown path, which does not).
+     */
+    private fun endCommandTiming(outcome: String) {
+        val label = inFlightLabel ?: return
+        val age = commandAgeMs()
+        val warned = inFlightWarnCount > 0
+        mainHandler.removeCallbacks(commandStallWatchdog)
+        inFlightLabel = null
+        inFlightWarnCount = 0
+        if (!warned) return
+        val behind = (gattQueue.size - 1).coerceAtLeast(0)
+        Log.w(TAG, "GATT command '$label' $outcome after ${age}ms ($behind queued behind)")
+        WedgeDiagnostics.captureGattCommand(application, outcome, label, age, behind)
+    }
+
+    /** Teardown-path counterpart to [endCommandTiming], which cleanupPeripheral calls off-monitor. */
+    @Synchronized private fun abandonInFlightCommand() = endCommandTiming("abandoned")
+
+    @Synchronized fun enqueueCommand(label: String, command: Runnable) {
+        gattQueue.add(GattCommand(label, command))
+        processNextCommand()
+    }
     @Synchronized private fun processNextCommand() {
         if (isProcessingCommand) return
         val cmd = gattQueue.peek() ?: return
         isProcessingCommand = true
-        mainHandler.post(cmd)
+        beginCommandTiming(cmd.label)
+        mainHandler.post(cmd.run)
     }
-    @Synchronized fun completeCommand() { gattQueue.poll(); isProcessingCommand = false; processNextCommand() }
+    @Synchronized fun completeCommand() {
+        endCommandTiming("recovered")
+        gattQueue.poll()
+        isProcessingCommand = false
+        processNextCommand()
+    }
 
     private fun findCharacteristic(gatt: BluetoothGatt?, serviceUuid: String, characteristicUuid: String): BluetoothGattCharacteristic? =
         gatt?.getService(UUID.fromString(serviceUuid))?.getCharacteristic(UUID.fromString(characteristicUuid))
@@ -679,6 +786,9 @@ class OmiBleManager private constructor(private val application: Application) {
         // stale command (referencing the now-dead gatt) to be re-posted on the next
         // enqueue after reconnect. Clear the queue so the next connection starts
         // with a clean command pipeline.
+        // Report first: this is the only place that learns a stalled command never came
+        // back, and the queue length behind it is gone a line later.
+        abandonInFlightCommand()
         gattQueue.clear()
         isProcessingCommand = false
         activeDownloads.remove(addr)?.complete(Result.failure(Exception("Stream closed without EOT")))
@@ -703,7 +813,7 @@ class OmiBleManager private constructor(private val application: Application) {
                 discoveryTimeouts[address] = discoveryTimeout
                 mainHandler.postDelayed(discoveryTimeout, DISCOVERY_TIMEOUT_MS)
 
-                enqueueCommand {
+                enqueueCommand("discoverServices $address") {
                     if (!gatt.discoverServices()) {
                         mainHandler.removeCallbacks(discoveryTimeout)
                         discoveryTimeouts.remove(address)
@@ -814,7 +924,7 @@ class OmiBleManager private constructor(private val application: Application) {
         else
             BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
 
-        enqueueCommand {
+        enqueueCommand("CMD_READ_FILE idx=$fileIndex off=$offset ts=$timerStart") {
             val success = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
                 gatt.writeCharacteristic(characteristic, cmd, writeType) == android.bluetooth.BluetoothStatusCodes.SUCCESS
             } else {
@@ -843,26 +953,60 @@ class OmiBleManager private constructor(private val application: Application) {
         private val fos: java.io.FileOutputStream
         private val completed = java.util.concurrent.atomic.AtomicBoolean(false)
         private var hasReceivedStartAck = false
+        // Selects which inactivity window applies (see [timeoutMs]). Distinct from
+        // hasReceivedStartAck, which the keep-alive's ACK can also set — that flag says
+        // "the stream is open", this one says "the device is actually delivering".
+        // Volatile: written on the binder thread (onPacket), read on main when the
+        // timeout fires. The functional read — picking the delay — happens on the binder
+        // thread, so only the message text depends on the cross-thread one, but there is
+        // no reason to leave that unsynchronised.
+        @Volatile private var hasReceivedData = false
 
-        // Inactivity timeout: 15 s reset on each packet
+        // Inactivity timeout: armed at init, re-armed only by DATA — see [rearmTimeout].
+        // Keep the "Transfer stalled" prefix: syncAll's retry loop matches on it
+        // (sdcard_wal_sync.dart) to retry the file in place rather than fail the sync.
         private val timeoutRunnable = Runnable {
             activeDownloads.remove(address)
-            complete(Result.failure(Exception("Transfer stalled: 15s inactivity timeout")))
+            complete(Result.failure(Exception("Transfer stalled: ${timeoutMs() / 1000}s inactivity timeout")))
+        }
+
+        /**
+         * Only *payload* traffic counts as liveness. ACKs must never re-arm this.
+         *
+         * The keep-alive (0x32, [storageKeepAliveInterval]) is answered by the firmware
+         * with a PACKET_ACK notification on this same characteristic (storage.c
+         * storage_write_handler → STORAGE_NOTIFY), which lands here as a 0x03 packet.
+         * Re-arming on every packet meant a 10 s ACK cadence perpetually reset a 15 s
+         * watchdog: a transfer that died mid-file could never time out, downloadStorage-
+         * File never completed, and since Dart awaits it with no timeout of its own the
+         * sync hung until the 60 s pipeline watchdog force-recovered — by recycling the
+         * GATT, which turned a stalled file into a dropped connection and a partial sync.
+         *
+         * Two windows, because the two phases have different expectations:
+         *  - START (30 s): CMD_READ_FILE sent, no payload yet. The firmware still has to
+         *    open + seek the file, and an SD op can block for ~10 s under write pressure
+         *    (storage.c's own CMD_LIST_FILES guard waits that long), so this is
+         *    deliberately looser than the stream window. Never re-armed — one window for
+         *    the whole setup phase — which keeps the worst case at 30 s, comfortably
+         *    inside the 60 s Dart watchdog so native still owns this failure.
+         *  - STREAM (15 s): unchanged from before, re-armed per DATA packet.
+         */
+        private fun timeoutMs(): Long = if (hasReceivedData) 15_000L else 30_000L
+
+        private fun rearmTimeout() {
+            mainHandler.removeCallbacks(timeoutRunnable)
+            mainHandler.postDelayed(timeoutRunnable, timeoutMs())
         }
 
         init {
             val file = java.io.File(outputPath)
             file.parentFile?.mkdirs()
             fos = java.io.FileOutputStream(file, startOffset > 0)
-            mainHandler.postDelayed(timeoutRunnable, 15_000L)
+            rearmTimeout()
         }
 
         fun onPacket(value: ByteArray) {
             if (completed.get() || value.isEmpty()) return
-
-            // Reset inactivity watchdog on every received packet
-            mainHandler.removeCallbacks(timeoutRunnable)
-            mainHandler.postDelayed(timeoutRunnable, 15_000L)
 
             when (value[0].toInt() and 0xFF) {
                 0x03 -> { // ACK
@@ -877,6 +1021,10 @@ class OmiBleManager private constructor(private val application: Application) {
                 }
                 0x01 -> { // DATA
                     if (!hasReceivedStartAck || value.size < 5) return
+                    // Payload in hand: this is the only thing that counts as liveness, and
+                    // it also narrows the window from the START grace to the STREAM one.
+                    hasReceivedData = true
+                    rearmTimeout()
                     val incoming = (value[1].toLong() and 0xFF) or
                         ((value[2].toLong() and 0xFF) shl 8) or
                         ((value[3].toLong() and 0xFF) shl 16) or

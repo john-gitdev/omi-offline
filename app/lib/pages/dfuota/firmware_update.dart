@@ -19,6 +19,23 @@ class FirmwareUpdate extends StatefulWidget {
 
   const FirmwareUpdate({super.key, this.device, this.isRollback = false, this.localZipPath});
 
+  /// The stack Done leaves behind, bottom first.
+  ///
+  /// Home is always the base: the update reset the pairing, so keeping the screens
+  /// the user came in through would leave them pointed at a device that no longer
+  /// answers on the old key. The scan list goes on top only while the re-pair has
+  /// *not* happened — once it has, that page is one the user cannot act on (every
+  /// route into it is gated on being disconnected, and it closes itself on connect),
+  /// so pushing it would only make them dismiss it.
+  ///
+  /// Split out from the button so the branch can be asserted without standing up
+  /// either destination page.
+  @visibleForTesting
+  static List<Widget> postUpdateDestinations({required bool isReconnected}) => [
+        const RecordingsPage(),
+        if (!isReconnected) const FindDevicesPage(),
+      ];
+
   @override
   State<FirmwareUpdate> createState() => _FirmwareUpdateState();
 }
@@ -30,6 +47,9 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
 
   // Store reference to provider for safe disposal
   DeviceProvider? _deviceProvider;
+
+  // Latch for [_hasRepaired] — set there and nowhere else.
+  bool _preFlashLinkGone = false;
 
   @override
   void initState() {
@@ -94,6 +114,7 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
   @override
   void dispose() {
     killMcuUpdateManager();
+    cancelPostFlashReconnect();
     // Backstop: release the OTA screen/CPU wakelocks in case a terminal DFU
     // callback didn't fire (e.g. an MCU update failure has no explicit handler).
     releaseUpdateWakelocks();
@@ -254,79 +275,171 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
     );
   }
 
+  /// Whether `isConnected` can be read as *re-paired*, rather than as the tail of the
+  /// link the flash has just invalidated.
+  ///
+  /// The connection state alone cannot answer that. The success callback kicks off
+  /// `releasePairingOnSuccess` unawaited and flips `isInstalled` in the same
+  /// synchronous block, so this screen's first frame is drawn before the release has
+  /// closed anything — and the disconnect it causes reaches the provider a debounce
+  /// later again. Native's own retry ladder may also have re-established the pre-DFU
+  /// link during the flash, which is the whole reason the release exists. Read bare,
+  /// such a link announces "Paired again" over a pairing that is seconds from being
+  /// wiped, and Done then drops the Find Devices fallback — while this page's dispose
+  /// cancels the rediscovery loop on the way out, so nothing is left trying to
+  /// reconnect at all.
+  ///
+  /// So require the transition, not the state: the old link has to be seen down
+  /// before a live one counts as the new one. Nothing needs to arrive for that in the
+  /// ordinary case — the device rebooted during the flash, so `isConnected` is
+  /// already false when this screen first builds and the latch closes on that frame.
+  ///
+  /// Latching from inside build is safe here because it cannot affect the frame it
+  /// runs in: it is only set on the branch that returns false, which is what an
+  /// unlatched read would have returned anyway. It changes later frames only, and
+  /// every later frame comes from a provider notification that rebuilds this Consumer
+  /// regardless. It also fails in the recoverable direction — a disconnect that never
+  /// reaches Dart at all (`unmanageDevice` no-ops for a device already unmanaged)
+  /// leaves the latch open, which keeps the instructions and the fallback up.
+  bool _hasRepaired(bool isConnected) {
+    if (!isConnected) {
+      _preFlashLinkGone = true;
+      return false;
+    }
+    return _preFlashLinkGone;
+  }
+
   Widget _buildSuccessSection() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          // Explicitly full width: the parent Column is crossAxisAlignment.start, so
-          // without this the card shrink-wraps its content and sits narrower than the
-          // repair-instructions card below it (whose Row/Expanded forces full width).
-          width: double.infinity,
-          decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
-          child: Padding(
-            padding: const EdgeInsets.all(32),
-            child: Column(
-              children: [
-                Container(
-                  width: 80,
-                  height: 80,
-                  decoration: BoxDecoration(color: const Color(0xFF1A3D2E), borderRadius: BorderRadius.circular(40)),
-                  child: const Center(child: FaIcon(FontAwesomeIcons.check, color: Color(0xFF4ADE80), size: 32)),
+    // Watched, not read once. The re-pair happens in the Android system pairing
+    // dialog, which the user can accept while this very page is on screen — so the
+    // reconnect arrives with nothing here having been tapped, and the section has to
+    // repaint on the provider's word alone. Scoped to this section rather than the
+    // whole page so a running install isn't rebuilt by every unrelated notification
+    // the provider emits (battery, sync progress).
+    //
+    // Not matched against widget.device.id: the app carries one Omi at a time, and
+    // after a flash it is this one — the DFU does not change its address. What the
+    // link state is matched against is *when* it came up; see [_hasRepaired].
+    return Consumer<DeviceProvider>(
+      builder: (context, deviceProvider, _) {
+        final isReconnected = _hasRepaired(deviceProvider.isConnected);
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              // Explicitly full width: the parent Column is crossAxisAlignment.start, so
+              // without this the card shrink-wraps its content and sits narrower than the
+              // repair-instructions card below it (whose Row/Expanded forces full width).
+              width: double.infinity,
+              decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
+              child: Padding(
+                padding: const EdgeInsets.all(32),
+                child: Column(
+                  children: [
+                    Container(
+                      width: 80,
+                      height: 80,
+                      decoration:
+                          BoxDecoration(color: const Color(0xFF1A3D2E), borderRadius: BorderRadius.circular(40)),
+                      child: const Center(child: FaIcon(FontAwesomeIcons.check, color: Color(0xFF4ADE80), size: 32)),
+                    ),
+                    const SizedBox(height: 24),
+                    const Text(
+                      'Firmware updated!',
+                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600, color: Colors.white),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      isReconnected
+                          ? 'Your ${widget.device?.name ?? "Omi device"} is paired again and connected.'
+                          : 'Your ${widget.device?.name ?? "Omi device"} is restarting to finish the update.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 15, color: Colors.grey.shade400, height: 1.4),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 24),
-                const Text(
-                  'Firmware updated!',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600, color: Colors.white),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Your ${widget.device?.name ?? "Omi device"} is restarting to finish the update.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 15, color: Colors.grey.shade400, height: 1.4),
-                ),
-              ],
+              ),
             ),
-          ),
-        ),
-        const SizedBox(height: 16),
-        _buildRepairInstructions(),
-        const SizedBox(height: 24),
-        // Done button — Material+InkWell so the tap shows a ripple inside the rounded corners.
-        Material(
-          color: Colors.transparent,
-          child: Ink(
-            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14)),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(14),
-              onTap: () {
-                final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
-                deviceProvider.resetFirmwareUpdateState();
-                // The update cleared the pairing on both sides, so re-pairing is the
-                // next step every time — land the user on the scan list rather than
-                // on a home screen showing a device that can no longer connect.
-                // Reset to home first and push the scan page on top of it: replacing
-                // the whole stack with the scan page would leave it as root with
-                // nothing to pop back to. The navigator is captured up front because
-                // the stack reset unmounts this page's context.
-                final navigator = Navigator.of(context);
-                navigator.pushAndRemoveUntil(_pageRoute(const RecordingsPage()), (route) => false);
-                navigator.push(_pageRoute(const FindDevicesPage()));
-              },
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                child: const Center(
-                  child: Text(
-                    'Done',
-                    style: TextStyle(color: Colors.black, fontSize: 17, fontWeight: FontWeight.w600),
+            const SizedBox(height: 16),
+            // Once the pairing request has been accepted there is nothing left to
+            // instruct — leaving "You need to pair again" up in front of a connected
+            // device would be telling the user to redo what they just did.
+            isReconnected ? _buildReconnectedNotice() : _buildRepairInstructions(),
+            const SizedBox(height: 24),
+            // Done button — Material+InkWell so the tap shows a ripple inside the rounded corners.
+            Material(
+              color: Colors.transparent,
+              child: Ink(
+                decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14)),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(14),
+                  onTap: () {
+                    deviceProvider.resetFirmwareUpdateState();
+                    // The navigator is captured up front because the stack reset
+                    // below unmounts this page's context.
+                    final navigator = Navigator.of(context);
+                    final destinations = FirmwareUpdate.postUpdateDestinations(isReconnected: isReconnected);
+                    // The first goes on as the new root — replacing the whole stack
+                    // with a later one would leave it with nothing to pop back to.
+                    navigator.pushAndRemoveUntil(_pageRoute(destinations.first), (route) => false);
+                    for (final destination in destinations.skip(1)) {
+                      navigator.push(_pageRoute(destination));
+                    }
+                  },
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    child: const Center(
+                      child: Text(
+                        'Done',
+                        style: TextStyle(color: Colors.black, fontSize: 17, fontWeight: FontWeight.w600),
+                      ),
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// Replaces the re-pair instructions once the device is back on the link — same
+  /// slot, so the page doesn't reflow when the reconnect lands mid-read.
+  Widget _buildReconnectedNotice() {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF1C1C1E),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFF2A2A2E)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const FaIcon(FontAwesomeIcons.circleCheck, color: Color(0xFF4ADE80), size: 16),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Paired again',
+                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Nothing else to do — tap Done to get back to your recordings.',
+                    style: TextStyle(color: Colors.grey.shade400, fontSize: 14, height: 1.4),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
-      ],
+      ),
     );
   }
 
@@ -371,11 +484,21 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
   // re-pairing is not an "if something went wrong" fallback here, it is the normal
   // next step, and it is why Done opens the scan list.
   Widget _buildRepairInstructions() {
+    // On Android the app waits for the Omi to start advertising again and then
+    // reconnects on its own (FirmwareMixin.reconnectWhenDeviceReturns), so the
+    // pairing request arrives without the user doing anything — the manual route is
+    // the fallback for when that window expires. iOS cannot clear its own bond, so
+    // there the user has to forget the device first and the manual route is the only
+    // one.
     final steps = <String>[
       'Wait a few seconds for your Omi to finish restarting.',
-      if (Platform.isIOS)
+      if (Platform.isIOS) ...[
         'On your phone: open Settings → Bluetooth, tap the ⓘ next to your Omi, and choose "Forget This Device".',
-      'Tap Done below, then tap your Omi in the list to pair with it again.',
+        'Tap Done below, then tap your Omi in the list to pair with it again.',
+      ] else ...[
+        'Accept the pairing request when it appears — your Omi reconnects on its own.',
+        'If it doesn\'t appear, tap Done below and tap your Omi in the list to pair with it again.',
+      ],
     ];
     return Container(
       decoration: BoxDecoration(
@@ -402,8 +525,16 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
             ),
             const SizedBox(height: 8),
             Text(
-              'The update cleared the Bluetooth pairing between your Omi and this phone, so it will not '
-              'reconnect on its own. Pair it again to finish:',
+              // Platform-split for the same reason the steps are: on Android the app
+              // reconnects by itself once it hears the Omi advertising again, so
+              // "it will not reconnect on its own" — true on iOS, where the bond can
+              // only be cleared by hand — would contradict the step right below it.
+              Platform.isIOS
+                  ? 'The update cleared the Bluetooth pairing between your Omi and this phone, so it will not '
+                      'reconnect on its own. Pair it again to finish:'
+                  : 'The update cleared the Bluetooth pairing between your Omi and this phone. The app '
+                      'reconnects as soon as your Omi is back, so all that is left is to accept the pairing '
+                      'request:',
               style: TextStyle(color: Colors.grey.shade400, fontSize: 14, height: 1.4),
             ),
             const SizedBox(height: 16),

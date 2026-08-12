@@ -212,6 +212,18 @@ interface BleHostApi {
   fun unsubscribeCharacteristic(peripheralUuid: String, serviceUuid: String, characteristicUuid: String)
   fun getBluetoothState(): String
   fun isPeripheralConnected(uuid: String): Boolean
+  /**
+   * (Android only) Addresses the OS currently holds a pairing key for,
+   * uppercased to match the ids native hands out everywhere else.
+   *
+   * Find Devices asks so it can mark which row is the Omi this phone is paired
+   * to — the stored preference cannot answer that, since it still names the
+   * device after a DFU wipes the bond. The whole set rather than a per-address
+   * query: it is one IPC instead of one per row, and normalizing the address is
+   * then native's job rather than every caller's. A local lookup, no radio
+   * traffic. iOS returns empty (CoreBluetooth exposes no bond state).
+   */
+  fun getBondedDeviceIds(): List<String>
   /** (Android only) Check if any CompanionDeviceManager association exists. */
   fun hasCompanionDeviceAssociation(): Boolean
   /** (Android only) Initiate CompanionDeviceManager association for a device. */
@@ -530,6 +542,21 @@ interface BleHostApi {
             val uuidArg = args[0] as String
             val wrapped: List<Any?> = try {
               listOf(api.isPeripheralConnected(uuidArg))
+            } catch (exception: Throwable) {
+              PigeonCommunicatorPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.omi_pigeon.BleHostApi.getBondedDeviceIds$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            val wrapped: List<Any?> = try {
+              listOf(api.getBondedDeviceIds())
             } catch (exception: Throwable) {
               PigeonCommunicatorPigeonUtils.wrapError(exception)
             }
