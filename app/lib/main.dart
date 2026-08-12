@@ -28,8 +28,14 @@ void main() async {
   // Version stamp, first thing after prefs are up so it heads the launch's log
   // lines. Firmware is the last-read value (nothing is connected yet); the
   // connect that follows confirms it with a device_version line of its own.
+  //
+  // Read from the flat lastLoggedFirmwareRevision string and NOT from
+  // `btDevice`, whose getter jsonDecodes a stored blob: this runs before
+  // runApp(), so anything that throws here is an app that will not start at all.
+  // The cost is that the very first launch on this build says "unknown" until
+  // the first connect populates it.
   unawaited(DebugLogManager.logAppStart(
-    lastKnownFirmware: SharedPreferencesUtil().btDevice.firmwareRevision,
+    lastKnownFirmware: SharedPreferencesUtil().lastLoggedFirmwareRevision,
   ));
   await SyncNotification.requestPermissions();
   await ServiceManager.init();
