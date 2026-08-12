@@ -776,16 +776,16 @@ class OmiBleManager private constructor(private val application: Application) {
         mainHandler.post(cmd.run)
     }
     @Synchronized fun completeCommand() {
-        // A callback for a command [resetCommandPipeline] already abandoned — the teardown
-        // ran while it was mid-flight, so there is nothing of ours at the head to retire.
-        // Returning is what stops it polling the *next* connection's command off the queue;
-        // without it, a late failure path from the dead link silently eats the new link's
-        // first command and clears the in-flight flag under it.
+        // Cheap invariant assertion, and deliberately no more than that: nothing legitimate
+        // reaches here with the flag down, because [processNextCommand] only posts a command
+        // once it has raised it — so a queue head seen while this is `false` has not been
+        // sent, and polling it would discard an unsent command rather than retire a finished
+        // one.
         //
-        // Nothing legitimate reaches here with the flag down: [processNextCommand] only
-        // posts a command once it has raised it, so a queue head seen while it is `false`
-        // has not been sent, and polling it would discard an unsent command rather than
-        // retire a finished one.
+        // It is NOT what protects the next connection's command from a stale callback. Once
+        // that connection has posted something the flag is true again, raised by *its*
+        // command, so this test cannot tell the two apart. What keeps a stale runnable from
+        // reaching here at all is the removeCallbacks in [resetCommandPipeline].
         if (!isProcessingCommand) return
         endCommandTiming("recovered")
         gattQueue.poll()
