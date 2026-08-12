@@ -717,7 +717,7 @@ class OmiBleManager private constructor(private val application: Application) {
      * finally arrived and "abandoned" when the peripheral was torn down with it still
      * outstanding. Only reports when the command had already been warned about, so a
      * healthy pipeline writes nothing at all. Caller holds the monitor (see
-     * [abandonInFlightCommand] for the teardown path, which does not).
+     * [resetCommandPipeline] for the teardown path, which takes it itself).
      */
     private fun endCommandTiming(outcome: String) {
         val label = inFlightLabel ?: return
@@ -732,8 +732,37 @@ class OmiBleManager private constructor(private val application: Application) {
         WedgeDiagnostics.captureGattCommand(application, outcome, label, age, behind)
     }
 
-    /** Teardown-path counterpart to [endCommandTiming], which cleanupPeripheral calls off-monitor. */
-    @Synchronized private fun abandonInFlightCommand() = endCommandTiming("abandoned")
+    /**
+     * Drop the in-flight command and everything queued behind it, as one indivisible step.
+     *
+     * [cleanupPeripheral] used to do this as three loose statements with only the first
+     * holding the monitor, which left two ways for a dead connection to corrupt the *next*
+     * one's pipeline:
+     *
+     * - An `enqueueCommand` landing between them was either wiped by the `clear()` or left
+     *   in the queue unprocessed — its [processNextCommand] had already seen
+     *   [isProcessingCommand] still `true`, and nothing re-runs it until some later enqueue
+     *   happens along. The queue is `ConcurrentLinkedQueue`, so each statement is
+     *   individually safe; it is the sequence that was not.
+     * - [processNextCommand] posts the head to `mainHandler`, and clearing the queue does
+     *   not unpost it. It then ran against the closed gatt and, on the failure paths that
+     *   call [completeCommand] (`writeDescriptorCompat`, the write/read helpers), polled the
+     *   queue — popping whatever the new connection had since enqueued, and dropping
+     *   [isProcessingCommand] while that command was genuinely in flight.
+     *
+     * Deliberately its own method rather than `@Synchronized` on [cleanupPeripheral]: that
+     * one also invokes the Dart read/write completions, which can re-enter this class.
+     */
+    @Synchronized private fun resetCommandPipeline() {
+        // Report first: this is the only place that learns a stalled command never came
+        // back, and the queue length behind it is gone a line later.
+        endCommandTiming("abandoned")
+        // Too late once it has started running — [completeCommand]'s own guard covers that
+        // — but it is the only thing that stops one still sitting on the handler.
+        gattQueue.peek()?.let { mainHandler.removeCallbacks(it.run) }
+        gattQueue.clear()
+        isProcessingCommand = false
+    }
 
     @Synchronized fun enqueueCommand(label: String, command: Runnable) {
         gattQueue.add(GattCommand(label, command))
@@ -747,6 +776,17 @@ class OmiBleManager private constructor(private val application: Application) {
         mainHandler.post(cmd.run)
     }
     @Synchronized fun completeCommand() {
+        // A callback for a command [resetCommandPipeline] already abandoned — the teardown
+        // ran while it was mid-flight, so there is nothing of ours at the head to retire.
+        // Returning is what stops it polling the *next* connection's command off the queue;
+        // without it, a late failure path from the dead link silently eats the new link's
+        // first command and clears the in-flight flag under it.
+        //
+        // Nothing legitimate reaches here with the flag down: [processNextCommand] only
+        // posts a command once it has raised it, so a queue head seen while it is `false`
+        // has not been sent, and polling it would discard an unsent command rather than
+        // retire a finished one.
+        if (!isProcessingCommand) return
         endCommandTiming("recovered")
         gattQueue.poll()
         isProcessingCommand = false
@@ -785,12 +825,10 @@ class OmiBleManager private constructor(private val application: Application) {
         // isProcessingCommand stuck true. Resetting only the flag would leave that
         // stale command (referencing the now-dead gatt) to be re-posted on the next
         // enqueue after reconnect. Clear the queue so the next connection starts
-        // with a clean command pipeline.
-        // Report first: this is the only place that learns a stalled command never came
-        // back, and the queue length behind it is gone a line later.
-        abandonInFlightCommand()
-        gattQueue.clear()
-        isProcessingCommand = false
+        // with a clean command pipeline. One call, because the three steps it used to
+        // take were separable and a racing enqueue could land between them — see
+        // [resetCommandPipeline].
+        resetCommandPipeline()
         activeDownloads.remove(addr)?.complete(Result.failure(Exception("Stream closed without EOT")))
     }
 
