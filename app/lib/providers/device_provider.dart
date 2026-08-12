@@ -1859,6 +1859,11 @@ class DeviceProvider extends ChangeNotifier
     final conn = await ServiceManager.instance().device.ensureConnection(device.id);
     if (conn != null) {
       final log = await conn.getDiagnostics();
+      // Why the last boot happened, for the version stamp below. Latched from
+      // the reset itself, so it describes the boot we are talking to now — it is
+      // read whether or not the reading is new, since the stamp is written on
+      // every connect while `crashLogs` deliberately dedupes.
+      final String? resetCause = log?.causeLabel;
       if (log != null) {
         // Only add if it's a new event (different device, cause, or uptime)
         bool isDuplicate = crashLogs.isNotEmpty &&
@@ -2007,6 +2012,26 @@ class DeviceProvider extends ChangeNotifier
             'marker_pause_gate_saves': dropStats.markerPauseGateSaves,
           });
         }
+      }
+
+      // Firmware identity + reboot check, on every connect. Together with the
+      // app_start line this is what makes a version change inferable from the
+      // log alone: which firmware produced the surrounding lines, when it
+      // changed, and — separately — when the device restarted. A DFU shows up as
+      // both (and as a reboot ALONE when the revision string didn't move, e.g. a
+      // same-version reflash that only re-sends the net core).
+      //
+      // dropStats is null while a sync holds the storage lock; the version is
+      // still worth stamping, so only the uptime half drops out.
+      final fw = pairedDevice?.firmwareRevision;
+      if (fw != null && fw.isNotEmpty) {
+        await DebugLogManager.logDeviceVersion(
+          firmwareRevision: fw,
+          hardwareRevision: pairedDevice?.hardwareRevision,
+          modelNumber: pairedDevice?.modelNumber,
+          uptimeMs: dropStats?.currentUptimeMs,
+          resetCause: resetCause,
+        );
       }
 
       // On-device diagnostic event log (dev tool): learn whether the firmware
