@@ -225,8 +225,12 @@ class DebugLogManager {
       files.sort((a, b) {
         final an = a.uri.pathSegments.last;
         final bn = b.uri.pathSegments.last;
-        if (an == _tempFileName) return -1;
-        if (bn == _tempFileName) return 1;
+        // Written as a total order rather than two early returns: `if (an ==
+        // _tempFileName) return -1` also fires when both sides are the active
+        // file, which reports it as ordered before itself.
+        final aActive = an == _tempFileName;
+        final bActive = bn == _tempFileName;
+        if (aActive != bActive) return aActive ? -1 : 1;
         return bn.compareTo(an);
       });
       return files;
@@ -292,8 +296,10 @@ class DebugLogManager {
   /// in because at launch nothing is connected yet. It is the caller's cached
   /// value, and the connect a moment later confirms it via [logDeviceVersion].
   static Future<void> logAppStart({String? lastKnownFirmware}) async {
-    String appVersion = 'unknown';
-    String buildNumber = 'unknown';
+    // Null rather than an 'unknown' sentinel, so a failed read stays
+    // distinguishable from a version that was actually read.
+    String? appVersion;
+    String? buildNumber;
     try {
       final info = await PackageInfo.fromPlatform();
       appVersion = info.version;
@@ -302,11 +308,11 @@ class DebugLogManager {
 
     final prefs = SharedPreferencesUtil();
     final previous = prefs.lastLoggedAppVersion;
-    final changed = previous.isNotEmpty && previous != appVersion;
+    final changed = appVersion != null && previous.isNotEmpty && previous != appVersion;
 
     await logEvent('app_start', {
-      'app_version': appVersion,
-      'build_number': buildNumber,
+      'app_version': appVersion ?? 'unknown',
+      'build_number': buildNumber ?? 'unknown',
       'os': Platform.operatingSystem,
       'os_version': Platform.operatingSystemVersion,
       'last_known_firmware': (lastKnownFirmware?.isNotEmpty ?? false) ? lastKnownFirmware : 'unknown',
@@ -314,7 +320,9 @@ class DebugLogManager {
       if (changed) 'previous_app_version': previous,
     });
 
-    if (previous != appVersion) prefs.lastLoggedAppVersion = appVersion;
+    // A failed read is not a version change. Recording the sentinel would make
+    // the NEXT launch report a spurious 'unknown' -> real transition.
+    if (appVersion != null && previous != appVersion) prefs.lastLoggedAppVersion = appVersion;
   }
 
   /// Stamps the device's firmware identity on every connect, and reports whether
@@ -350,6 +358,12 @@ class DebugLogManager {
     final previousUptimeMs = prefs.lastSeenDeviceUptimeMs;
     // Strictly lower, not merely different: uptime climbs within one boot, and
     // several connects during the same boot must not each read as a reboot.
+    //
+    // The firmware's uptime is a u32 of milliseconds, so it also goes backwards
+    // once every 49.7 days of continuous running. That is not worth code on a
+    // 150 mAh wearable — it would have to outlive its battery by two orders of
+    // magnitude — but it is why this reads "the device restarted" rather than
+    // "the device restarted, definitely".
     final rebooted = uptimeMs != null && previousUptimeMs > 0 && uptimeMs < previousUptimeMs;
 
     await logEvent('device_version', {
