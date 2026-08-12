@@ -279,7 +279,7 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
   /// link the flash has just invalidated.
   ///
   /// The connection state alone cannot answer that. The success callback kicks off
-  /// `_releasePairingOnSuccess` unawaited and flips `isInstalled` in the same
+  /// `releasePairingOnSuccess` unawaited and flips `isInstalled` in the same
   /// synchronous block, so this screen's first frame is drawn before the release has
   /// closed anything — and the disconnect it causes reaches the provider a debounce
   /// later again. Native's own retry ladder may also have re-established the pre-DFU
@@ -485,7 +485,7 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
   // next step, and it is why Done opens the scan list.
   Widget _buildRepairInstructions() {
     // On Android the app waits for the Omi to start advertising again and then
-    // reconnects on its own (FirmwareMixin._reconnectWhenDeviceReturns), so the
+    // reconnects on its own (FirmwareMixin.reconnectWhenDeviceReturns), so the
     // pairing request arrives without the user doing anything — the manual route is
     // the fallback for when that window expires. iOS cannot clear its own bond, so
     // there the user has to forget the device first and the manual route is the only
