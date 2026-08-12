@@ -503,17 +503,22 @@ class OmiBleForegroundService : Service() {
 
         handler.postDelayed({
             bleManager.enqueueCommand("requestMtu $addr") {
+                // Read outside the try so the catch below can name it too. completeCommand
+                // now identifies the link its callback belongs to, and a null here means
+                // there is no live one: the peripheral was torn down, which already reset
+                // the pipeline, so there is nothing of ours left to retire. Passing a stale
+                // gatt would be dropped on that same identity check anyway.
+                val currentGatt = bleManager.connectedGatts[addr]
                 try {
-                    val currentGatt = bleManager.connectedGatts[addr]
                     if (currentGatt == null || !currentGatt.requestMtu(MTU_SIZE)) {
                         Log.e(TAG, "requestMtu failed for $addr")
-                        bleManager.completeCommand()
+                        currentGatt?.let { bleManager.completeCommand(it) }
                         bleManager.connectionListener = originalListener
                         fireDeviceReady(addr, services)
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "requestMtu exception for $addr: ${e.message}")
-                    bleManager.completeCommand()
+                    currentGatt?.let { bleManager.completeCommand(it) }
                     bleManager.connectionListener = originalListener
                     fireDeviceReady(addr, services)
                 }
