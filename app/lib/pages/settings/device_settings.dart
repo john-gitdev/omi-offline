@@ -1269,56 +1269,65 @@ class _DeviceSettingsState extends State<DeviceSettings> {
       child: Column(
         children: [
           if (provider.isConnected) ...[
-            const Divider(height: 1, color: Color(0xFF3C3C43)),
-            // Remote cold-reboot — recover a wedged device without unpairing.
-            Material(
-              color: Colors.transparent,
-              child: InkWell(
-                onTap: () => _rebootDevice(provider),
-                child: const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 18),
-                  child: Row(
-                    children: [
-                      SizedBox(
-                        width: 24,
-                        height: 24,
-                        child: FaIcon(FontAwesomeIcons.arrowsRotate, color: Colors.white70, size: 20),
-                      ),
-                      SizedBox(width: 16),
-                      Text(
-                        'Reboot Omi',
-                        style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w400),
-                      ),
-                    ],
+            // Reboot and Shutdown wait behind the same gate as the sections
+            // above: both send a command over the storage characteristic the
+            // initial reads are still using, and neither is worth offering
+            // before the page can say whether the Omi is answering at all.
+            // Unpair is deliberately *not* gated — it is the way out of a
+            // device that never finishes answering, so it has to stay tappable
+            // for the whole of that wait.
+            if (!_isLoading) ...[
+              const Divider(height: 1, color: Color(0xFF3C3C43)),
+              // Remote cold-reboot — recover a wedged device without unpairing.
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: () => _rebootDevice(provider),
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: FaIcon(FontAwesomeIcons.arrowsRotate, color: Colors.white70, size: 20),
+                        ),
+                        SizedBox(width: 16),
+                        Text(
+                          'Reboot Omi',
+                          style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w400),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
-            ),
-            const Divider(height: 1, color: Color(0xFF3C3C43)),
-            // Remote power-off (ship mode) — stays off until a button/charger wake.
-            Material(
-              color: Colors.transparent,
-              child: InkWell(
-                onTap: () => _shutdownDevice(provider),
-                child: const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 18),
-                  child: Row(
-                    children: [
-                      SizedBox(
-                        width: 24,
-                        height: 24,
-                        child: FaIcon(FontAwesomeIcons.powerOff, color: Colors.white70, size: 20),
-                      ),
-                      SizedBox(width: 16),
-                      Text(
-                        'Shutdown Omi',
-                        style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w400),
-                      ),
-                    ],
+              const Divider(height: 1, color: Color(0xFF3C3C43)),
+              // Remote power-off (ship mode) — stays off until a button/charger wake.
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: () => _shutdownDevice(provider),
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: FaIcon(FontAwesomeIcons.powerOff, color: Colors.white70, size: 20),
+                        ),
+                        SizedBox(width: 16),
+                        Text(
+                          'Shutdown Omi',
+                          style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w400),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
-            ),
+            ],
             const Divider(height: 1, color: Color(0xFF3C3C43)),
             Material(
               color: Colors.transparent,
@@ -1421,16 +1430,22 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   Widget _buildLoadingPlaceholder() {
     return Padding(
       padding: const EdgeInsets.only(bottom: 48),
-      child: Column(
-        children: [
-          const SizedBox(
-            width: 22,
-            height: 22,
-            child: CircularProgressIndicator(strokeWidth: 2.5, color: Color(0xFF8E8E93)),
-          ),
-          const SizedBox(height: 14),
-          Text('Loading…', style: TextStyle(color: Colors.grey.shade500, fontSize: 15)),
-        ],
+      // The page's Column aligns its children to the start, so the placeholder
+      // has to centre itself — without this it shrink-wraps the text and sits
+      // against the left edge, off-axis from everything else on the screen.
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(strokeWidth: 2.5, color: Color(0xFF8E8E93)),
+            ),
+            const SizedBox(height: 14),
+            Text('Loading…', style: TextStyle(color: Colors.grey.shade500, fontSize: 15)),
+          ],
+        ),
       ),
     );
   }
