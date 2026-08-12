@@ -592,7 +592,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
 ///
 /// Note it does **not** help immediately after a firmware update, which is the one
 /// thing it looks like it should do: the flash wipes the phone's bond too
-/// (`_releasePairingOnSuccess`), so the Omi the user is hunting for is unmarked
+/// (`releasePairingOnSuccess`), so the Omi the user is hunting for is unmarked
 /// like every other, until the re-pair lands and turns it green.
 ///
 /// `isConnected` wins when both are set, which is the normal state of a live link
