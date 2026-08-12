@@ -193,6 +193,44 @@ object WedgeDiagnostics {
         }.start()
     }
 
+    /**
+     * One line about the single-in-flight GATT command pipeline, for the case Dart cannot
+     * see: `NativeBleTransport` abandons a read/write after 10 s, but that timeout is
+     * Dart-local. It cannot tell an operation that was merely slow — and later completed,
+     * freeing the pipeline — from one whose callback never arrived, which parks every
+     * command queued behind it until the link drops. The two need opposite fixes, and the
+     * only place that distinction exists is here.
+     *
+     * Read the outcomes as a sequence for one command:
+     *  - `stalled` alone, then nothing: the callback never came. Anything enqueued after it
+     *    was never sent, however healthy the link looked.
+     *  - `stalled` then `recovered`: slow, not wedged. Dart gave up early; the pipeline was
+     *    fine. Whatever else went wrong, it was not this.
+     *  - `stalled` then `abandoned`: it stayed stuck until the peripheral was torn down.
+     *
+     * Log-only, deliberately. Nothing here completes, cancels or re-posts a command:
+     * force-completing races the late callback this is trying to detect, and a double
+     * completeCommand() would pop an unrelated command off the queue.
+     */
+    fun captureGattCommand(
+        context: Context,
+        outcome: String,
+        label: String,
+        outstandingMs: Long,
+        queuedBehind: Int,
+    ) {
+        logEvent(
+            context,
+            "ble_gatt_command",
+            mapOf(
+                "outcome" to outcome,
+                "command" to label,
+                "outstanding_ms" to outstandingMs,
+                "queued_behind" to queuedBehind,
+            ),
+        )
+    }
+
     private fun adapterStateName(state: Int): String = when (state) {
         BluetoothAdapter.STATE_OFF -> "off"
         BluetoothAdapter.STATE_TURNING_ON -> "turning_on"
