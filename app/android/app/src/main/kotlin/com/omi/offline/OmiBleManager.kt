@@ -757,8 +757,30 @@ class OmiBleManager private constructor(private val application: Application) {
         // Report first: this is the only place that learns a stalled command never came
         // back, and the queue length behind it is gone a line later.
         endCommandTiming("abandoned")
-        // Too late once it has started running — [completeCommand]'s own guard covers that
-        // — but it is the only thing that stops one still sitting on the handler.
+        // Only unposts a head that has not started; a runnable already executing runs to
+        // completion. That residue is deliberately left alone, and reviewers have now asked
+        // three times, so the trace is here rather than in a PR thread.
+        //
+        // For an already-started A to hurt, its completion must retire a command belonging to
+        // the *live* link — so something must have enqueued one, and every enqueue site is
+        // either on the main thread (Dart's read/write/subscribe/CMD_READ_FILE via Pigeon,
+        // which has no TaskQueue, plus requestMtu's postDelayed) or is
+        // onConnectionStateChange(CONNECTED)'s discoverServices on a binder thread:
+        //
+        // - Main-thread enqueues cannot run while A occupies the main thread, so they land
+        //   only after A's body has returned. Before a reconnect, connectedGatts still holds
+        //   the dead gatt, so what they enqueue is a command on a dead link — retiring it
+        //   early costs nothing and leaves the pipeline consistent (empty queue, flag down).
+        // - For an enqueue to belong to the NEW link, connectedGatts must already hold the
+        //   new instance, and every assignment to it is preceded by close() on the old one
+        //   (connectGatt disconnects+closes+removes first, and refuses outright while an
+        //   entry exists). close() unregisters the client, so the old gatt delivers nothing
+        //   after that point — A's completion cannot arrive to retire the new command.
+        //
+        // A per-gatt identity parameter on [completeCommand] was tried and reverted: it
+        // guarded that unreachable case at the cost of a required argument in 16 places, and
+        // was itself incomplete — doing it properly needs readCompletions, writeCompletions
+        // and servicesDiscoveredFor scoped per gatt too.
         gattQueue.peek()?.let { mainHandler.removeCallbacks(it.run) }
         gattQueue.clear()
         isProcessingCommand = false
