@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/utils/debug_log_manager.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -58,14 +59,27 @@ void main() {
   });
 
   group('Core logging tests', () {
-    test('getLogFile returns a valid file with correct naming', () async {
+    test('getLogFile uses a fixed placeholder name, not a dated one', () async {
       final file = await DebugLogManager.getLogFile();
       expect(file, isNotNull);
       expect(file!.existsSync(), isTrue);
 
       final fileName = file.uri.pathSegments.last;
+      // The date belongs to the share name, not the working file.
+      expect(fileName, 'omi_debug_current.log');
+      // The native wedge-diagnostics writer finds this file by prefix + suffix.
       expect(fileName.startsWith('omi_debug_'), isTrue);
       expect(fileName.endsWith('.log'), isTrue);
+    });
+
+    test('shareFileName stamps os/app/fw and the share date', () async {
+      final name = DebugLogManager.shareFileName(os: 'android', appVersion: '0.33.8', fwVersion: 'oo-3.0.2');
+
+      final d = DateTime.now().toUtc();
+      final stamp = '${d.year.toString().padLeft(4, '0')}'
+          '${d.month.toString().padLeft(2, '0')}'
+          '${d.day.toString().padLeft(2, '0')}';
+      expect(name, 'android_0.33.8_oo-3.0.2_omi_offline_debug_$stamp.log');
     });
 
     test('appends logInfo correctly', () async {
@@ -186,6 +200,103 @@ void main() {
       expect(fileNames.contains('omi_debug_20230101.log'), isTrue);
       expect(fileNames.contains('omi_debug_20230102.log'), isTrue);
       expect(fileNames.contains('other_file.txt'), isFalse);
+    });
+
+    test('logAppStart stamps the app version and flags a change', () async {
+      PackageInfo.setMockInitialValues(
+        appName: 'omi',
+        packageName: 'com.omi.offline',
+        version: '0.33.8',
+        buildNumber: '338',
+        buildSignature: '',
+      );
+
+      // First ever run: the version is recorded, but nothing "changed" — there
+      // was no previous version to change from.
+      await DebugLogManager.logAppStart(lastKnownFirmware: 'oo-3.0.2');
+      var line = (await DebugLogManager.getRecentLogs()).first;
+      expect(line['type'], 'app_start');
+      expect(line['app_version'], '0.33.8');
+      expect(line['build_number'], '338');
+      expect(line['last_known_firmware'], 'oo-3.0.2');
+      expect(line.containsKey('app_version_changed'), isFalse);
+
+      // Same version again: stamped every launch, still no change.
+      await DebugLogManager.logAppStart();
+      line = (await DebugLogManager.getRecentLogs()).first;
+      expect(line['app_version'], '0.33.8');
+      expect(line['last_known_firmware'], 'unknown');
+      expect(line.containsKey('app_version_changed'), isFalse);
+
+      PackageInfo.setMockInitialValues(
+        appName: 'omi',
+        packageName: 'com.omi.offline',
+        version: '0.33.9',
+        buildNumber: '339',
+        buildSignature: '',
+      );
+      await DebugLogManager.logAppStart();
+      line = (await DebugLogManager.getRecentLogs()).first;
+      expect(line['app_version'], '0.33.9');
+      expect(line['app_version_changed'], isTrue);
+      expect(line['previous_app_version'], '0.33.8');
+    });
+
+    test('logDeviceVersion flags a firmware change once', () async {
+      await DebugLogManager.logDeviceVersion(firmwareRevision: 'oo-3.0.1', uptimeMs: 1000);
+      var line = (await DebugLogManager.getRecentLogs()).first;
+      expect(line['type'], 'device_version');
+      expect(line['firmware_revision'], 'oo-3.0.1');
+      expect(line.containsKey('firmware_changed'), isFalse); // nothing to change from
+
+      await DebugLogManager.logDeviceVersion(firmwareRevision: 'oo-3.0.2', uptimeMs: 2000);
+      line = (await DebugLogManager.getRecentLogs()).first;
+      expect(line['firmware_changed'], isTrue);
+      expect(line['previous_firmware'], 'oo-3.0.1');
+
+      // Flagged on the transition only, not on every connect thereafter.
+      await DebugLogManager.logDeviceVersion(firmwareRevision: 'oo-3.0.2', uptimeMs: 3000);
+      line = (await DebugLogManager.getRecentLogs()).first;
+      expect(line.containsKey('firmware_changed'), isFalse);
+    });
+
+    test('logDeviceVersion detects a reboot from uptime going backwards', () async {
+      await DebugLogManager.logDeviceVersion(firmwareRevision: 'oo-3.0.2', uptimeMs: 60000);
+      // Later in the same boot — uptime climbed, so no reboot.
+      await DebugLogManager.logDeviceVersion(firmwareRevision: 'oo-3.0.2', uptimeMs: 90000);
+      var line = (await DebugLogManager.getRecentLogs()).first;
+      expect(line.containsKey('rebooted'), isFalse);
+
+      // Uptime lower than last seen: the device restarted in between. Version
+      // unchanged — the case a same-version reflash produces.
+      await DebugLogManager.logDeviceVersion(
+        firmwareRevision: 'oo-3.0.2',
+        uptimeMs: 5000,
+        resetCause: 'software reset',
+      );
+      line = (await DebugLogManager.getRecentLogs()).first;
+      expect(line['rebooted'], isTrue);
+      expect(line['previous_uptime_ms'], 90000);
+      expect(line['reset_cause'], 'software reset');
+      expect(line.containsKey('firmware_changed'), isFalse);
+    });
+
+    test('logDeviceVersion without an uptime reading neither claims nor loses a reboot', () async {
+      await DebugLogManager.logDeviceVersion(firmwareRevision: 'oo-3.0.2', uptimeMs: 90000);
+
+      // A sync held the storage lock, so getDropStats() returned null. The
+      // version is still stamped, and the stored uptime must survive untouched.
+      await DebugLogManager.logDeviceVersion(firmwareRevision: 'oo-3.0.2');
+      var line = (await DebugLogManager.getRecentLogs()).first;
+      expect(line['firmware_revision'], 'oo-3.0.2');
+      expect(line.containsKey('rebooted'), isFalse);
+      expect(line.containsKey('uptime_ms'), isFalse);
+
+      // The next real reading still compares against 90000, not against a hole.
+      await DebugLogManager.logDeviceVersion(firmwareRevision: 'oo-3.0.2', uptimeMs: 5000);
+      line = (await DebugLogManager.getRecentLogs()).first;
+      expect(line['rebooted'], isTrue);
+      expect(line['previous_uptime_ms'], 90000);
     });
 
     test('getRecentLogs safely skips malformed JSON', () async {
