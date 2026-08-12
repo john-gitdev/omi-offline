@@ -502,7 +502,7 @@ class OmiBleForegroundService : Service() {
         }
 
         handler.postDelayed({
-            bleManager.enqueueCommand {
+            bleManager.enqueueCommand("requestMtu $addr") {
                 try {
                     val currentGatt = bleManager.connectedGatts[addr]
                     if (currentGatt == null || !currentGatt.requestMtu(MTU_SIZE)) {
