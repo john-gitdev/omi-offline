@@ -144,9 +144,14 @@ object WedgeDiagnostics {
     )
 
     /**
-     * Newest `omi_debug_*.log`, or null when developer file logging is off — disabling it
+     * The active `omi_debug_*.log`, or null when developer file logging is off — disabling it
      * deletes every log file, so absence is the "off" signal. Never creates one: a log
      * appearing on its own would silently re-enable a feature the user turned off.
+     *
+     * Dart writes a single fixed-name file (`omi_debug_current.log`); the descriptive dated
+     * name is supplied to the share sheet as metadata and the file on disk keeps its
+     * placeholder name. `maxByOrNull` is kept so a stray from the retired
+     * `omi_debug_YYYYMMDD.log` scheme cannot win — the placeholder's 'c' outranks a digit.
      */
     private fun currentLogFile(context: Context): File? = try {
         candidateLogDirs(context)
