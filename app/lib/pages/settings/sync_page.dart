@@ -1322,7 +1322,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     } catch (_) {}
 
     if (!mounted) return;
-    final fwVersion = context.read<DeviceProvider>().connectedDevice?.firmwareRevision ?? 'unknown';
+    // pairedDevice, NOT connectedDevice: only the former carries the DIS reads.
+    // connectedDevice is the transport's own BtDevice, and performGetDeviceInfo
+    // returns a copyWith rather than mutating it — so `connectedDevice
+    // .firmwareRevision` is null even while connected, and the firmware slot in
+    // this name has been reading 'unknown' ever since it was added. pairedDevice
+    // also survives a disconnect (it falls back to the stored device), which is
+    // the right answer here: that firmware is what produced the log.
+    final fwVersion = context.read<DeviceProvider>().pairedDevice?.firmwareRevision ?? 'unknown';
     final os = Platform.operatingSystem;
 
     // The on-disk file carries only a placeholder name; it is named here, at the
@@ -2189,7 +2196,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     } catch (_) {}
     if (!mounted) return;
     final devProvider = context.read<DeviceProvider>();
-    final fw = devProvider.connectedDevice?.firmwareRevision ?? 'unknown';
+    // pairedDevice for the same reason as in _shareDebugLogs: connectedDevice
+    // never carries the DIS reads, so this line said 'unknown' on every snapshot.
+    final fw = devProvider.pairedDevice?.firmwareRevision ?? 'unknown';
     final backend = _storageBackend == 1 ? 'ring' : (_storageBackend == 0 ? 'littlefs' : 'unknown');
 
     final b = StringBuffer()
