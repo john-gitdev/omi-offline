@@ -119,10 +119,12 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
   /// lookup that touches neither the radio nor the link a sync may be using, and
   /// returns them uppercased to match the ids native hands out.
   ///
-  /// Called at the top of every scan and on a connect. Between them those cover
+  /// Called at both ends of every scan and on a connect. Between them those cover
   /// every moment the answer can move while this page is up: only a pairing or an
   /// unpairing changes it, this page's own unpair (_forgetDevice) ends in a rescan,
-  /// and one made outside the app is picked up by the Refresh button.
+  /// and one made outside the app is picked up by the Refresh button. The pair of
+  /// calls per scan is not redundant — the opening one is the fast answer and the
+  /// closing one is the correct one; see the call site in [_startScan]'s finally.
   Future<void> _refreshBondStates() async {
     final generation = ++_bondQueryGeneration;
     Set<String> bonded;
@@ -213,12 +215,6 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     // the request does not return until the user has answered, which can be a long
     // way after that. Every setState past this point would then land on a disposed
     // state; the ones inside the scan below already check, this one did not.
-    // The page can be gone by the time the answer lands. The permission prompt is a
-    // system window, not a Flutter route, so this page stays `isCurrent` behind it and
-    // a connect arriving meanwhile still runs _closePage and pops it — and on Android
-    // the request does not return until the user has answered, which can be a long
-    // way after that. Every setState past this point would then land on a disposed
-    // state; the ones inside the scan below already check, this one did not.
     if (!mounted) return;
     setState(() {
       _isScanning = true;
@@ -254,6 +250,28 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
         setState(() {
           _isScanning = false;
         });
+        // Ask again now the scan is over. The query at the top of this method is the
+        // one that answers fast, but it is also the one most likely to answer wrong,
+        // for two reasons that both resolve by the time we get here:
+        //
+        // - It can run without the permission its answer needs. On Android 12+
+        //   `BluetoothAdapter.bondedDevices` requires BLUETOOTH_CONNECT, and native
+        //   turns the refusal into an empty list rather than an error — so on a visit
+        //   that has to *ask* for the permission, the first query publishes "nothing
+        //   is bonded" and, with only that one call, nothing ever corrected it. The
+        //   scan below it cannot have run without the grant, so reaching here means
+        //   the answer is now askable.
+        // - It can run before the OS has finished an unpair. _forgetDevice awaits
+        //   removeBond, but that returns before Android's BOND_NONE lands, so the
+        //   rescan it kicks off re-reads the device it just unpaired as still bonded
+        //   and leaves a grey "Paired" check on it. A whole scan is far longer than
+        //   that gap (the service's own fallback for a missing BOND_NONE broadcast is
+        //   3 s).
+        //
+        // Kept as well as the first call, not instead of it: that one covers the
+        // early returns above, where no scan runs to reach this. Two answers in
+        // flight is what _bondQueryGeneration is for.
+        unawaited(_refreshBondStates());
       }
     }
   }
@@ -566,9 +584,16 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
 /// key for it but the link is down, chevron = a stranger.
 ///
 /// The grey one is the useful case on this page. Several Omis in a room look
-/// identical apart from a MAC address nobody has memorised, and after a firmware
-/// update the paired one is *specifically* the one that has gone unbonded — so a
-/// mark that says "you have paired with this one before" is what picks it out.
+/// identical apart from a MAC address nobody has memorised, and this page is only
+/// ever open because none of them is connected — so "the OS holds a key for this
+/// one" is the only thing left that picks yours out. Reset Connection is where it
+/// earns its keep: the row you want is the one that is paired and still will not
+/// connect.
+///
+/// Note it does **not** help immediately after a firmware update, which is the one
+/// thing it looks like it should do: the flash wipes the phone's bond too
+/// (`_releasePairingOnSuccess`), so the Omi the user is hunting for is unmarked
+/// like every other, until the re-pair lands and turns it green.
 ///
 /// `isConnected` wins when both are set, which is the normal state of a live link
 /// (connected devices are also bonded) — never render the weaker of the two facts.
