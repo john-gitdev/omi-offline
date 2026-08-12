@@ -199,9 +199,16 @@ void main() {
         unawaited(state.releasePairingOnSuccess(btDevice));
         await tester.pump();
         await tester.pump();
-        await settleLoop(tester, state);
+        await tester.pump(scanCycle);
 
         expect(hostCalls, contains('removeBond'));
+        // And the rediscovery loop still runs. A failed release means native's ladder
+        // was never stopped, which is damage already done — scanning cannot add to it,
+        // since the only connect this makes is after a sighting, i.e. a device that has
+        // finished booting. Gating the loop here would just hand the user a manual tap
+        // that makes the identical ensureConnection call.
+        expect(scansStarted(), greaterThan(0), reason: 'a failed release must not also cost the automatic re-pair');
+        await settleLoop(tester, state);
       });
     });
 
