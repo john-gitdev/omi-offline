@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:intl/intl.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'package:omi/backend/preferences.dart';
@@ -12,16 +13,17 @@ import 'package:omi/backend/preferences.dart';
 class DebugLogManager {
   DebugLogManager._();
 
-  // Name for a brand-new log file: the UTC day it is first created. There is
-  // only ever one log file and it keeps this name for its whole life (it is not
-  // rotated per day), so the name records the day logging started.
-  static String _newFileName() {
-    final d = DateTime.now().toUtc();
-    final y = d.year.toString().padLeft(4, '0');
-    final m = d.month.toString().padLeft(2, '0');
-    final day = d.day.toString().padLeft(2, '0');
-    return 'omi_debug_$y$m$day.log';
-  }
+  // The on-disk log carries a fixed placeholder name for its whole life. It is
+  // a working file, not a deliverable: the descriptive
+  // `<os>_<app>_<fw>_omi_offline_debug_<YYYYMMDD>.log` name is applied only when
+  // the user shares it (see `shareFileName`), so the name reflects the versions
+  // and the day it was actually handed over rather than whenever the toggle
+  // happened to be flipped.
+  //
+  // Keep the `omi_debug_` prefix and `.log` suffix: the native wedge-diagnostics
+  // writer (`WedgeDiagnostics.currentLogFile`) locates this file by that pattern
+  // and appends to it from outside Dart.
+  static const String _tempFileName = 'omi_debug_current.log';
 
   // Single persistent file is capped here. On overflow the most recent half is
   // kept (see _rotateIfNeeded) rather than the whole file being wiped, so the
@@ -41,11 +43,12 @@ class DebugLogManager {
 
   static bool get isEnabled => enabledOverride ?? SharedPreferencesUtil().devLogsToFileEnabled;
 
-  // Resolves the current log file. Reusing the newest existing omi_debug_*.log
-  // (rather than always creating today's) keeps the main and background isolates
-  // on the same file without sharing memory, and preserves the file across app
-  // restarts. The create path runs only when none exists, and its name is the
-  // UTC day, so even two isolates cold-creating at once land on the same path.
+  // Resolves the current log file. Reusing the existing omi_debug_*.log (rather
+  // than always creating a new one) keeps the main and background isolates on
+  // the same file without sharing memory, preserves the file across app
+  // restarts, and adopts a date-named file left by a build that predates the
+  // placeholder name. The create path runs only when none exists, and the name
+  // is fixed, so even two isolates cold-creating at once land on the same path.
   // Deleting/replacing files is done explicitly by setEnabled/clear, not here.
   static Future<File> _ensureFile() async {
     if (_file != null) return _file!;
@@ -59,8 +62,8 @@ class DebugLogManager {
     _initializing = true;
     try {
       final dir = await getApplicationDocumentsDirectory();
-      final existing = await listLogFiles(); // newest first
-      final f = existing.isNotEmpty ? existing.first : File('${dir.path}/${_newFileName()}');
+      final existing = await listLogFiles(); // active file first
+      final f = existing.isNotEmpty ? existing.first : File('${dir.path}/$_tempFileName');
       if (!(await f.exists())) {
         await f.create(recursive: true);
       }
@@ -190,7 +193,20 @@ class DebugLogManager {
     await _startFreshFile();
   }
 
-  /// Returns the debug log file(s), newest first — normally just the one.
+  /// The name the log is given when the user shares it. The on-disk file is a
+  /// placeholder (`_tempFileName`); this is where it acquires an identity, so
+  /// the date is the day of the share and the versions are the ones in force
+  /// then. Lowercase and underscored — no spaces or apostrophes — so it is easy
+  /// to work with on upload/save targets.
+  static String shareFileName({required String os, required String appVersion, required String fwVersion}) {
+    final d = DateTime.now().toUtc();
+    final y = d.year.toString().padLeft(4, '0');
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    return '${os}_${appVersion}_${fwVersion}_omi_offline_debug_$y$m$day.log';
+  }
+
+  /// Returns the debug log file(s), the active one first — normally just the one.
   static Future<List<File>> listLogFiles() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
@@ -201,13 +217,17 @@ class DebugLogManager {
         if (!name.startsWith('omi_debug_') || !name.endsWith('.log')) continue;
         files.add(entity);
       }
-      // Sort by filename descending (YYYYMMDD ensures lexical order = chronological),
-      // fallback to lastModified if names differ.
+      // The active file must come first: `_ensureFile` appends to `files.first`
+      // and the share path takes it as *the* log. It is sorted ahead of anything
+      // else explicitly rather than relying on 'c' outranking a digit in ASCII.
+      // The rest sort by name descending, which for the retired
+      // `omi_debug_YYYYMMDD.log` scheme is newest-first.
       files.sort((a, b) {
         final an = a.uri.pathSegments.last;
         final bn = b.uri.pathSegments.last;
-        final cmp = bn.compareTo(an);
-        return cmp != 0 ? cmp : 0;
+        if (an == _tempFileName) return -1;
+        if (bn == _tempFileName) return 1;
+        return bn.compareTo(an);
       });
       return files;
     } catch (_) {
@@ -256,5 +276,95 @@ class DebugLogManager {
       ...fields,
     };
     await _append(jsonEncode(payload));
+  }
+
+  /// Stamps the app's own version on every launch, so any behaviour change in
+  /// the log can be attributed to (or cleared of) an app update.
+  ///
+  /// Emitted unconditionally rather than only when the version moved: the log is
+  /// a sliding window that can be cleared or start mid-life, so a line that only
+  /// appeared on change would leave stretches with no version at all. The
+  /// `app_version_changed` flag is what marks the transition, and it is only set
+  /// when a previous version was actually recorded — a first run has nothing to
+  /// have changed from.
+  ///
+  /// [lastKnownFirmware] is the paired device's last-read DIS revision, passed
+  /// in because at launch nothing is connected yet. It is the caller's cached
+  /// value, and the connect a moment later confirms it via [logDeviceVersion].
+  static Future<void> logAppStart({String? lastKnownFirmware}) async {
+    String appVersion = 'unknown';
+    String buildNumber = 'unknown';
+    try {
+      final info = await PackageInfo.fromPlatform();
+      appVersion = info.version;
+      buildNumber = info.buildNumber;
+    } catch (_) {}
+
+    final prefs = SharedPreferencesUtil();
+    final previous = prefs.lastLoggedAppVersion;
+    final changed = previous.isNotEmpty && previous != appVersion;
+
+    await logEvent('app_start', {
+      'app_version': appVersion,
+      'build_number': buildNumber,
+      'os': Platform.operatingSystem,
+      'os_version': Platform.operatingSystemVersion,
+      'last_known_firmware': (lastKnownFirmware?.isNotEmpty ?? false) ? lastKnownFirmware : 'unknown',
+      if (changed) 'app_version_changed': true,
+      if (changed) 'previous_app_version': previous,
+    });
+
+    if (previous != appVersion) prefs.lastLoggedAppVersion = appVersion;
+  }
+
+  /// Stamps the device's firmware identity on every connect, and reports whether
+  /// the Omi rebooted since the last connect.
+  ///
+  /// The two facts are logged together because neither implies the other:
+  ///
+  ///  - A DFU always ends in a reboot (mcumgr resets to swap the image; the
+  ///    post-DFU bond wipe depends on that next boot), but it does **not** always
+  ///    change the revision string — a same-version reflash sends only the net
+  ///    core, and a dev/production swap can share a version. So a reboot with an
+  ///    unchanged version still deserves a second look.
+  ///  - Equally, a reboot is usually not a flash at all: a crash, a battery
+  ///    brownout, a Reboot/Shutdown command. The reset cause from `0x0061`
+  ///    separates those.
+  ///
+  /// [uptimeMs] is the device's LIVE uptime (`0x0062`), not the latched
+  /// prior-boot value from `0x0061`. Pass null when the read was skipped (a sync
+  /// holds the storage lock): reboot detection is then simply not evaluated, and
+  /// the stored uptime is left alone so the next connect still compares against
+  /// a real reading rather than a hole.
+  static Future<void> logDeviceVersion({
+    required String firmwareRevision,
+    String? hardwareRevision,
+    String? modelNumber,
+    int? uptimeMs,
+    String? resetCause,
+  }) async {
+    final prefs = SharedPreferencesUtil();
+    final previousFw = prefs.lastLoggedFirmwareRevision;
+    final fwChanged = previousFw.isNotEmpty && previousFw != firmwareRevision;
+
+    final previousUptimeMs = prefs.lastSeenDeviceUptimeMs;
+    // Strictly lower, not merely different: uptime climbs within one boot, and
+    // several connects during the same boot must not each read as a reboot.
+    final rebooted = uptimeMs != null && previousUptimeMs > 0 && uptimeMs < previousUptimeMs;
+
+    await logEvent('device_version', {
+      'firmware_revision': firmwareRevision,
+      if (hardwareRevision != null) 'hardware_revision': hardwareRevision,
+      if (modelNumber != null) 'model_number': modelNumber,
+      if (uptimeMs != null) 'uptime_ms': uptimeMs,
+      if (resetCause != null) 'reset_cause': resetCause,
+      if (fwChanged) 'firmware_changed': true,
+      if (fwChanged) 'previous_firmware': previousFw,
+      if (rebooted) 'rebooted': true,
+      if (rebooted) 'previous_uptime_ms': previousUptimeMs,
+    });
+
+    if (previousFw != firmwareRevision) prefs.lastLoggedFirmwareRevision = firmwareRevision;
+    if (uptimeMs != null) prefs.lastSeenDeviceUptimeMs = uptimeMs;
   }
 }
