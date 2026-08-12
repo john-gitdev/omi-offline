@@ -699,6 +699,24 @@ class SharedPreferencesUtil {
   bool get devLogsToFileEnabled => getBool('devLogsToFileEnabled');
   set devLogsToFileEnabled(bool value) => saveBool('devLogsToFileEnabled', value);
 
+  // Last app version / firmware revision / device uptime the debug log was
+  // stamped with. Their only job is to mark a *change* — see
+  // DebugLogManager.logAppStart / logDeviceVersion. Updated whether or not file
+  // logging is on, so they always describe reality rather than the last time
+  // somebody happened to be watching.
+  String get lastLoggedAppVersion => getString('lastLoggedAppVersion');
+  set lastLoggedAppVersion(String value) => saveString('lastLoggedAppVersion', value);
+
+  String get lastLoggedFirmwareRevision => getString('lastLoggedFirmwareRevision');
+  set lastLoggedFirmwareRevision(String value) => saveString('lastLoggedFirmwareRevision', value);
+
+  // The device's live uptime (0x0062) at the last connect. A reading LOWER than
+  // this one means the Omi rebooted in between — the only reboot signal that
+  // survives the app being closed, and the one that catches a DFU whose version
+  // string did not change.
+  int get lastSeenDeviceUptimeMs => getInt('lastSeenDeviceUptimeMs', defaultValue: 0);
+  set lastSeenDeviceUptimeMs(int value) => saveInt('lastSeenDeviceUptimeMs', value);
+
   // When true, the app holds a wakelock while open so the screen never sleeps
   // (useful for babysitting a foreground sync/processing run).
   bool get keepScreenOn => getBool('keepScreenOn');
