@@ -174,6 +174,7 @@ Record the sub-class in the "Recovery trigger" column below.
 | 6a | 2026-08-02 09:22→10:07 | 44m 52s | SILENT, then **ADVERTISING @ −103 dBm** | **NOT A WEDGE — out of range** (overnight, user-confirmed) | **No** | *(not in excerpt)* | — | **8** |
 | 6b | 2026-08-02 10:45→15:23 | 4h 37m 30s | SILENT ×10, then **ADVERTISING @ −91 dBm** | **NOT A WEDGE — out of range**; cleared when the user woke up | **No** | *(not in excerpt)* | — | 147 |
 | 7 | 2026-08-04 03:07→03:08 | 1m 38s | *(none — sub-threshold)* | **BT toggle** (`error=bluetooth_off` → reconnect in 2.5 s) | **Yes** | +0 (flat at 19) | fast | *none — all `-1`* |
+| 8 | 2026-08-12 22:39→23:24 | 45m 38s | SILENT ×3 | **BT toggle** (`error=bluetooth_off` → reconnect in 8 s) | **Yes** | +0 (flat at 93) | fast | **147** |
 
 **Wedge 5 is SOLVED** — see the resolution block below. Root cause: the post-disconnect
 `bt_le_adv_start()` in `transport.c` was fire-and-forget, so a single failure left the device
@@ -193,8 +194,15 @@ vs. the 147/8 the self-clearing wedges carried), **`estab_fail_count` flat**, an
 **only** when the adapter cycled. That matches the §7 hypothesis: flat-estab + all-timeout(`-1`)
 = central-side initiator wedge = a toggle (which resets the phone's own controller) is what fixes it.
 
+**Wedge 8 takes the toggle-required class to n=3 and breaks its signature open**: it is flat-estab
+and toggle-cured like 3 and 7, but its statuses are real `147`s, not all-`-1`, and it ran 45 minutes
+rather than 1–3. So **`-1` is not part of the class signature — flat estab is.** The corollary cuts
+the other way too: 147 + flat estab does not predict the bucket either, since Wedge 2 carried the
+same pair and self-cleared in six minutes. Wedge 8 is also the first toggle-required episode long
+enough to trip the detector, so it is the first with a full snapshot + probe set to reason from.
+
 **Wedge 7 reproduces Wedge 3 exactly** — all-`-1`, flat estab, sub-threshold, cured by an adapter
-cycle — which takes the toggle-required class from n=1 to **n=2 with an identical signature**. It
+cycle — which took the toggle-required class from n=1 to **n=2 with an identical signature**. It
 also carries the firmware exoneration Wedge 3 could not: its build runs the post-2.8.4 advertising
 watchdog *and* the event log, and neither `DIAG_ADV_START_FAIL` nor `DIAG_ADV_WATCHDOG_RESCUE`
 appears anywhere in the outage window. So for this episode the Wedge 5 root cause is affirmatively
@@ -823,6 +831,59 @@ across a live establishment. That is exactly the feedback loop deleted from `_sc
 lowering it also makes native hand off to the sync schedule that many failures sooner. (3) It would
 fire the alert on any 90-second absence — walking out of range — where "toggle Bluetooth" is wrong
 advice. **Any earlier capture must be a separate trigger, not a lower threshold** — see §6 #10.
+
+### Detail — Wedge 8 (2026-08-12, ~45 min) — third toggle-required; first one with real statuses
+
+- Log source: app 0.33.7, firmware `oo-3.0.3`, device `C3:94:71:EA:A8:D5`. First toggle-required
+  episode to clear `WEDGE_NOTIFY_AFTER`, so unlike Wedges 3 and 7 it carries the full instrumentation.
+- Preceded by a clean session: background sync completed and **the app disconnected on purpose** @
+  22:16:45 (`Background sync done: disconnecting device`). Nothing led in — no mid-transfer failure,
+  no bond event, no reboot. First failure on the next scheduled cycle @ 22:39:04.
+- Two `ble_wedge` snapshots (22:43:13 `consecutive_failures=6`; 23:05:40 `=11`) and **three
+  `scan_probe`s, all SILENT** (22:43:21 / 23:05:48 / 23:21:13) — `adv_packets=0`, `rssi_*` all null.
+- Statuses: **`gatt_status_147` throughout**, with one `-1` @ 22:42:04 logged as a transient. Native
+  stopped its own fast retry at 6 and handed off; the backoff ladder ran 45 s → 180 s → 360 s → 720 s.
+- **Firmware exonerated on device evidence.** Diag sequence numbers are contiguous (3–5 pulled
+  @ 20:40, then **6–12** @ 23:24 — no drops), and **neither `DIAG_ADV_START_FAIL` nor
+  `DIAG_ADV_WATCHDOG_RESCUE` appears anywhere in the window**. That is stronger than "no failure was
+  logged": the watchdog re-asserts `bt_le_adv_start()` every `ADV_TICK_MS` while disconnected —
+  roughly 90 ticks across this outage — and a plain re-assert returning `0` *is* the rescue signal
+  (`transport.c` `adv_watchdog_work_handler`). Every one of them must therefore have answered
+  `-EALREADY`. The host believed itself advertising, continuously, for the whole outage.
+- **The device never rebooted and never stopped recording.** `live_uptime_ms` 9 070 902 @ 20:40:07 →
+  18 953 577 @ 23:24:48 = **+2h 44m 43s against 2h 44m 41s of wall clock**. On reconnect it handed
+  over **9 bins covering 22:09:57 → 23:12:05** — i.e. the whole outage — with `block_drops=0`,
+  `stream/boot/codec_frame_drops=0`, `ring_io_errors=0`, `msgq_peak_depth=62`.
+- estab context: `estab_fail_count` **93 @ 20:40:07 (before) → 93 @ 23:24:48 (at recovery) → 93 @
+  01:17:14**, `failed_conn_count=0` throughout ⟹ **+0 ⟹ the Omi never heard the CONNECT_INDs ⟹
+  central (phone) side.** Note the baseline reading straddles five *successful* connects (21:01,
+  21:36, 22:09 …), so the flatness is not an artefact of a quiet device.
+- **Contention is affirmatively ruled out, not merely absent.** `contending_le_links=0` at *both*
+  wedge snapshots and **1** at recovery — the Garmin `Instinct 2X Solar` joined **after** the wedge
+  cleared. `classic_profiles=[]`, `bt_audio_devices=[]`, `sco_active=false`, `audio_active=false`
+  throughout. `omi_in_gatt_list=false` + `omi_acl_connected=false` ⟹ no ghost host link to purge.
+- Neither self-clearing mechanism applies: `screen_interactive` went true → false → true and
+  `doze_mode=false` for the entire outage, so screen-wake and Doze deprioritization are both out.
+- **Bluetooth toggle in window? YES** — @ 23:24:32 `error=bluetooth_off`, adapter back @ 23:24:34,
+  `connected` @ 23:24:42, `ble_wedge_recovered` with `wedge_duration_ms=2488815` (41m 29s from
+  detection; 45m 38s from the first failure). Sync then drained 9 bins at **57–72 KB/s**.
+- **Not out-of-range**, by all four §3 discriminators: SILENT probes with `rssi_*` null (Wedge 6, the
+  range case, eventually produced ADVERTISING at −103/−91 dBm); no `last_real_gatt_status=8` anywhere;
+  mid-evening local time with the user actively on the phone and tapping through Find Devices at
+  23:22; and a fast, full-strength recovery rather than Wedge 6's slow weak one.
+- **Bucket: toggle-required.** The backed-off recovery alarm fired repeatedly across 45 minutes and
+  never landed; the adapter cycle cleared it in 8 s.
+
+**Operational consequence worth recording — the outage nearly truncated a Priority Recording.** The
+firmware hit its 120-minute safety cap and wrote the `0xFFFFFFFC` stop @ 23:01:29 (uptime delta
+7 200 000 ms, exact), but the phone could not collect that bin until the wedge cleared. The app's
+restored-priority-latch ceiling is cap + 30 min slack (`_maxRestoredPriorityAgeMs`), i.e. 23:31:29.958
+for a recording opened @ 21:01:29.958; the processing run that finally consumed the stop marker
+started @ **23:29:31.888 — 1 m 58 s inside it**. Two more minutes of outage and the latch would have
+failed closed, and the last ~52 minutes of a force-captured recording would have been re-processed as
+ordinary auto audio: VAD-split, with its quiet stretches discarded. A connectivity wedge is normally
+"no data loss, it all syncs later"; this is the one place where wedge *duration* can cost audio, and
+the bound is the priority cap plus 30 minutes.
 
 ---
 
