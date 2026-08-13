@@ -180,6 +180,14 @@ class VadAudioProcessor {
   // Set immediately before the boundary flush and cleared immediately after, so a
   // flush that saves nothing (encoder failure, discard guard) can't leak the stamp
   // onto some later unrelated recording.
+  //
+  // Residual, stated rather than papered over: a boundary that closes NOTHING has no
+  // recording to stamp, so it rests on [_hardStartPending] alone — and if its
+  // successor also lands in a later run, the boundary is lost and the old gap rule
+  // applies. That needs the marker to arrive in a bin holding no audio of its own,
+  // which for a force-captured span means a rotation landing in the few ms before the
+  // stop. Closing it would need the pending flag made durable in its own sentinel;
+  // not worth the machinery for that shape, but this is where to start if it shows up.
   bool _endsAtHardBoundary = false;
 
   // True while processing the audio between a 0xFFFFFFF8 Priority Recording
@@ -582,6 +590,13 @@ class VadAudioProcessor {
       // force-capture same-session auto audio indefinitely. Prefer openedAtMs; fall
       // back to the persist 'ts' for a legacy sentinel written before the field
       // existed. If neither is present, fail closed and delete the sentinel.
+      //
+      // The 'ts' fallback is an APPROXIMATE origin: it is the phone's clock at the
+      // last persist (end of a prior run), not the device's clock at the marker, so
+      // the cap fires late by however long the span had already been open — bounded
+      // by one cap. Acceptable because it only applies to a sentinel written before
+      // openedAtMs existed (app 0.29-era), and such a sentinel only lives between two
+      // runs, so it cannot survive the upgrade that introduced the field.
       final openedAtMs = (data['openedAtMs'] ?? data['ts']) as int?;
       // Cap snapshotted when the recording opened; a legacy sentinel without it falls
       // back to the live pref. Set BEFORE the stamp check so the bound reflects the
