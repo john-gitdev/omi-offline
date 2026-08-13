@@ -200,6 +200,52 @@ void main() {
       expect(fileNames.contains('omi_debug_20230101.log'), isTrue);
       expect(fileNames.contains('omi_debug_20230102.log'), isTrue);
       expect(fileNames.contains('other_file.txt'), isFalse);
+
+      // The active file sorts FIRST, ahead of any stray from the retired dated
+      // scheme. Both _ensureFile (which appends to files.first) and the share
+      // action (which hands over files.first) depend on this, so a stray left by
+      // an older build must not capture either.
+      expect(fileNames.first, 'omi_debug_current.log');
+    });
+
+    test('a cold resolve with a stray alongside the active file picks the active one', () async {
+      // The ordering in listLogFiles only decides anything on a COLD resolve
+      // with both files present — once _ensureFile has cached a handle, appends
+      // never consult it again. Drop the cached handle the way disabling does,
+      // then re-enable the pref directly so _startFreshFile's wipe doesn't
+      // remove the very files under test.
+      await DebugLogManager.setEnabled(false);
+      SharedPreferencesUtil().devLogsToFileEnabled = true;
+      await File('${docsDir.path}/omi_debug_20230102.log').writeAsString('old\n');
+      await File('${docsDir.path}/omi_debug_current.log').create();
+
+      await DebugLogManager.logInfo('cold resolve');
+
+      expect(await File('${docsDir.path}/omi_debug_current.log').readAsString(), contains('cold resolve'));
+      expect(await File('${docsDir.path}/omi_debug_20230102.log').readAsString(), 'old\n');
+    });
+
+    test('the firmware stamped at connect is the one reported on the next launch', () async {
+      PackageInfo.setMockInitialValues(
+        appName: 'omi',
+        packageName: 'com.omi.offline',
+        version: '0.33.8',
+        buildNumber: '338',
+        buildSignature: '',
+      );
+
+      // A connect records the firmware...
+      await DebugLogManager.logDeviceVersion(firmwareRevision: 'oo-3.0.2', uptimeMs: 1000);
+      // ...and main() reads it back from the same flat pref on the next launch,
+      // which is the whole reason that pref is what main() reads rather than the
+      // jsonDecoded btDevice blob.
+      await DebugLogManager.logAppStart(
+        lastKnownFirmware: SharedPreferencesUtil().lastLoggedFirmwareRevision,
+      );
+
+      final line = (await DebugLogManager.getRecentLogs()).first;
+      expect(line['type'], 'app_start');
+      expect(line['last_known_firmware'], 'oo-3.0.2');
     });
 
     test('logAppStart stamps the app version and flags a change', () async {
