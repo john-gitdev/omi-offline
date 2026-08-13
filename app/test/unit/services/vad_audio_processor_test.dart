@@ -1283,15 +1283,14 @@ void main() {
 
         final written = jsonDecode(File(latchPath).readAsStringSync()) as Map<String, dynamic>;
         expect(written['sessionId'], 1);
-        expect(written['openedAtMs'], kBase + 200, reason: 'the 0xFFFFFFF8 wall time, preserved for the age bound');
+        expect(written['openedAtMs'], kBase + 200,
+            reason: 'the 0xFFFFFFF8 wall time — the origin the audio-domain cap measures from');
         expect(written.containsKey('capMinutes'), isTrue,
-            reason: 'the cap armed at open is snapshotted so a later Settings change cannot move the ceiling');
+            reason: 'the cap armed at open is snapshotted so a later Settings change cannot move the bound');
 
-        // Run 2: a fresh (recent) sentinel restores force-capture. Rewritten with a
-        // current openedAtMs because kBase is historical — a real recording's marker
-        // time is ~now, so the age ceiling does not trip.
-        File(latchPath).writeAsStringSync(
-            jsonEncode({'sessionId': 1, 'openedAtMs': DateTime.now().millisecondsSinceEpoch, 'ts': 0}));
+        // Run 2: the sentinel restores force-capture as written. kBase is historical
+        // by years and that is deliberately irrelevant now — restore no longer asks
+        // how long ago the recording opened in real time.
         final p2 = VadAudioProcessor.fromSettings(
             settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
         expect(p2.inPriorityRecording, isFalse, reason: 'fresh processor starts outside a priority recording');
@@ -1300,7 +1299,11 @@ void main() {
         await p2.destroy();
       });
 
-      test('restorePriorityLatch drops a latch older than the age ceiling (dropped stop marker)', () async {
+      test('restorePriorityLatch keeps an ancient latch — age is not evidence of a lost stop', () async {
+        // The Omi records for days without seeing the phone, so "opened 7 hours ago in
+        // real time" says nothing about whether its 0xFFFFFFFC arrived. It used to drop
+        // the latch here, which re-VAD'd a legitimate force-captured stretch purely
+        // because syncing had been delayed. The bound now lives in the audio (below).
         final latchPath = '${tempDir.path}/latch_stale.json';
         final sevenHoursAgo = DateTime.now().millisecondsSinceEpoch - (7 * 60 * 60 * 1000);
         File(latchPath)
@@ -1308,16 +1311,11 @@ void main() {
         final p = VadAudioProcessor.fromSettings(
             settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
         await p.restorePriorityLatch();
-        expect(p.inPriorityRecording, isFalse, reason: 'a >6h-open latch means the 0xFFFFFFFC was lost → drop it');
-        expect(File(latchPath).existsSync(), isFalse, reason: 'the stuck sentinel is cleared');
+        expect(p.inPriorityRecording, isTrue, reason: 'a long-delayed sync must not cost force-capture');
+        expect(File(latchPath).existsSync(), isTrue, reason: 'and the sentinel survives for the next run');
         await p.destroy();
       });
 
-      // The restored-latch ceiling tracks the firmware Priority Recording safety
-      // cap (0x19B10014) + 30 min slack, not a fixed 6 h. Same 90-min-old latch:
-      // dropped under a 30-min cap (ceiling 60 min), kept under a 120-min cap
-      // (ceiling 150 min). Guards against a lost 0xFFFFFFFC ballooning a recording
-      // for hours while still clearing a legitimate full-cap recording.
       ProcessingSettings capSettings(int capMinutes) => ProcessingSettings(
             vadEnabled: false,
             speechThreshold: 0.5,
@@ -1331,65 +1329,71 @@ void main() {
             priorityRecordCapMinutes: capMinutes,
           );
 
-      test('restored-latch ceiling is derived from the priority cap, not a fixed 6h', () async {
-        final ninetyMinAgo = DateTime.now().millisecondsSinceEpoch - (90 * 60 * 1000);
-        String writeSentinel(String name) {
-          final path = '${tempDir.path}/$name';
-          File(path).writeAsStringSync(jsonEncode({'sessionId': 1, 'openedAtMs': ninetyMinAgo, 'ts': ninetyMinAgo}));
-          return path;
-        }
+      // The safety cap is enforced against the AUDIO's own device clock: a
+      // continuation bin whose frames sit `audioAgeMin` past the 0xFFFFFFF8 either
+      // stays inside the span or ends it, and the phone's clock never enters it. Each
+      // case runs a fresh sentinel + continuation so a dropped 0xFFFFFFFC is bounded
+      // exactly where the firmware would have stopped, however late the bins arrive.
+      Future<bool> stillCapturingAfter({
+        required String name,
+        required int audioAgeMin,
+        int? snapshotCapMinutes,
+        required int prefCapMinutes,
+      }) async {
+        final latchPath = '${tempDir.path}/$name';
+        // Opened "now" in real time; only the AUDIO is old.
+        final openedAtMs = DateTime.now().millisecondsSinceEpoch;
+        File(latchPath).writeAsStringSync(jsonEncode({
+          'sessionId': 1,
+          'openedAtMs': openedAtMs,
+          if (snapshotCapMinutes != null) 'capMinutes': snapshotCapMinutes,
+          'ts': openedAtMs,
+        }));
+        final p = VadAudioProcessor.fromSettings(
+            settings: capSettings(prefCapMinutes), outputDir: tempDir.path, priorityStatePath: latchPath);
+        await p.restorePriorityLatch();
+        expect(p.inPriorityRecording, isTrue, reason: 'restore never refuses on age now');
+        // Continuation bin (same session) whose audio lands audioAgeMin past the open.
+        await p.processSegmentFile(
+          _makeBinFile(tempDir, 10, name: '${name}_cont.bin'),
+          DateTime.fromMillisecondsSinceEpoch(openedAtMs + audioAgeMin * 60 * 1000, isUtc: true),
+          sessionId: 1,
+        );
+        final open = p.inPriorityRecording;
+        await p.destroy();
+        return open;
+      }
 
-        // cap 30 min → ceiling 60 min < 90 min open → drop (a fixed 6h would keep it).
-        final tightPath = writeSentinel('latch_cap30.json');
-        final pTight = VadAudioProcessor.fromSettings(
-            settings: capSettings(30), outputDir: tempDir.path, priorityStatePath: tightPath);
-        await pTight.restorePriorityLatch();
-        expect(pTight.inPriorityRecording, isFalse,
-            reason: '90-min-old latch under a 30-min cap is past the 60-min ceiling → dropped');
-        expect(File(tightPath).existsSync(), isFalse);
-        await pTight.destroy();
-
-        // cap 120 min → ceiling 150 min > 90 min open → keep (a legit long recording).
-        final loosePath = writeSentinel('latch_cap120.json');
-        final pLoose = VadAudioProcessor.fromSettings(
-            settings: capSettings(120), outputDir: tempDir.path, priorityStatePath: loosePath);
-        await pLoose.restorePriorityLatch();
-        expect(pLoose.inPriorityRecording, isTrue,
-            reason: '90-min-old latch under a 120-min cap is within the 150-min ceiling → kept');
-        await pLoose.destroy();
+      test('the cap is measured in the audio, so a late sync keeps force-capture', () async {
+        // 90 minutes of audio under a 120-minute cap: inside the bound, still capturing
+        // — and it stays that way no matter when the bins reach the phone.
+        expect(await stillCapturingAfter(name: 'aud_in.json', audioAgeMin: 90, prefCapMinutes: 120), isTrue);
       });
 
-      test('restore uses the cap snapshotted at open, not the current pref (mid-recording cap change)', () async {
-        final ninetyMinAgo = DateTime.now().millisecondsSinceEpoch - (90 * 60 * 1000);
-        String writeSentinel(String name, int capMinutes) {
-          final path = '${tempDir.path}/$name';
-          File(path).writeAsStringSync(
-              jsonEncode({'sessionId': 1, 'openedAtMs': ninetyMinAgo, 'capMinutes': capMinutes, 'ts': ninetyMinAgo}));
-          return path;
-        }
+      test('the cap closes a span whose audio has passed it (the 0xFFFFFFFC was lost)', () async {
+        // 200 minutes of audio under a 120-minute cap: the firmware would have stopped
+        // at 120, so the marker is gone. Cut here and treat the rest as auto mode.
+        expect(await stillCapturingAfter(name: 'aud_out.json', audioAgeMin: 200, prefCapMinutes: 120), isFalse);
+      });
 
-        // Recording opened under a 120-min cap (snapshot → ceiling 150 min); user then
-        // shrank the cap to 30. Live pref would age it out at 60 min < 90, but the
-        // snapshot must win → keep the legit recording.
-        final keepPath = writeSentinel('latch_snap120_pref30.json', 120);
-        final pKeep = VadAudioProcessor.fromSettings(
-            settings: capSettings(30), outputDir: tempDir.path, priorityStatePath: keepPath);
-        await pKeep.restorePriorityLatch();
-        expect(pKeep.inPriorityRecording, isTrue,
-            reason: 'snapshot cap 120 (ceiling 150) overrides the shrunk 30-min pref → kept');
-        await pKeep.destroy();
+      test('cap 0 (no firmware cap) falls back to a 6 h bound on the audio', () async {
+        expect(await stillCapturingAfter(name: 'aud_nocap_in.json', audioAgeMin: 300, prefCapMinutes: 0), isTrue);
+        expect(await stillCapturingAfter(name: 'aud_nocap_out.json', audioAgeMin: 400, prefCapMinutes: 0), isFalse);
+      });
 
-        // Symmetric: opened under a 30-min cap (ceiling 60 < 90), user then raised it
-        // to 120. The snapshot still ages it out — the recording the firmware armed
-        // was the 30-min one.
-        final dropPath = writeSentinel('latch_snap30_pref120.json', 30);
-        final pDrop = VadAudioProcessor.fromSettings(
-            settings: capSettings(120), outputDir: tempDir.path, priorityStatePath: dropPath);
-        await pDrop.restorePriorityLatch();
-        expect(pDrop.inPriorityRecording, isFalse,
-            reason: 'snapshot cap 30 (ceiling 60) overrides the raised 120-min pref → dropped');
-        expect(File(dropPath).existsSync(), isFalse);
-        await pDrop.destroy();
+      test('the cap snapshotted at open wins over a mid-recording Settings change', () async {
+        // Opened under 120 (bound 122); user then shrank the pref to 30. 90 min of
+        // audio is inside the recording's OWN bound → keep capturing.
+        expect(
+            await stillCapturingAfter(
+                name: 'snap120_pref30.json', audioAgeMin: 90, snapshotCapMinutes: 120, prefCapMinutes: 30),
+            isTrue);
+        // Symmetric: opened under 30 (bound 32), pref later raised to 120. The
+        // firmware armed the 30-minute recording, so 90 min of audio is past it.
+        expect(
+            await stillCapturingAfter(
+                name: 'snap30_pref120.json', audioAgeMin: 90, snapshotCapMinutes: 30, prefCapMinutes: 120),
+            isFalse);
       });
 
       // Bin with a 0xFFFFFFFB header (anchors uptime + session=1) + 10 frames + a
@@ -1591,7 +1595,7 @@ void main() {
 
       test('a 0xFFFFFFFC clears the sentinel mid-run (robust to an abrupt exit)', () async {
         final latchPath = '${tempDir.path}/latch_stop.json';
-        // A latch left open by a prior run (recent, so the age ceiling doesn't trip).
+        // A latch left open by a prior run.
         File(latchPath).writeAsStringSync(
             jsonEncode({'sessionId': 1, 'openedAtMs': DateTime.now().millisecondsSinceEpoch, 'ts': 0}));
         final p = VadAudioProcessor.fromSettings(
@@ -1657,8 +1661,8 @@ void main() {
 
       test('restoreState fails closed on an open priority span with no open time (no poa)', () async {
         // Strip 'poa' to mimic a checkpoint from an intermediate build that had the
-        // session id but not the open time. Without an open time the age ceiling can't
-        // bound it, so force-capture must NOT be restored.
+        // session id but not the open time. Without it the audio-domain safety cap has
+        // no origin to measure from, so force-capture must NOT be restored.
         final p1 = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
         await p1.processSegmentFile(
             priorityBin('failclosed_poa.bin', frames: 10), DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
@@ -1670,7 +1674,7 @@ void main() {
 
         final p2 = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
         await p2.restoreState(state);
-        expect(p2.inPriorityRecording, isFalse, reason: 'no open time to age-bound → fail closed');
+        expect(p2.inPriorityRecording, isFalse, reason: 'no open time to measure the cap from → fail closed');
         await p2.destroy();
       });
 
@@ -1691,7 +1695,7 @@ void main() {
         final p = VadAudioProcessor.fromSettings(
             settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
         await p.restorePriorityLatch();
-        expect(p.inPriorityRecording, isFalse, reason: 'no open time to age-bound → fail closed');
+        expect(p.inPriorityRecording, isFalse, reason: 'no open time to measure the cap from → fail closed');
         expect(File(latchPath).existsSync(), isFalse);
         await p.destroy();
       });
@@ -1703,24 +1707,25 @@ void main() {
         final p = VadAudioProcessor.fromSettings(
             settings: markerSettings(), outputDir: tempDir.path, priorityStatePath: latchPath);
         await p.restorePriorityLatch();
-        expect(p.inPriorityRecording, isTrue, reason: 'recent ts bounds the latch → safe to restore');
+        expect(p.inPriorityRecording, isTrue, reason: 'the ts gives the cap an origin → safe to restore');
         await p.destroy();
       });
 
-      test('restoreState fails closed on a checkpoint older than the age ceiling', () async {
+      test('restoreState keeps a checkpoint whose span opened long ago in real time', () async {
+        // Mirrors the sentinel rule: a resumed checkpoint is not aged out either. The
+        // audio decides, so an Omi that was away from the phone for hours resumes its
+        // force-capture instead of having the rest of it re-VAD'd as auto mode.
         final p1 = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
         await p1.processSegmentFile(
             priorityBin('failclosed_stale.bin', frames: 10), DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
         final state = (await p1.serializeState())!;
         await p1.destroy();
         expect(state['ipr'], isTrue);
-        // Age the open time past the ceiling (7h) — mirrors the sentinel's stale bound.
         state['poa'] = DateTime.now().millisecondsSinceEpoch - (7 * 60 * 60 * 1000);
 
         final p2 = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
         await p2.restoreState(state);
-        expect(p2.inPriorityRecording, isFalse,
-            reason: 'a >6h-old resumed checkpoint span → fail closed (stop marker likely lost)');
+        expect(p2.inPriorityRecording, isTrue, reason: 'real-time age is not evidence the 0xFFFFFFFC was lost');
         await p2.destroy();
       });
 
