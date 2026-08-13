@@ -1147,6 +1147,23 @@ class RecordingsManager {
           break;
         }
 
+        // A next recording that BEGINS at a hard firmware boundary is not
+        // stitchable at any gap. The processor already cuts at 0xFFFFFFF8 /
+        // 0xFFFFFFFC within a run, but it ends each run by flushing whatever is
+        // open as a `_draft`, and the gap rule above then rejoins both sides of
+        // that cut on the next pass — gap 0, since the audio really is
+        // contiguous. That is how a 2 h Priority Recording surfaced as 2 h 18 m:
+        // ~15 min of pre-tap auto conversation glued to its front and ~3 min of
+        // post-stop audio to its back. Close the draft at the boundary instead.
+        if (audioToStitch != null && await _startsAtHardBoundary(audioToStitch)) {
+          Logger.debug('RecordingsManager: Finalizing draft $draftTs — next recording '
+              '${audioToStitch.path.split('/').last} starts at a hard marker boundary.');
+          // Never the bolt: a real recording demonstrably follows this draft.
+          await _finalizeDraft(draftFile, isForceSynced: false);
+          scanNeeded = true;
+          break;
+        }
+
         if (audioToStitch != null) {
           // Found speech within threshold! Stitch all intermediate ghosts and then the speech file.
           int lastEndTs = draftEndTs;
@@ -1225,6 +1242,36 @@ class RecordingsManager {
       }
     }
   }
+
+  /// True when [audioFile]'s `.meta` marks it as beginning at a hard firmware
+  /// boundary — a 0xFFFFFFF8 Priority Recording start, or the audio that resumed
+  /// after a 0xFFFFFFFC stop. Missing/short/unreadable meta answers false, which
+  /// is the pre-feature behaviour (stitch on the gap rule alone).
+  Future<bool> _startsAtHardBoundary(File audioFile) async {
+    final meta = File(audioFile.path.replaceAll(RegExp(r'\.(ogg|wav|m4a)$'), '.meta'));
+    try {
+      if (!await meta.exists()) return false;
+      return metaMarksHardStart(await meta.readAsBytes());
+    } catch (e) {
+      Logger.error('RecordingsManager: hard-start read failed for ${meta.path}: $e');
+      return false;
+    }
+  }
+
+  /// Reads the `hardStart` bit (0x02) out of the fourth flag byte of a `.meta`.
+  /// Written by `VadAudioProcessor._saveMetadata`, which documents why the flag
+  /// shares that byte with `isSilero` instead of taking a fifth one.
+  @visibleForTesting
+  static bool metaMarksHardStart(Uint8List metaBytes) {
+    if (metaBytes.length < 417) return false;
+    final flagOffset = 417 + metaBytes[416];
+    if (metaBytes.length <= flagOffset + 3) return false;
+    return (metaBytes[flagOffset + 3] & 0x02) != 0;
+  }
+
+  @visibleForTesting
+  Future<void> stitchDraftRecordingsForTest({bool finalizeAll = false}) =>
+      _stitchDraftRecordings(finalizeAll: finalizeAll);
 
   /// Appends the audio from a [DiscardRecord] (ghost) into the [draftFile],
   /// preceded by [gapMs] of silence.
