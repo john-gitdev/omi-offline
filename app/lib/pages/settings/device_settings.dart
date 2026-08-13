@@ -205,7 +205,18 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     if (_hasPriorityCapFeature == true) {
       final cap = await connection.getPriorityRecordCap();
       if (!mounted) return;
-      if (cap != null) _applyLoaded(() => _priorityRecordCap = cap);
+      if (cap != null) {
+        _applyLoaded(() {
+          _priorityRecordCap = cap;
+          // Persist the DEVICE's value, not just the row. The processor now cuts a
+          // Priority Recording at this cap when its 0xFFFFFFFC is lost, so a pref
+          // that has drifted from the device would cut a legitimate recording at the
+          // wrong length. They drift on a fresh install against an Omi whose cap was
+          // set by a previous one: the pref falls back to its 120 default while the
+          // device still holds, say, 480. Every other write path sets both.
+          SharedPreferencesUtil().priorityRecordMaxMinutes = cap;
+        });
+      }
     }
   }
 
