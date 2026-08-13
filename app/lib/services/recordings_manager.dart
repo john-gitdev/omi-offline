@@ -1019,6 +1019,15 @@ class RecordingsManager {
     final splitSeconds = SharedPreferencesUtil().vadSplitSeconds;
     final thresholdMs = splitSeconds * 1000;
 
+    // Drafts this call has already tried to close. Every finalize below sets
+    // scanNeeded and re-scans, on the assumption the file is no longer a draft --
+    // but _finalizeDraft swallows its own exceptions, so a rename that fails leaves
+    // the draft on disk and the rescan finds it again, forever. Pre-existing shape;
+    // the hard-boundary rules add two more paths into it, which is reason enough to
+    // bound it. A successful finalize never revisits (the file stops matching
+    // `_draft.`), so this only ever fires on failure.
+    final finalizeAttempted = <String>{};
+
     bool scanNeeded = true;
     while (scanNeeded) {
       scanNeeded = false;
@@ -1062,12 +1071,17 @@ class RecordingsManager {
       if (draftFiles.isEmpty) break;
 
       for (final draftFile in draftFiles) {
+        // Only skip a draft a previous pass already TRIED to finalize; a draft that
+        // merely stitched must be revisited, since a chain folds several recordings
+        // in across successive rescans.
+        if (finalizeAttempted.contains(draftFile.path)) continue;
         final draftTs = _extractTimestamp(draftFile.path);
         final draftExt = draftFile.path.split('.').last;
         final draftMeta = File(draftFile.path.replaceAllMapped(RegExp(r'\.' + draftExt + r'$'), (_) => '.meta'));
 
         if (!await draftMeta.exists()) {
           // No meta, can't stitch accurately. Finalize it.
+          finalizeAttempted.add(draftFile.path);
           await _finalizeDraft(draftFile, isForceSynced: finalizeAll);
           scanNeeded = true;
           break;
@@ -1076,6 +1090,7 @@ class RecordingsManager {
         // Get draft duration from meta
         final metaBytes = await draftMeta.readAsBytes();
         if (metaBytes.length < 8) {
+          finalizeAttempted.add(draftFile.path);
           await _finalizeDraft(draftFile, isForceSynced: finalizeAll);
           scanNeeded = true;
           break;
@@ -1083,12 +1098,29 @@ class RecordingsManager {
         final durationMs = ByteData.sublistView(metaBytes).getUint32(4, Endian.little);
         final draftEndTs = draftTs + durationMs;
 
+        // The draft already ends at a hard firmware boundary — it absorbed the
+        // recording that closed at one, or was itself closed there. Nothing may be
+        // appended, whatever the gap says. This is the half of the rule that
+        // survives runs: the successor's own hardStart stamp is set in memory and
+        // dies with the checkpoint when a run completes cleanly, which is exactly
+        // what happens when the boundary is the last thing in the last synced bin.
+        if (metaMarksHardEnd(metaBytes)) {
+          Logger.debug('RecordingsManager: Finalizing draft $draftTs — it ends at a hard marker boundary.');
+          // Not the bolt: that marks a draft a Force Process closed because nothing
+          // followed it. This one closed because the device said it was over.
+          finalizeAttempted.add(draftFile.path);
+          await _finalizeDraft(draftFile, isForceSynced: false);
+          scanNeeded = true;
+          break;
+        }
+
         // Find the next chronological event across all folders.
         final currentIndex = allEvents.indexWhere((e) => e.audio?.path == draftFile.path);
         if (currentIndex == -1 || currentIndex == allEvents.length - 1) {
           // No next event anywhere.
           if (finalizeAll) {
             // Manual user trigger (Force Process) always finalizes immediately.
+            finalizeAttempted.add(draftFile.path);
             await _finalizeDraft(draftFile, isForceSynced: true);
             scanNeeded = true;
             break;
@@ -1142,6 +1174,7 @@ class RecordingsManager {
               'RecordingsManager: Finalizing draft $draftTs — non-speech threshold (${thresholdMs}ms) exceeded.');
           // Bolt only when this is a Force Process and no speech follows — i.e.
           // the boundary was a trailing gap/discard, not a real next recording.
+          finalizeAttempted.add(draftFile.path);
           await _finalizeDraft(draftFile, isForceSynced: finalizeAll && !hasLaterAudio);
           scanNeeded = true;
           break;
@@ -1159,6 +1192,7 @@ class RecordingsManager {
           Logger.debug('RecordingsManager: Finalizing draft $draftTs — next recording '
               '${audioToStitch.path.split('/').last} starts at a hard marker boundary.');
           // Never the bolt: a real recording demonstrably follows this draft.
+          finalizeAttempted.add(draftFile.path);
           await _finalizeDraft(draftFile, isForceSynced: false);
           scanNeeded = true;
           break;
@@ -1235,6 +1269,7 @@ class RecordingsManager {
           // the last actual recording, so finalize it now with the bolt instead
           // of leaving it open as a draft.
           Logger.debug('RecordingsManager: Force-finalizing draft $draftTs — only trailing discards follow (bolt).');
+          finalizeAttempted.add(draftFile.path);
           await _finalizeDraft(draftFile, isForceSynced: true);
           scanNeeded = true;
           break;
@@ -1259,14 +1294,23 @@ class RecordingsManager {
   }
 
   /// Reads the `hardStart` bit (0x02) out of the fourth flag byte of a `.meta`.
-  /// Written by `VadAudioProcessor._saveMetadata`, which documents why the flag
-  /// shares that byte with `isSilero` instead of taking a fifth one.
+  /// Written by `VadAudioProcessor._saveMetadata`, which documents why the flags
+  /// share that byte with `isSilero` instead of taking bytes of their own.
   @visibleForTesting
-  static bool metaMarksHardStart(Uint8List metaBytes) {
+  static bool metaMarksHardStart(Uint8List metaBytes) => _metaFlagBit(metaBytes, 0x02);
+
+  /// Reads the `hardEnd` bit (0x04). The durable half of a boundary: [hardStart]
+  /// can only be carried by a recording that gets written, and the audio after a
+  /// boundary often arrives runs later (the firmware rotates the bin at a priority
+  /// stop, so the successor is in the bin a sync cannot fetch yet).
+  @visibleForTesting
+  static bool metaMarksHardEnd(Uint8List metaBytes) => _metaFlagBit(metaBytes, 0x04);
+
+  static bool _metaFlagBit(Uint8List metaBytes, int mask) {
     if (metaBytes.length < 417) return false;
     final flagOffset = 417 + metaBytes[416];
     if (metaBytes.length <= flagOffset + 3) return false;
-    return (metaBytes[flagOffset + 3] & 0x02) != 0;
+    return (metaBytes[flagOffset + 3] & mask) != 0;
   }
 
   @visibleForTesting
@@ -1843,6 +1887,15 @@ class RecordingsManager {
         final p2 = nMeta.getUint16(8 + i * 2, Endian.little);
         outData.setUint16(8 + i * 2, max(p1, p2), Endian.little);
       }
+    }
+
+    // Carry the appended recording's hardEnd onto the draft. The draft's own flag
+    // bytes are otherwise preserved wholesale, so without this the boundary would be
+    // dropped the moment the recording that ended at it is folded in — and the next
+    // pass would happily append across it.
+    if (nBytes != null && metaMarksHardEnd(nBytes) && outBytes.length >= 417) {
+      final flagOffset = 417 + outBytes[416];
+      if (outBytes.length > flagOffset + 3) outBytes[flagOffset + 3] |= 0x04;
     }
 
     await draftMetaFile.writeAsBytes(outBytes, flush: true);
