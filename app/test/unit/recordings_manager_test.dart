@@ -1604,4 +1604,76 @@ void main() {
       // but we ensure the code structure is correct.
     });
   });
+
+  // The cross-run draft stitcher decides on time gaps alone, which silently
+  // rejoined the two halves of a firmware recording boundary: a 2 h Priority
+  // Recording came back as 2 h 18 m because the draft that was open when the user
+  // tapped Record Start got glued to its front (15 min) and the audio that resumed
+  // after the stop marker to its back (3 min). The hardStart stamp in the next
+  // recording's .meta is what makes the boundary visible here.
+  group('_stitchDraftRecordings hard marker boundaries', () {
+    /// Writes a `recording_<startMs>[_draft].wav` + `.meta` pair holding
+    /// [durationMs] of 16 kHz mono 16-bit PCM. [hardStart] sets bit 0x02 of the
+    /// fourth flag byte — the stamp VadAudioProcessor writes for a recording that
+    /// begins at a 0xFFFFFFF8 priority start or after a 0xFFFFFFFC stop.
+    Future<File> writeStitchable({
+      required int startMs,
+      required int durationMs,
+      bool isDraft = false,
+      bool hardStart = false,
+    }) async {
+      final dateDir = Directory(p.join(tempDir.path, 'recordings', coverageDateOf(startMs)))
+        ..createSync(recursive: true);
+      final suffix = isDraft ? '_draft' : '';
+      final wav = File(p.join(dateDir.path, 'recording_$startMs$suffix.wav'))
+        ..writeAsBytesSync(Uint8List(44 + durationMs * 32));
+      // 416-byte fixed header + keyLen byte + 4 flag bytes.
+      final meta = Uint8List(416 + 1 + 4);
+      ByteData.sublistView(meta)
+        ..setUint32(0, durationMs * 16, Endian.little) // totalSamples @ 16 kHz
+        ..setUint32(4, durationMs, Endian.little);
+      meta[416] = 0; // keyLen
+      meta[420] = hardStart ? 0x02 : 0x00; // [3] bit0 isSilero, bit1 hardStart
+      File(p.join(dateDir.path, 'recording_$startMs$suffix.meta')).writeAsBytesSync(meta);
+      return wav;
+    }
+
+    const draftMs = 5000;
+    const nextMs = 3000;
+    final draftStart = DateTime.utc(2026, 8, 12, 20, 46, 28).millisecondsSinceEpoch;
+    // Contiguous: gap 0, so the plain gap rule would stitch these unconditionally.
+    final nextStart = draftStart + draftMs;
+
+    test('a next recording stamped hardStart finalizes the draft instead of stitching', () async {
+      final draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true);
+      final next = await writeStitchable(startMs: nextStart, durationMs: nextMs, hardStart: true);
+
+      await RecordingsManager().stitchDraftRecordingsForTest();
+
+      expect(draft.existsSync(), isFalse, reason: 'the draft is closed at the boundary, not left open');
+      expect(File(draft.path.replaceAll('_draft.wav', '.wav')).existsSync(), isTrue,
+          reason: 'closed means promoted to a finalized recording');
+      expect(next.existsSync(), isTrue, reason: 'the boundary recording keeps its own file');
+      expect(next.lengthSync(), 44 + nextMs * 32, reason: 'and nothing was prepended to it');
+    });
+
+    test('an ordinary next recording at the same zero gap is still stitched (control)', () async {
+      final draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true);
+      final next = await writeStitchable(startMs: nextStart, durationMs: nextMs);
+
+      await RecordingsManager().stitchDraftRecordingsForTest();
+
+      expect(next.existsSync(), isFalse, reason: 'consumed into the draft');
+      expect(draft.existsSync(), isTrue, reason: 'still open — stitched, not finalized');
+      final meta = File(draft.path.replaceAll('.wav', '.meta')).readAsBytesSync();
+      expect(ByteData.sublistView(meta).getUint32(4, Endian.little), draftMs + nextMs,
+          reason: 'both durations now live in the draft');
+    });
+
+    test('a meta with no flag bytes at all reads as no boundary (pre-feature recordings)', () async {
+      final legacy = Uint8List(8);
+      ByteData.sublistView(legacy).setUint32(4, 1000, Endian.little);
+      expect(RecordingsManager.metaMarksHardStart(legacy), isFalse);
+    });
+  });
 }
