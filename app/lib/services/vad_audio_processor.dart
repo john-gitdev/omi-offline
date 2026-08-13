@@ -146,6 +146,26 @@ class VadAudioProcessor {
   // sub-50 ms recording.
   bool _sessionEndPendingResume = false;
 
+  // Set when a hard recording boundary is parsed — a 0xFFFFFFF8 Priority Recording
+  // start or a 0xFFFFFFFC stop. Consumed by the next recording actually written to
+  // disk, which stamps `hardStart` into its .meta so the cross-run draft stitcher
+  // (RecordingsManager._stitchDraftRecordings) refuses to prepend the preceding
+  // conversation to it.
+  //
+  // Within one run the processor already cuts at these markers. What undoes it is
+  // that a run ENDS by flushing whatever is open as a `_draft`, and the stitcher
+  // then glues the next run's files onto that draft on a pure time-gap rule — gap 0
+  // across a marker boundary, so both sides are silently rejoined. That is how a
+  // 2 h Priority Recording surfaced as 2 h 18 m: ~15 min of pre-tap auto audio on
+  // the front (the draft that was open when the user hit Record Start) and ~3 min of
+  // post-stop audio on the back.
+  //
+  // Pending rather than applied on the spot, because the boundary and the recording
+  // that begins at it need not land in the same run: an FC at the tail of the last
+  // synced bin has its successor arrive on a later sync. Hence it rides the
+  // checkpoint ('hsp') alongside [_sessionEndPendingResume].
+  bool _hardStartPending = false;
+
   // True while processing the audio between a 0xFFFFFFF8 Priority Recording
   // start marker and its 0xFFFFFFFC stop. The firmware force-captures every
   // frame across this span (runtime VAD threshold 65535), so the app must NOT
@@ -580,6 +600,7 @@ class VadAudioProcessor {
       'fbm': _forcedByMarker,
       'mpu': _markerProtectedUntilMs,
       'sep': _sessionEndPendingResume,
+      'hsp': _hardStartPending,
       'ipr': _inPriorityRecording,
       'prs': _priorityRecordingSessionId,
       'poa': _priorityOpenedAtMs,
@@ -629,6 +650,9 @@ class VadAudioProcessor {
     _forcedByMarker = s['fbm'] as bool;
     _markerProtectedUntilMs = s['mpu'] as int?;
     _sessionEndPendingResume = s['sep'] as bool;
+    // Absent in checkpoints written before hard-boundary stamping existed; false is
+    // the pre-feature behaviour (stitch on the gap rule alone).
+    _hardStartPending = (s['hsp'] as bool?) ?? false;
     _inPriorityRecording = (s['ipr'] as bool?) ?? false;
     _priorityRecordingSessionId = s['prs'] as int?;
     _priorityOpenedAtMs = s['poa'] as int?;
@@ -1148,6 +1172,11 @@ class VadAudioProcessor {
               _emitOrphanMarkers();
             }
             _sessionEndPendingResume = true;
+            // Whatever resumes after this stop begins a new conversation, and the
+            // recording just flushed must not grow backwards into it during the
+            // cross-run stitch. Set AFTER the flush above so the flag lands on the
+            // successor, not on the recording this marker closed.
+            _hardStartPending = true;
             // Session-end also stops a Priority Recording (auto-mode RECORD_STOP
             // restores the auto threshold, which the firmware finalizes by
             // emitting this same 0xFFFFFFFC). Leaving the force-capture span.
@@ -1218,6 +1247,13 @@ class VadAudioProcessor {
             } else {
               _emitOrphanMarkers();
             }
+            // The priority recording opens HERE. Stamp it so the cross-run stitcher
+            // cannot glue the preceding auto conversation onto its front — the flush
+            // above only closes what THIS run had buffered, and a draft left open by
+            // an earlier run is still sitting on disk waiting to absorb it. Set after
+            // the flush for the same reason as the FC path: the flag belongs to the
+            // successor, not to the recording just closed.
+            _hardStartPending = true;
             // 4) Enter force-capture: every frame is speech, no silence split,
             // until the 0xFFFFFFFC stop.
             _inPriorityRecording = true;
@@ -2565,16 +2601,31 @@ class VadAudioProcessor {
     } else {
       metaOut.add(0); // empty keyLen — keep flag bytes positioned at flagOffset = 417
     }
-    // Three flag bytes at flagOffset = 417 + keyLen:
+    // Four flag bytes at flagOffset = 417 + keyLen:
     //   [0] passthrough (set later by integrations layer, 0 on initial write)
     //   [1] forceSynced (set later by _finalizeDraft for manual-finalize cases, 0 on initial write)
     //   [2] capEnded    (set HERE — true iff VAD ended this recording at the max-duration cap)
+    //   [3] bit0 isSilero, bit1 hardStart (both set HERE)
     // pruneConsumedBins reads byte [2] to decide whether bins extending past rec_end may be
     // safely deleted (silence-ended) or must be preserved (cap-ended).
+    //
+    // hardStart shares byte [3] rather than taking a fifth byte on purpose. The bins
+    // JSON that follows is located as `flagOffset + <number of flag bytes>`, and the
+    // reader infers that count from the meta's LENGTH (recordings_models.dart) — it
+    // cannot tell four flag bytes from five. A fifth byte would therefore shift the
+    // bins section out from under every .meta already on disk, emptying relativeBins
+    // for recordings that predate it (breaking bin pruning and "lists no source
+    // segments"). Every existing reader masks these bytes with & 0x01, so the high
+    // bits are free and invisible to older parsers.
     metaOut.add(0); // passthrough
     metaOut.add(0); // forceSynced
     metaOut.add(capEnded ? 1 : 0); // capEnded
-    metaOut.add(isSilero ? 1 : 0); // isSilero
+    // Consumed here, at the single funnel every persisted recording passes through:
+    // whichever recording is written first after the boundary is by definition the
+    // one that starts at it, whether that happens in this run or a later one.
+    final hardStart = _hardStartPending;
+    _hardStartPending = false;
+    metaOut.add((isSilero ? 0x01 : 0) | (hardStart ? 0x02 : 0));
 
     // Append relative bins used for this recording (binary length + JSON).
     // Use relBinPath() so a ref whose path doesn't contain a literal
