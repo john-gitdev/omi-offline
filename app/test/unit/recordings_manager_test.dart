@@ -1621,6 +1621,7 @@ void main() {
       required int durationMs,
       bool isDraft = false,
       bool hardStart = false,
+      bool hardEnd = false,
     }) async {
       final dateDir = Directory(p.join(tempDir.path, 'recordings', coverageDateOf(startMs)))
         ..createSync(recursive: true);
@@ -1633,7 +1634,8 @@ void main() {
         ..setUint32(0, durationMs * 16, Endian.little) // totalSamples @ 16 kHz
         ..setUint32(4, durationMs, Endian.little);
       meta[416] = 0; // keyLen
-      meta[420] = hardStart ? 0x02 : 0x00; // [3] bit0 isSilero, bit1 hardStart
+      // [3] bit0 isSilero, bit1 hardStart, bit2 hardEnd
+      meta[420] = (hardStart ? 0x02 : 0x00) | (hardEnd ? 0x04 : 0x00);
       File(p.join(dateDir.path, 'recording_$startMs$suffix.meta')).writeAsBytesSync(meta);
       return wav;
     }
@@ -1670,10 +1672,57 @@ void main() {
           reason: 'both durations now live in the draft');
     });
 
+    test('a draft that ends at a boundary is finalized even before the next audio exists', () async {
+      // The cross-run half. The successor's hardStart stamp lives in memory and dies
+      // with the checkpoint on clean completion, and the firmware rotates the bin at a
+      // priority stop — so the audio after the boundary is routinely still in the bin
+      // being written when the run ends. The draft's own hardEnd has to hold the line.
+      final draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true, hardEnd: true);
+
+      await RecordingsManager().stitchDraftRecordingsForTest();
+
+      expect(draft.existsSync(), isFalse);
+      expect(File(draft.path.replaceAll('_draft.wav', '.wav')).existsSync(), isTrue,
+          reason: 'the device said the recording was over — promote it, do not leave it "in progress"');
+    });
+
+    test('a draft that ends at a boundary refuses a next recording carrying no stamp', () async {
+      final draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true, hardEnd: true);
+      // The successor as a LATER run writes it: contiguous, and with no hardStart of
+      // its own because the pending flag did not survive the run boundary.
+      final next = await writeStitchable(startMs: nextStart, durationMs: nextMs);
+
+      await RecordingsManager().stitchDraftRecordingsForTest();
+
+      expect(next.existsSync(), isTrue, reason: 'the post-boundary audio stays its own recording');
+      expect(next.lengthSync(), 44 + nextMs * 32);
+      expect(File(draft.path.replaceAll('_draft.wav', '.wav')).existsSync(), isTrue);
+    });
+
+    test('stitching a boundary-ended recording into a draft carries the boundary onto the draft', () async {
+      // The draft absorbs the recording the 0xFFFFFFFC closed (allowed — that one does
+      // not START at a boundary), and must inherit its hardEnd, or the next pass would
+      // append straight across the boundary it just swallowed.
+      final draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true);
+      await writeStitchable(startMs: nextStart, durationMs: nextMs, hardEnd: true);
+      // What arrives after the boundary, in a later run, unstamped.
+      final after = await writeStitchable(startMs: nextStart + nextMs, durationMs: 2000);
+
+      await RecordingsManager().stitchDraftRecordingsForTest();
+
+      expect(after.existsSync(), isTrue, reason: 'never folded in — the draft now ends at the boundary');
+      final finalized = File(draft.path.replaceAll('_draft.wav', '.wav'));
+      expect(finalized.existsSync(), isTrue);
+      final meta = File(finalized.path.replaceAll('.wav', '.meta')).readAsBytesSync();
+      expect(ByteData.sublistView(meta).getUint32(4, Endian.little), draftMs + nextMs,
+          reason: 'exactly the pre-boundary audio, and nothing past it');
+    });
+
     test('a meta with no flag bytes at all reads as no boundary (pre-feature recordings)', () async {
       final legacy = Uint8List(8);
       ByteData.sublistView(legacy).setUint32(4, 1000, Endian.little);
       expect(RecordingsManager.metaMarksHardStart(legacy), isFalse);
+      expect(RecordingsManager.metaMarksHardEnd(legacy), isFalse);
     });
   });
 }

@@ -1066,6 +1066,49 @@ void main() {
       expect(flagByte3(saved[1]) & 0x01, 0, reason: 'vadEnabled:false → isSilero clear alongside a set hardStart');
       expect(RecordingsManager.metaMarksHardStart(metaOf(saved[1])), isTrue);
       expect(RecordingsManager.metaMarksHardStart(metaOf(saved[0])), isFalse);
+
+      // The other half: each recording CLOSED at a boundary is stamped hardEnd. That
+      // is the half that survives a run, which matters because the successor often
+      // does not exist yet (below).
+      expect(flagByte3(saved[0]) & 0x04, 0x04, reason: 'the auto recording was closed by the 0xFFFFFFF8');
+      expect(flagByte3(saved[1]) & 0x04, 0x04, reason: 'the priority recording was closed by the 0xFFFFFFFC');
+      expect(flagByte3(flushed) & 0x04, 0, reason: 'the tail was closed by the end of the run, not a boundary');
+    });
+
+    // The firmware rotates the bin at a priority stop, so a 0xFFFFFFFC sits at the
+    // END of a bin and the audio after it is in the bin still being written — the one
+    // a sync cannot fetch yet. So the boundary routinely arrives as the last thing in
+    // a run, its successor runs later, and _hardStartPending (in-memory, and the
+    // checkpoint carrying it is deleted on clean completion) is gone by then. Only the
+    // hardEnd stamp on the closed recording survives to hold the boundary.
+    test('a boundary at the very end of a run still leaves the closing recording stamped', () async {
+      final builder = BytesBuilder();
+      final hdr = ByteData(36);
+      hdr.setUint32(0, 0xFFFFFFFB, Endian.little);
+      hdr.setUint32(4, 28, Endian.little);
+      hdr.setUint64(8, kBase, Endian.little);
+      hdr.setUint64(16, 0, Endian.little);
+      hdr.setUint32(24, 0, Endian.little);
+      hdr.setUint32(28, 1, Endian.little);
+      builder.add(hdr.buffer.asUint8List());
+      final fhdr = ByteData(4)..setUint32(0, 4, Endian.little);
+      for (int i = 0; i < 10; i++) {
+        builder.add(fhdr.buffer.asUint8List());
+        builder.add(List.filled(4, 0));
+      }
+      // Stop marker as the final bytes of the final bin — nothing follows it.
+      builder.add((ByteData(20)..setUint32(0, 0xFFFFFFFC, Endian.little)).buffer.asUint8List());
+      final file = File('${tempDir.path}/boundary_at_eof.bin')..writeAsBytesSync(builder.toBytes());
+
+      final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+      final saved = await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      expect(await proc.flushRemaining(), isNull, reason: 'the marker consumed everything');
+      await proc.destroy();
+
+      expect(saved.length, 1);
+      final meta = File(saved[0].replaceAll(RegExp(r'\.(wav|m4a)$'), '.meta')).readAsBytesSync();
+      expect(RecordingsManager.metaMarksHardEnd(meta), isTrue,
+          reason: 'nothing can be appended to this recording in any later run');
     });
 
     // Builds [header + 0xFFFFFFF8 priority-start + `frames` frames + optional FC].
@@ -1095,6 +1138,23 @@ void main() {
       }
       return File('${tempDir.path}/$name')..writeAsBytesSync(builder.toBytes());
     }
+
+    // The firmware rotates the bin BEFORE writing a 0xFFFFFFF8, so the marker
+    // normally arrives at a bin head with nothing buffered — no recording is closed,
+    // so there is no hardEnd to carry the boundary and hardStart is the only stamp
+    // that can. This is why both halves exist rather than just the durable one.
+    test('a priority start at a bin head stamps hardStart with no recording to close', () async {
+      final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+      final saved = await proc.processSegmentFile(priorityBin('prio_binhead.bin', frames: 10, stop: true),
+          DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      await proc.destroy();
+
+      expect(saved.length, 1, reason: 'nothing was buffered at the F8 — only the priority recording is written');
+      final meta = File(saved[0].replaceAll(RegExp(r'\.(wav|m4a)$'), '.meta')).readAsBytesSync();
+      expect(RecordingsManager.metaMarksHardStart(meta), isTrue,
+          reason: 'the boundary rides on the recording that OPENED at it');
+      expect(RecordingsManager.metaMarksHardEnd(meta), isTrue, reason: 'and its own 0xFFFFFFFC closed it');
+    });
 
     test('serialize/restore preserves _inPriorityRecording and the high-priority marker', () async {
       // Leave the processor mid-Priority-Recording (start + frames, no stop).
@@ -1374,6 +1434,37 @@ void main() {
         // 200 minutes of audio under a 120-minute cap: the firmware would have stopped
         // at 120, so the marker is gone. Cut here and treat the rest as auto mode.
         expect(await stillCapturingAfter(name: 'aud_out.json', audioAgeMin: 200, prefCapMinutes: 120), isFalse);
+      });
+
+      test('a run opening already past the cap closes the span without inventing a fragment', () async {
+        // The boundary can land at a run START — earlier runs consumed the pre-cap
+        // audio — so the frame that trips the cap is the first one buffered. Nothing
+        // may be saved there (the "recording" would be that one 20 ms frame); the
+        // stamp goes on the audio that follows instead. This is also why the cap is
+        // enforced in the ingestion loop and not in the deferred verdict, which only
+        // ever sees frames already appended.
+        final latchPath = '${tempDir.path}/aud_runstart.json';
+        final openedAtMs = DateTime.now().millisecondsSinceEpoch;
+        File(latchPath).writeAsStringSync(jsonEncode({'sessionId': 1, 'openedAtMs': openedAtMs, 'ts': openedAtMs}));
+        final p = VadAudioProcessor.fromSettings(
+            settings: capSettings(120), outputDir: tempDir.path, priorityStatePath: latchPath);
+        await p.restorePriorityLatch();
+
+        final saved = await p.processSegmentFile(
+          _makeBinFile(tempDir, 10, name: 'runstart_cont.bin'),
+          DateTime.fromMillisecondsSinceEpoch(openedAtMs + 200 * 60 * 1000, isUtc: true),
+          sessionId: 1,
+        );
+        expect(saved, isEmpty, reason: 'no audio buffered before the cap tripped — nothing to save');
+        expect(p.inPriorityRecording, isFalse, reason: 'the span is over');
+        expect(File(latchPath).existsSync(), isFalse, reason: 'the sentinel goes with it');
+
+        final flushed = await p.flushRemaining();
+        expect(flushed, isNotNull, reason: 'the post-cap audio is an ordinary recording');
+        final meta = File(flushed!.replaceAll(RegExp(r'\.(wav|m4a)$'), '.meta')).readAsBytesSync();
+        expect(RecordingsManager.metaMarksHardStart(meta), isTrue,
+            reason: 'the cut is the hard boundary the lost 0xFFFFFFFC would have been');
+        await p.destroy();
       });
 
       test('cap 0 (no firmware cap) falls back to a 6 h bound on the audio', () async {
