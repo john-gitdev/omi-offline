@@ -166,6 +166,22 @@ class VadAudioProcessor {
   // checkpoint ('hsp') alongside [_sessionEndPendingResume].
   bool _hardStartPending = false;
 
+  // The other half of the same boundary: set around the flush that CLOSES a
+  // recording at one, so its .meta records that nothing may be appended to it.
+  //
+  // [_hardStartPending] alone is not enough, because it can only be consumed by a
+  // recording that gets written, and the successor may not exist yet: the firmware
+  // rotates the bin at a priority stop, so a 0xFFFFFFFC lands at the end of a bin
+  // and the audio after it is in the bin still being written — i.e. the one a sync
+  // cannot download yet. The run then completes cleanly, its checkpoint is deleted,
+  // and the pending flag goes with it. Stamped on the closing recording instead, the
+  // boundary is on disk in the .meta and survives any number of runs.
+  //
+  // Set immediately before the boundary flush and cleared immediately after, so a
+  // flush that saves nothing (encoder failure, discard guard) can't leak the stamp
+  // onto some later unrelated recording.
+  bool _endsAtHardBoundary = false;
+
   // True while processing the audio between a 0xFFFFFFF8 Priority Recording
   // start marker and its 0xFFFFFFFC stop. The firmware force-captures every
   // frame across this span (runtime VAD threshold 65535), so the app must NOT
@@ -1193,7 +1209,9 @@ class VadAudioProcessor {
                 'VadAudioProcessor: Session-end marker at $lastFrameWallTime — finalizing recording (refs=${_currentRefs.length}).');
             if (_currentRefs.isNotEmpty) {
               _forcedByMarker = true;
+              _endsAtHardBoundary = true;
               final filePath = await flushRemaining(isDraft: false);
+              _endsAtHardBoundary = false;
               if (filePath != null) savedFiles.add(filePath);
             } else {
               // No audio buffered for this session — still surface any pending
@@ -1265,7 +1283,9 @@ class VadAudioProcessor {
             // 3) Finalize the current auto recording (if any) at this boundary.
             if (_currentRefs.isNotEmpty) {
               _forcedByMarker = true;
+              _endsAtHardBoundary = true;
               final filePath = await flushRemaining(isDraft: false);
+              _endsAtHardBoundary = false;
               if (filePath != null) savedFiles.add(filePath);
             } else {
               _emitOrphanMarkers();
@@ -1603,13 +1623,6 @@ class VadAudioProcessor {
           isSpeech = true;
         }
 
-        // Inside a Priority Recording the firmware force-captured every frame;
-        // treat all audio as speech so the app never splits it on silence. It
-        // finalizes only at the 0xFFFFFFFC stop (or the firmware safety cap).
-        if (_inPriorityRecording) {
-          isSpeech = true;
-        }
-
         final frameRef = FrameRef(segmentFile: segmentFile, byteOffset: offset, frameLength: frameLength);
 
         // Compute accurate wall-clock time for this frame using VAD-resume anchor if available.
@@ -1618,6 +1631,55 @@ class VadAudioProcessor {
             : segmentStartTime.add(Duration(milliseconds: frameIndex * frameDurationMs));
         lastFrameWallTime = frameTime;
         if (_currentFrameUptimeMs != null) _currentFrameUptimeMs = _currentFrameUptimeMs! + frameDurationMs;
+
+        // Priority Recording safety cap — the stand-in for a 0xFFFFFFFC that never
+        // arrived, so it is handled exactly like the real stop marker: flush the
+        // deferred batch, finalize at this boundary, leave the span. Two reasons it
+        // belongs HERE and not in the deferred verdict:
+        //   * the force-speech stamp below is applied at ingestion, so a cap fired
+        //     during the Pass-2 replay would leave a whole batch (up to 6000 frames
+        //     / 120 s) of post-cap audio still stamped force-captured;
+        //   * _currentRefs is still empty on the first frame of a run, so a run that
+        //     opens already past the cap closes the span without inventing a 20 ms
+        //     recording out of the single frame that tripped it.
+        // Deliberately does NOT set _sessionEndPendingResume (the 0xFFFFFFF8 path
+        // doesn't either): the audio after the cap is ordinary auto audio to be kept,
+        // not the marker-write race the real stop marker has to swallow.
+        if (_inPriorityRecording && _priorityCapReachedAt(frameTime)) {
+          if (_useBatchRunner && _batchDeferredFrames.isNotEmpty) {
+            segmentSpeechFrames =
+                await _flushVadBatch(savedFiles: savedFiles, segmentSpeechFrames: segmentSpeechFrames);
+          }
+          Logger.debug('VadAudioProcessor: Priority Recording hit its ${_priorityCapAudioMs ~/ 60000}min safety cap '
+              'in the audio at $frameTime (opened $_priorityOpenedAtMs) — its 0xFFFFFFFC was lost; '
+              'cutting here and treating what follows as ordinary auto mode.');
+          if (_currentRefs.isNotEmpty) {
+            _forcedByMarker = true;
+            _endsAtHardBoundary = true;
+            final filePath = await flushRemaining(isDraft: false);
+            _endsAtHardBoundary = false;
+            if (filePath != null) savedFiles.add(filePath);
+          } else {
+            _emitOrphanMarkers();
+          }
+          await _endPriorityRecording();
+          // The same hard boundary the lost stop marker would have been, so the
+          // cross-run stitcher must not glue the post-cap audio back onto it.
+          _hardStartPending = true;
+          _pcmBufferLen = 0;
+          // ignore: unawaited_futures, discarded_futures
+          _cachedStateValue?.dispose();
+          _cachedStateValue = null;
+          _vadContext.fillRange(0, _vadContextSamples, 0.0);
+          _batchResetPending = true;
+        }
+
+        // Inside a Priority Recording the firmware force-captured every frame;
+        // treat all audio as speech so the app never splits it on silence. It
+        // finalizes only at the 0xFFFFFFFC stop, or at the safety cap above.
+        if (_inPriorityRecording) {
+          isSpeech = true;
+        }
 
         if (_useBatchRunner) {
           // TWO-PASS: defer verdict — accumulate frame metadata for Pass 2 replay.
@@ -1951,25 +2013,12 @@ class VadAudioProcessor {
       return _VadVerdictResult(segmentSpeechFrames: segmentSpeechFrames, splitFired: splitFired);
     }
 
-    // Priority Recording safety cap, measured in the audio itself. The firmware stops
-    // a force-captured stretch at this cap and emits 0xFFFFFFFC; if that marker is
-    // ever lost, THIS is what ends the span — cutting the priority recording into its
-    // own file at the cap and letting everything after it be ordinary auto audio,
-    // exactly as the device did. It replaces a wall-clock ceiling on the restored
-    // latch, which conflated "the stop marker was dropped" with "the Omi hasn't been
-    // near the phone lately" and re-VAD'd a legitimate force-captured stretch on a
-    // long enough sync outage.
-    final bool priorityCapHit = _inPriorityRecording && _priorityCapReachedAt(frameTime);
-
     // Max conversation duration cap (0 / disabled by default). Bypassed inside a
-    // Priority Recording so a deliberate force-captured stretch stays one file;
-    // the cap above bounds its length instead.
-    if (priorityCapHit || (!_inPriorityRecording && _currentChunkDurationMs >= _maxChunkMs)) {
-      Logger.debug(priorityCapHit
-          ? 'VadAudioProcessor: Priority Recording reached its '
-              '${_priorityCapAudioMs ~/ 60000}min safety cap in the audio (opened $_priorityOpenedAtMs) — '
-              'cutting here; the 0xFFFFFFFC was lost and what follows is ordinary auto mode.'
-          : 'VadAudioProcessor: Max conversation duration — forcing cut.');
+    // Priority Recording so a deliberate force-captured stretch stays one file; the
+    // firmware safety cap bounds it instead, enforced in the ingestion loop where the
+    // real 0xFFFFFFFC is handled (see _priorityCapReachedAt's call site).
+    if (!_inPriorityRecording && _currentChunkDurationMs >= _maxChunkMs) {
+      Logger.debug('VadAudioProcessor: Max conversation duration — forcing cut.');
       await _flushPartialWindow();
       final speechMs = _speechFrameCount * frameDurationMs;
       final bool tooShortSpeech = _session != null && _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
@@ -1990,16 +2039,6 @@ class VadAudioProcessor {
         Logger.debug('VadAudioProcessor: Discarding noise conversation during max-duration cut.');
       }
       final cutTime = _recordingStartTime!.add(Duration(milliseconds: _currentChunkDurationMs));
-
-      if (priorityCapHit) {
-        // The span is over: everything from here is ordinary auto audio, and the
-        // sentinel must go so no later run resurrects force-capture.
-        await _endPriorityRecording();
-        // Same hard boundary the 0xFFFFFFFC would have been, so the cross-run
-        // stitcher must not glue the post-cap audio back onto the recording just
-        // closed — the file this cut produces is the Priority Recording.
-        _hardStartPending = true;
-      }
 
       final bool newConversationProtected =
           _markerProtectedUntilMs != null && cutTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
@@ -2652,7 +2691,7 @@ class VadAudioProcessor {
     //   [0] passthrough (set later by integrations layer, 0 on initial write)
     //   [1] forceSynced (set later by _finalizeDraft for manual-finalize cases, 0 on initial write)
     //   [2] capEnded    (set HERE — true iff VAD ended this recording at the max-duration cap)
-    //   [3] bit0 isSilero, bit1 hardStart (both set HERE)
+    //   [3] bit0 isSilero, bit1 hardStart, bit2 hardEnd (all set HERE)
     // pruneConsumedBins reads byte [2] to decide whether bins extending past rec_end may be
     // safely deleted (silence-ended) or must be preserved (cap-ended).
     //
@@ -2672,7 +2711,7 @@ class VadAudioProcessor {
     // one that starts at it, whether that happens in this run or a later one.
     final hardStart = _hardStartPending;
     _hardStartPending = false;
-    metaOut.add((isSilero ? 0x01 : 0) | (hardStart ? 0x02 : 0));
+    metaOut.add((isSilero ? 0x01 : 0) | (hardStart ? 0x02 : 0) | (_endsAtHardBoundary ? 0x04 : 0));
 
     // Append relative bins used for this recording (binary length + JSON).
     // Use relBinPath() so a ref whose path doesn't contain a literal
