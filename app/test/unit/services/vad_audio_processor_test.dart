@@ -994,6 +994,80 @@ void main() {
           reason: 'priority marker anchors to the new recording, not an orphan');
     });
 
+    // Regression: the boundary has to be stamped into the .meta of the recording
+    // that STARTS at it. The processor cuts correctly inside a run, but a run ends
+    // by flushing whatever is open as a `_draft`, and RecordingsManager's cross-run
+    // stitcher — which sees only timestamps and gaps — then rejoined both sides at
+    // gap 0. That is how a 2 h Priority Recording surfaced as 2 h 18 m: 15 min of
+    // pre-tap audio on the front, 3 min of post-stop audio on the back.
+    test('0xFFFFFFF8, and the audio resuming after 0xFFFFFFFC, are stamped hardStart in .meta', () async {
+      final builder = BytesBuilder();
+      final hdr = ByteData(36);
+      hdr.setUint32(0, 0xFFFFFFFB, Endian.little);
+      hdr.setUint32(4, 28, Endian.little);
+      hdr.setUint64(8, kBase, Endian.little);
+      hdr.setUint64(16, 0, Endian.little);
+      hdr.setUint32(24, 0, Endian.little);
+      hdr.setUint32(28, 1, Endian.little);
+      builder.add(hdr.buffer.asUint8List());
+      final fhdr = ByteData(4)..setUint32(0, 4, Endian.little);
+      void frames(int n) {
+        for (int i = 0; i < n; i++) {
+          builder.add(fhdr.buffer.asUint8List());
+          builder.add(List.filled(4, 0));
+        }
+      }
+
+      // Auto recording → priority start → priority span → stop → resume → tail.
+      frames(10);
+      final start = ByteData(20)
+        ..setUint32(0, 0xFFFFFFF8, Endian.little)
+        ..setUint64(4, kBase + 200, Endian.little)
+        ..setUint32(12, 0, Endian.little)
+        ..setUint32(16, 1, Endian.little);
+      builder.add(start.buffer.asUint8List());
+      frames(10);
+      builder.add((ByteData(20)..setUint32(0, 0xFFFFFFFC, Endian.little)).buffer.asUint8List());
+      // Resume 5 min later — past the 110 s file-gap threshold, so the tail anchors
+      // to the resume time and gets a filename of its own. (0xFFFFFFFD carries UTC
+      // *seconds*, not ms, so a sub-second offset here would round the tail back
+      // onto the first recording's timestamp and overwrite its .meta.)
+      final resume = ByteData(20)
+        ..setUint32(0, 0xFFFFFFFD, Endian.little)
+        ..setUint32(4, kBase ~/ 1000 + 300, Endian.little)
+        ..setUint32(8, 300000, Endian.little);
+      builder.add(resume.buffer.asUint8List());
+      frames(10);
+      final file = File('${tempDir.path}/hardstart.bin')..writeAsBytesSync(builder.toBytes());
+
+      final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+      final saved = await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      final flushed = await proc.flushRemaining();
+      await proc.destroy();
+
+      // Read the wire layout directly rather than through the production parser, so
+      // this pins the byte position too: flag byte [3] at flagOffset = 417 + keyLen,
+      // bit 0x01 = isSilero, bit 0x02 = hardStart.
+      Uint8List metaOf(String audioPath) =>
+          File(audioPath.replaceAll(RegExp(r'\.(wav|m4a)$'), '.meta')).readAsBytesSync();
+      int flagByte3(String audioPath) {
+        final meta = metaOf(audioPath);
+        return meta[417 + meta[416] + 3];
+      }
+
+      expect(saved.length, 2, reason: 'F8 closes the prior auto recording, FC closes the priority one');
+      expect(flagByte3(saved[0]) & 0x02, 0, reason: 'the pre-tap auto recording starts at no boundary');
+      expect(flagByte3(saved[1]) & 0x02, 0x02, reason: 'the priority recording starts AT the 0xFFFFFFF8');
+      expect(flushed, isNotNull, reason: 'the post-stop audio is a recording of its own');
+      expect(flagByte3(flushed!) & 0x02, 0x02, reason: 'the audio after the 0xFFFFFFFC starts at that boundary');
+
+      // The flag shares its byte with isSilero, which must survive the packing —
+      // and the production reader must agree with the layout asserted above.
+      expect(flagByte3(saved[1]) & 0x01, 0, reason: 'vadEnabled:false → isSilero clear alongside a set hardStart');
+      expect(RecordingsManager.metaMarksHardStart(metaOf(saved[1])), isTrue);
+      expect(RecordingsManager.metaMarksHardStart(metaOf(saved[0])), isFalse);
+    });
+
     // Builds [header + 0xFFFFFFF8 priority-start + `frames` frames + optional FC].
     File priorityBin(String name, {required int frames, bool stop = false}) {
       final builder = BytesBuilder();
