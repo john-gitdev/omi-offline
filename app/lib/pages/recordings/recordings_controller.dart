@@ -1018,54 +1018,25 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     return timerStart;
   }
 
-  /// Processes each pending mode-switch backlog with the settings that were live
-  /// when it was recorded, and returns [batches] holding only the bins that
-  /// post-date the LAST switch — the ones the caller should run under the
-  /// current mode.
+  /// Splits [batches] into the passes a processing run must make, so that every
+  /// bin is cut by the settings that were live when it was recorded.
   ///
-  /// A recording mode is a property of the audio, not of the toggle. Flipping it
-  /// rewrites the live VAD prefs and the processor reads those at run time, so
-  /// without this a backlog is re-cut by a mode it was NOT recorded in — auto
-  /// audio chopped at every bin boundary and AAD wake by manual's
-  /// `vadSplitSeconds = 0`, or a deliberate manual capture discarded as noise by
-  /// auto's Silero + `minSpeechMs` filter.
+  /// Pure, and deliberately so: this is the whole of the decision, and it is the
+  /// part worth testing. [_drainModeSwitchBacklog] only executes what this
+  /// returns.
   ///
-  /// One pass per entry, oldest first. The ascending walk is what assigns each
-  /// bin to the first switch it predates: each pass takes everything older than
-  /// its own stamp out of the remainder, so by the time a later entry is reached
-  /// the older spans are already gone.
-  ///
-  /// Never passes `finalizeDrafts: true`, not even under Force Sync. It is
-  /// tempting — a draft left open at a boundary is re-stitched onto the next
-  /// pass's audio, so the last recording before a switch can absorb audio from
-  /// after it. But `finalizeDrafts` is a whole-DISK post-step: it promotes every
-  /// draft it finds, not this pass's. Entries survive across runs (see
-  /// [ModeSwitchRecord.retire]), so a draft belonging to audio AFTER the switch
-  /// is on disk when this runs, and promoting it is the premature promotion the
-  /// pipeline warns about everywhere — it prunes the draft's source bins and
-  /// anchors the next run too early. Under Force Sync it would also promote a
-  /// post-switch draft before the current-mode pass has processed the bins that
-  /// should have stitched onto it, splitting one recording in two. Draft
-  /// finalization belongs to the LAST pass of a run; the boundary here is left
-  /// to the firmware's own 0xFFFFFFFC, which it writes at the switch whenever it
-  /// was mid-recording — i.e. exactly when a draft is open.
-  ///
-  /// No-ops on every ordinary run: the history is empty unless a switch is
-  /// pending.
-  Future<List<Batch>> _drainModeSwitchBacklog(List<Batch> batches, int gen) async {
-    final history = ModeSwitchRecord.decode(_prefs.processingModeSwitchHistory);
-    if (history.isEmpty) {
-      // decode() never throws, so a stored value that parses to nothing is the
-      // only way this mechanism can silently switch itself off. Say so, and wipe
-      // the unreadable value rather than re-reading and re-failing on every run.
-      if (_prefs.processingModeSwitchHistory.isNotEmpty) {
-        Logger.error('RecordingsController: unreadable mode-switch history — discarding it. Any backlog from before '
-            'a recent mode switch will be processed with the current mode.');
-        _prefs.processingModeSwitchHistory = '';
-      }
-      return batches;
-    }
-
+  /// Returns one entry per pass, oldest first, each with the [ModeSettings] to
+  /// cut it with — or null on the LAST entry, meaning "the current mode". The
+  /// ascending walk is what assigns a bin to the first switch it predates: each
+  /// pass takes everything older than its own stamp out of the remainder, so by
+  /// the time a later switch is reached the older spans are already gone.
+  /// Passes with no bins are dropped, so an ordinary run gets exactly one entry
+  /// back.
+  @visibleForTesting
+  static List<({ModeSettings? settings, List<Batch> batches})> planModeSwitchPasses(
+    List<Batch> batches,
+    List<ModeSwitchRecord> history,
+  ) {
     List<Batch> withBins(List<Batch> src, bool Function(File) keep) => src
         .map((b) => Batch(
               dateString: b.dateString,
@@ -1077,84 +1048,93 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
               discards: b.discards,
             ))
         .toList();
+    bool hasBins(List<Batch> bs) => bs.any((b) => b.rawSegments.isNotEmpty);
 
-    // Everything at or after the newest switch is current-mode audio, so it is
-    // the safe thing to hand back from a bail-out: no entry governs it.
-    List<Batch> currentModeOnly() => withBins(batches, (f) => binStartUtcSeconds(f) >= history.last.atUtcSeconds);
-
+    final passes = <({ModeSettings? settings, List<Batch> batches})>[];
     var remaining = batches;
     for (final entry in history) {
       final group = withBins(remaining, (f) => binStartUtcSeconds(f) < entry.atUtcSeconds);
-      final rest = withBins(remaining, (f) => binStartUtcSeconds(f) >= entry.atUtcSeconds);
-      final int binCount = group.fold(0, (n, b) => n + b.rawSegments.length);
-      if (binCount > 0) {
-        Logger.debug('RecordingsController: mode switch pending — processing $binCount bin(s) recorded before '
-            '${DateTime.fromMillisecondsSinceEpoch(entry.atUtcSeconds * 1000, isUtc: true)} with the settings they '
-            'were recorded under (vadEnabled=${entry.settings.vadEnabled}, '
-            'split=${entry.settings.silenceDurationToSplitMs}ms, minSpeech=${entry.settings.minSpeechMs}ms).');
-        try {
-          await _manager.processAll(
-            group,
-            (_, __) {},
-            backgroundMode: !_isForcePipeline,
-            // Always false, including under Force Sync — see the doc comment.
-            // finalizeDrafts is a whole-DISK post-step, so it belongs to the last
-            // pass of a run, not to a pre-pass. Letting Force Sync set it here
-            // would promote post-switch drafts before the current-mode pass below
-            // has processed the bins that should have stitched onto them, turning
-            // one recording into two.
-            finalizeDrafts: false,
-            settingsOverride: entry.settings,
-            onRecordingFinalized: () => unawaited(reloadBatchesSilently()),
-          );
-        } catch (e) {
-          // Persist nothing: the history in prefs is still the pre-run one, so
-          // the next cycle retries this entry (and any after it) under its own
-          // settings rather than letting the audio fall through to the current
-          // mode's — the outcome this whole mechanism exists to avoid. Entries
-          // already drained this run simply find no bins next time and retire
-          // then. Deliberately does not rethrow: this runs outside
-          // _runProcessing's own try, so an escaping exception would strand the
-          // pipeline in `processing` until the watchdog.
-          Logger.error('RecordingsController: mode-switch backlog processing failed ($e) — retrying next cycle.');
-          return currentModeOnly();
-        }
-        // Watchdog recovered mid-pass. Leave the history untouched for the retry;
-        // the caller's own generation check returns immediately after this.
-        if (gen != _pipelineGeneration) return batches;
-      }
-      remaining = rest;
+      if (hasBins(group)) passes.add((settings: entry.settings, batches: group));
+      remaining = withBins(remaining, (f) => binStartUtcSeconds(f) >= entry.atUtcSeconds);
     }
-
-    final retained = ModeSwitchRecord.retire(
-      history: history,
-      nowUtcSeconds: DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000,
-      // Answered from the UNFILTERED batches, unlike the partition above: a bin
-      // still mid-transfer is pre-switch audio that isProcessableBin hides from
-      // this run, and an interrupted sync handing over to processing is exactly
-      // when that happens.
-      anyBinBefore: (at) => _batches.any((b) => b.rawSegments.any((f) => binStartUtcSeconds(f) < at)),
-      // The Omi keeps recording while disconnected, so a cut-short sync means it
-      // may still hold audio from before a switch that has not reached the phone
-      // at all. Force- and process-only runs read whatever the last real sync
-      // left here, which is the right answer for them too: it is the device that
-      // has or hasn't been drained.
-      lastSyncPartial: _prefs.lastSyncPartial,
-      maxAgeSeconds: _modeSwitchMaxAge.inSeconds,
-    );
-    if (retained.length != history.length) {
-      final dropped = history.length - retained.length;
-      Logger.debug('RecordingsController: retired $dropped mode-switch '
-          'entr${dropped == 1 ? "y" : "ies"}, ${retained.length} still pending.');
-      _prefs.processingModeSwitchHistory = ModeSwitchRecord.encode(retained);
-    }
-    return remaining;
+    passes.add((settings: null, batches: remaining));
+    return passes;
   }
 
-  /// How long a mode-switch entry may outlive its switch. An Omi that is never
-  /// fully drained would otherwise hold an entry forever, and every live entry
-  /// costs one extra processing pass per run.
-  static const Duration _modeSwitchMaxAge = Duration(days: 7);
+  /// Processes each pending mode-switch backlog with the settings that were live
+  /// when it was recorded, and returns the bins the caller should run under the
+  /// current mode — those that post-date every switch.
+  ///
+  /// A recording mode is a property of the audio, not of the toggle. Flipping it
+  /// rewrites the live VAD prefs and the processor reads those at run time, so
+  /// without this a backlog is re-cut by a mode it was NOT recorded in — auto
+  /// audio chopped at every bin boundary and AAD wake by manual's
+  /// `vadSplitSeconds = 0`, or a deliberate manual capture filed as a recoverable
+  /// ghost row by auto's `minSpeechMs` filter.
+  ///
+  /// Never passes `finalizeDrafts: true`, not even under Force Sync. It is
+  /// tempting — a draft left open at a boundary is re-stitched onto the next
+  /// pass's audio, so the last recording before a switch can absorb audio from
+  /// after it. But `finalizeDrafts` is a whole-DISK post-step: it promotes every
+  /// draft it finds, not this pass's. Entries live indefinitely, so a draft
+  /// belonging to audio AFTER the switch is on disk when this runs, and promoting
+  /// it is the premature promotion the pipeline warns about everywhere — it
+  /// prunes the draft's source bins and anchors the next run too early. Under
+  /// Force Sync it would also promote a post-switch draft before the current-mode
+  /// pass had processed the bins that should have stitched onto it, splitting one
+  /// recording in two. Draft finalization belongs to the LAST pass of a run; the
+  /// boundary here is left to the firmware's own 0xFFFFFFFC, which it writes at
+  /// the switch whenever it was mid-recording — i.e. exactly when a draft is open.
+  Future<List<Batch>> _drainModeSwitchBacklog(List<Batch> batches, int gen) async {
+    final raw = _prefs.processingModeSwitchHistory;
+    if (raw.isEmpty) return batches;
+
+    final history = ModeSwitchRecord.decode(raw);
+    if (history.isEmpty) {
+      // decode() never throws, so a stored value that parses to nothing is the
+      // only way this mechanism can silently switch itself off. Say so, and wipe
+      // the unreadable value rather than re-reading and re-failing every run.
+      Logger.error('RecordingsController: unreadable mode-switch history — discarding it. Any backlog from before '
+          'a recent mode switch will be processed with the current mode.');
+      _prefs.processingModeSwitchHistory = '';
+      return batches;
+    }
+
+    final passes = planModeSwitchPasses(batches, history);
+    if (passes.length == 1) return batches; // nothing predates a switch — the steady state
+
+    final live = ProcessingSettings.fromPrefs();
+    for (final pass in passes) {
+      if (pass.settings == null) return pass.batches; // hand the current-mode remainder back
+      final int binCount = pass.batches.fold(0, (n, b) => n + b.rawSegments.length);
+      Logger.debug('RecordingsController: mode switch pending — processing $binCount bin(s) with the settings they '
+          'were recorded under (vadEnabled=${pass.settings!.vadEnabled}, '
+          'split=${pass.settings!.silenceDurationToSplitMs}ms, minSpeech=${pass.settings!.minSpeechMs}ms).');
+      try {
+        await _manager.processAll(
+          pass.batches,
+          (_, __) {},
+          backgroundMode: !_isForcePipeline,
+          finalizeDrafts: false, // see the doc comment — never true here, not even on Force Sync
+          settingsOverride: live.withMode(pass.settings!),
+          onRecordingFinalized: () => unawaited(reloadBatchesSilently()),
+        );
+      } catch (e) {
+        // Do nothing further this run. Every bail-out here fails the same way —
+        // less work, retried next cycle — because the alternative is handing
+        // audio to the current mode's settings, which is the outcome this exists
+        // to prevent. Nothing is persisted, so the history is untouched and the
+        // next cycle replans from scratch; passes that already completed simply
+        // find no bins. Deliberately does not rethrow: this runs outside
+        // _runProcessing's own try, so an escaping exception would strand the
+        // pipeline in `processing` until the watchdog.
+        Logger.error('RecordingsController: mode-switch backlog processing failed ($e) — retrying next cycle.');
+        return const [];
+      }
+      if (gen != _pipelineGeneration) return const []; // watchdog recovered; caller returns immediately
+    }
+    return const []; // unreachable: the plan always ends with the current-mode pass
+  }
 
   /// Bins still awaiting a resumed read — never safe to process or prune.
   ///

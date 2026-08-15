@@ -697,7 +697,7 @@ class DeviceProvider extends ChangeNotifier
         ModeSwitchRecord.decode(prefs.processingModeSwitchHistory),
         ModeSwitchRecord(
           atUtcSeconds: DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000,
-          settings: ProcessingSettings.fromPrefs(),
+          settings: ProcessingSettings.fromPrefs().mode,
         ),
       ),
     );

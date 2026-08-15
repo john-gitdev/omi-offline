@@ -1,18 +1,22 @@
+import 'dart:io';
+
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/models/recordings/recordings_models.dart';
+import 'package:omi/pages/recordings/recordings_controller.dart';
 import 'package:omi/services/vad/vad_types.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// The recording-mode switch history decides which settings cut which audio.
-/// An entry lost early sends a backlog through the mode it was NOT recorded in —
-/// auto audio chopped at every AAD wake by manual's `vadSplitSeconds = 0`, or a
-/// deliberate manual capture discarded as noise by auto's speech filter. So the
-/// ordering, the retirement rule and the round trip are all load-bearing.
+/// Send a stretch to the wrong entry and it is processed by the mode it was NOT
+/// recorded in — auto audio chopped at every AAD wake by manual's
+/// `vadSplitSeconds = 0`, or a deliberate manual capture filed as a recoverable
+/// ghost row by auto's speech filter.
 void main() {
   setUp(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
-    // ProcessingSettings.fromJson falls back to the live prefs per field, and
+    // ModeSettings.fromJson falls back to the live prefs per field, and
     // SharedPreferencesUtil.init touches secure storage on the way up.
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
       const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
@@ -22,28 +26,30 @@ void main() {
     await SharedPreferencesUtil.init();
   });
 
-  ProcessingSettings settings({required int splitMs, int minSpeechMs = 0}) => ProcessingSettings(
+  ModeSettings mode({required int splitMs, int minSpeechMs = 0}) => ModeSettings(
         vadEnabled: splitMs > 0,
         speechThreshold: 0.5,
         silenceDurationToSplitMs: splitMs,
         minDurationMs: 0,
         minSpeechMs: minSpeechMs,
         maxChunkMs: 0x7FFFFFFFFFFFFFFF,
-        deviceId: 'dev',
-        audioSaveFormat: 'wav',
-        omiEnabled: false,
-        priorityRecordCapMinutes: 120,
       );
 
+  /// Real firmware `timerStart` from the 2026-08-14 log. Test timestamps are
+  /// offsets from it because anything at or below kMinValidEpoch (2000-01-01)
+  /// is treated as a pre-time-sync bin and reads as 0 — the case its own test
+  /// below covers deliberately.
+  const int base = 1786741941;
+
   ModeSwitchRecord entry(int at, {int splitMs = 120000}) =>
-      ModeSwitchRecord(atUtcSeconds: at, settings: settings(splitMs: splitMs));
+      ModeSwitchRecord(atUtcSeconds: base + at, settings: mode(splitMs: splitMs));
 
   group('encode / decode', () {
     test('round-trips a multi-entry history in order', () {
       final history = [entry(100, splitMs: 120000), entry(200, splitMs: 0)];
       final restored = ModeSwitchRecord.decode(ModeSwitchRecord.encode(history));
 
-      expect(restored.map((e) => e.atUtcSeconds), [100, 200]);
+      expect(restored.map((e) => e.atUtcSeconds), [base + 100, base + 200]);
       expect(restored[0].settings.silenceDurationToSplitMs, 120000);
       expect(restored[1].settings.silenceDurationToSplitMs, 0);
       // The sentinel is the largest int Dart holds; a JSON round trip that
@@ -67,7 +73,15 @@ void main() {
 
     test('decode sorts, so a clock that stepped backwards cannot unorder it', () {
       final raw = ModeSwitchRecord.encode([entry(300), entry(100)]);
-      expect(ModeSwitchRecord.decode(raw).map((e) => e.atUtcSeconds), [100, 300]);
+      expect(ModeSwitchRecord.decode(raw).map((e) => e.atUtcSeconds), [base + 100, base + 300]);
+    });
+
+    test('a field missing from an older entry falls back to the live value', () {
+      final live = ProcessingSettings.fromPrefs().mode;
+      final partial = ModeSettings.fromJson({'silenceDurationToSplitMs': 0});
+      expect(partial.silenceDurationToSplitMs, 0, reason: 'the field that IS present wins');
+      expect(partial.minSpeechMs, live.minSpeechMs);
+      expect(partial.vadEnabled, live.vadEnabled);
     });
   });
 
@@ -75,7 +89,7 @@ void main() {
     test('keeps entries ascending', () {
       var h = ModeSwitchRecord.append(const [], entry(200));
       h = ModeSwitchRecord.append(h, entry(100)); // clock stepped back
-      expect(h.map((e) => e.atUtcSeconds), [100, 200]);
+      expect(h.map((e) => e.atUtcSeconds), [base + 100, base + 200]);
     });
 
     test('caps the history by dropping the OLDEST', () {
@@ -86,74 +100,146 @@ void main() {
       expect(h.length, ModeSwitchRecord.maxEntries);
       // Newest survive: the dropped span falls to the next entry's settings,
       // degraded for the oldest audio only rather than unbounded growth.
-      expect(h.first.atUtcSeconds, 40);
-      expect(h.last.atUtcSeconds, (ModeSwitchRecord.maxEntries + 3) * 10);
+      expect(h.first.atUtcSeconds, base + 40);
+      expect(h.last.atUtcSeconds, base + (ModeSwitchRecord.maxEntries + 3) * 10);
     });
   });
 
-  group('retire', () {
-    List<ModeSwitchRecord> retire(
-      List<ModeSwitchRecord> history, {
-      required int now,
-      required bool Function(int) anyBinBefore,
-      bool partial = false,
-      int maxAge = 7 * 24 * 3600,
-    }) =>
-        ModeSwitchRecord.retire(
-          history: history,
-          nowUtcSeconds: now,
-          anyBinBefore: anyBinBefore,
-          lastSyncPartial: partial,
-          maxAgeSeconds: maxAge,
-        );
+  group('withMode', () {
+    test('replaces the mode-shaped fields and keeps the global ones live', () {
+      // The point of storing only six fields: a replaced Omi's id or a changed
+      // save format must NOT be frozen into a pending backlog.
+      final live = ProcessingSettings.fromPrefs();
+      final applied = live.withMode(mode(splitMs: 0, minSpeechMs: 0));
 
-    test('retires a drained entry', () {
-      final h = [entry(100)];
-      expect(retire(h, now: 200, anyBinBefore: (_) => false), isEmpty);
+      expect(applied.silenceDurationToSplitMs, 0);
+      expect(applied.minSpeechMs, 0);
+      expect(applied.deviceId, live.deviceId);
+      expect(applied.audioSaveFormat, live.audioSaveFormat);
+      expect(applied.omiEnabled, live.omiEnabled);
+      expect(applied.priorityRecordCapMinutes, live.priorityRecordCapMinutes);
+    });
+  });
+
+  /// The whole decision: which bins each pass gets, and with what settings.
+  group('planModeSwitchPasses', () {
+    /// One batch holding bins named by their firmware `timerStart`, the way the
+    /// sync layer writes them: raw_segments/<timerStart>/<timerStart>_<sid>.bin
+    List<Batch> batchOf(List<int> timerStarts) => [
+          Batch(
+            dateString: '2026-08-14',
+            date: DateTime(2026, 8, 14),
+            rawSegments: timerStarts.map((o) {
+              final t = base + o;
+              return File('/docs/raw_segments/$t/${t}_99.bin');
+            }).toList(),
+            draftRecordings: const [],
+            finalizedRecordings: const [],
+          )
+        ];
+
+    /// Bin start times as the offsets [batchOf] was given, so expectations read
+    /// in the same small numbers the test wrote.
+    List<int> binsIn(List<Batch> bs) =>
+        bs.expand((b) => b.rawSegments).map((f) => RecordingsController.binStartUtcSeconds(f) - base).toList();
+
+    test('no history means one pass under the current mode', () {
+      final passes = RecordingsController.planModeSwitchPasses(batchOf([1000, 2000]), const []);
+      expect(passes, hasLength(1));
+      expect(passes.single.settings, isNull);
+      expect(binsIn(passes.single.batches), [1000, 2000]);
     });
 
-    test('keeps an entry while a bin on disk still predates it', () {
-      // Includes the mid-transfer case: isProcessableBin hides a downloading bin
-      // from the run's partition, so "nothing to process" is not "nothing left".
-      // That is the ordinary state when an interrupted sync hands over.
-      final h = [entry(100)];
-      expect(retire(h, now: 200, anyBinBefore: (_) => true), hasLength(1));
+    test('splits a backlog either side of one switch', () {
+      final passes = RecordingsController.planModeSwitchPasses(
+        batchOf([1000, 1500, 2500, 3000]),
+        [entry(2000, splitMs: 120000)],
+      );
+      expect(passes, hasLength(2));
+      expect(passes[0].settings!.silenceDurationToSplitMs, 120000, reason: 'the mode being left');
+      expect(binsIn(passes[0].batches), [1000, 1500]);
+      expect(passes[1].settings, isNull, reason: 'current mode');
+      expect(binsIn(passes[1].batches), [2500, 3000]);
     });
 
-    test('keeps an entry after a partial sync even with nothing on disk', () {
-      // The Omi keeps recording while disconnected, so a cut-short sync means it
-      // may still hold pre-switch files that never reached the phone.
-      final h = [entry(100)];
-      expect(retire(h, now: 200, anyBinBefore: (_) => false, partial: true), hasLength(1));
+    test('gives each span of two switches its own settings', () {
+      // The case a single "previous mode" snapshot could not express: the middle
+      // span belongs to neither the oldest mode nor the current one.
+      final passes = RecordingsController.planModeSwitchPasses(
+        batchOf([100, 1500, 2500]),
+        [entry(1000, splitMs: 120000), entry(2000, splitMs: 0)],
+      );
+      expect(passes, hasLength(3));
+      expect(binsIn(passes[0].batches), [100]);
+      expect(passes[0].settings!.silenceDurationToSplitMs, 120000);
+      expect(binsIn(passes[1].batches), [1500]);
+      expect(passes[1].settings!.silenceDurationToSplitMs, 0);
+      expect(binsIn(passes[2].batches), [2500]);
+      expect(passes[2].settings, isNull);
     });
 
-    test('retires only the leading run, keeping later entries', () {
-      // Bins exist before 300 but not before 100/200 → drop the first two.
-      final h = [entry(100), entry(200), entry(300)];
-      final kept = retire(h, now: 400, anyBinBefore: (at) => at > 250);
-      expect(kept.map((e) => e.atUtcSeconds), [300]);
+    test('every bin lands in exactly one pass', () {
+      // The invariant that matters: a bin in two passes is decoded twice, a bin
+      // in none is never processed and its file is never reclaimed.
+      final all = [100, 900, 1000, 1500, 2000, 2500];
+      final passes = RecordingsController.planModeSwitchPasses(
+        batchOf(all),
+        [entry(1000), entry(2000)],
+      );
+      expect(passes.expand((p) => binsIn(p.batches)).toList()..sort(), all);
     });
 
-    test('stops at the first surviving entry even if a later one looks drained', () {
-      // Guards the prefix assumption. Both conditions are monotone along the
-      // ascending list, so a later entry can never be retirable once an earlier
-      // one is not — and dropping out of the middle would misassign every bin
-      // after it.
-      final h = [entry(100), entry(200)];
-      final kept = retire(h, now: 400, anyBinBefore: (at) => at == 100);
-      expect(kept.map((e) => e.atUtcSeconds), [100, 200]);
+    test('a bin exactly at a switch instant belongs to the NEW mode', () {
+      // `< at` not `<= at`: the stamp is the moment the new mode took effect.
+      final passes = RecordingsController.planModeSwitchPasses(batchOf([2000]), [entry(2000)]);
+      expect(passes, hasLength(1));
+      expect(passes.single.settings, isNull);
     });
 
-    test('retires on age even with bins on disk and a partial sync', () {
-      // The escape hatch: every live entry costs a processing pass per run, and
-      // an Omi that is never fully drained would otherwise hold one forever.
-      final h = [entry(100)];
-      expect(retire(h, now: 100 + 8 * 24 * 3600, anyBinBefore: (_) => true, partial: true), isEmpty);
-      expect(retire(h, now: 100 + 6 * 24 * 3600, anyBinBefore: (_) => true, partial: true), hasLength(1));
+    test('an empty pass is dropped, so a drained entry costs nothing', () {
+      // Entries are never retired, so this is what a spent one does: match
+      // nothing and disappear from the plan.
+      final passes = RecordingsController.planModeSwitchPasses(batchOf([5000]), [entry(1000), entry(2000)]);
+      expect(passes, hasLength(1));
+      expect(passes.single.settings, isNull);
+      expect(binsIn(passes.single.batches), [5000]);
     });
 
-    test('an empty history retires to empty', () {
-      expect(retire(const [], now: 1, anyBinBefore: (_) => false), isEmpty);
+    test('a pre-time-sync bin lands in the oldest pass', () {
+      // No usable clock, so it reads as 0 — older than any switch. That is the
+      // safe side: audio predating a working clock predates today's switch.
+      final passes = RecordingsController.planModeSwitchPasses(
+        [
+          Batch(
+            dateString: 'unorganized',
+            date: DateTime(2026, 8, 14),
+            rawSegments: [File('/docs/raw_segments/session_99/1234_99.bin')],
+            draftRecordings: const [],
+            finalizedRecordings: const [],
+          )
+        ],
+        [entry(1000)],
+      );
+      expect(passes, hasLength(2));
+      expect(passes[0].settings, isNotNull);
+      expect(passes[1].batches.every((b) => b.rawSegments.isEmpty), isTrue);
+    });
+
+    test('carries drafts, markers and discards into every pass unchanged', () {
+      // processAll reads none of them for bin selection, but dropping them would
+      // silently change the early-return and force-sync branches downstream.
+      final src = [
+        Batch(
+          dateString: '2026-08-14',
+          date: DateTime(2026, 8, 14),
+          rawSegments: [File('/docs/raw_segments/500/500_99.bin')],
+          draftRecordings: const [],
+          finalizedRecordings: const [],
+          markerTimestamps: [DateTime(2026, 8, 14, 12)],
+        )
+      ];
+      final passes = RecordingsController.planModeSwitchPasses(src, [entry(1000)]);
+      expect(passes.every((p) => p.batches.single.markerTimestamps.length == 1), isTrue);
     });
   });
 }
