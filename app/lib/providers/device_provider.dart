@@ -672,8 +672,16 @@ class DeviceProvider extends ChangeNotifier
     notifyListeners();
   }
 
-  Future<void> setManualMode(bool enabled) async {
-    if (connectedDevice == null) return;
+  /// Returns whether the switch actually happened. False means the device went
+  /// away between the toggle being tapped (which the UI gates on being
+  /// connected) and the save — in which case NOTHING here ran, and the caller
+  /// must not write the new mode's processing prefs either. Writing them anyway
+  /// leaves the app cutting audio by manual's rules while `manualMode` still
+  /// says auto and the Omi is still in auto: no pin is taken, because no switch
+  /// was recorded, so the backlog is re-cut unprotected. That is the 2026-08-14
+  /// configuration exactly.
+  Future<bool> setManualMode(bool enabled) async {
+    if (connectedDevice == null) return false;
     final prefs = SharedPreferencesUtil();
     // Freeze the OUTGOING mode's processing settings before anything flips, so
     // the backlog recorded under them is still cut by them. Read here and not in
@@ -700,6 +708,7 @@ class DeviceProvider extends ChangeNotifier
     // Mode flipped — make the new mode's button mapping live on the device.
     await pushActiveButtonConfig();
     notifyListeners();
+    return true;
   }
 
   @visibleForTesting
