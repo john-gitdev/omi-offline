@@ -998,6 +998,118 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     return !discarded.contains(parts.last);
   }
 
+  /// Start of the audio in a raw bin, as firmware UTC epoch seconds.
+  ///
+  /// Bins are named `<timerStart>/<timerStart>_<sessionId>.bin` where
+  /// `timerStart` is the firmware clock. Pre-time-sync bins land in
+  /// `session_<id>/` and have no usable timestamp — they are reported as 0 so a
+  /// mode-switch partition treats them as older than any switch, which puts them
+  /// in the frozen-settings group. That is the safe side: an "Unorganized" bin
+  /// predating a working clock certainly predates a switch made today.
+  ///
+  /// Mirrors the `segmentStartTimesMs` derivation in RecordingsManager.processAll
+  /// — the two must agree on where a bin sits in time.
+  @visibleForTesting
+  static int binStartUtcSeconds(File f) {
+    const kMinValidEpoch = 946684800;
+    final stem = f.path.split('/').last.split('.').first;
+    final timerStart = int.tryParse(stem.split('_').first);
+    if (timerStart == null || timerStart <= kMinValidEpoch) return 0;
+    return timerStart;
+  }
+
+  /// Processes the bins recorded before a pending mode switch with the settings
+  /// that were live when they were recorded, and returns [batches] with those
+  /// bins removed so the caller runs the remainder under the current mode.
+  ///
+  /// A recording mode is a property of the audio, not of the toggle. Flipping it
+  /// rewrites the live VAD prefs and the processor reads those at run time, so
+  /// without this a backlog is re-cut by the mode it was NOT recorded in — auto
+  /// audio chopped at every bin boundary and AAD wake by manual's
+  /// `vadSplitSeconds = 0`, or a deliberate manual capture discarded as noise by
+  /// auto's Silero + `minSpeechMs` filter.
+  ///
+  /// `finalizeDrafts: true` on the frozen run is deliberate and is NOT the
+  /// premature promotion the ordinary path guards against: a mode switch is a
+  /// real boundary (the firmware writes a 0xFFFFFFFC there whenever it was
+  /// mid-recording), and leaving a draft open would let the current-mode run
+  /// stitch the old mode's audio onto the new mode's — the exact mixing this
+  /// exists to prevent. Every bin it consumes is pre-switch, so the prune that
+  /// follows can't touch post-switch audio.
+  ///
+  /// No-ops on every ordinary run: the stamp is 0 unless a switch is pending.
+  Future<List<Batch>> _drainPreSwitchBacklog(List<Batch> batches, int gen) async {
+    final int switchAt = _prefs.processingModeSwitchAtUtc;
+    if (switchAt == 0) return batches;
+
+    ProcessingSettings? frozen;
+    final raw = _prefs.processingPreSwitchSettings;
+    if (raw.isNotEmpty) {
+      try {
+        frozen = ProcessingSettings.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+      } catch (e) {
+        Logger.error('RecordingsController: unreadable pre-switch settings ($e) — processing the backlog with the '
+            'current mode instead.');
+      }
+    }
+
+    List<Batch> withBins(List<Batch> src, bool Function(File) keep) => src
+        .map((b) => Batch(
+              dateString: b.dateString,
+              date: b.date,
+              rawSegments: b.rawSegments.where(keep).toList(),
+              draftRecordings: b.draftRecordings,
+              finalizedRecordings: b.finalizedRecordings,
+              markerTimestamps: b.markerTimestamps,
+              discards: b.discards,
+            ))
+        .toList();
+
+    final preSwitch = withBins(batches, (f) => binStartUtcSeconds(f) < switchAt);
+    final hasPreSwitch = preSwitch.any((b) => b.rawSegments.isNotEmpty);
+
+    // Nothing left from before the switch — the pin has done its job. Clearing
+    // both keys together is the invariant; a stamp with no settings would send
+    // every later run down the unreadable-snapshot branch above.
+    if (!hasPreSwitch || frozen == null) {
+      _prefs.processingModeSwitchAtUtc = 0;
+      _prefs.processingPreSwitchSettings = '';
+      return batches;
+    }
+
+    final int binCount = preSwitch.fold(0, (n, b) => n + b.rawSegments.length);
+    Logger.debug('RecordingsController: mode switch pending — processing $binCount bin(s) recorded before '
+        '${DateTime.fromMillisecondsSinceEpoch(switchAt * 1000, isUtc: true)} with the settings they were '
+        'recorded under (vadEnabled=${frozen.vadEnabled}, split=${frozen.silenceDurationToSplitMs}ms, '
+        'minSpeech=${frozen.minSpeechMs}ms).');
+
+    try {
+      await _manager.processAll(
+        preSwitch,
+        (_, __) {},
+        backgroundMode: !_isForcePipeline,
+        finalizeDrafts: true,
+        settingsOverride: frozen,
+        onRecordingFinalized: () => unawaited(reloadBatchesSilently()),
+      );
+    } catch (e) {
+      // Leave the stamp in place and drop these bins from THIS run: the backlog
+      // is still pre-switch audio, so the next cycle must retry it under the
+      // frozen settings rather than let it fall through to the current mode's —
+      // the outcome this whole mechanism exists to avoid. Deliberately does not
+      // rethrow: this runs outside _runProcessing's own try, so an escaping
+      // exception would strand the pipeline in `processing` until the watchdog.
+      // Post-switch bins are unaffected and still process below.
+      Logger.error('RecordingsController: pre-switch backlog processing failed ($e) — retrying it next cycle.');
+      return withBins(batches, (f) => binStartUtcSeconds(f) >= switchAt);
+    }
+    if (gen != _pipelineGeneration) return batches; // watchdog recovered; stamp survives for the retry
+
+    _prefs.processingModeSwitchAtUtc = 0;
+    _prefs.processingPreSwitchSettings = '';
+    return withBins(batches, (f) => binStartUtcSeconds(f) >= switchAt);
+  }
+
   /// Bins still awaiting a resumed read — never safe to process or prune.
   ///
   /// [failClosed] governs what happens when the WAL state can't be read (a
@@ -1059,7 +1171,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       return;
     }
 
-    final processableBatches = _batches.map((b) {
+    var processableBatches = _batches.map((b) {
       final filtered =
           b.rawSegments.where((f) => isProcessableBin(f, discardedBins, coveredBins, incompleteBins)).toList();
       if (filtered.length == b.rawSegments.length) return b;
@@ -1073,6 +1185,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         discards: b.discards,
       );
     }).toList();
+
+    // Drain any pre-mode-switch backlog with the settings that were live when it
+    // was recorded, and take those bins out of this run so the rest is processed
+    // with the current mode's. Returns the remainder unchanged when nothing is
+    // pending, which is every ordinary run.
+    processableBatches = await _drainPreSwitchBacklog(processableBatches, gen);
+    if (gen != _pipelineGeneration) return; // watchdog recovered mid-drain
 
     final activeBatches = processableBatches.where((b) => b.rawSegments.isNotEmpty).toList();
     final hasDrafts = processableBatches.any((b) => b.draftRecordings.isNotEmpty);
