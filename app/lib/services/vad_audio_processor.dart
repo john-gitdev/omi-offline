@@ -2022,7 +2022,20 @@ class VadAudioProcessor {
     // whole stream stitches into one unbounded conversation that never
     // finalizes. Independently cut here once the Silero VAD has seen
     // _silenceDurationToSplitMs of continuous non-speech.
-    if (_silenceRunMs >= _silenceDurationToSplitMs) {
+    //
+    // A threshold of 0 means "no app-side silence split", NOT "split on every
+    // frame". Manual mode pins vadSplitSeconds to 0 so that the *inter-bin* gap
+    // threshold — max(0, split − _firmwareVadHoldMs) — collapses to 0 and any
+    // positive gap between bins splits; the session-end marker is the real
+    // boundary there and this per-frame cut must stay out of it. Without the
+    // guard `_silenceRunMs >= 0` is true on literally every frame (it is 0 on a
+    // speech frame), so each 20 ms Opus frame is saved as its own recording —
+    // 87 minutes of backlog became 7 218 684-byte files on 2026-08-14. Callers
+    // that mean "never split" pass a large sentinel instead (0x7FFFFFFF, see
+    // RecordingsController's discard-recovery override), and the auto-mode
+    // dropdown only offers 30/60/120/300/600 s, so 0 can only arrive from the
+    // manual-mode pin.
+    if (_silenceDurationToSplitMs > 0 && _silenceRunMs >= _silenceDurationToSplitMs) {
       await _splitOnSilence(savedFiles);
       splitFired = true;
       return _VadVerdictResult(segmentSpeechFrames: segmentSpeechFrames, splitFired: splitFired);
