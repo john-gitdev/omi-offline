@@ -217,6 +217,13 @@ class SharedPreferencesUtil {
   // the default, not because anyone asked for it — so an Omi in auto is not a
   // disagreement worth reporting until this is set. Written only by
   // DeviceProvider.setManualMode.
+  //
+  // Deliberately NOT migrated for installs that predate it. Someone who chose
+  // manual before this existed reads as `false`, and cannot be told apart from
+  // someone who never chose: `manualMode` is true either way, being the default.
+  // Both possible seeds guess wrong half the time, and the only cost of guessing
+  // low is a missing mismatch banner on a replacement Omi — which self-corrects
+  // the first time the mode is changed. Don't add a migration.
   bool get manualModeUserSet => getBool('manualModeUserSet', defaultValue: false);
   set manualModeUserSet(bool v) => saveBool('manualModeUserSet', v);
 
