@@ -77,4 +77,49 @@ void main() {
       expect(RecordingsController.binStartUtcSeconds(File('/docs/raw_segments/x/notanumber.bin')), 0);
     });
   });
+
+  /// When the mode-switch pin may be retired. Retiring it early drops any
+  /// pre-switch audio that arrives afterwards back onto the current mode's
+  /// settings — the failure the pin exists to stop — so "no processable
+  /// pre-switch bins in this run" is deliberately NOT one of the conditions.
+  group('preSwitchPinIsSpent', () {
+    const int switchAt = 1784262000;
+    bool spent({
+      bool onDisk = false,
+      bool partial = false,
+      int ageSeconds = 60,
+    }) =>
+        RecordingsController.preSwitchPinIsSpent(
+          switchAt: switchAt,
+          nowUtcSeconds: switchAt + ageSeconds,
+          anyPreSwitchBinOnDisk: onDisk,
+          lastSyncPartial: partial,
+        );
+
+    test('retires once the backlog is drained and the sync completed', () {
+      expect(spent(), isTrue);
+    });
+
+    test('survives while a pre-switch bin is still on disk', () {
+      // Includes the mid-transfer case: isProcessableBin hides those from the
+      // partition, so a run can see zero pre-switch bins to process while one is
+      // actively downloading. That is the ordinary state when an interrupted
+      // sync hands over to processing, not a corner case.
+      expect(spent(onDisk: true), isFalse);
+    });
+
+    test('survives a partial sync even with nothing left on disk', () {
+      // The Omi keeps recording while disconnected, so a cut-short sync means it
+      // still holds pre-switch files that have not reached the phone at all.
+      expect(spent(partial: true), isFalse);
+    });
+
+    test('retires on age even with a partial sync and bins on disk', () {
+      // The escape hatch: a live pin blocks the NEXT switch from recording its
+      // own, so a device that is never fully drained must not disarm the
+      // mechanism for every switch after it.
+      expect(spent(onDisk: true, partial: true, ageSeconds: 8 * 24 * 3600), isTrue);
+      expect(spent(onDisk: true, partial: true, ageSeconds: 6 * 24 * 3600), isFalse);
+    });
+  });
 }
