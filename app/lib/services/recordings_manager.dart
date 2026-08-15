@@ -1017,7 +1017,18 @@ class RecordingsManager {
     if (!await recordingsDir.exists()) return;
 
     final splitSeconds = SharedPreferencesUtil().vadSplitSeconds;
-    final thresholdMs = splitSeconds * 1000;
+    // A threshold of 0 means "no silence-based boundary", NOT "every gap is a
+    // boundary" — the same reading that made the VAD processor save one file per
+    // 20 ms frame. Manual mode pins vadSplitSeconds to 0, and both look-ahead
+    // tests below are `accumulated + gap >= thresholdMs` with both terms
+    // non-negative (`gap < 0` is skipped just above the first one), so at 0 the
+    // very first event examined finalizes the draft. That is why a manual
+    // recording spanning two sync cycles came back as two recordings instead of
+    // one: the draft was closed before the next cycle's audio could stitch onto
+    // it. At 0 the boundary is the firmware's own 0xFFFFFFFC and nothing else.
+    // Force Process is unaffected — it finalizes through its own `finalizeAll`
+    // branches, not this one.
+    final thresholdMs = splitSeconds > 0 ? splitSeconds * 1000 : null;
 
     // Drafts this call has already tried to close. Every finalize below sets
     // scanNeeded and re-scans, on the assumption the file is no longer a draft --
@@ -1148,7 +1159,7 @@ class RecordingsManager {
 
           if (gap < 0) continue; // safety: ignore events that somehow overlap or precede
 
-          if (accumulatedNonSpeechMs + gap >= thresholdMs) {
+          if (thresholdMs != null && accumulatedNonSpeechMs + gap >= thresholdMs) {
             finalizeNow = true;
             break;
           }
@@ -1159,7 +1170,7 @@ class RecordingsManager {
             audioToStitch = event.audio;
             break;
           } else if (event.discard != null) {
-            if (accumulatedNonSpeechMs + event.durationMs >= thresholdMs) {
+            if (thresholdMs != null && accumulatedNonSpeechMs + event.durationMs >= thresholdMs) {
               finalizeNow = true;
               break;
             }
