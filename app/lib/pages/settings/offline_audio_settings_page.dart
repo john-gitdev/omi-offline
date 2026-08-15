@@ -7,6 +7,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/pages/settings/button_config_page.dart';
 import 'package:omi/providers/device_provider.dart';
+import 'package:omi/utils/logger.dart';
 import 'package:provider/provider.dart';
 
 class OfflineAudioSettingsPage extends StatefulWidget {
@@ -120,10 +121,22 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
     if (mounted) setState(() => _isIgnoringBatteryOptimizations = v);
   }
 
-  Future<void> _saveSettings() async {
+  /// Returns whether anything was saved. False only when a requested mode switch
+  /// couldn't be applied — see below.
+  Future<bool> _saveSettings() async {
     final prefs = SharedPreferencesUtil();
     if (_manualMode != prefs.manualMode) {
-      await context.read<DeviceProvider>().setManualMode(_manualMode);
+      // The toggle is gated on being connected, but the Omi can drop in the
+      // window between tapping it and saving — and then setManualMode does
+      // nothing at all. Writing the mode-dependent prefs anyway would leave the
+      // app cutting audio by the new mode's rules while `manualMode` and the
+      // device both still say the old one, with no mode-switch pin taken to
+      // protect the backlog. Leave everything as it was and keep the page dirty
+      // so the save can be retried once the Omi is back.
+      if (!await context.read<DeviceProvider>().setManualMode(_manualMode)) {
+        Logger.debug('OfflineAudioSettings: mode switch skipped — Omi not connected; settings left unchanged.');
+        return false;
+      }
     }
     prefs.vadEnabled = _vadEnabled;
     prefs.vadSpeechThreshold = _vadSpeechThreshold;
@@ -133,14 +146,25 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
     _saveModeSnapshot(_manualMode);
 
     if (mounted) setState(() => _isDirty = false);
+    return true;
   }
 
   Future<void> _saveAndPop() async {
     final modeChanged = _manualMode != SharedPreferencesUtil().manualMode;
-    await _saveSettings();
+    final saved = await _saveSettings();
     if (!mounted) return;
+    if (!saved) {
+      // Stay put rather than popping: the page is still dirty and the edits are
+      // still here, so the user can retry once the Omi reconnects. Popping would
+      // discard them silently — and silently is how the mode and the processing
+      // settings drifted apart in the first place.
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Connect your Omi to change recording mode — nothing was saved.')),
+      );
+      return;
+    }
     // Each mode has its own button mapping; nudge the user to review the one
-    // that just became active.
+    // that just became active — but only if it actually did.
     if (modeChanged) await _promptReviewButtonConfig(_manualMode);
     if (mounted) Navigator.of(context).pop();
   }
