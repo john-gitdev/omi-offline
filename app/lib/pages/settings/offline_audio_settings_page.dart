@@ -74,6 +74,12 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
     super.dispose();
   }
 
+  /// Loads the page's editable fields for [manual].
+  ///
+  /// Mirrors [SharedPreferencesUtil.applyRecordingModeDefaults], which writes the
+  /// same values to the live prefs when the app adopts a mode from the device.
+  /// Keep the two in step — this one only fills the form (the user may still back
+  /// out before saving), that one commits.
   void _loadModeFields(bool manual) {
     final p = SharedPreferencesUtil();
     if (manual) {

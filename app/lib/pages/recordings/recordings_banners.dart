@@ -205,3 +205,59 @@ class AccumulatingBanner extends StatelessWidget {
     );
   }
 }
+
+/// Shown when the app adopted a recording mode from the Omi that differs from the
+/// one the user chose — a replacement device, or one whose settings were reset.
+///
+/// A banner rather than a dialog on purpose: a replacement Omi connects during
+/// pairing, and a modal would land on top of that. Nothing is broken while this
+/// is up — the app and the Omi agree, they just agree on something the user did
+/// not pick — so it stays dismissible and out of the way.
+class RecordingModeMismatchBanner extends StatelessWidget {
+  final bool active;
+
+  /// The mode now in force, i.e. the one adopted from the Omi.
+  final bool manual;
+  final VoidCallback onReview;
+  final VoidCallback onDismiss;
+
+  const RecordingModeMismatchBanner({
+    super.key,
+    required this.active,
+    required this.manual,
+    required this.onReview,
+    required this.onDismiss,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (!active) return const SizedBox.shrink();
+    return Container(
+      width: double.infinity,
+      color: Colors.indigo.shade900,
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+      child: Row(
+        children: [
+          const FaIcon(FontAwesomeIcons.circleInfo, color: Colors.white, size: 20),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'This Omi is set to ${manual ? "Manual" : "Automatic"} recording, which is not what you chose. '
+              'Your settings now match the device.',
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
+            ),
+          ),
+          TextButton(
+            onPressed: onReview,
+            child: const Text('Review', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+          ),
+          IconButton(
+            onPressed: onDismiss,
+            icon: const Icon(Icons.close, color: Colors.white70, size: 18),
+            tooltip: 'Dismiss',
+          ),
+        ],
+      ),
+    );
+  }
+}
