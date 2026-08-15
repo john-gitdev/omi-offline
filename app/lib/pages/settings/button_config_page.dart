@@ -102,7 +102,24 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
       return;
     }
     try {
-      final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
+      // force: true, or this page is unusable almost all the time. Without it
+      // ensureConnection NEVER establishes a link — it hands back the existing
+      // one or null (`if (!force) return null;`) — and the app is deliberately
+      // disconnected between its ~30-second sync windows. So opening Button
+      // Config outside one of those windows went straight to "no device" with no
+      // connection attempt at all, every dropdown dead.
+      //
+      // Worst right after a mode switch, which is where the settings page's
+      // "review your button actions" prompt sends you: on 2026-08-14 the mode
+      // switch landed at 22:43:30 and the background cycle hung up at 22:43:41,
+      // eleven seconds later, with nothing reconnecting until 23:10.
+      //
+      // Safe: ensureConnection returns early when already connected to this
+      // device, so force costs nothing in the window, and only one Omi is ever
+      // paired. Matches what every other UI path that needs the device does
+      // (find_devices_page, sync_page, the DFU flow). The initial `loading`
+      // state covers the ~1 s the connect takes.
+      final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id, force: true);
       if (connection == null) {
         if (mounted) setState(() => _status = _ConfigStatus.noDevice);
         return;
@@ -119,13 +136,27 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
       // Capability gate for the Record Toggle action (byte 6): older firmware
       // rejects it, so hide the switch / Toggle option there. A failed/zero read
       // means unsupported (fail closed) — never offer a byte the device rejects.
-      final features = await connection.getFeatures();
+      //
+      // getFeaturesIfIdle, NEVER getFeatures. This page is most often reached
+      // straight after a mode switch — the settings save prompts for it — which is
+      // exactly when a sync is likely to be running on the same link. A plain GATT
+      // read racing the storage notify stream drops the link on Android with Error
+      // 133 (see performGetFeaturesIfIdle, which takes the storage mutex for this
+      // reason). The old call therefore did worse than fail: it could kill the
+      // connection, after which the catch below reported "no device" for a device
+      // that was connected until this page asked.
+      //
+      // A null answer means a transfer holds the lock, NOT that the Omi is absent.
+      // Fail closed on the capability — never offer a byte the firmware may reject —
+      // but stay usable: the mappings themselves are app-owned and need no device to
+      // read, and the write paths report their own failures.
+      final features = await connection.getFeaturesIfIdle();
       if (mounted) {
         setState(() {
           _configManual = prefs.buttonConfigManual;
           _configAuto = prefs.buttonConfigAuto;
           _combineRecord = prefs.combineRecordButton;
-          _recordToggleSupported = OmiFeatures.hasFeature(features, OmiFeatures.recordToggle);
+          _recordToggleSupported = features != null && OmiFeatures.hasFeature(features, OmiFeatures.recordToggle);
           if (haptic != null && haptic.length == 6) {
             _hapticConfig = haptic;
             _hapticSupported = true;
@@ -170,7 +201,7 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
       final pairedDevice = context.read<DeviceProvider>().pairedDevice;
       if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
         try {
-          final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
+          final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id, force: true);
           final thr = await connection?.getVadThreshold();
           if (thr == 65535 && mounted) {
             final proceed = await showDialog<bool>(
@@ -273,7 +304,7 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
     final pairedDevice = context.read<DeviceProvider>().pairedDevice;
     if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
       try {
-        final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
+        final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id, force: true);
         if (connection != null) {
           // Send the snapshot taken at call time — not `_config` (a tab-dependent
           // getter, wrong mode if the tab switched) and not the live `cfg` (whose
@@ -314,7 +345,7 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
     final pairedDevice = context.read<DeviceProvider>().pairedDevice;
     if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
       try {
-        final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
+        final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id, force: true);
         if (connection != null) {
           await connection.setHapticConfig(_hapticConfig);
           return;
