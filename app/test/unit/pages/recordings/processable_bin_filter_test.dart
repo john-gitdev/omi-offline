@@ -49,4 +49,32 @@ void main() {
       expect(RecordingsController.isProcessableBin(File('/docs/elsewhere/x.bin'), {}, {}, {partial}), isTrue);
     });
   });
+
+  /// Decides which side of a pending mode switch a bin falls on, and therefore
+  /// whether it is cut by the settings it was recorded under or the ones the
+  /// user just switched to. Getting a bin onto the wrong side re-cuts it under
+  /// the other mode's rules — which is how a manual-mode switch chopped an auto
+  /// backlog on 2026-08-14.
+  group('binStartUtcSeconds', () {
+    test('reads the firmware timerStart out of the bin name', () {
+      expect(RecordingsController.binStartUtcSeconds(bin(whole)), 1784263022);
+    });
+
+    test('partitions either side of a switch instant', () {
+      const int switchAt = 1784262000; // between the two bins above
+      expect(RecordingsController.binStartUtcSeconds(bin(partial)) < switchAt, isTrue);
+      expect(RecordingsController.binStartUtcSeconds(bin(whole)) < switchAt, isFalse);
+    });
+
+    test('a pre-time-sync bin sorts before any switch', () {
+      // No usable clock, so it lands in session_<id>/ with no epoch in the name.
+      // 0 puts it in the frozen-settings group, which is the safe side: audio
+      // that predates a working clock certainly predates a switch made today.
+      expect(RecordingsController.binStartUtcSeconds(bin('session_4230330572/1234_4230330572.bin')), 0);
+    });
+
+    test('an unparseable name sorts before any switch rather than throwing', () {
+      expect(RecordingsController.binStartUtcSeconds(File('/docs/raw_segments/x/notanumber.bin')), 0);
+    });
+  });
 }
