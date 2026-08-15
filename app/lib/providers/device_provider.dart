@@ -534,6 +534,56 @@ class DeviceProvider extends ChangeNotifier
     notifyListeners();
   }
 
+  /// True when the app adopted a recording mode from the Omi that differs from
+  /// the one the user chose. Only reachable for an Omi the app has never
+  /// configured — a replacement, or one whose settings were reset — because the
+  /// button cannot move the persisted threshold across the auto/manual line and a
+  /// firmware update does not clear it. Surfaced as a banner on the recordings
+  /// page; cleared when the user reviews or dismisses it.
+  bool recordingModeMismatch = false;
+
+  void dismissRecordingModeMismatch() {
+    if (!recordingModeMismatch) return;
+    recordingModeMismatch = false;
+    notifyListeners();
+  }
+
+  /// Appends the OUTGOING mode's settings to the switch history, so a backlog
+  /// recorded under them is still cut by them. Must be called BEFORE the caller
+  /// changes anything the settings are derived from.
+  void _recordModeSwitch(SharedPreferencesUtil prefs) {
+    prefs.processingModeSwitchHistory = ModeSwitchRecord.encode(
+      ModeSwitchRecord.append(
+        ModeSwitchRecord.decode(prefs.processingModeSwitchHistory),
+        ModeSwitchRecord(
+          atUtcSeconds: DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000,
+          settings: ProcessingSettings.fromPrefs().mode,
+        ),
+      ),
+    );
+  }
+
+  /// Bring the app's recording mode into line with the Omi's.
+  ///
+  /// Almost always a no-op: only the app can move the persisted threshold across
+  /// the auto/manual line, so the two normally agree. When they don't, this is an
+  /// Omi the app has never configured.
+  ///
+  /// Everything that depends on the mode moves together. Leaving the flat vad*
+  /// prefs behind is what would make an adopted mode dangerous rather than merely
+  /// surprising: the processor reads those, not the label.
+  void _adoptRecordingModeFromDevice(SharedPreferencesUtil prefs, bool manual) {
+    if (prefs.manualMode == manual) return;
+    Logger.debug('DeviceProvider: adopting ${manual ? "manual" : "auto"} mode from the device — the app had '
+        '${prefs.manualMode ? "manual" : "auto"}. Only an Omi this app has not configured can differ.');
+    _recordModeSwitch(prefs);
+    prefs.manualMode = manual;
+    prefs.applyRecordingModeDefaults(manual);
+    // Worth telling the user about only if they had chosen a mode themselves; a
+    // fresh install carries a default, not a preference.
+    if (prefs.manualModeUserSet) recordingModeMismatch = true;
+  }
+
   /// Writes the Omi's AAD threshold and confirms it actually landed.
   ///
   /// Returns whether the device now holds [threshold]. Reading it back is not
@@ -738,17 +788,14 @@ class DeviceProvider extends ChangeNotifier
     // audio holds two boundaries, each needing its own settings. The processing
     // run walks the entries oldest-first and gives every span the mode it was
     // actually recorded in.
-    prefs.processingModeSwitchHistory = ModeSwitchRecord.encode(
-      ModeSwitchRecord.append(
-        ModeSwitchRecord.decode(prefs.processingModeSwitchHistory),
-        ModeSwitchRecord(
-          atUtcSeconds: DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000,
-          settings: ProcessingSettings.fromPrefs().mode,
-        ),
-      ),
-    );
+    _recordModeSwitch(prefs);
     prefs.manualMode = enabled;
+    // This is the user choosing, as opposed to the app adopting whatever an Omi
+    // happened to hold. Only a choice makes a later disagreement worth reporting.
+    prefs.manualModeUserSet = true;
     _manualRecording = false;
+    // Their own choice is never a mismatch, and re-choosing is how you clear one.
+    recordingModeMismatch = false;
 
     // Mode flipped — make the new mode's button mapping live on the device. Must
     // follow the prefs.manualMode write, which is what it reads to pick a config.
@@ -1897,11 +1944,14 @@ class DeviceProvider extends ChangeNotifier
       // action, which writes + persists at that moment.
       if (thr == 65535 || thr == 32769) {
         // Manual recording sentinels → manual mode; 65535 = recording, 32769 = standby.
-        prefs.manualMode = true;
+        // The 32769 <-> 65535 move is the BUTTON's, and stays inside manual mode, so
+        // the adopt below no-ops for it and only _manualRecording tracks it. That is
+        // the case this whole read-and-adopt exists for.
+        _adoptRecordingModeFromDevice(prefs, true);
         _manualRecording = thr == 65535;
       } else if (thr != null) {
         // A real auto-sensitivity value → auto mode.
-        prefs.manualMode = false;
+        _adoptRecordingModeFromDevice(prefs, false);
         _manualRecording = false;
       }
       // thr == null (read failed) → leave the last-known state untouched.
