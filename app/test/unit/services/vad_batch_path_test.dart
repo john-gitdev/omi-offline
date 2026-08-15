@@ -208,6 +208,31 @@ void main() {
       expect(processor.currentChunkDurationMs, 100 * 20);
       await processor.destroy();
     });
+
+    test('manual mode (silenceDurationToSplitMs = 0) does NOT split per frame', () async {
+      // Regression guard for 2026-08-14: manual mode pins vadSplitSeconds to 0
+      // so the *inter-bin* gap threshold collapses to 0. That 0 also reached the
+      // per-frame check `_silenceRunMs >= _silenceDurationToSplitMs`, which is
+      // true on every frame (0 >= 0 even on a speech frame), so each 20 ms Opus
+      // frame was saved as its own 684-byte recording — 7 218 files from 87
+      // minutes of backlog, which wedged the pipeline and the recordings page.
+      final processor = VadAudioProcessor.fromSettings(
+        settings: _settings(minDurationMs: 0, silenceDurationToSplitMs: 0),
+        outputDir: tempDir.path,
+        batchRunner: UnavailableBatchRunner(),
+        // session: null → AAD mode, exactly what manual mode runs (vadEnabled=false)
+      );
+
+      final saved = await processor.processSegmentFile(
+        _makeBinFile(tempDir, 100, name: 'manual_zero_split.bin'),
+        DateTime.now(),
+      );
+
+      expect(saved, isEmpty, reason: 'no recording may finalize without a real boundary');
+      expect(processor.currentChunkDurationMs, 100 * 20,
+          reason: 'all 100 frames stay in one open conversation for the session-end marker to close');
+      await processor.destroy();
+    });
   });
 
   group('Partial window flush conservatism', () {
