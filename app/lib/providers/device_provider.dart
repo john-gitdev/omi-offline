@@ -677,27 +677,30 @@ class DeviceProvider extends ChangeNotifier
   /// connected) and the save — in which case NOTHING here ran, and the caller
   /// must not write the new mode's processing prefs either. Writing them anyway
   /// leaves the app cutting audio by manual's rules while `manualMode` still
-  /// says auto and the Omi is still in auto: no pin is taken, because no switch
-  /// was recorded, so the backlog is re-cut unprotected. That is the 2026-08-14
-  /// configuration exactly.
+  /// says auto and the Omi is still in auto — and with no switch recorded, no
+  /// history entry is taken either, so the backlog is re-cut unprotected. That
+  /// is the 2026-08-14 configuration exactly.
   Future<bool> setManualMode(bool enabled) async {
     if (connectedDevice == null) return false;
     final prefs = SharedPreferencesUtil();
-    // Freeze the OUTGOING mode's processing settings before anything flips, so
+    // Record the OUTGOING mode's processing settings before anything flips, so
     // the backlog recorded under them is still cut by them. Read here and not in
     // the settings page because this runs BEFORE the page writes the new mode's
     // vad* prefs — ProcessingSettings.fromPrefs() still returns the old mode.
     //
-    // An existing stamp is kept rather than overwritten: switch twice before the
-    // backlog drains and the oldest stamp is the one that still has bins waiting
-    // behind it. The newer switch's audio is then processed with the oldest
-    // mode's settings, which is wrong in the same way this whole mechanism
-    // exists to prevent — but it is bounded (one drain) and self-clearing, where
-    // overwriting would strand the original backlog permanently.
-    if (prefs.processingModeSwitchAtUtc == 0) {
-      prefs.processingPreSwitchSettings = jsonEncode(ProcessingSettings.fromPrefs().toJson());
-      prefs.processingModeSwitchAtUtc = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
-    }
+    // Appended, never overwritten: switch twice before the backlog drains and the
+    // audio holds two boundaries, each needing its own settings. The processing
+    // run walks the entries oldest-first and gives every span the mode it was
+    // actually recorded in.
+    prefs.processingModeSwitchHistory = ModeSwitchRecord.encode(
+      ModeSwitchRecord.append(
+        ModeSwitchRecord.decode(prefs.processingModeSwitchHistory),
+        ModeSwitchRecord(
+          atUtcSeconds: DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000,
+          settings: ProcessingSettings.fromPrefs(),
+        ),
+      ),
+    );
     prefs.manualMode = enabled;
     _manualRecording = false;
     if (enabled) {
