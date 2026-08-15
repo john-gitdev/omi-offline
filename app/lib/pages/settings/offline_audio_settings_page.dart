@@ -126,15 +126,15 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
   Future<bool> _saveSettings() async {
     final prefs = SharedPreferencesUtil();
     if (_manualMode != prefs.manualMode) {
-      // The toggle is gated on being connected, but the Omi can drop in the
-      // window between tapping it and saving — and then setManualMode does
-      // nothing at all. Writing the mode-dependent prefs anyway would leave the
-      // app cutting audio by the new mode's rules while `manualMode` and the
-      // device both still say the old one, with no mode-switch pin taken to
-      // protect the backlog. Leave everything as it was and keep the page dirty
-      // so the save can be retried once the Omi is back.
+      // False means the Omi never adopted the mode — it dropped in the window
+      // between tapping the toggle and saving, or it did not confirm the write.
+      // Writing the mode-dependent prefs anyway would leave the app cutting audio
+      // by the new mode's rules while `manualMode` and the device both still say
+      // the old one, and with no switch recorded there is no history entry to
+      // protect the backlog either. Leave everything as it was and keep the page
+      // dirty so the save can be retried.
       if (!await context.read<DeviceProvider>().setManualMode(_manualMode)) {
-        Logger.debug('OfflineAudioSettings: mode switch skipped — Omi not connected; settings left unchanged.');
+        Logger.debug('OfflineAudioSettings: mode switch did not take — settings left unchanged.');
         return false;
       }
     }
@@ -159,7 +159,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
       // discard them silently — and silently is how the mode and the processing
       // settings drifted apart in the first place.
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Connect your Omi to change recording mode — nothing was saved.')),
+        const SnackBar(content: Text("Couldn't reach your Omi — recording mode unchanged and nothing was saved.")),
       );
       return;
     }
