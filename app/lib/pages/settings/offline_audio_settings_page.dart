@@ -503,7 +503,9 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                     ],
                   ], // end !_manualMode
 
-                  // Silence to End Conversation (hidden in manual mode — always 3 s)
+                  // Silence to End Conversation (hidden in manual mode — pinned to 0,
+                  // which disables the per-frame silence split and collapses the
+                  // inter-bin gap threshold to 0; see _loadModeFields)
                   if (!_manualMode)
                     Container(
                       padding: const EdgeInsets.all(16),
