@@ -162,12 +162,12 @@ class ModeSettings {
 /// that would have expired its entry, and an Omi that has not finished syncing
 /// still holds audio from before the switch. Both meant a late arrival fell back
 /// to the wrong mode and was KEPT that way, which is the entire failure this
-/// exists to stop. The two rules that survive are the ones whose failure is
-/// inert: [retireExpired], where anything the wrong mode produces is deleted by
-/// retention anyway, and [maxEntries], which bounds the list. Otherwise an entry
-/// lives indefinitely — it costs one list filter per run and cannot be wrong,
-/// since it only ever governs audio older than itself and matches nothing once
-/// none exists.
+/// exists to stop. What survives is [retireBefore], which drops an entry only
+/// on evidence that no late arrival is possible (or that one would be deleted
+/// rather than kept), and [maxEntries], which bounds the list. Absent that
+/// evidence an entry lives indefinitely — it costs one list filter per run and
+/// cannot be wrong, since it only ever governs audio older than itself and
+/// matches nothing once none exists.
 class ModeSwitchRecord {
   /// Epoch SECONDS, to compare directly against the firmware `timerStart` in a
   /// bin's folder name. Written from the phone clock; the two are kept in step
@@ -215,34 +215,26 @@ class ModeSwitchRecord {
     }
   }
 
-  /// Drops the entries the recordings-retention policy has made irrelevant.
+  /// Drops every entry at or before [watermarkUtcSeconds] — the point before
+  /// which no audio can still need its own settings. Null means there is no
+  /// evidence yet and nothing is dropped.
   ///
-  /// An entry governs only audio recorded BEFORE its stamp. Once the retention
-  /// cutoff (now − keepRecordingsDays) has moved past that stamp, every recording
-  /// from before it is already past its keep-window, so the next retention sweep
-  /// deletes whatever this entry would have produced. Which mode's rules cut it
-  /// no longer changes anything the user ends up with, and the entry is dead
-  /// weight.
+  /// An entry governs only audio recorded strictly BEFORE its stamp, so an entry
+  /// AT the watermark governs nothing and goes too. Ascending order makes this a
+  /// prefix drop.
   ///
-  /// This is the safe form of a rule an earlier design got wrong, and the
-  /// difference is worth being precise about. That version expired an entry as
-  /// soon as its audio looked processed — so a late arrival (a bin still
-  /// downloading, or one the Omi had not handed over yet) was cut by the wrong
-  /// mode and **kept**. Here a late arrival is cut by the wrong mode and then
-  /// **deleted by retention**, which is the same result as never having had the
-  /// entry at all. The rule is safe because its failure is inert, not because
-  /// late arrivals were ruled out.
-  ///
-  /// Retention deletes finalized recordings, not raw bins, so pre-switch bins
-  /// CAN still arrive after the cutoff has passed — that is the case above, and
-  /// it is fine.
-  ///
-  /// [retentionCutoffUtcSeconds] is null when retention is off — the default
-  /// ("Always Keep", `keepRecordingsDays <= 0`) — and then nothing is dropped and
-  /// [maxEntries] stays the only bound.
-  static List<ModeSwitchRecord> retireExpired(List<ModeSwitchRecord> history, int? retentionCutoffUtcSeconds) {
-    if (retentionCutoffUtcSeconds == null || history.isEmpty) return history;
-    final kept = history.where((e) => e.atUtcSeconds > retentionCutoffUtcSeconds).toList();
+  /// The caller supplies the watermark; see
+  /// RecordingsController.\_retirementWatermarkUtcSeconds for the two things that
+  /// can establish one. What matters here is the shape of the guarantee: this is
+  /// the safe form of a rule an earlier design got wrong. That version retired an
+  /// entry as soon as its backlog *looked* processed, so a late arrival — a bin
+  /// still downloading, or one the Omi had not handed over — was cut by the wrong
+  /// mode and KEPT. A watermark is a statement that no such late arrival is
+  /// possible, or that if one comes it will be deleted rather than kept. Retire
+  /// only on evidence of that kind.
+  static List<ModeSwitchRecord> retireBefore(List<ModeSwitchRecord> history, int? watermarkUtcSeconds) {
+    if (watermarkUtcSeconds == null || history.isEmpty) return history;
+    final kept = history.where((e) => e.atUtcSeconds > watermarkUtcSeconds).toList();
     return kept.length == history.length ? history : kept;
   }
 

@@ -105,41 +105,42 @@ void main() {
     });
   });
 
-  group('retireExpired', () {
-    test('drops an entry the retention cutoff has passed', () {
-      // Everything that entry governed was recorded before it, so it is all past
-      // its keep-window and the next sweep deletes it — whichever mode's rules
-      // cut it. The entry cannot change the outcome any more.
-      final h = [entry(100), entry(500)];
-      expect(ModeSwitchRecord.retireExpired(h, base + 300).map((e) => e.atUtcSeconds), [base + 500]);
+  group('retireBefore', () {
+    test('drops entries at or before the watermark', () {
+      // An entry governs audio recorded strictly BEFORE its stamp, so one AT the
+      // watermark governs nothing and goes too.
+      final h = [entry(100), entry(300), entry(500)];
+      expect(ModeSwitchRecord.retireBefore(h, base + 300).map((e) => e.atUtcSeconds), [base + 500]);
     });
 
-    test('keeps an entry the cutoff has not reached', () {
-      final h = [entry(500)];
-      expect(ModeSwitchRecord.retireExpired(h, base + 300), hasLength(1));
+    test('keeps an entry past the watermark', () {
+      expect(ModeSwitchRecord.retireBefore([entry(500)], base + 300), hasLength(1));
     });
 
-    test('an entry exactly at the cutoff is dropped', () {
-      // Off-by-one worth spelling out. An entry at T governs audio recorded
-      // strictly BEFORE T, and the sweep deletes recordings strictly before the
-      // cutoff. So at T == cutoff everything the entry governs is inside the
-      // sweep's range and the entry is already moot — `> cutoff` keeps, `<=`
-      // drops. (The two `strictly before`s are what make the boundaries line up;
-      // if either were inclusive this would have to keep it.)
-      expect(ModeSwitchRecord.retireExpired([entry(300)], base + 300), isEmpty);
-      expect(ModeSwitchRecord.retireExpired([entry(301)], base + 300), hasLength(1));
-    });
-
-    test('retention off drops nothing', () {
-      // "Always Keep" is the default (keepRecordingsDays = -1) and passthrough is
-      // 0; both mean no sweep, so nothing an entry governs is ever deleted for
-      // age and maxEntries stays the only bound.
-      final h = [entry(100), entry(500)];
-      expect(ModeSwitchRecord.retireExpired(h, null), hasLength(2));
+    test('a null watermark drops nothing', () {
+      // No bins on disk and retention off: an empty disk is equally consistent
+      // with "all processed" and "nothing synced yet", and only the first would
+      // justify retiring. maxEntries stays the only bound.
+      expect(ModeSwitchRecord.retireBefore([entry(100), entry(500)], null), hasLength(2));
     });
 
     test('an empty history stays empty', () {
-      expect(ModeSwitchRecord.retireExpired(const [], base + 300), isEmpty);
+      expect(ModeSwitchRecord.retireBefore(const [], base + 300), isEmpty);
+    });
+
+    test('the oldest bin on disk is a valid watermark because sync cannot go backwards', () {
+      // The property this leans on: sdcard_wal_sync reads device index 0 only and
+      // stops rather than skipping a file it can't read or delete. So if the
+      // oldest bin held is at X, nothing older than X can still be coming — it
+      // has arrived already, or was poison-dropped from the device and is gone.
+      // A switch before X therefore governs audio that is fully accounted for.
+      const int oldestBinOnDisk = 400;
+      final h = [entry(100), entry(600)];
+      expect(
+        ModeSwitchRecord.retireBefore(h, base + oldestBinOnDisk).map((e) => e.atUtcSeconds),
+        [base + 600],
+        reason: 'the switch at +100 predates every bin held, so its audio is all in',
+      );
     });
   });
 

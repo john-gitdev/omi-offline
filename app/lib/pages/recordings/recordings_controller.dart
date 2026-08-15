@@ -1061,15 +1061,46 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     return passes;
   }
 
-  /// Epoch seconds before which finalized recordings are swept, or null when
-  /// retention is off ("Always Keep", the default, and the passthrough setting).
-  /// Mirrors the cutoff in [_enforceRetentionPolicy] — the two must agree, since
-  /// this decides when a mode-switch entry stops mattering and that one does the
-  /// deleting that makes it stop mattering.
-  int? _retentionCutoffUtcSeconds() {
+  /// The point before which no audio can still need a mode-switch entry's
+  /// settings, or null if nothing establishes one yet. Two independent things
+  /// can, and the later of the two wins:
+  ///
+  /// **The oldest raw bin on disk.** The sync layer hands files over strictly
+  /// oldest-first and *cannot* skip: `sdcard_wal_sync.dart` reads index 0 only,
+  /// and a file it fails to read or delete stops the cycle rather than advancing
+  /// past it ("we can't skip past this file without deleting it"). So if the
+  /// oldest bin the phone holds starts at X, everything recorded before X has
+  /// already arrived, or was dropped from the device outright — audio cannot
+  /// arrive from further back in time. The one way past a stuck file is the
+  /// poison-drop, which deletes it from the device, so that audio is gone too.
+  /// Read from the UNFILTERED batches: a bin still mid-transfer is real audio and
+  /// must be allowed to hold the watermark down.
+  ///
+  /// **The recordings-retention cutoff.** Everything before it is past its
+  /// keep-window, so whatever an entry would have produced is deleted by the next
+  /// sweep — which mode's rules cut it stops changing anything. Null when
+  /// retention is off ("Always Keep", the default, and passthrough). Mirrors the
+  /// cutoff in [_enforceRetentionPolicy]; the two must agree, since this decides
+  /// when an entry stops mattering and that one does the deleting that makes it
+  /// stop mattering.
+  ///
+  /// No bins and no retention ⇒ null: an empty disk is equally consistent with
+  /// "all processed" and "nothing synced yet", and only the first would justify
+  /// retiring anything.
+  int? _retirementWatermarkUtcSeconds() {
+    int? watermark;
+    for (final b in _batches) {
+      for (final f in b.rawSegments) {
+        final start = binStartUtcSeconds(f);
+        if (watermark == null || start < watermark) watermark = start;
+      }
+    }
     final days = _prefs.keepRecordingsDays;
-    if (days <= 0) return null;
-    return DateTime.now().toUtc().subtract(Duration(days: days)).millisecondsSinceEpoch ~/ 1000;
+    if (days > 0) {
+      final cutoff = DateTime.now().toUtc().subtract(Duration(days: days)).millisecondsSinceEpoch ~/ 1000;
+      if (watermark == null || cutoff > watermark) watermark = cutoff;
+    }
+    return watermark;
   }
 
   /// Processes each pending mode-switch backlog with the settings that were live
@@ -1111,15 +1142,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       return batches;
     }
 
-    // Retire what the retention policy has already made moot. Anything a retired
-    // entry would have governed is past its keep-window, so the next sweep
-    // deletes it whichever mode's rules cut it. See ModeSwitchRecord.retireExpired
-    // for why this is the one retirement rule that is safe.
-    final history = ModeSwitchRecord.retireExpired(decoded, _retentionCutoffUtcSeconds());
+    // Retire the entries nothing can still need. See _retirementWatermarkUtcSeconds.
+    final history = ModeSwitchRecord.retireBefore(decoded, _retirementWatermarkUtcSeconds());
     if (history.length != decoded.length) {
-      Logger.debug('RecordingsController: retired ${decoded.length - history.length} mode-switch entr'
-          '${decoded.length - history.length == 1 ? "y" : "ies"} older than the recordings-retention window; '
-          '${history.length} left.');
+      final dropped = decoded.length - history.length;
+      Logger.debug('RecordingsController: retired $dropped mode-switch entr${dropped == 1 ? "y" : "ies"} '
+          'whose audio has all been accounted for; ${history.length} left.');
       _prefs.processingModeSwitchHistory = ModeSwitchRecord.encode(history);
     }
     if (history.isEmpty) return batches;
