@@ -1483,10 +1483,12 @@ class VadAudioProcessor {
               _forcedByMarker = true;
             }
 
+            // `>` not `>=`, matching the inter-FILE gap test above. The intent of a
+            // 0 threshold (manual mode's pin) is "any POSITIVE gap splits"; `>=`
+            // made a zero gap split too, so a resume marker that lands flush against
+            // the previous frame — no silence at all — still cut a recording in two.
             final bool wouldSplit = staleLatchBreak ||
-                (!withinMarkerWindow &&
-                    gapMs >= max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) &&
-                    !isClockJump);
+                (!withinMarkerWindow && gapMs > max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) && !isClockJump);
 
             // AAD flood guard: a bogus large gap (clock-anchor mismatch) on every
             // resume marker would spray a flood of tiny junk recordings. While
