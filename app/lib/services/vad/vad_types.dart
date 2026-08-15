@@ -42,6 +42,45 @@ class ProcessingSettings {
     required this.priorityRecordCapMinutes,
   });
 
+  /// Round-trips through SharedPreferences so a mode switch can freeze the
+  /// OUTGOING mode's settings and keep processing the audio recorded under them
+  /// with them. Only the fields that change how audio is cut have to survive —
+  /// but all of them are written, since a partial snapshot is the kind of thing
+  /// that silently rots when a field is added. See
+  /// [SharedPreferencesUtil.processingPreSwitchSettings].
+  Map<String, dynamic> toJson() => {
+        'vadEnabled': vadEnabled,
+        'speechThreshold': speechThreshold,
+        'silenceDurationToSplitMs': silenceDurationToSplitMs,
+        'minDurationMs': minDurationMs,
+        'minSpeechMs': minSpeechMs,
+        'maxChunkMs': maxChunkMs,
+        'deviceId': deviceId,
+        'audioSaveFormat': audioSaveFormat,
+        'omiEnabled': omiEnabled,
+        'priorityRecordCapMinutes': priorityRecordCapMinutes,
+      };
+
+  /// Inverse of [toJson]. Every field falls back to the live pref rather than a
+  /// hardcoded default, so a snapshot written by an older build (missing a field
+  /// added since) degrades to current behaviour for that field instead of
+  /// inventing one.
+  factory ProcessingSettings.fromJson(Map<String, dynamic> j) {
+    final live = ProcessingSettings.fromPrefs();
+    return ProcessingSettings(
+      vadEnabled: j['vadEnabled'] as bool? ?? live.vadEnabled,
+      speechThreshold: (j['speechThreshold'] as num?)?.toDouble() ?? live.speechThreshold,
+      silenceDurationToSplitMs: j['silenceDurationToSplitMs'] as int? ?? live.silenceDurationToSplitMs,
+      minDurationMs: j['minDurationMs'] as int? ?? live.minDurationMs,
+      minSpeechMs: j['minSpeechMs'] as int? ?? live.minSpeechMs,
+      maxChunkMs: j['maxChunkMs'] as int? ?? live.maxChunkMs,
+      deviceId: j['deviceId'] as String? ?? live.deviceId,
+      audioSaveFormat: j['audioSaveFormat'] as String? ?? live.audioSaveFormat,
+      omiEnabled: j['omiEnabled'] as bool? ?? live.omiEnabled,
+      priorityRecordCapMinutes: j['priorityRecordCapMinutes'] as int? ?? live.priorityRecordCapMinutes,
+    );
+  }
+
   factory ProcessingSettings.fromPrefs() {
     final p = SharedPreferencesUtil();
     return ProcessingSettings(
