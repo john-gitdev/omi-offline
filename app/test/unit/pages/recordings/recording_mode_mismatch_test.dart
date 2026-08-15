@@ -60,6 +60,35 @@ void main() {
       expect([p.vadSplitSeconds, p.vadMinSpeechSeconds, p.vadEnabled], before);
     });
 
+    test('a fresh install in manual mode does not run on auto-shaped defaults', () {
+      // The bug this closes. The flat vad* prefs the processor reads carried
+      // their own legacy defaults — Silero on, a 120 s split, a 3 s noise filter,
+      // a 60-minute cap — independent of manualMode, which defaults to true. So a
+      // fresh install was labelled Manual and cut by auto's rules until the user
+      // first saved Recording Settings. main() now applies the mode's rules at
+      // startup; this pins what that has to produce.
+      final p = SharedPreferencesUtil();
+      expect(p.manualMode, isTrue, reason: 'fresh install defaults to manual, matching the firmware');
+      expect(p.vadSplitSeconds, 120, reason: 'the un-reconciled legacy default');
+      expect(p.vadMinSpeechSeconds, 3);
+      expect(p.vadMaxConversationMinutes, 60);
+
+      p.applyRecordingModeDefaults(p.manualMode);
+
+      expect(p.vadEnabled, isFalse, reason: 'manual never runs Silero');
+      expect(p.vadSplitSeconds, 0, reason: 'the button ends a manual recording, not silence');
+      expect(p.vadMinSpeechSeconds, 0, reason: 'manual keeps everything');
+      expect(p.vadMaxConversationMinutes, 0, reason: 'manual is uncapped by default');
+    });
+
+    test('applying twice changes nothing, so running it every launch is safe', () {
+      final p = SharedPreferencesUtil();
+      p.applyRecordingModeDefaults(false);
+      final once = [p.vadEnabled, p.vadSplitSeconds, p.vadMinSpeechSeconds, p.vadMaxConversationMinutes];
+      p.applyRecordingModeDefaults(false);
+      expect([p.vadEnabled, p.vadSplitSeconds, p.vadMinSpeechSeconds, p.vadMaxConversationMinutes], once);
+    });
+
     test('manualModeUserSet starts false, so a default is not a preference', () {
       // A fresh install has manualMode true because that is the default. Reporting
       // a disagreement against an auto Omi there would be noise.
