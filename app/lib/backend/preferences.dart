@@ -191,6 +191,30 @@ class SharedPreferencesUtil {
   int get manualModeVadMaxConversationMinutes => getInt('manual_vadMaxConversationMinutes', defaultValue: 0);
   set manualModeVadMaxConversationMinutes(int v) => saveInt('manual_vadMaxConversationMinutes', v);
 
+  // ---------------------------------------------------------------------------
+  // Mode-switch backlog pin
+  //
+  // A recording mode is a property of the audio, not of the toggle: flipping the
+  // mode rewrites the live VAD prefs, and the processor reads those at run time,
+  // so a backlog recorded under one mode was being re-cut under the other's
+  // rules. Both directions are wrong in their own way — manual's pinned
+  // vadSplitSeconds=0 chops auto audio at every bin boundary and AAD wake, and
+  // auto's Silero + minSpeech filter can discard a deliberate manual capture as
+  // noise. So the switch freezes the OUTGOING settings and stamps the instant it
+  // happened; bins that started before the stamp are processed with the frozen
+  // settings, and the stamp clears once none are left. See
+  // RecordingsController._runProcessing.
+  //
+  // Epoch SECONDS to match the bin folder name (the firmware `timerStart`), which
+  // is what the partition compares against. 0 = nothing pending.
+  int get processingModeSwitchAtUtc => getInt('processingModeSwitchAtUtc', defaultValue: 0);
+  set processingModeSwitchAtUtc(int v) => saveInt('processingModeSwitchAtUtc', v);
+
+  // JSON ProcessingSettings captured just before the flip; '' = none. Kept in
+  // lockstep with the stamp above — clear both together, never one alone.
+  String get processingPreSwitchSettings => getString('processingPreSwitchSettings');
+  set processingPreSwitchSettings(String v) => saveString('processingPreSwitchSettings', v);
+
   // The format to save processed audio files. Options: 'm4a', 'wav'.
   // OGG support was removed entirely; any stored 'ogg' value (from the legacy
   // convertOpusToM4a migration or a previously-chosen setting) is coerced to
