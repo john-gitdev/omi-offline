@@ -102,23 +102,23 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
       return;
     }
     try {
-      // force: true, or this page is unusable almost all the time. Without it
-      // ensureConnection NEVER establishes a link — it hands back the existing
-      // one or null (`if (!force) return null;`) — and the app is deliberately
-      // disconnected between its ~30-second sync windows. So opening Button
-      // Config outside one of those windows went straight to "no device" with no
-      // connection attempt at all, every dropdown dead.
+      // force: true. Without it ensureConnection NEVER establishes a link — it
+      // hands back one that already exists, or null (`if (!force) return null;`).
+      // So opening this page at any moment the app is not already connected went
+      // straight to _ConfigStatus.noDevice with no connection attempt at all,
+      // every dropdown dead, and nothing in the log to say why.
       //
-      // Worst right after a mode switch, which is where the settings page's
-      // "review your button actions" prompt sends you: on 2026-08-14 the mode
-      // switch landed at 22:43:30 and the background cycle hung up at 22:43:41,
-      // eleven seconds later, with nothing reconnecting until 23:10.
+      // The app does hold the link while it is in the foreground (the keep-alive
+      // runs, and all three disconnect paths in DeviceProvider are gated on
+      // !_isAppInForeground), so this is not the steady state — but the gap is
+      // routine: after a background/foreground cycle before the reconnect lands,
+      // or after any of the link drops this device sees regularly.
       //
       // Safe: ensureConnection returns early when already connected to this
-      // device, so force costs nothing in the window, and only one Omi is ever
-      // paired. Matches what every other UI path that needs the device does
-      // (find_devices_page, sync_page, the DFU flow). The initial `loading`
-      // state covers the ~1 s the connect takes.
+      // device, so force costs nothing when the link is up, and only one Omi is
+      // ever paired. Matches what every other UI path that needs the device does
+      // (find_devices_page, sync_page, the DFU flow). The initial `loading` state
+      // covers the ~1 s the connect takes.
       final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id, force: true);
       if (connection == null) {
         if (mounted) setState(() => _status = _ConfigStatus.noDevice);
