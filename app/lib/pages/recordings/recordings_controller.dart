@@ -1061,6 +1061,17 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     return passes;
   }
 
+  /// Epoch seconds before which finalized recordings are swept, or null when
+  /// retention is off ("Always Keep", the default, and the passthrough setting).
+  /// Mirrors the cutoff in [_enforceRetentionPolicy] — the two must agree, since
+  /// this decides when a mode-switch entry stops mattering and that one does the
+  /// deleting that makes it stop mattering.
+  int? _retentionCutoffUtcSeconds() {
+    final days = _prefs.keepRecordingsDays;
+    if (days <= 0) return null;
+    return DateTime.now().toUtc().subtract(Duration(days: days)).millisecondsSinceEpoch ~/ 1000;
+  }
+
   /// Processes each pending mode-switch backlog with the settings that were live
   /// when it was recorded, and returns the bins the caller should run under the
   /// current mode — those that post-date every switch.
@@ -1089,8 +1100,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final raw = _prefs.processingModeSwitchHistory;
     if (raw.isEmpty) return batches;
 
-    final history = ModeSwitchRecord.decode(raw);
-    if (history.isEmpty) {
+    final decoded = ModeSwitchRecord.decode(raw);
+    if (decoded.isEmpty) {
       // decode() never throws, so a stored value that parses to nothing is the
       // only way this mechanism can silently switch itself off. Say so, and wipe
       // the unreadable value rather than re-reading and re-failing every run.
@@ -1099,6 +1110,19 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       _prefs.processingModeSwitchHistory = '';
       return batches;
     }
+
+    // Retire what the retention policy has already made moot. Anything a retired
+    // entry would have governed is past its keep-window, so the next sweep
+    // deletes it whichever mode's rules cut it. See ModeSwitchRecord.retireExpired
+    // for why this is the one retirement rule that is safe.
+    final history = ModeSwitchRecord.retireExpired(decoded, _retentionCutoffUtcSeconds());
+    if (history.length != decoded.length) {
+      Logger.debug('RecordingsController: retired ${decoded.length - history.length} mode-switch entr'
+          '${decoded.length - history.length == 1 ? "y" : "ies"} older than the recordings-retention window; '
+          '${history.length} left.');
+      _prefs.processingModeSwitchHistory = ModeSwitchRecord.encode(history);
+    }
+    if (history.isEmpty) return batches;
 
     final passes = planModeSwitchPasses(batches, history);
     if (passes.length == 1) return batches; // nothing predates a switch — the steady state

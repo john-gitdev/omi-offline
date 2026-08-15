@@ -156,15 +156,18 @@ class ModeSettings {
 /// before the backlog drains and there are two boundaries in the audio, each
 /// needing its own settings. Collapsing them to one loses the middle span.
 ///
-/// **Entries are never retired.** An earlier version expired them once the
-/// backlog looked drained, and that produced two of this feature's bugs — a bin
-/// still downloading is invisible to the run that would have expired its entry,
-/// and an Omi that has not finished syncing still holds audio from before the
-/// switch. Both meant a late arrival fell back to the wrong mode, which is the
-/// entire failure this exists to stop. Keeping an entry forever costs one list
-/// filter per run and cannot be wrong: an entry only ever governs audio older
-/// than itself, and once none exists it simply matches nothing. [maxEntries]
-/// bounds the list, and that is the whole of the lifecycle.
+/// **An entry is only ever dropped when dropping it cannot matter.** An earlier
+/// version expired entries once the backlog looked drained, and that produced
+/// two of this feature's bugs — a bin still downloading is invisible to the run
+/// that would have expired its entry, and an Omi that has not finished syncing
+/// still holds audio from before the switch. Both meant a late arrival fell back
+/// to the wrong mode and was KEPT that way, which is the entire failure this
+/// exists to stop. The two rules that survive are the ones whose failure is
+/// inert: [retireExpired], where anything the wrong mode produces is deleted by
+/// retention anyway, and [maxEntries], which bounds the list. Otherwise an entry
+/// lives indefinitely — it costs one list filter per run and cannot be wrong,
+/// since it only ever governs audio older than itself and matches nothing once
+/// none exists.
 class ModeSwitchRecord {
   /// Epoch SECONDS, to compare directly against the firmware `timerStart` in a
   /// bin's folder name. Written from the phone clock; the two are kept in step
@@ -210,6 +213,37 @@ class ModeSwitchRecord {
     } catch (_) {
       return const [];
     }
+  }
+
+  /// Drops the entries the recordings-retention policy has made irrelevant.
+  ///
+  /// An entry governs only audio recorded BEFORE its stamp. Once the retention
+  /// cutoff (now − keepRecordingsDays) has moved past that stamp, every recording
+  /// from before it is already past its keep-window, so the next retention sweep
+  /// deletes whatever this entry would have produced. Which mode's rules cut it
+  /// no longer changes anything the user ends up with, and the entry is dead
+  /// weight.
+  ///
+  /// This is the safe form of a rule an earlier design got wrong, and the
+  /// difference is worth being precise about. That version expired an entry as
+  /// soon as its audio looked processed — so a late arrival (a bin still
+  /// downloading, or one the Omi had not handed over yet) was cut by the wrong
+  /// mode and **kept**. Here a late arrival is cut by the wrong mode and then
+  /// **deleted by retention**, which is the same result as never having had the
+  /// entry at all. The rule is safe because its failure is inert, not because
+  /// late arrivals were ruled out.
+  ///
+  /// Retention deletes finalized recordings, not raw bins, so pre-switch bins
+  /// CAN still arrive after the cutoff has passed — that is the case above, and
+  /// it is fine.
+  ///
+  /// [retentionCutoffUtcSeconds] is null when retention is off — the default
+  /// ("Always Keep", `keepRecordingsDays <= 0`) — and then nothing is dropped and
+  /// [maxEntries] stays the only bound.
+  static List<ModeSwitchRecord> retireExpired(List<ModeSwitchRecord> history, int? retentionCutoffUtcSeconds) {
+    if (retentionCutoffUtcSeconds == null || history.isEmpty) return history;
+    final kept = history.where((e) => e.atUtcSeconds > retentionCutoffUtcSeconds).toList();
+    return kept.length == history.length ? history : kept;
   }
 
   /// Appends [entry] and re-sorts. Sorting rather than trusting append order

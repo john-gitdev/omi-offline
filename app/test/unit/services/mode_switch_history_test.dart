@@ -105,6 +105,44 @@ void main() {
     });
   });
 
+  group('retireExpired', () {
+    test('drops an entry the retention cutoff has passed', () {
+      // Everything that entry governed was recorded before it, so it is all past
+      // its keep-window and the next sweep deletes it — whichever mode's rules
+      // cut it. The entry cannot change the outcome any more.
+      final h = [entry(100), entry(500)];
+      expect(ModeSwitchRecord.retireExpired(h, base + 300).map((e) => e.atUtcSeconds), [base + 500]);
+    });
+
+    test('keeps an entry the cutoff has not reached', () {
+      final h = [entry(500)];
+      expect(ModeSwitchRecord.retireExpired(h, base + 300), hasLength(1));
+    });
+
+    test('an entry exactly at the cutoff is dropped', () {
+      // Off-by-one worth spelling out. An entry at T governs audio recorded
+      // strictly BEFORE T, and the sweep deletes recordings strictly before the
+      // cutoff. So at T == cutoff everything the entry governs is inside the
+      // sweep's range and the entry is already moot — `> cutoff` keeps, `<=`
+      // drops. (The two `strictly before`s are what make the boundaries line up;
+      // if either were inclusive this would have to keep it.)
+      expect(ModeSwitchRecord.retireExpired([entry(300)], base + 300), isEmpty);
+      expect(ModeSwitchRecord.retireExpired([entry(301)], base + 300), hasLength(1));
+    });
+
+    test('retention off drops nothing', () {
+      // "Always Keep" is the default (keepRecordingsDays = -1) and passthrough is
+      // 0; both mean no sweep, so nothing an entry governs is ever deleted for
+      // age and maxEntries stays the only bound.
+      final h = [entry(100), entry(500)];
+      expect(ModeSwitchRecord.retireExpired(h, null), hasLength(2));
+    });
+
+    test('an empty history stays empty', () {
+      expect(ModeSwitchRecord.retireExpired(const [], base + 300), isEmpty);
+    });
+  });
+
   group('withMode', () {
     test('replaces the mode-shaped fields and keeps the global ones live', () {
       // The point of storing only six fields: a replaced Omi's id or a changed
