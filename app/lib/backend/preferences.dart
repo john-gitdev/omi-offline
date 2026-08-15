@@ -212,6 +212,41 @@ class SharedPreferencesUtil {
   String get processingModeSwitchHistory => getString('processingModeSwitchHistory');
   set processingModeSwitchHistory(String v) => saveString('processingModeSwitchHistory', v);
 
+  // Whether the user has ever chosen a recording mode themselves, as opposed to
+  // running on the default. A fresh install has `manualMode` true because that is
+  // the default, not because anyone asked for it — so an Omi in auto is not a
+  // disagreement worth reporting until this is set. Written only by
+  // DeviceProvider.setManualMode.
+  bool get manualModeUserSet => getBool('manualModeUserSet', defaultValue: false);
+  set manualModeUserSet(bool v) => saveBool('manualModeUserSet', v);
+
+  /// Writes the flat processing prefs that a recording mode implies.
+  ///
+  /// `manualMode` is only the label; the processor reads the flat vad* prefs. The
+  /// two must never disagree — an auto label over manual's `vadSplitSeconds = 0`
+  /// is the 2026-08-14 configuration. The settings page keeps them in step when
+  /// the user switches; this keeps them in step when the app adopts a mode from
+  /// the device instead.
+  ///
+  /// Manual's values are fixed by design (VAD off, no filtering — the firmware's
+  /// session-end marker is the boundary). Auto's come from its own snapshot, so a
+  /// round trip through manual and back restores what the user had.
+  void applyRecordingModeDefaults(bool manual) {
+    if (manual) {
+      vadEnabled = false;
+      vadSpeechThreshold = 0.5;
+      vadMinSpeechSeconds = 0;
+      vadSplitSeconds = 0;
+      vadMaxConversationMinutes = manualModeVadMaxConversationMinutes;
+    } else {
+      vadEnabled = autoModeVadEnabled;
+      vadSpeechThreshold = autoModeVadSpeechThreshold;
+      vadMinSpeechSeconds = autoModeVadMinSpeechSeconds;
+      vadSplitSeconds = autoModeVadSplitSeconds;
+      vadMaxConversationMinutes = autoModeVadMaxConversationMinutes;
+    }
+  }
+
   // The format to save processed audio files. Options: 'm4a', 'wav'.
   // OGG support was removed entirely; any stored 'ogg' value (from the legacy
   // convertOpusToM4a migration or a previously-chosen setting) is coerced to
