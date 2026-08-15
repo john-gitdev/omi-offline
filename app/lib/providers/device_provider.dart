@@ -15,6 +15,7 @@ import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/pages/recordings/recordings_controller.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
+import 'package:omi/services/vad/vad_types.dart';
 import 'package:omi/services/wals.dart';
 import 'package:omi/utils/audio/sync_notification.dart';
 import 'package:omi/utils/debug_log_manager.dart';
@@ -674,6 +675,21 @@ class DeviceProvider extends ChangeNotifier
   Future<void> setManualMode(bool enabled) async {
     if (connectedDevice == null) return;
     final prefs = SharedPreferencesUtil();
+    // Freeze the OUTGOING mode's processing settings before anything flips, so
+    // the backlog recorded under them is still cut by them. Read here and not in
+    // the settings page because this runs BEFORE the page writes the new mode's
+    // vad* prefs — ProcessingSettings.fromPrefs() still returns the old mode.
+    //
+    // An existing stamp is kept rather than overwritten: switch twice before the
+    // backlog drains and the oldest stamp is the one that still has bins waiting
+    // behind it. The newer switch's audio is then processed with the oldest
+    // mode's settings, which is wrong in the same way this whole mechanism
+    // exists to prevent — but it is bounded (one drain) and self-clearing, where
+    // overwriting would strand the original backlog permanently.
+    if (prefs.processingModeSwitchAtUtc == 0) {
+      prefs.processingPreSwitchSettings = jsonEncode(ProcessingSettings.fromPrefs().toJson());
+      prefs.processingModeSwitchAtUtc = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
+    }
     prefs.manualMode = enabled;
     _manualRecording = false;
     if (enabled) {
