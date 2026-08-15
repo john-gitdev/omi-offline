@@ -534,11 +534,38 @@ class DeviceProvider extends ChangeNotifier
     notifyListeners();
   }
 
-  Future<void> _setDeviceVadThreshold(int threshold) async {
+  /// Writes the Omi's AAD threshold and confirms it actually landed.
+  ///
+  /// Returns whether the device now holds [threshold]. Reading it back is not
+  /// belt-and-braces here — it is the only honest signal, because every layer
+  /// underneath fails **silently**:
+  ///   * `performSetVadThreshold` wraps its BLE write in `catch (_) {}`;
+  ///   * `DeviceConnection.setVadThreshold` no-ops when not connected;
+  ///   * `ensureConnection` can hand back null.
+  /// So "no exception was thrown" says nothing at all about whether the Omi
+  /// changed, and the old void signature had no way to tell the caller.
+  ///
+  /// The read is honest about the right thing: `0013`'s read handler returns
+  /// `app_settings_get_vad_threshold()`, the PERSISTED value, and the write
+  /// handler persists before applying. So a mismatch also catches the case where
+  /// the live threshold changed but the NVS save failed — which would revert on
+  /// the next reboot, so refusing it is correct.
+  Future<bool> _setDeviceVadThreshold(int threshold) async {
     final dev = connectedDevice;
-    if (dev == null) return;
-    final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
-    await connection?.setVadThreshold(threshold);
+    if (dev == null) return false;
+    try {
+      final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
+      if (connection == null) return false;
+      await connection.setVadThreshold(threshold);
+      final readBack = await connection.getVadThreshold();
+      if (readBack == threshold) return true;
+      Logger.error('DeviceProvider: VAD threshold write did not take — wrote $threshold, device reports '
+          '${readBack ?? "no answer"}.');
+      return false;
+    } catch (e) {
+      Logger.error('DeviceProvider: VAD threshold write to $threshold failed: $e');
+      return false;
+    }
   }
 
   /// Push the button config for the device's current mode to the firmware.
@@ -683,10 +710,29 @@ class DeviceProvider extends ChangeNotifier
   Future<bool> setManualMode(bool enabled) async {
     if (connectedDevice == null) return false;
     final prefs = SharedPreferencesUtil();
-    // Record the OUTGOING mode's processing settings before anything flips, so
-    // the backlog recorded under them is still cut by them. Read here and not in
-    // the settings page because this runs BEFORE the page writes the new mode's
-    // vad* prefs — ProcessingSettings.fromPrefs() still returns the old mode.
+
+    // DEVICE FIRST, and nothing local until it confirms. The threshold write is
+    // the only step here that can fail, and it fails silently (see
+    // _setDeviceVadThreshold) — so the old order committed the app to a mode the
+    // Omi had never adopted. That divergence is not cosmetic: on the next connect
+    // the read-and-adopt block in _onDeviceConnected takes the DEVICE's threshold
+    // as the source of truth and flips `manualMode` straight back, while the
+    // vad* prefs the settings page wrote on the way out stay put. The app is then
+    // cutting audio by one mode's rules while believing it is in the other — the
+    // 2026-08-14 configuration, reached without a single line of that bug.
+    if (!await _setDeviceVadThreshold(enabled ? 32769 : prefs.autoVadThreshold)) {
+      Logger.debug('DeviceProvider: manual-mode switch abandoned — the Omi did not take the threshold write.');
+      return false;
+    }
+
+    // Everything below is local and cannot fail partway: the caller keys writing
+    // the new mode's vad* prefs off our return value, so anything that unwound
+    // after this point would reproduce exactly the split state above.
+    //
+    // Record the OUTGOING mode's processing settings, so the backlog recorded
+    // under them is still cut by them. Read here and not in the settings page
+    // because this runs BEFORE the page writes the new mode's vad* prefs —
+    // ProcessingSettings.fromPrefs() still returns the old mode.
     //
     // Appended, never overwritten: switch twice before the backlog drains and the
     // audio holds two boundaries, each needing its own settings. The processing
@@ -703,13 +749,17 @@ class DeviceProvider extends ChangeNotifier
     );
     prefs.manualMode = enabled;
     _manualRecording = false;
-    if (enabled) {
-      await _setDeviceVadThreshold(32769);
-    } else {
-      await _setDeviceVadThreshold(prefs.autoVadThreshold);
+
+    // Mode flipped — make the new mode's button mapping live on the device. Must
+    // follow the prefs.manualMode write, which is what it reads to pick a config.
+    // Best-effort by design (it is retried on the next connect), and guarded so a
+    // BLE failure here cannot unwind past the commit above.
+    try {
+      await pushActiveButtonConfig();
+    } catch (e) {
+      Logger.error('DeviceProvider: button config push failed after the mode switch ($e) — '
+          'retried on the next connect.');
     }
-    // Mode flipped — make the new mode's button mapping live on the device.
-    await pushActiveButtonConfig();
     notifyListeners();
     return true;
   }
