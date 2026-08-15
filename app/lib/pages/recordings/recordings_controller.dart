@@ -1029,13 +1029,17 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   /// `vadSplitSeconds = 0`, or a deliberate manual capture discarded as noise by
   /// auto's Silero + `minSpeechMs` filter.
   ///
-  /// `finalizeDrafts: true` on the frozen run is deliberate and is NOT the
-  /// premature promotion the ordinary path guards against: a mode switch is a
-  /// real boundary (the firmware writes a 0xFFFFFFFC there whenever it was
-  /// mid-recording), and leaving a draft open would let the current-mode run
-  /// stitch the old mode's audio onto the new mode's — the exact mixing this
-  /// exists to prevent. Every bin it consumes is pre-switch, so the prune that
-  /// follows can't touch post-switch audio.
+  /// Deliberately does NOT pass `finalizeDrafts: true`. It is tempting — a draft
+  /// left open at the boundary is re-stitched onto the next run's audio, so the
+  /// last recording before the switch can absorb audio from after it. But
+  /// `finalizeDrafts` promotes EVERY draft on disk, not this pass's, and once
+  /// the stamp survives a run (partial sync, below) a post-switch draft from an
+  /// earlier run is on disk when this pass runs. Promoting that is the premature
+  /// promotion the pipeline warns about everywhere: it prunes the draft's source
+  /// bins and anchors the next run too early. Trading one mixed-mode recording
+  /// at the boundary for that is a bad trade, so the boundary is left to the
+  /// firmware's own 0xFFFFFFFC — which it writes at the switch whenever it was
+  /// mid-recording, i.e. the case where a draft is actually open.
   ///
   /// No-ops on every ordinary run: the stamp is 0 unless a switch is pending.
   Future<List<Batch>> _drainPreSwitchBacklog(List<Batch> batches, int gen) async {
@@ -1068,12 +1072,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final preSwitch = withBins(batches, (f) => binStartUtcSeconds(f) < switchAt);
     final hasPreSwitch = preSwitch.any((b) => b.rawSegments.isNotEmpty);
 
-    // Nothing left from before the switch — the pin has done its job. Clearing
-    // both keys together is the invariant; a stamp with no settings would send
-    // every later run down the unreadable-snapshot branch above.
     if (!hasPreSwitch || frozen == null) {
-      _prefs.processingModeSwitchAtUtc = 0;
-      _prefs.processingPreSwitchSettings = '';
+      if (frozen == null || _preSwitchPinIsSpent(switchAt)) {
+        // Clearing both keys together is the invariant; a stamp with no settings
+        // would send every later run down the unreadable-snapshot branch above.
+        _prefs.processingModeSwitchAtUtc = 0;
+        _prefs.processingPreSwitchSettings = '';
+      }
       return batches;
     }
 
@@ -1088,7 +1093,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         preSwitch,
         (_, __) {},
         backgroundMode: !_isForcePipeline,
-        finalizeDrafts: true,
+        finalizeDrafts: _isForcePipeline, // see the doc comment — never unconditionally true
         settingsOverride: frozen,
         onRecordingFinalized: () => unawaited(reloadBatchesSilently()),
       );
@@ -1105,9 +1110,63 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
     if (gen != _pipelineGeneration) return batches; // watchdog recovered; stamp survives for the retry
 
-    _prefs.processingModeSwitchAtUtc = 0;
-    _prefs.processingPreSwitchSettings = '';
+    if (_preSwitchPinIsSpent(switchAt)) {
+      _prefs.processingModeSwitchAtUtc = 0;
+      _prefs.processingPreSwitchSettings = '';
+    }
     return withBins(batches, (f) => binStartUtcSeconds(f) >= switchAt);
+  }
+
+  /// How long a mode-switch pin may outlive its switch. An Omi that is never
+  /// fully drained would otherwise hold the pin forever, and a live pin blocks
+  /// the NEXT switch from recording its own (see DeviceProvider.setManualMode) —
+  /// so the cap is what stops one stuck pin from silently disarming the
+  /// mechanism for every switch after it.
+  static const Duration _preSwitchPinMaxAge = Duration(days: 7);
+
+  /// Whether the pin for a switch at [switchAt] can be retired.
+  ///
+  /// "No processable pre-switch bins in this run" is NOT sufficient, and reading
+  /// it that way was the first version's bug. Two ways pre-switch audio is
+  /// invisible to that test:
+  ///   * a bin still mid-transfer is filtered out by [isProcessableBin] before
+  ///     the partition ever sees it — and a download in flight is precisely the
+  ///     state the pipeline is in when an interrupted sync hands over to
+  ///     processing, so this is the common case, not the corner one;
+  ///   * the Omi keeps recording while disconnected, so after a partial sync it
+  ///     still holds pre-switch files that have not reached the phone at all.
+  /// Retiring the pin in either state drops the late arrivals back onto the
+  /// current mode's settings — the exact failure the pin exists to stop.
+  ///
+  /// So: every raw bin on disk must post-date the switch (checked against the
+  /// UNFILTERED batches, unlike the partition), and the last sync must have
+  /// completed rather than been cut short. A pin that survives costs one
+  /// partition per run and no processing.
+  bool _preSwitchPinIsSpent(int switchAt) => preSwitchPinIsSpent(
+        switchAt: switchAt,
+        nowUtcSeconds: DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000,
+        // UNFILTERED, unlike the partition: a mid-transfer bin is pre-switch
+        // audio even though isProcessableBin hides it from this run.
+        anyPreSwitchBinOnDisk: _batches.any((b) => b.rawSegments.any((f) => binStartUtcSeconds(f) < switchAt)),
+        // A partial sync means the Omi may still hold pre-switch files. Force-
+        // and process-only runs read whatever the last real sync left here,
+        // which is the right answer for them too: it is the device that has or
+        // hasn't been drained.
+        lastSyncPartial: _prefs.lastSyncPartial,
+      );
+
+  /// Pure form of the retirement rule, so it can be exercised without standing
+  /// up a controller. See [_preSwitchPinIsSpent] for why each input matters.
+  @visibleForTesting
+  static bool preSwitchPinIsSpent({
+    required int switchAt,
+    required int nowUtcSeconds,
+    required bool anyPreSwitchBinOnDisk,
+    required bool lastSyncPartial,
+  }) {
+    if (nowUtcSeconds - switchAt > _preSwitchPinMaxAge.inSeconds) return true;
+    if (anyPreSwitchBinOnDisk) return false;
+    return !lastSyncPartial;
   }
 
   /// Bins still awaiting a resumed read — never safe to process or prune.
