@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
@@ -232,6 +233,40 @@ void main() {
       expect(processor.currentChunkDurationMs, 100 * 20,
           reason: 'all 100 frames stay in one open conversation for the session-end marker to close');
       await processor.destroy();
+    });
+  });
+
+  group('ProcessingSettings snapshot', () {
+    // A mode switch freezes the OUTGOING mode's settings so the backlog recorded
+    // under them is still cut by them. That snapshot lives in SharedPreferences
+    // as JSON, so it has to survive the round trip intact — and it has to
+    // survive being read by a build that has since gained a field.
+    test('round-trips every field', () {
+      final original = _settings(minDurationMs: 5000, silenceDurationToSplitMs: 0, minSpeechMs: 3000);
+      final restored = ProcessingSettings.fromJson(jsonDecode(jsonEncode(original.toJson())) as Map<String, dynamic>);
+
+      expect(restored.vadEnabled, original.vadEnabled);
+      expect(restored.speechThreshold, original.speechThreshold);
+      expect(restored.silenceDurationToSplitMs, original.silenceDurationToSplitMs);
+      expect(restored.minDurationMs, original.minDurationMs);
+      expect(restored.minSpeechMs, original.minSpeechMs);
+      expect(restored.maxChunkMs, original.maxChunkMs);
+      expect(restored.deviceId, original.deviceId);
+      expect(restored.audioSaveFormat, original.audioSaveFormat);
+      expect(restored.omiEnabled, original.omiEnabled);
+      expect(restored.priorityRecordCapMinutes, original.priorityRecordCapMinutes);
+    });
+
+    test('a missing field falls back to the live pref, not a hardcoded default', () {
+      // An older build's snapshot won't carry a field added since. Degrading to
+      // current behaviour for that one field is right; inventing a value is not.
+      final live = ProcessingSettings.fromPrefs();
+      final partial = ProcessingSettings.fromJson({'silenceDurationToSplitMs': 0});
+
+      expect(partial.silenceDurationToSplitMs, 0, reason: 'the field that IS present wins');
+      expect(partial.minSpeechMs, live.minSpeechMs);
+      expect(partial.vadEnabled, live.vadEnabled);
+      expect(partial.audioSaveFormat, live.audioSaveFormat);
     });
   });
 
