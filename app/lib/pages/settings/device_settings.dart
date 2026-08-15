@@ -35,6 +35,37 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   // instead of popping in row by row as each BLE read lands.
   bool _isLoading = true;
 
+  /// Set when the capability read came back "busy" because a sync holds the BLE
+  /// link, as opposed to failing. The distinction is the whole point: a failed
+  /// capability read returns 0, and 0 is indistinguishable from "this Omi has no
+  /// features", so five rows — LED brightness, mic gain, sensitivity, priority
+  /// cap, LED switches — vanish at once. That is the half-empty page. Say the Omi
+  /// is busy and come back instead.
+  bool _waitingForSync = false;
+  Timer? _syncWaitTimer;
+
+  /// Re-runs the load once the sync that is holding the link finishes.
+  ///
+  /// A poll rather than a listener because the page has no other reason to
+  /// subscribe to sync state, and the check is a field read. Cancelled on
+  /// dispose and as soon as it fires, so at most one is ever live.
+  void _armSyncWait() {
+    _syncWaitTimer?.cancel();
+    _syncWaitTimer = Timer.periodic(const Duration(seconds: 2), (t) async {
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
+      if (ServiceManager.instance().wal.getSyncs().isSyncing) return;
+      t.cancel();
+      setState(() {
+        _waitingForSync = false;
+        _isLoading = true;
+      });
+      await _loadAll();
+    });
+  }
+
   double _dimRatio = 100.0;
   bool? _hasDimmingFeature;
 
@@ -111,6 +142,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
 
   @override
   void dispose() {
+    _syncWaitTimer?.cancel();
     _debounce?.cancel();
     _micGainDebounce?.cancel();
     _vadThresholdDebounce?.cancel();
@@ -152,24 +184,54 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     final pairedDevice = deviceProvider.pairedDevice;
     if (pairedDevice == null || pairedDevice.id.isEmpty) return;
 
-    var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
+    // force: true — ensureConnection never establishes a link without it
+    // (`if (!force) return null;`), so this page would declare the Omi absent at
+    // any moment one was not already up, without trying. Forcing is a no-op when
+    // already connected, and only one Omi is ever paired.
+    var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id, force: true);
     if (connection == null) return;
 
-    var features = await connection.getFeatures();
-    // Retry up to 2 more times if the first read fails (transient GATT error
-    // on a degraded but still-connected link returns 0 instead of the real flags).
-    for (int i = 0; i < 2 && features == 0 && mounted; i++) {
+    // getFeaturesIfIdle, never getFeatures. Two reasons, and the second is why
+    // this page used to come up half empty:
+    //
+    //   * getFeatures reads unguarded, and a plain GATT read racing the storage
+    //     notify stream drops the link on Android with Error 133. The old retry
+    //     loop repeated that read up to three times on an already-degraded link.
+    //   * getFeatures returns 0 on failure, and 0 reads as "this Omi has no
+    //     features" — so one unanswered read silently hid every capability-gated
+    //     row rather than reporting anything. The guarded twin returns null,
+    //     which can be told apart from a real answer of zero.
+    //
+    // Retry on null only while no sync is running: there a null is a transient
+    // GATT hiccup worth another go. Once a transfer holds the lock, retrying is
+    // pointless — wait for it and say so.
+    final syncs = ServiceManager.instance().wal.getSyncs();
+    int? features = await connection.getFeaturesIfIdle();
+    for (int i = 0; i < 2 && features == null && mounted && !syncs.isSyncing; i++) {
       await Future.delayed(const Duration(milliseconds: 600));
-      features = await connection.getFeatures();
+      features = await connection.getFeaturesIfIdle();
     }
     if (!mounted) return;
+    if (features == null) {
+      if (syncs.isSyncing) {
+        Logger.debug('DeviceSettings: a sync holds the link — waiting for it rather than reading past it.');
+        setState(() => _waitingForSync = true);
+        _armSyncWait();
+      }
+      // Not syncing and still no answer: a genuinely degraded link. Leave the
+      // capabilities unset, exactly as a zero read did before.
+      return;
+    }
+    // Re-bound as final so it promotes to non-null past the guard above; the
+    // loop variable can't, being reassigned.
+    final int deviceFeatures = features;
 
     _applyLoaded(() {
-      _hasDimmingFeature = OmiFeatures.hasFeature(features, OmiFeatures.ledDimming);
-      _hasMicGainFeature = OmiFeatures.hasFeature(features, OmiFeatures.micGain);
-      _hasVadThresholdFeature = OmiFeatures.hasFeature(features, OmiFeatures.vadThreshold);
-      _hasPriorityCapFeature = OmiFeatures.hasFeature(features, OmiFeatures.priorityRecordCap);
-      _hasLedServiceFeature = OmiFeatures.hasFeature(features, OmiFeatures.ledService);
+      _hasDimmingFeature = OmiFeatures.hasFeature(deviceFeatures, OmiFeatures.ledDimming);
+      _hasMicGainFeature = OmiFeatures.hasFeature(deviceFeatures, OmiFeatures.micGain);
+      _hasVadThresholdFeature = OmiFeatures.hasFeature(deviceFeatures, OmiFeatures.vadThreshold);
+      _hasPriorityCapFeature = OmiFeatures.hasFeature(deviceFeatures, OmiFeatures.priorityRecordCap);
+      _hasLedServiceFeature = OmiFeatures.hasFeature(deviceFeatures, OmiFeatures.ledService);
     });
 
     if (_hasDimmingFeature == true) {
@@ -1454,7 +1516,10 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               child: CircularProgressIndicator(strokeWidth: 2.5, color: Color(0xFF8E8E93)),
             ),
             const SizedBox(height: 14),
-            Text('Loading…', style: TextStyle(color: Colors.grey.shade500, fontSize: 15)),
+            Text(
+              _waitingForSync ? 'Waiting for sync to complete…' : 'Loading…',
+              style: TextStyle(color: Colors.grey.shade500, fontSize: 15),
+            ),
           ],
         ),
       ),
@@ -1540,7 +1605,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                   const SizedBox(height: 32),
                 ],
                 if (provider.isConnected) ...[
-                  if (_isLoading)
+                  if (_isLoading || _waitingForSync)
                     _buildLoadingPlaceholder()
                   else ...[
                     const SizedBox(height: 16),
