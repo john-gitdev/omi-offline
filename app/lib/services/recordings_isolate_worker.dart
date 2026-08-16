@@ -262,6 +262,14 @@ Future<void> processingIsolateEntry(IsolateParams params) async {
         params.sendPort.send({'type': 'marker_edl', 'items': edlData});
       }
 
+      // A 0xFFFFFFFC that arrived with no audio buffered closes a `_draft` an
+      // earlier run left on disk. Only the main isolate owns the recordings
+      // directory, so forward the boundary for it to stamp.
+      final hardEnds = processor.consumePendingDraftHardEnds();
+      if (hardEnds.isNotEmpty) {
+        params.sendPort.send({'type': 'draft_hard_end', 'markerMs': hardEnds});
+      }
+
       // Emit discard records before delete_segments so the main isolate can
       // register protected bin paths before considering them for deletion.
       final discards = processor.consumePendingDiscards();
