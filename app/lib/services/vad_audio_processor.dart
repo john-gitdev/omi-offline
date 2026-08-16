@@ -2405,11 +2405,17 @@ class VadAudioProcessor {
   /// Drains the wall-clock times of session-end stops that found no audio in
   /// memory to close, so the caller can stamp the on-disk `_draft` they end.
   ///
-  /// Deliberately not part of [serializeState]: a cancel throws out of
-  /// `processSegmentFile` before the drain, and the checkpoint's `lastIndex`
-  /// still points before that bin, so the next run re-parses the marker and
-  /// re-emits. Persisting it would double-stamp instead (harmless, since the
-  /// stamp is a bit-OR, but it would owe the same reasoning either way).
+  /// Deliberately not part of [serializeState], which covers a cancel but NOT
+  /// every kill. A cancel throws out of `processSegmentFile` before the drain and
+  /// leaves the checkpoint's `lastIndex` before that bin, so the next run re-parses
+  /// the marker and re-emits. A kill in the narrow window between the worker's
+  /// `send` and the main isolate handling it does lose the stamp, because the
+  /// checkpoint written just afterwards has already advanced past the bin. The
+  /// window is small — `serializeState()` is awaited in between, which gives the
+  /// main isolate a scheduling point first — and the cost of losing it is the
+  /// original bug (the draft stays open, closable by Force Process), not a
+  /// corrupt one. Persisting it would be correct too, and the stamp is a bit-OR
+  /// so a double-apply is harmless; it is simply not worth the state for that.
   List<int> consumePendingDraftHardEnds() {
     if (_pendingDraftHardEnds.isEmpty) return const [];
     final result = List<int>.from(_pendingDraftHardEnds);
