@@ -266,6 +266,17 @@ class VadAudioProcessor {
   // EDL payload ready to be consumed by the isolate caller after each save.
   final List<Map<String, dynamic>> _pendingEdlData = [];
 
+  // Wall-clock timestamps of 0xFFFFFFFC stops parsed with NOTHING buffered in
+  // memory — the recording the stop closes was flushed as a `_draft` by an
+  // earlier run, so there is no in-flight conversation for [_endsAtHardBoundary]
+  // to stamp. Drained by the isolate entry and forwarded to the main isolate,
+  // which owns the recordings directory and stamps the draft's own `.meta`.
+  // Without this a manual-mode recording can never close: manual pins
+  // vadSplitSeconds to 0, which disables the gap rule in
+  // `_stitchDraftRecordings`, leaving the hardEnd bit as the only thing that can
+  // finalize the draft — and no successor audio ever arrives to carry it.
+  final List<int> _pendingDraftHardEnds = [];
+
   // Tracks segment files that have been fully processed. Used by consumeSafeToDeletePaths()
   // to determine which files are no longer referenced by any internal buffer.
   final Set<String> _processedFiles = {};
@@ -1232,6 +1243,19 @@ class VadAudioProcessor {
               // No audio buffered for this session — still surface any pending
               // taps as orphans so they aren't lost.
               _emitOrphanMarkers();
+              // ...and close the recording this stop belongs to, which an EARLIER
+              // run already flushed to disk as a `_draft`. That happens whenever
+              // the stop lands in a bin the phone fetched separately from the
+              // audio it ends — a sync rotates the active bin, so a stop tapped
+              // shortly after one writes its marker into an otherwise empty bin.
+              // The branch above stamps hardEnd through the file it writes; here
+              // there is no file, so hand the boundary to the main isolate to
+              // stamp the draft directly. Skipping this strands the draft as
+              // "Conversation in progress" forever in manual mode (see the
+              // [_pendingDraftHardEnds] doc).
+              final markerUtcMs = byteData.getUint64(offset + 4, Endian.little);
+              _pendingDraftHardEnds
+                  .add(markerUtcMs > 946684800000 ? markerUtcMs : lastFrameWallTime.millisecondsSinceEpoch);
             }
             _sessionEndPendingResume = true;
             // Whatever resumes after this stop begins a new conversation, and the
@@ -2375,6 +2399,21 @@ class VadAudioProcessor {
     if (_pendingEdlData.isEmpty) return const [];
     final result = List<Map<String, dynamic>>.from(_pendingEdlData);
     _pendingEdlData.clear();
+    return result;
+  }
+
+  /// Drains the wall-clock times of session-end stops that found no audio in
+  /// memory to close, so the caller can stamp the on-disk `_draft` they end.
+  ///
+  /// Deliberately not part of [serializeState]: a cancel throws out of
+  /// `processSegmentFile` before the drain, and the checkpoint's `lastIndex`
+  /// still points before that bin, so the next run re-parses the marker and
+  /// re-emits. Persisting it would double-stamp instead (harmless, since the
+  /// stamp is a bit-OR, but it would owe the same reasoning either way).
+  List<int> consumePendingDraftHardEnds() {
+    if (_pendingDraftHardEnds.isEmpty) return const [];
+    final result = List<int>.from(_pendingDraftHardEnds);
+    _pendingDraftHardEnds.clear();
     return result;
   }
 
