@@ -96,7 +96,8 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
   }
 
   Future<void> _loadConfig() async {
-    final pairedDevice = context.read<DeviceProvider>().pairedDevice;
+    final deviceProvider = context.read<DeviceProvider>();
+    final pairedDevice = deviceProvider.pairedDevice;
     if (pairedDevice == null || pairedDevice.id.isEmpty) {
       if (mounted) setState(() => _status = _ConfigStatus.noDevice);
       return;
@@ -150,7 +151,14 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
       // Fail closed on the capability — never offer a byte the firmware may reject —
       // but stay usable: the mappings themselves are app-owned and need no device to
       // read, and the write paths report their own failures.
-      final features = await connection.getFeaturesIfIdle();
+      //
+      // Prefer the connect-time cache, which is read in the idle window BEFORE the
+      // sync starts. Failing closed is the right default but a bad outcome — the
+      // Toggle action and the "Single recording button" switch just vanish — and on
+      // the path this page is normally reached by (straight after a mode switch,
+      // sync running) reading here answered null nearly every time. The cache makes
+      // that the exception rather than the rule; the read stays as the fallback.
+      final features = deviceProvider.deviceFeatures ?? await connection.getFeaturesIfIdle();
       if (mounted) {
         setState(() {
           _configManual = prefs.buttonConfigManual;
