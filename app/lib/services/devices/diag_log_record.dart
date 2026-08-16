@@ -61,10 +61,11 @@ class DiagLogRecord {
   /// On a normal bin the reason is just context. On an EMPTY bin it is the whole
   /// story, because the reasons are not equally interesting: most say a rotation
   /// landed where nothing was being written (any silent stretch in auto mode), which
-  /// is routine. `priority stop` is the exception — that bin should hold at least the
-  /// recording's own markers, and an accepted marker force-drains its block
-  /// immediately, so an empty one means they never reached the card — dropped, or left
-  /// buffered by a full SD queue and carried into the next bin.
+  /// is routine. The two stop reasons are the exceptions — `priority stop` and
+  /// `manual recording stop` each close a bin that should hold at least the recording's
+  /// own markers, and an accepted marker force-drains its block immediately, so an
+  /// empty one means they never reached the card — dropped, or left buffered by a full
+  /// SD queue and carried into the next bin.
   static String rotateReasonLabel(int reason) {
     switch (reason) {
       case 1:
@@ -85,6 +86,12 @@ class DiagLogRecord {
         return 'storage cleared';
       case 9:
         return 'active bin deleted';
+      case 10:
+        // Reads like `priority stop`: this bin should hold the manual recording's
+        // own 0xFFFFFFFC, so an empty one means the markers never reached the card.
+        return 'manual recording stop — markers dropped';
+      case 11:
+        return 'BLE connect (idle — no write to trigger it)';
       default:
         // 0 is the firmware's own "unknown", and is also what a pre-oo-3.0.2 build
         // sends. Both mean the same thing to a reader: nothing is claimed.
