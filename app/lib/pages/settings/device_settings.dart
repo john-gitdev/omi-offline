@@ -357,10 +357,15 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
       var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
       await connection?.setLedDimRatio(value.toInt());
-      // Write through to the connect-time cache, or reopening this page would
-      // seed the pre-edit value and — if the refresh read then failed — show the
-      // user's own change reverted.
-      deviceProvider.deviceLedDimRatio = value.toInt();
+      // Cache only what the device CONFIRMS. performSet* swallows write errors
+      // (the transport surfaces none), so an unverified write-through would
+      // publish a value the Omi never took — and the cache is authoritative on
+      // the next page open. Read back: a match caches it; anything else stores
+      // null, which means UNREAD and sends the next open to the device rather
+      // than to a guess. The row itself is left showing what the user chose —
+      // a slider snapping back under your finger is worse than a stale pixel.
+      final readBack = await connection?.getLedDimRatio();
+      deviceProvider.deviceLedDimRatio = readBack == value.toInt() ? readBack : null;
     }
   }
 
@@ -444,10 +449,15 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
       var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
       await connection?.setMicGain(value.toInt());
-      // Write through to the connect-time cache, or reopening this page would
-      // seed the pre-edit value and — if the refresh read then failed — show the
-      // user's own change reverted.
-      deviceProvider.deviceMicGain = value.toInt();
+      // Cache only what the device CONFIRMS. performSet* swallows write errors
+      // (the transport surfaces none), so an unverified write-through would
+      // publish a value the Omi never took — and the cache is authoritative on
+      // the next page open. Read back: a match caches it; anything else stores
+      // null, which means UNREAD and sends the next open to the device rather
+      // than to a guess. The row itself is left showing what the user chose —
+      // a slider snapping back under your finger is worse than a stale pixel.
+      final readBack = await connection?.getMicGain();
+      deviceProvider.deviceMicGain = readBack == value.toInt() ? readBack : null;
     }
   }
 
@@ -458,10 +468,15 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
       var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
       await connection?.setVadThreshold(value.toInt());
-      // Write through to the connect-time cache, or reopening this page would
-      // seed the pre-edit value and — if the refresh read then failed — show the
-      // user's own change reverted.
-      deviceProvider.deviceVadThreshold = value.toInt();
+      // Cache only what the device CONFIRMS. performSet* swallows write errors
+      // (the transport surfaces none), so an unverified write-through would
+      // publish a value the Omi never took — and the cache is authoritative on
+      // the next page open. Read back: a match caches it; anything else stores
+      // null, which means UNREAD and sends the next open to the device rather
+      // than to a guess. The row itself is left showing what the user chose —
+      // a slider snapping back under your finger is worse than a stale pixel.
+      final readBack = await connection?.getVadThreshold();
+      deviceProvider.deviceVadThreshold = readBack == value.toInt() ? readBack : null;
     }
   }
 
@@ -482,10 +497,15 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
       var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
       await connection?.setPriorityRecordCap(minutes);
-      // Write through to the connect-time cache, or reopening this page would
-      // seed the pre-edit value and — if the refresh read then failed — show the
-      // user's own change reverted.
-      deviceProvider.devicePriorityRecordCap = minutes;
+      // Cache only what the device CONFIRMS. performSet* swallows write errors
+      // (the transport surfaces none), so an unverified write-through would
+      // publish a value the Omi never took — and the cache is authoritative on
+      // the next page open. Read back: a match caches it; anything else stores
+      // null, which means UNREAD and sends the next open to the device rather
+      // than to a guess. The row itself is left showing what the user chose —
+      // a slider snapping back under your finger is worse than a stale pixel.
+      final readBack = await connection?.getPriorityRecordCap();
+      deviceProvider.devicePriorityRecordCap = readBack == minutes ? readBack : null;
     }
   }
 
