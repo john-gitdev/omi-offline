@@ -1374,9 +1374,16 @@ class RecordingsManager {
     // that needs it.
     if (!await meta.exists()) return;
     final bytes = await meta.readAsBytes();
-    if (bytes.length < 417) return;
+    // A meta long enough to pass _stitchDraftRecordings' own `< 8` finalize but too
+    // short to carry flags (a torn write) would otherwise be dropped in silence —
+    // and silence here looks exactly like the bug this method exists to fix, so say
+    // so. Nothing else will close this draft but Force Process.
+    if (bytes.length < 417 || bytes.length <= 417 + bytes[416] + 3) {
+      Logger.error('RecordingsManager: draft $newestTs has a ${bytes.length} B meta with no flag bytes — '
+          'cannot mark the hard end; it stays open until Force Process.');
+      return;
+    }
     final flagOffset = 417 + bytes[416];
-    if (bytes.length <= flagOffset + 3) return;
     bytes[flagOffset + 3] |= 0x04;
     await meta.writeAsBytes(bytes, flush: true);
     Logger.debug('RecordingsManager: session-end stop at $markerMs — draft $newestTs marked as ending at a hard '
