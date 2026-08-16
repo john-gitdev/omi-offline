@@ -48,6 +48,11 @@ typedef enum {
     ROTATE_REASON_TIME_SYNC = 7,      /* rotate to a UTC-keyed segment once the clock is known */
     ROTATE_REASON_CLEAR = 8,          /* CMD_CLEAR_STORAGE */
     ROTATE_REASON_ACTIVE_DELETED = 9, /* the active file was deleted; reopen on BLE disconnect */
+    ROTATE_REASON_SESSION_END = 10,   /* manual-mode RECORD_STOP — closes the MANUAL bin (empty here = loss,
+                                       * same reading as PRIORITY_STOP: that bin holds the recording's own
+                                       * 0xFFFFFFFC) */
+    ROTATE_REASON_IDLE_CONNECT = 11,  /* BLE-connect rotate serviced from the flush handler because no write
+                                       * ever arrived to evaluate it — see should_rotate_file() */
 } rotate_reason_t;
 
 /* Request types for the SD worker */
