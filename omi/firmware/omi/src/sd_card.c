@@ -1134,8 +1134,8 @@ void sd_worker_thread(void)
             /* Drain any writes still queued in sd_msgq into the OLD file before we
              * rotate. The SD worker services sd_prio_msgq (this request) ahead of
              * sd_msgq, so a write enqueued just before the rotate — most importantly
-             * the 0xFFFFFFFC session-end marker written by priority_record_stop()
-             * immediately before create_new_audio_file() — would otherwise be
+             * the 0xFFFFFFFC session-end marker the manual and priority stops enqueue
+             * immediately before requesting this rotation — would otherwise be
              * processed AFTER the rotate and land in the fresh bin. Draining here
              * keeps each recording's markers/audio in its own bin (priority bins
              * stay self-contained: [0xFFFFFFF8 .. audio .. 0xFFFFFFFC]). Reuses the
