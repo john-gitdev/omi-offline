@@ -1724,5 +1724,57 @@ void main() {
       expect(RecordingsManager.metaMarksHardStart(legacy), isFalse);
       expect(RecordingsManager.metaMarksHardEnd(legacy), isFalse);
     });
+
+    // The stop marker does not always arrive in the same processing run as the
+    // audio it ends: a sync rotates the active bin, so a Stop tapped shortly
+    // after one writes its 0xFFFFFFFC into a bin of its own, fetched a cycle
+    // later. By then the recording is a `_draft` on disk and the processor has
+    // no refs in memory to flush — so it hands the boundary to the manager,
+    // which stamps the draft. Without that, manual mode never closes it: the
+    // mode pins vadSplitSeconds to 0, which disables the gap rule below.
+    group('a session-end stop that lands after its own run', () {
+      setUp(() => SharedPreferencesUtil().vadSplitSeconds = 0); // manual mode
+
+      test('stamping the draft closes it even though nothing follows', () async {
+        final draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true);
+
+        await RecordingsManager().markDraftHardEndedForTest(tempDir.path, draftStart + draftMs + 200);
+        await RecordingsManager().stitchDraftRecordingsForTest();
+
+        expect(draft.existsSync(), isFalse);
+        expect(File(draft.path.replaceAll('_draft.wav', '.wav')).existsSync(), isTrue,
+            reason: 'the user pressed Stop — the recording is over, not "in progress"');
+      });
+
+      test('without the stamp the same draft stays open forever (the bug)', () async {
+        final draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true);
+
+        await RecordingsManager().stitchDraftRecordingsForTest();
+
+        expect(draft.existsSync(), isTrue,
+            reason: 'manual mode disables the gap rule, so nothing else can ever close this');
+      });
+
+      test('only the draft preceding the stop is closed', () async {
+        final earlier = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true);
+        // Audio the device captured after the stop, flushed as its own draft.
+        final later = await writeStitchable(startMs: draftStart + 600000, durationMs: draftMs, isDraft: true);
+
+        await RecordingsManager().markDraftHardEndedForTest(tempDir.path, draftStart + draftMs + 200);
+        await RecordingsManager().stitchDraftRecordingsForTest();
+
+        expect(File(earlier.path.replaceAll('_draft.wav', '.wav')).existsSync(), isTrue);
+        expect(later.existsSync(), isTrue, reason: 'it starts after the stop — a different conversation');
+      });
+
+      test('a stop with no draft anywhere before it is a no-op', () async {
+        final later = await writeStitchable(startMs: draftStart + 600000, durationMs: draftMs, isDraft: true);
+
+        await RecordingsManager().markDraftHardEndedForTest(tempDir.path, draftStart);
+        await RecordingsManager().stitchDraftRecordingsForTest();
+
+        expect(later.existsSync(), isTrue);
+      });
+    });
   });
 }
