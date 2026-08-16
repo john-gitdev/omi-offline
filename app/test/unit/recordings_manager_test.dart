@@ -1767,6 +1767,48 @@ void main() {
         expect(later.existsSync(), isTrue, reason: 'it starts after the stop — a different conversation');
       });
 
+      test('end to end: a real run over a marker-only bin closes the draft', () async {
+        // The two halves of this fix are joined only by the string 'draft_hard_end'
+        // — the worker's `send` key and the manager's `switch` case, which has no
+        // `default`. Every other test here drives _markDraftHardEnded directly, so a
+        // typo in either literal is a silent no-op that they all still pass. Drive a
+        // real processAll so the wire itself is under test.
+        SharedPreferencesUtil().vadEnabled = false; // manual mode: AAD, no Silero
+
+        const binTs = 1786567600; // epoch SECONDS — the folder name is the timerStart
+        final draft = await writeStitchable(
+          startMs: binTs * 1000 - 300000, // 5 min of audio ending just before the bin
+          durationMs: 300000,
+          isDraft: true,
+        );
+
+        // A bin holding nothing but the 0xFFFFFFFC — the shape a stop takes when it
+        // reaches the phone in a batch of its own.
+        await Directory('${tempDir.path}/raw_segments/$binTs').create(recursive: true);
+        final bin = File('${tempDir.path}/raw_segments/$binTs/${binTs}_1.bin');
+        final marker = ByteData(20)
+          ..setUint32(0, 0xFFFFFFFC, Endian.little)
+          ..setUint64(4, binTs * 1000 + 5000, Endian.little)
+          ..setUint32(12, 0, Endian.little)
+          ..setUint32(16, 1, Endian.little);
+        await bin.writeAsBytes(marker.buffer.asUint8List());
+
+        await RecordingsManager().processAll([
+          Batch(
+            dateString: '2026-08-12',
+            date: DateTime(2026, 8, 12),
+            rawSegments: [bin],
+            draftRecordings: [],
+            finalizedRecordings: [],
+            markerTimestamps: [],
+            discards: [],
+          )
+        ], (_, __) {});
+
+        expect(draft.existsSync(), isFalse, reason: 'the stop reached the manager and closed the draft');
+        expect(File(draft.path.replaceAll('_draft.wav', '.wav')).existsSync(), isTrue);
+      });
+
       test('a stop with no draft anywhere before it is a no-op', () async {
         final later = await writeStitchable(startMs: draftStart + 600000, durationMs: draftMs, isDraft: true);
 
