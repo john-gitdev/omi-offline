@@ -182,6 +182,34 @@ class DeviceProvider extends ChangeNotifier
   bool _manualRecording = false;
   bool get manualRecording => _manualRecording;
 
+  /// Everything the firmware owns, read ONCE per connect in the window before the
+  /// background sync starts, and served from here afterwards.
+  ///
+  /// Why a cache at all: these reads have to be serialized against the storage
+  /// characteristic (an unguarded GATT read racing the transfer stream drops the
+  /// link on Android with Error 133), so every reader used the non-blocking
+  /// [DeviceConnection.getFeaturesIfIdle] and got `null` whenever a sync held the
+  /// lock. Four call sites each read the same immutable-per-connection bytes and
+  /// each failed on its own — Device Settings hid every capability-gated row,
+  /// Button Configuration hid the Toggle action, Debug Tools lost the event log.
+  /// Reading once, early, and sharing the answer removes three of those reads and
+  /// the failure mode with them.
+  ///
+  /// `null` means UNREAD, never "the device has none" — the distinction the old
+  /// `getFeatures()` (which returned 0 on failure) could not express, and the
+  /// reason a single unanswered read used to empty a whole page. Consumers must
+  /// fall back to their own read rather than rendering a null as "absent".
+  ///
+  /// Not device-scoped: only one Omi is ever paired, and the values are refreshed
+  /// on every connect, so a stale entry cannot outlive the device it describes.
+  int? deviceFeatures;
+  int? deviceVadThreshold;
+  int? deviceLedDimRatio;
+  int? deviceMicGain;
+  int? devicePriorityRecordCap;
+  bool? deviceConnectedLed;
+  bool? deviceLedBootEnabled;
+
   String? lastSyncError;
   DateTime? lastSyncErrorTime;
 
@@ -1839,6 +1867,51 @@ class DeviceProvider extends ChangeNotifier
     }
   }
 
+  /// Reads the firmware-owned settings once per connect into the [deviceFeatures]
+  /// group, from the idle window before the sync starts.
+  ///
+  /// Every read here fails soft: a null leaves the field UNREAD and the page that
+  /// wants it reads for itself. That matters most for the capability bitfield —
+  /// rendering a failed read as "no features" is the bug this whole cache exists
+  /// to kill, so it must not be reintroduced by storing 0 for a failure.
+  ///
+  /// The per-setting reads are gated on the capability bits, exactly as the
+  /// settings page gates them: asking a device for a characteristic it does not
+  /// implement is a guaranteed failure and a wasted round trip.
+  Future<void> _cacheDeviceSettings(String deviceId) async {
+    final conn = await ServiceManager.instance().device.ensureConnection(deviceId);
+    if (conn == null) return;
+
+    // getFeaturesIfIdle, not getFeatures: even here the storage lock can be held
+    // (a resumed sync on a reconnect), and the guarded twin answers null instead
+    // of 0 so "unread" stays distinguishable from "has nothing".
+    final features = await conn.getFeaturesIfIdle();
+    // Leave every field exactly as it was and let the pages fall back to their own
+    // reads. On a reconnect that means the previous connection's values survive,
+    // which is what we want: all of these are firmware-PERSISTED settings that only
+    // this app writes (getLedBootEnabled deliberately reports the stored default,
+    // not the volatile live gate the button toggles), so a last-known value is
+    // still true. Contrast diagLogGateOnDevice, which resets on every connect
+    // precisely because a reboot clears it.
+    if (features == null) return;
+    deviceFeatures = features;
+
+    if (OmiFeatures.hasFeature(features, OmiFeatures.ledDimming)) {
+      deviceLedDimRatio = await conn.getLedDimRatio();
+    }
+    if (OmiFeatures.hasFeature(features, OmiFeatures.micGain)) {
+      deviceMicGain = await conn.getMicGain();
+    }
+    if (OmiFeatures.hasFeature(features, OmiFeatures.priorityRecordCap)) {
+      devicePriorityRecordCap = await conn.getPriorityRecordCap();
+    }
+    if (OmiFeatures.hasFeature(features, OmiFeatures.ledService)) {
+      deviceConnectedLed = await conn.getConnectedLed();
+      deviceLedBootEnabled = await conn.getLedBootEnabled();
+    }
+    notifyListeners();
+  }
+
   /// The fingerprint to persist if Android's cached GATT database for [deviceId]
   /// has to be dropped, or null to leave the cache alone.
   ///
@@ -1870,15 +1943,16 @@ class DeviceProvider extends ChangeNotifier
       final fw = pairedDevice?.firmwareRevision;
       if (fw == null || fw.isEmpty) return null;
 
-      final conn = await ServiceManager.instance().device.ensureConnection(deviceId);
-      if (conn == null) return null;
-      // Storage-lock-safe read: this can run while a sync holds the storage
-      // characteristic, and an unserialized read there races the transfer stream
-      // and drops the link on Android. Null means a transfer holds the lock, so
-      // the whole check waits for the next connect.
-      final features = await conn.getFeaturesIfIdle();
-      // A transient GATT error on a degraded link reads 0 rather than the real
-      // flags — that is a failed read, not a device that lost every capability.
+      // Served from the pre-sync cache rather than read here. This site used to
+      // issue its own getFeaturesIfIdle AFTER the sync had started, so on the
+      // ordinary background connect (a pending sync holding the storage lock) it
+      // answered null and the refresh silently deferred every time. The cached
+      // read happens in the idle window instead — same value, same null-means-
+      // unread semantics, no second round trip.
+      final features = deviceFeatures;
+      // Unread (null) or a transient GATT error reading 0 rather than the real
+      // flags — neither is a device that lost every capability, and neither may
+      // trigger a recycle. Wait for the next connect.
       if (features == null || features == 0) return null;
 
       final fingerprint = '$fw|$features';
@@ -1932,10 +2006,32 @@ class DeviceProvider extends ChangeNotifier
     await initiateBleMuteListener();
     await updateMuteState();
 
+    // MOVED UP, ahead of the sync kickoff below. performGetDeviceInfo fires five
+    // plain DIS reads with no storage-lock guard, and it used to run three lines
+    // AFTER `unawaited(_doBackgroundSync())` — i.e. straight into a live transfer
+    // notify stream, the exact pattern performGetFeaturesIfIdle / ButtonConfigPage /
+    // DeviceSettings are each hardened against because it drops the link on Android
+    // (Error 133). Guarding the reads instead would be worse: a skipped DIS read
+    // leaves no firmware revision, which both the Firmware row and the GATT-cache
+    // fingerprint need. Reordering removes the race rather than detecting it.
+    //
+    // Conditional because setConnectedDevice() already ran getDeviceInfo() at the
+    // top of _onDeviceConnected — five DIS reads — and DIS cannot change between
+    // there and here. Re-reading unconditionally (which is what the old post-sync
+    // call did) simply spent a second five round trips per connect. The retry is
+    // still worth having: that first read happens on a link that has only just
+    // come up, and a failed one leaves the revision empty, which would then
+    // silently disable the GATT-cache fingerprint below.
+    if ((pairedDevice?.firmwareRevision ?? '').isEmpty) {
+      await getDeviceInfo();
+    }
+    SharedPreferencesUtil().deviceName = device.name;
+
     {
       final prefs = SharedPreferencesUtil();
       final conn = await ServiceManager.instance().device.ensureConnection(device.id);
       final thr = await conn?.getVadThreshold();
+      deviceVadThreshold = thr;
       // Read-and-adopt: the firmware persists the threshold across reboot and
       // oo→oo OTA, so it is the source of truth. Reflect whatever it holds rather
       // than overwriting it with our remembered preference — pushing here would
@@ -1958,6 +2054,14 @@ class DeviceProvider extends ChangeNotifier
       notifyListeners();
     }
 
+    // Everything the settings pages render, read here and cached — see
+    // [deviceFeatures]. This is the last moment on a connect where the link is
+    // reliably idle: the sync starts a few lines below and holds the storage lock
+    // for the rest of the session, after which every one of these reads is a
+    // coin-flip. Failures leave their field null (UNREAD) and each page falls back
+    // to reading for itself.
+    await _cacheDeviceSettings(device.id);
+
     // The mode was just adopted from the device above, so push the matching
     // per-mode button config (and run the one-time migration) now that
     // prefs.manualMode is current.
@@ -1976,11 +2080,10 @@ class DeviceProvider extends ChangeNotifier
       unawaited(_doBackgroundSync());
     }
 
-    await getDeviceInfo();
-    SharedPreferencesUtil().deviceName = device.name;
-
-    // Decide now (getDeviceInfo just refreshed the firmware revision) but act
-    // later — see the deferred block at the end of _onDeviceConnected.
+    // Decide now (getDeviceInfo refreshed the firmware revision in the pre-sync
+    // block above, and the capability bitfield was cached alongside it) but act
+    // later — see the deferred block at the end of _onDeviceConnected. Safe to
+    // leave here now that it reads nothing over BLE.
     _pendingGattFingerprint = await _gattCacheRefreshFingerprint(device.id);
 
     // Read crash diagnostics and store for Debug Tools display
@@ -2182,9 +2285,16 @@ class DeviceProvider extends ChangeNotifier
       // has cleared the device's volatile gate.
       diagLogGateOnDevice = null;
       diagLogGatePushedAt = null;
-      final int? deviceFeatures = await conn.getFeaturesIfIdle();
-      if (deviceFeatures != null) {
-        diagLogSupported = (deviceFeatures & OmiFeatures.diagLog) != 0;
+      // From the pre-sync cache. Read here it was a second getFeaturesIfIdle on a
+      // link the sync already held, so it answered null on the ordinary background
+      // connect and left diagLogSupported at its previous value. The resets above
+      // stay unconditional and stay ABOVE this line for the reason they always
+      // did: a reset inside the success branch lets the previous connection's
+      // belief survive, including a stale `true` after a reboot cleared the
+      // device's volatile gate.
+      final int? features = deviceFeatures;
+      if (features != null) {
+        diagLogSupported = (features & OmiFeatures.diagLog) != 0;
         if (diagLogSupported) {
           await pushDiagLogEnabled();
           if (SharedPreferencesUtil().diagLogEnabled) {
