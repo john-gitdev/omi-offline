@@ -2249,4 +2249,68 @@ void main() {
       await proc.destroy();
     });
   });
+
+  // A Stop tapped shortly after a sync writes its 0xFFFFFFFC into a bin of its
+  // own — the sync rotated the active bin, so the audio the stop ends was
+  // already fetched, decoded, and flushed as a `_draft` by an earlier run. The
+  // processor then meets the marker with nothing in memory to finalize, and the
+  // hard-end stamp it normally writes through the file it saves has no file to
+  // land on. It must hand the boundary out instead, or the draft is stranded as
+  // "Conversation in progress" — permanently, in manual mode, where
+  // vadSplitSeconds is 0 and the manager's gap rule is disabled.
+  group('session-end with no audio buffered (stop arrives after its own run)', () {
+    const int kBase = 1746057600000; // 2026-05-01 UTC, past the year-2000 guard
+
+    ProcessingSettings settings() => const ProcessingSettings(
+          vadEnabled: false,
+          speechThreshold: 0.5,
+          silenceDurationToSplitMs: 0, // manual mode
+          minDurationMs: 0,
+          minSpeechMs: 0,
+          maxChunkMs: 0x7FFFFFFFFFFFFFFF,
+          deviceId: '',
+          audioSaveFormat: 'wav',
+          omiEnabled: false,
+          priorityRecordCapMinutes: 0,
+        );
+
+    File writeBin(String name, {required int frames, required int stopUtcMs}) {
+      final b = BytesBuilder();
+      final fhdr = ByteData(4)..setUint32(0, 4, Endian.little);
+      for (int i = 0; i < frames; i++) {
+        b.add(fhdr.buffer.asUint8List());
+        b.add(List.filled(4, 0));
+      }
+      final m = ByteData(20);
+      m.setUint32(0, 0xFFFFFFFC, Endian.little);
+      m.setUint64(4, stopUtcMs, Endian.little);
+      m.setUint32(12, 0, Endian.little);
+      m.setUint32(16, 1, Endian.little);
+      b.add(m.buffer.asUint8List());
+      final f = File('${tempDir.path}/$name');
+      f.writeAsBytesSync(b.toBytes());
+      return f;
+    }
+
+    test('a marker-only bin queues the stop time for the on-disk draft', () async {
+      final proc = VadAudioProcessor.fromSettings(settings: settings(), outputDir: tempDir.path);
+      await proc.processSegmentFile(writeBin('stop_only.bin', frames: 0, stopUtcMs: kBase + 5000),
+          DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+
+      expect(proc.consumePendingDraftHardEnds(), [kBase + 5000]);
+      expect(proc.consumePendingDraftHardEnds(), isEmpty, reason: 'drained, not re-reported every segment');
+      await proc.destroy();
+    });
+
+    test('a stop that DOES close buffered audio queues nothing (control)', () async {
+      // The ordinary case: audio and its stop in the same bin. The flush writes
+      // the hard end into the recording's own .meta, so there is no draft to fix.
+      final proc = VadAudioProcessor.fromSettings(settings: settings(), outputDir: tempDir.path);
+      await proc.processSegmentFile(writeBin('stop_with_audio.bin', frames: 10, stopUtcMs: kBase + 5000),
+          DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+
+      expect(proc.consumePendingDraftHardEnds(), isEmpty);
+      await proc.destroy();
+    });
+  });
 }
