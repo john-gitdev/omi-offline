@@ -454,13 +454,28 @@ static bool record_stop(void)
              * would move sd_get_empty_bin_rotations() for no reason and make the
              * counter's one real signal harder to read.
              *
-             * Blocking, on the button workqueue — the same thread and the same call
-             * priority_record_stop() has always made. Deliberately NOT done inside
-             * aad_set_threshold(): the app's own threshold writes land there on the
-             * BLE callback thread, where a blocking SD wait would stall the stack
-             * into an ATT timeout (see the flush-on-connect warning in sd_card.c).
-             * The app-driven stop is covered by the idle-connect rotate instead. */
-            create_new_audio_file(ROTATE_REASON_SESSION_END);
+             * Fire-and-forget, NOT create_new_audio_file() as priority_record_stop()
+             * below uses: that one blocks up to 2 s queueing plus 25 s on the worker's
+             * semaphore, and this runs on the button workqueue — the same queue that
+             * carries priority_cap_work and the FSM's own 25 Hz poll. Stopping is the
+             * everyday path, so it must not be able to park that queue for 27 s on a
+             * slow card. Ordering is unaffected: REQ_CREATE_NEW_FILE drains sd_msgq
+             * into the OLD bin before rotating, so the 0xFFFFFFFC aad_set_threshold()
+             * just enqueued still lands in the bin it closes.
+             *
+             * Deliberately NOT done inside aad_set_threshold(): the app's own
+             * threshold writes land there on the BLE callback thread, and even a
+             * fire-and-forget rotate would be wrong to attach to a path whose other
+             * callers are boot restore and the priority cap. The app-driven stop is
+             * covered by the idle-connect rotate instead.
+             *
+             * Logged on failure because this call IS the fix: without it the bin is
+             * unreachable until the next recording or a Force Sync, and the only
+             * remaining symptom is a recording that stays "in progress" for hours. */
+            if (sd_request_rotate_async(ROTATE_REASON_SESSION_END) != 0) {
+                LOG_ERR("Manual stop: bin rotation not queued — this recording stays "
+                        "unlistable until the idle-connect rotate or a Force Sync");
+            }
         }
 #endif
         /* NO mic_reset() HERE — removed, and pre-arm is why it is worse than dead.
