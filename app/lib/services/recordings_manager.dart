@@ -868,6 +868,18 @@ class RecordingsManager {
                     Logger.error('RecordingsManager: _writeMarkerEdl failed for ${edl['markerMs']}: $e');
                   }
                 }
+              case 'draft_hard_end':
+                // A session-end stop whose recording is already on disk as a
+                // `_draft`. Stamp the draft itself so the Phase 3 stitch pass
+                // below closes it — and so a kill before that pass still leaves
+                // the boundary recorded for the next run to act on.
+                for (final markerMs in (msg['markerMs'] as List).cast<int>()) {
+                  try {
+                    await _markDraftHardEnded(directory.path, markerMs);
+                  } catch (e) {
+                    Logger.error('RecordingsManager: draft hard-end stamp failed for $markerMs: $e');
+                  }
+                }
               case 'discard_records':
                 final items = (msg['items'] as List).cast<Map<String, dynamic>>();
                 for (final rec in items) {
@@ -1323,6 +1335,56 @@ class RecordingsManager {
     if (metaBytes.length <= flagOffset + 3) return false;
     return (metaBytes[flagOffset + 3] & mask) != 0;
   }
+
+  /// Stamps the `hardEnd` bit onto the newest `_draft` starting at or before
+  /// [markerMs] — the recording a 0xFFFFFFFC stop closed, in the case where the
+  /// run that wrote that draft had already finished by the time the stop's own
+  /// bin arrived. [metaMarksHardEnd] is then all [_stitchDraftRecordings] needs
+  /// to close it, and the bit is on disk, so a kill before that pass loses
+  /// nothing.
+  ///
+  /// Newest-before-the-marker rather than every draft: several can coexist (a
+  /// run interrupted mid-conversation leaves one behind), and a stop ends only
+  /// the recording immediately preceding it. Drafts that start after the marker
+  /// hold audio the device captured later and must stay open.
+  Future<void> _markDraftHardEnded(String docsPath, int markerMs) async {
+    final recordingsDir = Directory('$docsPath/recordings');
+    if (!await recordingsDir.exists()) return;
+
+    File? newest;
+    int newestTs = -1;
+    for (final folder in (await recordingsDir.list().toList()).whereType<Directory>()) {
+      for (final f in (await folder.list().toList()).whereType<File>()) {
+        final p = f.path;
+        if (!p.contains('_draft.') || !(p.endsWith('.wav') || p.endsWith('.m4a'))) continue;
+        final ts = _extractTimestamp(p);
+        if (ts <= 0 || ts > markerMs || ts <= newestTs) continue;
+        newestTs = ts;
+        newest = f;
+      }
+    }
+    if (newest == null) {
+      Logger.debug('RecordingsManager: session-end stop at $markerMs — no open draft precedes it, nothing to close.');
+      return;
+    }
+
+    final meta = File(newest.path.replaceAll(RegExp(r'\.(m4a|wav|ogg)$'), '.meta'));
+    // A draft with no (or a truncated) `.meta` is already finalized unconditionally
+    // by _stitchDraftRecordings — there is nothing to carry the bit on, and nothing
+    // that needs it.
+    if (!await meta.exists()) return;
+    final bytes = await meta.readAsBytes();
+    if (bytes.length < 417) return;
+    final flagOffset = 417 + bytes[416];
+    if (bytes.length <= flagOffset + 3) return;
+    bytes[flagOffset + 3] |= 0x04;
+    await meta.writeAsBytes(bytes, flush: true);
+    Logger.debug('RecordingsManager: session-end stop at $markerMs — draft $newestTs marked as ending at a hard '
+        'marker boundary.');
+  }
+
+  @visibleForTesting
+  Future<void> markDraftHardEndedForTest(String docsPath, int markerMs) => _markDraftHardEnded(docsPath, markerMs);
 
   @visibleForTesting
   Future<void> stitchDraftRecordingsForTest({bool finalizeAll = false}) =>
