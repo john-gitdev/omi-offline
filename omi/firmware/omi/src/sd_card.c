@@ -1188,6 +1188,45 @@ void sd_worker_thread(void)
             if (fr == 0) {
                 ring_bytes_since_sync = 0; /* keep pending on failure so it retries */
             }
+            /* Service the BLE-connect rotate here too. Its only other consumer is
+             * should_rotate_file(), which runs exclusively on the write path — so a
+             * device that has STOPPED writing never rotates at all, and its last bin
+             * stays the ACTIVE file: omitted from CMD_LIST_FILES, therefore
+             * unfetchable, until something writes again or the user force-syncs. That
+             * is every manual stop the app didn't seal (a threshold write from the
+             * app, where button.c's rotate doesn't run) and every auto-mode recording
+             * that ended because the room went quiet. This request is posted on every
+             * BLE connect and depends on nothing the mic does, which makes it the one
+             * place that reliably runs while idle.
+             *
+             * Re-queued as an ordinary explicit rotation rather than rotated inline,
+             * so it still gets REQ_CREATE_NEW_FILE's drain-then-sync ordering — the
+             * part that keeps an already-queued write (a session-end marker, most of
+             * all) in the OLD bin instead of the fresh one. K_NO_WAIT because this
+             * runs ON the worker thread: a full queue must drop the rotation, not
+             * deadlock waiting for the thread that would drain it. Dropping is safe —
+             * the next connect re-arms the flag.
+             *
+             * Skipped for a header-only bin (same test ring_create_segment() calls
+             * empty): with nothing recorded there is nothing to release, and rotating
+             * anyway would move sd_get_empty_bin_rotations() on every connect of an
+             * idle device — burying the one case where that counter means something. */
+            if (fr == 0 && current_file_created_uptime_ms >= 0 &&
+                current_file_size > sizeof(RecordingHeader_v1_t) &&
+                atomic_cas(&pending_rotate_on_ble_connect, 1, 0)) {
+                int64_t idle_age_ms = k_uptime_get() - current_file_created_uptime_ms;
+                if (idle_age_ms >= BLE_CONNECT_MIN_ROTATE_AGE_MS) {
+                    LOG_INF("[SD_WORK] Idle BLE-connect rotate (age %lld ms, %u bytes — no write to trigger it)",
+                            idle_age_ms, current_file_size);
+                    sd_req_t rot = {0};
+                    rot.type = REQ_CREATE_NEW_FILE;
+                    rot.u.create_file.reason = ROTATE_REASON_IDLE_CONNECT;
+                    rot.u.create_file.resp = NULL;
+                    if (k_msgq_put(&sd_prio_msgq, &rot, K_NO_WAIT) != 0) {
+                        LOG_WRN("[SD_WORK] Idle rotate dropped (prio queue full) — retries next connect");
+                    }
+                }
+            }
             if (req.u.create_file.resp) {
                 req.u.create_file.resp->res = fr;
                 k_sem_give(&req.u.create_file.resp->sem);
