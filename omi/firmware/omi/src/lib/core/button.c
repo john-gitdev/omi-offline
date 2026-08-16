@@ -301,7 +301,22 @@ static void priority_record_stop(void)
      *
      * A wedge here is caught by DIAG_VAD_LEVEL instead: auto mode keeps the mic
      * running, so its windows keep closing and a zero peak is the signature. */
-    create_new_audio_file(ROTATE_REASON_PRIORITY_STOP);
+
+    /* Fire-and-forget, like the manual stop in record_stop(). Both reach here on the
+     * system workqueue (this one also via priority_cap_work), and neither consumes
+     * the durability the blocking form waits for — a drain plus a CTRL_SYNC that can
+     * force a NAND erase. Nothing after this call depends on the rotation having
+     * completed: priority_record_cancel_cap() only cancels a work item.
+     *
+     * Safe here specifically because a STOP wants its marker in the OLD bin, and
+     * REQ_CREATE_NEW_FILE drains sd_msgq before rotating — so the 0xFFFFFFFC that
+     * aad_set_threshold() just enqueued lands in the priority bin either way, keeping
+     * it self-contained ([0xFFFFFFF8 .. audio .. 0xFFFFFFFC]). record_start()'s
+     * rotation is the mirror image and must NOT be converted; see the note there. */
+    if (sd_request_rotate_async(ROTATE_REASON_PRIORITY_STOP) != 0) {
+        LOG_ERR("Priority stop: bin rotation not queued — the priority bin stays open "
+                "and unlistable until the idle-connect rotate or a Force Sync");
+    }
     priority_record_cancel_cap();
 }
 #else
@@ -406,6 +421,13 @@ static bool record_start(void)
 #endif
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     sd_write_pause(false);
+    /* MUST stay blocking — do not "match" the async rotate the two stop paths use.
+     * A START needs its 0xFFFFFFF8 in the NEW bin, and the marker below is enqueued
+     * on sd_msgq, which REQ_CREATE_NEW_FILE DRAINS INTO THE OLD BIN before rotating.
+     * Waiting here is what guarantees the rotation is already done before the marker
+     * exists, so it cannot be swept backwards. The stops want the opposite (their
+     * marker belongs to the bin being closed), which is why async is right for them
+     * and wrong here. */
     create_new_audio_file(ROTATE_REASON_PRIORITY_START);
     write_priority_recording_marker_to_storage();
 #endif
@@ -454,14 +476,16 @@ static bool record_stop(void)
              * would move sd_get_empty_bin_rotations() for no reason and make the
              * counter's one real signal harder to read.
              *
-             * Fire-and-forget, NOT create_new_audio_file() as priority_record_stop()
-             * below uses: that one blocks up to 2 s queueing plus 25 s on the worker's
-             * semaphore, and this runs on the button workqueue — the same queue that
-             * carries priority_cap_work and the FSM's own 25 Hz poll. Stopping is the
-             * everyday path, so it must not be able to park that queue for 27 s on a
-             * slow card. Ordering is unaffected: REQ_CREATE_NEW_FILE drains sd_msgq
-             * into the OLD bin before rotating, so the 0xFFFFFFFC aad_set_threshold()
-             * just enqueued still lands in the bin it closes.
+             * Fire-and-forget, matching priority_record_stop() below. The blocking
+             * create_new_audio_file() waits up to 2 s queueing plus 25 s on the
+             * worker's semaphore, and this runs on the system workqueue — the same
+             * one carrying priority_cap_work and the FSM's own 25 Hz poll. The wait
+             * buys durability nothing here consumes; what it costs is a drain plus a
+             * CTRL_SYNC that can force a NAND erase, on the everyday path. Ordering
+             * is unaffected: REQ_CREATE_NEW_FILE drains sd_msgq into the OLD bin
+             * before rotating, so the 0xFFFFFFFC aad_set_threshold() just enqueued
+             * still lands in the bin it closes. (record_start()'s rotation is the
+             * mirror image and stays blocking — see the note there.)
              *
              * Deliberately NOT done inside aad_set_threshold(): the app's own
              * threshold writes land there on the BLE callback thread, and even a
