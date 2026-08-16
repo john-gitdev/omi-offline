@@ -117,14 +117,27 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   void initState() {
     _vadThreshold = SharedPreferencesUtil().autoVadThreshold.toDouble();
     _priorityRecordCap = SharedPreferencesUtil().priorityRecordMaxMinutes;
+    // Seed synchronously, BEFORE the first frame, so a warm cache means no spinner
+    // at all rather than a spinner that resolves quickly. Safe to run here while
+    // _isLoading is still true: _applyLoaded assigns directly in that state and
+    // never calls setState, which initState forbids.
+    final provider = context.read<DeviceProvider>();
+    _seedFromProviderCache(provider);
+    // The gate exists so the sections appear together instead of row by row. With
+    // the capability bits already in hand there is nothing left to wait for — the
+    // reads _loadAll still runs are a refresh, and they repaint themselves.
+    if (provider.deviceFeatures != null) _isLoading = false;
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadAll());
     super.initState();
   }
 
-  /// Runs every read the page's sections depend on, then lifts [_isLoading] once
-  /// — one rebuild with everything in place. Same order and concurrency as
-  /// before (DIS first, then settings + storage stats together) so the BLE
-  /// traffic is unchanged; only the UI gating differs.
+  /// Refreshes every value the page's sections show, then lifts [_isLoading].
+  ///
+  /// Usually a no-op for the gate: [initState] seeds from the connect-time cache
+  /// and drops the spinner before the first frame, so this runs as a background
+  /// refresh and each value repaints itself through [_applyLoaded]. The gate only
+  /// really holds on a cold cache — the capability read failed at connect, or the
+  /// app started with the device already connected before one happened.
   ///
   /// The timeout is a backstop, not a budget: a read that wedges must not leave
   /// the page on a spinner forever. Falling through renders whatever did land,
@@ -161,7 +174,13 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     // explanation. They are both serial internally, so ordering them costs only
     // wall-clock, and the settings go first because they are what the page is for.
     await _loadDeviceSettings();
-    await provider.refreshStorageStats();
+    // NOT awaited, and not part of the gate. Storage stats takes the storage lock
+    // for a full listFiles round trip (seconds), and the Storage row renders
+    // straight off `provider.storageStats` with its own `!= null` guard — so
+    // holding the spinner for it made every other section wait on a value none of
+    // them use. Serialization is still intact: _loadDeviceSettings has completed
+    // and released its read before this starts.
+    unawaited(provider.refreshStorageStats());
   }
 
   @override
