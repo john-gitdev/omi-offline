@@ -1199,33 +1199,34 @@ void sd_worker_thread(void)
              * BLE connect and depends on nothing the mic does, which makes it the one
              * place that reliably runs while idle.
              *
-             * Re-queued as an ordinary explicit rotation rather than rotated inline,
-             * so it still gets REQ_CREATE_NEW_FILE's drain-then-sync ordering — the
-             * part that keeps an already-queued write (a session-end marker, most of
-             * all) in the OLD bin instead of the fresh one. K_NO_WAIT because this
-             * runs ON the worker thread: a full queue must drop the rotation, not
-             * deadlock waiting for the thread that would drain it. Dropping is safe —
-             * the next connect re-arms the flag.
+             * Queued as an ordinary explicit rotation rather than rotated inline, so
+             * it still gets REQ_CREATE_NEW_FILE's drain-then-sync ordering — the part
+             * that keeps an already-queued write (a session-end marker, most of all)
+             * in the OLD bin instead of the fresh one. That handler is also what
+             * completes a rotation it previously had to defer (ring_pending_explicit_
+             * rotate, when the durability sync failed): the write path normally
+             * finishes those, and after a stop there IS no write path, so this is the
+             * only thing that ever retries a manual stop's deferred rotation.
              *
              * Skipped for a header-only bin (same test ring_create_segment() calls
              * empty): with nothing recorded there is nothing to release, and rotating
              * anyway would move sd_get_empty_bin_rotations() on every connect of an
-             * idle device — burying the one case where that counter means something. */
+             * idle device — burying the one case where that counter means something.
+             *
+             * The age is checked BEFORE consuming the flag, unlike should_rotate_file()
+             * which consumes first: this handler runs within milliseconds of the
+             * connect that armed it, so consuming-then-rejecting would spend the flag
+             * on the youngest the file will ever be and leave nothing for the write
+             * path to evaluate later. */
             if (fr == 0 && current_file_created_uptime_ms >= 0 &&
                 current_file_size > sizeof(RecordingHeader_v1_t) &&
+                (k_uptime_get() - current_file_created_uptime_ms) >= BLE_CONNECT_MIN_ROTATE_AGE_MS &&
                 atomic_cas(&pending_rotate_on_ble_connect, 1, 0)) {
-                int64_t idle_age_ms = k_uptime_get() - current_file_created_uptime_ms;
-                if (idle_age_ms >= BLE_CONNECT_MIN_ROTATE_AGE_MS) {
-                    LOG_INF("[SD_WORK] Idle BLE-connect rotate (age %lld ms, %u bytes — no write to trigger it)",
-                            idle_age_ms, current_file_size);
-                    sd_req_t rot = {0};
-                    rot.type = REQ_CREATE_NEW_FILE;
-                    rot.u.create_file.reason = ROTATE_REASON_IDLE_CONNECT;
-                    rot.u.create_file.resp = NULL;
-                    if (k_msgq_put(&sd_prio_msgq, &rot, K_NO_WAIT) != 0) {
-                        LOG_WRN("[SD_WORK] Idle rotate dropped (prio queue full) — retries next connect");
-                    }
-                }
+                LOG_INF("[SD_WORK] Idle BLE-connect rotate (age %lld ms, %u bytes — no write to trigger it)",
+                        k_uptime_get() - current_file_created_uptime_ms, current_file_size);
+                /* Failure is logged inside and is not fatal: the flag re-arms on the
+                 * next connect. */
+                (void) sd_request_rotate_async(ROTATE_REASON_IDLE_CONNECT);
             }
             if (req.u.create_file.resp) {
                 req.u.create_file.resp->res = fr;
@@ -1867,8 +1868,14 @@ void sd_notify_ble_state(bool connected)
         /* Fire-and-forget flush via prio queue.
          * Do NOT block here — this runs on the BLE callback thread;
          * a blocking call would freeze the BLE stack and cause
-         * ATT Timeout → disconnect.  The storage auto-sync will
-         * flush before reading anyway. */
+         * ATT Timeout → disconnect.
+         *
+         * This request is load-bearing beyond the flush: its handler is where the
+         * pending_rotate_on_ble_connect flag set just above is actually serviced for
+         * a device that has stopped writing. (An older comment here claimed "the
+         * storage auto-sync will flush before reading anyway" — it does not.
+         * sd_flush_current_file() has exactly one caller, the low-battery flush in
+         * transport.c, so nothing on the read path flushes.) */
         sd_req_t req = {0};
         req.type = REQ_FLUSH_FILE;
         req.u.create_file.resp = NULL; /* no response needed */
@@ -2232,6 +2239,23 @@ int clear_audio_directory(void)
         return -1;
     }
     return 0;
+}
+
+int sd_request_rotate_async(uint8_t reason)
+{
+    sd_req_t req = {0};
+    req.type = REQ_CREATE_NEW_FILE;
+    req.u.create_file.reason = reason;
+    req.u.create_file.resp = NULL; /* nobody is waiting — the handler skips the give */
+
+    /* K_NO_WAIT, never a timeout: callers use this precisely because they must not
+     * block, and one of them (the REQ_FLUSH_FILE handler) runs ON the worker thread,
+     * where waiting for space would deadlock against the thread that drains it. */
+    int ret = k_msgq_put(&sd_prio_msgq, &req, K_NO_WAIT);
+    if (ret) {
+        LOG_ERR("sd_request_rotate_async: prio queue full, rotation (reason %u) dropped: %d", reason, ret);
+    }
+    return ret;
 }
 
 int create_new_audio_file(uint8_t reason)

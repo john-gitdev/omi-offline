@@ -368,6 +368,31 @@ int clear_audio_directory(void);
 int create_new_audio_file(uint8_t reason);
 
 /**
+ * @brief Request a rotation without waiting for it (fire-and-forget).
+ *
+ * Same rotation as create_new_audio_file(), minus the wait: that one blocks up to
+ * 2 s queueing plus 25 s on the worker's semaphore, which is 27 s a caller on a
+ * shared thread cannot always afford. The button workqueue is one such caller —
+ * a manual RECORD_STOP rotates from there, and stalling it also stalls
+ * priority_cap_work and the button FSM's own 25 Hz poll.
+ *
+ * The rotation is still correctly ordered: the REQ_CREATE_NEW_FILE handler drains
+ * sd_msgq into the OLD bin before rotating, whoever queued it, so a session-end
+ * marker enqueued just before this call still lands in the bin it closes.
+ *
+ * Failure is only ever "the priority queue is full" — reported so the caller can
+ * say what was lost. A dropped rotation is recoverable rather than fatal: the
+ * BLE-connect rotate serviced from REQ_FLUSH_FILE rotates the bin at the next
+ * connect (see sd_worker_thread), which is also what completes a rotation the
+ * worker had to defer because its durability sync failed.
+ *
+ * @param reason Why this rotation is happening (rotate_reason_t) — see
+ *               create_new_audio_file() for how it is used.
+ * @return 0 if the request was queued, negative errno if it was not.
+ */
+int sd_request_rotate_async(uint8_t reason);
+
+/**
  * @brief Notify that BLE connection state has changed
  *
  * Call this when BLE connects/disconnects to manage file rotation.
