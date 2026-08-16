@@ -436,6 +436,32 @@ static bool record_stop(void)
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
         aad_set_threshold(32769);
         app_settings_save_vad_threshold(32769);
+        if (force_recording) {
+            /* Seal the bin, exactly as priority_record_stop() does below. Without
+             * this the recording's last bin — the one holding its own 0xFFFFFFFC —
+             * stays the ACTIVE file, which the firmware omits from CMD_LIST_FILES,
+             * so the app cannot fetch it. Nothing reopens it either: the age and
+             * BLE-connect rotations are both evaluated inside the write path
+             * (should_rotate_file(), called only from process_write_data_req), and
+             * the stop just parked the mic — there is no next write. The tail then
+             * sits on the card until the user records again or force-syncs, and the
+             * app holds the recording open as a draft for exactly that long. Seen
+             * on-device 2026-08-16: stop at 03:47, five background syncs told "0
+             * files", released 2h33m later only by a manual Force Sync.
+             *
+             * Gated on force_recording so a Stop tapped in standby (in_manual is
+             * true for 32769 too) doesn't rotate an empty bin every press — that
+             * would move sd_get_empty_bin_rotations() for no reason and make the
+             * counter's one real signal harder to read.
+             *
+             * Blocking, on the button workqueue — the same thread and the same call
+             * priority_record_stop() has always made. Deliberately NOT done inside
+             * aad_set_threshold(): the app's own threshold writes land there on the
+             * BLE callback thread, where a blocking SD wait would stall the stack
+             * into an ATT timeout (see the flush-on-connect warning in sd_card.c).
+             * The app-driven stop is covered by the idle-connect rotate instead. */
+            create_new_audio_file(ROTATE_REASON_SESSION_END);
+        }
 #endif
         /* NO mic_reset() HERE — removed, and pre-arm is why it is worse than dead.
          * The FSM has not returned to idle yet, so mic_prearm is still set and the
