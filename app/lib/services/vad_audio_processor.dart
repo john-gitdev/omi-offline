@@ -293,6 +293,10 @@ class VadAudioProcessor {
   // Firmware Priority Recording safety cap in minutes (0x19B10014); 0 = no cap.
   // Drives how much audio a force-capture span may take (see [_priorityCapAudioMs]).
   final int _priorityRecordCapMinutes;
+  // Recording mode for the audio this run is cutting, or null when the caller
+  // could not say. Written into the .meta and read by nothing else — see
+  // ProcessingSettings.manual for why it must never influence the cut.
+  final bool? _manual;
 
   static const int sampleRate = 16000;
   static const int channels = 1;
@@ -486,7 +490,8 @@ class VadAudioProcessor {
         _deviceId = settings.deviceId,
         _audioSaveFormat = settings.audioSaveFormat,
         _omiEnabled = settings.omiEnabled,
-        _priorityRecordCapMinutes = settings.priorityRecordCapMinutes;
+        _priorityRecordCapMinutes = settings.priorityRecordCapMinutes,
+        _manual = settings.manual;
 
   /// Whether the native batch runner is available for this processor instance.
   /// When true, processSegmentFile uses the two-pass batched VAD path.
@@ -2766,7 +2771,7 @@ class VadAudioProcessor {
     //   [0] passthrough (set later by integrations layer, 0 on initial write)
     //   [1] forceSynced (set later by _finalizeDraft for manual-finalize cases, 0 on initial write)
     //   [2] capEnded    (set HERE — true iff VAD ended this recording at the max-duration cap)
-    //   [3] bit0 isSilero, bit1 hardStart, bit2 hardEnd (all set HERE)
+    //   [3] bit0 isSilero, bit1 hardStart, bit2 hardEnd, bit3 modeKnown, bit4 manual (all set HERE)
     // pruneConsumedBins reads byte [2] to decide whether bins extending past rec_end may be
     // safely deleted (silence-ended) or must be preserved (cap-ended).
     //
@@ -2777,7 +2782,15 @@ class VadAudioProcessor {
     // bins section out from under every .meta already on disk, emptying relativeBins
     // for recordings that predate it (breaking bin pruning and "lists no source
     // segments"). Every existing reader masks these bytes with & 0x01, so the high
-    // bits are free and invisible to older parsers.
+    // bits are free and invisible to older parsers. The mode pair below follows the
+    // same rule for the same reason.
+    //
+    // The mode takes TWO bits, not one, because a single bit cannot say "unknown"
+    // and every .meta already on disk reads 0. One bit would silently relabel the
+    // entire back catalogue as whichever mode 0 meant — wrong for most of it either
+    // way, since manual is the default. modeKnown(0x08) gates manual(0x10):
+    // 00 = unknown (render the pre-feature label), 01xxx = auto, 11xxx = manual.
+    // Left unwritten when the caller has no honest answer (see _manual).
     metaOut.add(0); // passthrough
     metaOut.add(0); // forceSynced
     metaOut.add(capEnded ? 1 : 0); // capEnded
@@ -2786,7 +2799,8 @@ class VadAudioProcessor {
     // one that starts at it, whether that happens in this run or a later one.
     final hardStart = _hardStartPending;
     _hardStartPending = false;
-    metaOut.add((isSilero ? 0x01 : 0) | (hardStart ? 0x02 : 0) | (_endsAtHardBoundary ? 0x04 : 0));
+    final mode = _manual == null ? 0 : (0x08 | (_manual! ? 0x10 : 0));
+    metaOut.add((isSilero ? 0x01 : 0) | (hardStart ? 0x02 : 0) | (_endsAtHardBoundary ? 0x04 : 0) | mode);
 
     // Append relative bins used for this recording (binary length + JSON).
     // Use relBinPath() so a ref whose path doesn't contain a literal
