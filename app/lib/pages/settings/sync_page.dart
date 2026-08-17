@@ -1310,11 +1310,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       );
 
   Future<void> _shareDebugLogs() async {
-    final files = await DebugLogManager.listLogFiles();
-    if (files.isEmpty) {
-      if (mounted) setState(() => _statusMessage = 'No log files available to share');
-      return;
-    }
     String appVersion = 'unknown';
     try {
       final packageInfo = await PackageInfo.fromPlatform();
@@ -1329,19 +1324,34 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // this name has been reading 'unknown' ever since it was added. pairedDevice
     // also survives a disconnect (it falls back to the stored device), which is
     // the right answer here: that firmware is what produced the log.
-    final fwVersion = context.read<DeviceProvider>().pairedDevice?.firmwareRevision ?? 'unknown';
-    final os = Platform.operatingSystem;
+    //
+    // It is null, though, until something populates it — getDeviceInfo() runs on
+    // connect, so a share taken before the app has connected once this launch
+    // still had nothing. lastLoggedFirmwareRevision is the persisted revision
+    // from the last connect (logDeviceVersion writes it), which is exactly the
+    // firmware that produced the log lines being handed over.
+    final pairedFw = context.read<DeviceProvider>().pairedDevice?.firmwareRevision ?? '';
+    final storedFw = SharedPreferencesUtil().lastLoggedFirmwareRevision;
+    final fwVersion = pairedFw.isNotEmpty
+        ? pairedFw
+        : storedFw.isNotEmpty
+            ? storedFw
+            : 'unknown';
 
-    // The on-disk file carries only a placeholder name; it is named here, at the
-    // moment it is handed over.
-    final shareName = DebugLogManager.shareFileName(os: os, appVersion: appVersion, fwVersion: fwVersion);
-    // Name the XFile (not just the share `subject`) so the name lands on targets
-    // that use the file's own name, not the title.
-    final xFile = XFile(files.first.path, name: shareName);
+    // The on-disk log carries only a placeholder name, and neither `XFile(name:)`
+    // nor the share `subject` renames the file itself for every target — so it is
+    // copied to a temp file that really is named this, at the moment it is handed
+    // over. See DebugLogManager.prepareShareFile.
+    final shareFile = await DebugLogManager.prepareShareFile(appVersion: appVersion, fwVersion: fwVersion);
+    if (shareFile == null) {
+      if (mounted) setState(() => _statusMessage = 'No log files available to share');
+      return;
+    }
+    final shareName = shareFile.uri.pathSegments.last;
     // Use `subject` (share-sheet/email title metadata), not `text`: a `text`
-    // argument is shared as a SEPARATE item alongside the file, so iOS upload/save
+    // argument is shared as a SEPARATE item alongside the file, so upload/save
     // targets materialize a second phantom file containing the label string.
-    await SharePlus.instance.share(ShareParams(files: [xFile], subject: shareName));
+    await SharePlus.instance.share(ShareParams(files: [XFile(shareFile.path)], subject: shareName));
   }
 
   Widget _buildLogWindow() {
