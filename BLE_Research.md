@@ -944,22 +944,31 @@ the bound is the priority cap plus 30 minutes.
   `wedgeDetected` / `wedgeStartedAtMs` so an outage survives a restart** — a mid-outage app update is
   exactly when a user reaches for one.
 - **estab context: `estab_fail_count` +0 — flat at 100.** Read **100** @ 19:14:46, 19:15:36 and
-  19:43:20, and **still 100** when the operator read it off the Sync page the next day. **Neither
-  bracket is tight, and that is fine — but know why before quoting this.** The last pre-outage
-  reading is 19:43:20, **5h 36m before** the first failure: eleven connects succeeded in between
-  (20:19, 20:50, 21:19 … 00:49) and none of them logged counters, their `device_version` events
-  carrying no `uptime_ms` — which per `logDeviceVersion`'s contract means the diagnostics read was
-  skipped because a sync held the storage lock. On the other side the log ends 4 s after the recovery
-  connect, before `_finishDeviceSetup` reads counters, so "after" is a manual read a day later. The
-  conclusion survives both gaps because the counter is **monotonic** (`atomic_inc` only,
-  `transport.c:2298`), lifetime, NVS-persisted and uncapped (`:400, :3056`): flat across a superset
-  interval implies flat across every subinterval, the outage included. The extra coverage costs
-  nothing — it only means a rise could not have been pinned to a window, and there was no rise. The
-  single loophole, a persist lost across a reboot, reads *lower* than 100, not equal. Per §2, flat ⟹
-  **the Omi never heard the CONNECT_INDs** ⟹ central side.
+  19:43:20 before, and **100 @ 02:14:05** after — the latter **ten minutes past the recovery, from
+  the log itself** (a continuation capture running to 04:08 supplied it; the first capture stopped at
+  02:13:59, six seconds short of the reading). A later manual Sync-page read the next day agreed.
+  Per §2, flat ⟹ **the Omi never heard the CONNECT_INDs** ⟹ central side.
+  The **trailing** bracket is therefore tight. The **leading** one is not: 19:43:20 is 5h 36m before
+  the first failure, because eleven connects succeeded in between (20:19, 20:50, 21:19 … 00:49) and
+  none logged counters — their `device_version` events carry no `uptime_ms`, which per
+  `logDeviceVersion`'s contract means the read was skipped while a sync held the storage lock. That
+  gap is harmless: the counter is **monotonic** (`atomic_inc` only, `transport.c:2298`), lifetime,
+  NVS-persisted and uncapped (`:400, :3056`), so flat across a superset interval implies flat across
+  every subinterval. The only loophole — a persist lost across a reboot — reads *lower* than 100, and
+  the uptime continuity below rules a reboot out anyway.
   **Lesson for the next episode: read the Sync page at the first sign of an outage**, so the "before"
   anchor is minutes old rather than hours. The counters are only logged when the storage lock is free,
   so a busy sync schedule can silently starve the record for hours at a time.
+- **The device never rebooted and never stopped, right through the outage.** `live_uptime_ms` runs
+  8 745 803 @ 19:43:20 → 32 193 626 @ 02:14:05, i.e. **23 447 823 ms of uptime against 23 445 550 ms
+  of wall clock — 2.3 s of drift over 6h 30m** (0.01 %, ordinary crystal error). The firmware was
+  alive, keeping time and holding its NVS counters across the whole 54 minutes. With flat estab, that
+  is the peripheral fully exonerated on its own evidence rather than by inference.
+- **`ble_wedge_recovered` is confirmed absent, not merely off the end of the capture.** The
+  continuation log covers 02:13:55 through 04:08 and contains no recovery record — one `ble_wedge`
+  and one `ble_wedge_scan_probe` in the whole file, both from 01:28/01:29. So the diagnosis holds:
+  the 02:09:17 app upgrade took `managedDevices` with the process and the recovery had nothing left
+  to close against. Fixed in app 0.34.9 by persisting the open outage.
 - **Range is ruled out, though not by the estab delta alone.** Flat estab is consistent with both a
   deaf central and an out-of-range peripheral — §2's row says "deaf RX **or nothing reached the air**"
   — so it narrows the fault to the phone's transmit/initiator path without separating the two. Three
@@ -984,6 +993,27 @@ which is the number §3 discriminator 1 leans on to separate a wedge from plain 
 constant, so probes from 0.34.9 on are comparable — and the gap between the two is a bonus reading of
 how starved the main thread was. Wedge 9's own probe stays uncomparable; nothing can recover that.
 
+**Aftermath — the same fault recurs sub-threshold, and mostly clears itself.** The continuation
+capture (to 04:08, same app 0.34.7, no restart) shows Wedge 9 was not a discrete event but the tail
+of a distribution. After the 02:13:55 cure there were four clean sessions (02:14, 02:44, 03:13,
+03:15, all connecting in 324–1588 ms), then:
+
+- **03:44:49 → 03:47:34, 2m 45s, self-cleared.** `gatt_status_-1` @ 03:45:30, device-ready timeout at
+  the full 75 s, then two more `-1` disconnects, then a normal connect. Three failures — short of
+  `WEDGE_NOTIFY_AFTER`, so **no `ble_wedge` and no probe fired**.
+- **04:07:53 → 04:08:33, 40 s.** Native gave up at 37.6 s; the very next `ensureConnection(force:
+  true)` connected in 1159 ms.
+
+Both carry the Wedge 9 signature — all `-1`, no real GATT status — and `estab_fail_count` is **100 at
+02:14:05 and still 100 at 04:08:43**, a tight 1h 55m bracket containing both. So both are central-side
+too, and the class is not "an outage that needs a toggle" but **a central-side failure whose duration
+varies from seconds to an hour**; the toggle-required episodes are simply the ones that ran long. Two
+consequences for reading these logs: a self-clearing episode of this class is invisible in the event
+stream (sub-threshold ⟹ no snapshot, no probe), so **count `-1` connect failures, not `ble_wedge`
+events**, when judging how often it is happening; and the recurrence cadence — three episodes in the
+three hours after six clean hours — is itself the signal that the phone's initiator has entered a bad
+state, whatever puts it there.
+
 **And the log itself is lossy.** 141 of 547 lines in the source log fail to parse — **26 %** — with
 the signature of one record's head overwritten by another's (line 38 holds a record truncated at
 `…(count fi` with a second record's JSON spliced into it). Three unsynchronized writers share the
@@ -994,6 +1024,12 @@ native's `WedgeDiagnostics.logEvent`, which spawns **a new `Thread` per event** 
 it by decoding leniently — which saves the *file*, not the *records*. A destroyed head is
 unrecoverable and unremarked, and it can be a `ble_wedge_recovered` or a `gatt_command stalled`. Any
 future forensics here is reading a log that silently drops a quarter of itself.
+The continuation capture reproduces the rate exactly — **40 of 185 new lines torn, 21.6 %** — which
+is expected, since it was taken on 0.34.7. **Fixed in app 0.34.9**; the root cause turned out to be
+narrower than the three-writer theory above: `Logger.debug`/`info`/`warning` are synchronous `void`
+and call the async log methods un-awaited, so a single isolate has many `_append` futures in flight
+at once, and Dart's `FileMode.append` seeks to EOF at *open* rather than using `O_APPEND`. Every tear
+diagnosed was same-isolate. A mutex on `_append` closes it.
 
 ---
 
