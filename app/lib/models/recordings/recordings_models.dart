@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:omi/backend/preferences.dart';
 import 'package:omi/utils/other/time_utils.dart';
 
 /// Parsed metadata for a single processed recording (M4A or WAV).
@@ -25,6 +26,17 @@ class Conversation {
   // conservatively (no aggressive pruning past rec_end).
   final bool capEnded;
   final bool? isSilero;
+
+  /// The recording mode this audio was captured in: true manual, false auto,
+  /// null "not recorded". Stamped by `VadAudioProcessor._saveMetadata` into flag
+  /// byte [3] as a modeKnown/manual pair — two bits precisely so null stays
+  /// expressible, since every `.meta` written before this reads 0 and a single
+  /// bit would relabel the whole back catalogue as one mode.
+  ///
+  /// Distinct from [isSilero], which is not the mode: it records whether a
+  /// Silero session loaded, and is false for manual mode, for auto with Silero
+  /// switched off, AND for auto where the model failed to load.
+  final bool? recordedManual;
   final List<String> relativeBins;
 
   const Conversation({
@@ -38,8 +50,13 @@ class Conversation {
     this.forceSynced = false,
     this.capEnded = true,
     this.isSilero,
+    this.recordedManual,
     this.relativeBins = const [],
   });
+
+  /// Decodes the mode pair out of `.meta` flag byte [3]. modeKnown (0x08) gates
+  /// manual (0x10), so an unstamped byte answers null rather than "auto".
+  static bool? modeFromFlagByte(int flagByte) => (flagByte & 0x08) == 0 ? null : (flagByte & 0x10) != 0;
 
   DateTime get endTime => startTime.add(duration);
 
@@ -113,6 +130,7 @@ class Conversation {
           // conservatively by pruneConsumedBins (no aggressive prune past rec_end).
           bool capEnded = true;
           bool? isSilero;
+          bool? recordedManual;
           List<String> relativeBins = const [];
           if (metaBytes.length >= 417) {
             final keyLen = metaBytes[416];
@@ -134,8 +152,12 @@ class Conversation {
               }
               if (metaBytes.length > flagOffset + 3) {
                 isSilero = (metaBytes[flagOffset + 3] & 0x01) != 0;
+                recordedManual = modeFromFlagByte(metaBytes[flagOffset + 3]);
               }
 
+              // Still derived from whether byte [3] is PRESENT, never from the
+              // mode bits inside it: the mode adds no bytes, so the count is
+              // unchanged and every .meta already on disk keeps its bins tail.
               final binsOffset = flagOffset + (isSilero != null ? 4 : 3);
               if (metaBytes.length >= binsOffset + 4) {
                 final binsLen = bd.getUint32(binsOffset, Endian.little);
@@ -165,6 +187,7 @@ class Conversation {
             forceSynced: forceSynced,
             capEnded: capEnded,
             isSilero: isSilero,
+            recordedManual: recordedManual,
             relativeBins: relativeBins,
           );
         }
@@ -225,6 +248,7 @@ class Conversation {
       bool forceSynced = false;
       bool capEnded = true; // see Conversation.capEnded — default conservative
       bool? isSilero;
+      bool? recordedManual;
       if (metaBytes.length >= 417) {
         final keyLen = metaBytes[416];
         if (417 + keyLen <= metaBytes.length) {
@@ -243,6 +267,7 @@ class Conversation {
           }
           if (metaBytes.length > flagOffset + 3) {
             isSilero = (metaBytes[flagOffset + 3] & 0x01) != 0;
+            recordedManual = modeFromFlagByte(metaBytes[flagOffset + 3]);
           }
         }
       }
@@ -270,6 +295,7 @@ class Conversation {
         forceSynced: forceSynced,
         capEnded: capEnded,
         isSilero: isSilero,
+        recordedManual: recordedManual,
       );
     } catch (_) {
       return null;
@@ -328,6 +354,7 @@ class Conversation {
           // conservatively by pruneConsumedBins (no aggressive prune past rec_end).
           bool capEnded = true;
           bool? isSilero;
+          bool? recordedManual;
           if (metaBytes.length >= 417) {
             final keyLen = metaBytes[416];
             if (417 + keyLen <= metaBytes.length) {
@@ -348,6 +375,7 @@ class Conversation {
               }
               if (metaBytes.length > flagOffset + 3) {
                 isSilero = (metaBytes[flagOffset + 3] & 0x01) != 0;
+                recordedManual = modeFromFlagByte(metaBytes[flagOffset + 3]);
               }
             }
           }
@@ -365,6 +393,7 @@ class Conversation {
             forceSynced: forceSynced,
             capEnded: capEnded,
             isSilero: isSilero,
+            recordedManual: recordedManual,
           );
         }
       } catch (_) {
@@ -416,9 +445,47 @@ class Conversation {
     } else {
       size = '$bytes B';
     }
-    if (isSilero == true) return '$size  ·  VAD';
-    if (isSilero == false) return '$size  ·  AAD';
-    return size;
+    final label = modeLabel;
+    return label == null ? size : '$size  ·  $label';
+  }
+
+  /// The trailing designation on a recording row, or null for none.
+  ///
+  /// | state | label |
+  /// |---|---|
+  /// | mode known, manual | `Manual` |
+  /// | mode known, auto, Silero ran | `Auto/VAD` |
+  /// | mode known, auto, Silero did not | `Auto/AAD` |
+  /// | mode unknown, Silero ran | `Auto/VAD` |
+  /// | mode unknown, Silero did not | `AAD` |
+  /// | no flag byte at all | *(null)* |
+  ///
+  /// Manual drops the detector half deliberately: manual mode pins
+  /// `vadEnabled = false` (`applyRecordingModeDefaults`), so every manual
+  /// recording is AAD by construction and `Manual/AAD` would spend a word saying
+  /// nothing. On an auto row the same word is real information — Silero versus
+  /// the bare amplitude gate.
+  ///
+  /// **The unknown-mode rows are two different answers, not one.** `isSilero ==
+  /// true` proves the recording is NOT manual — Silero only runs when
+  /// `vadEnabled` is set, which manual mode pins off — so a legacy `.meta` with
+  /// that bit can be promoted to `Auto/VAD` for free, no migration. The reverse
+  /// does not hold: `isSilero == false` is manual, auto-with-Silero-off and
+  /// auto-with-a-model-that-failed-to-load all at once, so it keeps the old bare
+  /// `AAD` and ages out as those recordings are replaced. Guessing "manual"
+  /// there because manual is the default is exactly what the modeKnown bit
+  /// exists to avoid.
+  String? get modeLabel {
+    // Off restores the original strings exactly, including their silences.
+    if (!SharedPreferencesUtil().showRecordingMode) {
+      if (isSilero == true) return 'VAD';
+      if (isSilero == false) return 'AAD';
+      return null;
+    }
+    if (recordedManual == true) return 'Manual';
+    if (recordedManual == false || isSilero == true) return isSilero == true ? 'Auto/VAD' : 'Auto/AAD';
+    if (isSilero == false) return 'AAD';
+    return null;
   }
 }
 
