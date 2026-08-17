@@ -86,6 +86,33 @@ class OmiBleForegroundService : Service() {
         // ~120/hour that dominated the battery cost of an outage.
         private const val AUTONOMOUS_RETRY_STOP_AFTER = WEDGE_NOTIFY_AFTER
 
+        // Failure count at which the advertising probe *measures*, as opposed to
+        // WEDGE_NOTIFY_AFTER at which the alert is *raised*. Deliberately far lower.
+        //
+        // The two were the same number, and that made the common case unobservable. On
+        // 2026-08-17 this device produced four outages in one evening of which only ONE ran
+        // long enough to reach six failures; the other three — 40 s, 2m45s, and one cured by
+        // a Bluetooth toggle — left nothing behind but `-1` disconnects. No snapshot, no
+        // probe, no advertising reading. A fault that mostly clears in under three minutes
+        // was therefore invisible in exactly the field that would identify it.
+        //
+        // The probe is the only instrument that reads the peripheral's advertising rate
+        // *during* a failure: `0x0062` needs a connection, which is the thing that is not
+        // working. With the measured `probe_ms` (app 0.34.9) packets-per-second separates the
+        // fast interval (100-150 ms) from slow (1 s) directly — see BLE_Research.md, the
+        // slow-advertising lead. Two failures is enough to mean something: single failures
+        // are routine, consecutive ones are not.
+        //
+        // Cost is one 8 s scan per episode. The alert stays at WEDGE_NOTIFY_AFTER, so this
+        // adds diagnostics and no user-facing noise.
+        private const val WEDGE_PROBE_AFTER = 2
+
+        // Floor between probes that survives a recovery, bounding the pathological case the
+        // lower threshold opens up: a link flapping connect/fail/fail would otherwise re-arm
+        // at every recovery (which resets nextWedgeReprobeAtMs) and scan almost continuously.
+        // Within a single outage nextWedgeReprobeAtMs already bounds repeats far more widely.
+        private const val WEDGE_MIN_PROBE_GAP_MS = 60_000L
+
         // Eligibility floor for repeating a probe that heard no advertisements. An Omi that was
         // out of range when the outage began can walk back into range and start failing at
         // establishment, and nothing else would ever re-examine it: the streak does not clear
@@ -287,9 +314,14 @@ class OmiBleForegroundService : Service() {
         // *detection*, not at notification — whether the alert is posted depends on the
         // advertising probe. Cleared once services are discovered on a later connect.
         var wedgeDetected: Boolean = false,
-        // Failure count at which the *first* advertising probe runs (WEDGE_NOTIFY_AFTER):
-        // outage confirmation, while failures still accrue fast under native's own retry loop.
-        var nextWedgeProbeAt: Int = WEDGE_NOTIFY_AFTER,
+        // Failure count at which the *first* advertising probe runs (WEDGE_PROBE_AFTER):
+        // measurement, while failures still accrue fast under native's own retry loop. Note
+        // this is the probe threshold, not the alert one — see WEDGE_PROBE_AFTER.
+        var nextWedgeProbeAt: Int = WEDGE_PROBE_AFTER,
+        // elapsedRealtime() of the last probe actually started, for the WEDGE_MIN_PROBE_GAP_MS
+        // floor. Deliberately NOT reset by onGattServicesDiscovered: its whole job is to
+        // survive a recovery, since that is what re-opens the failure-count branch.
+        var lastWedgeProbeAtMs: Long = 0,
         // elapsedRealtime() at/after which the next *re*-probe runs, once the first probe has
         // fired. 0 until then. Wall-clock-keyed (WEDGE_REPROBE_INTERVAL_MS) because after native
         // hands off, failures accrue too slowly for a failure-count schedule — see the constant.
@@ -443,7 +475,7 @@ class OmiBleForegroundService : Service() {
                 managed.wedgeDetected = false
                 managed.wedgeRestored = false
                 managed.wedgeAlertPosted = false
-                managed.nextWedgeProbeAt = WEDGE_NOTIFY_AFTER
+                managed.nextWedgeProbeAt = WEDGE_PROBE_AFTER
                 managed.nextWedgeReprobeAtMs = 0
                 managed.wedgeStartedAtMs = 0
                 managed.lastRealGattStatus = null
@@ -1285,13 +1317,34 @@ class OmiBleForegroundService : Service() {
             // effective cadence is max(15 min, next-attempt). That's deliberate; see
             // WEDGE_REPROBE_INTERVAL_MS for why it rides the attempt schedule rather than the 15 h
             // a failure-count schedule would cost once native hands off.
-            val probeDue = if (managed.nextWedgeReprobeAtMs == 0L) {
+            //
+            // The failure-count branch is a two-step ladder: WEDGE_PROBE_AFTER (measure only)
+            // then WEDGE_NOTIFY_AFTER (measure + alert). It has to be a ladder rather than a
+            // single lowered threshold, because **the alert is raised from the probe
+            // callback**: probing once at 2 and then handing over to the wall-clock schedule
+            // would leave a genuine outage un-alerted for up to WEDGE_REPROBE_INTERVAL_MS.
+            val onCountBranch = managed.nextWedgeReprobeAtMs == 0L
+            val scheduledDue = if (onCountBranch) {
                 managed.consecutiveConnectFailures >= managed.nextWedgeProbeAt
             } else {
                 nowMs >= managed.nextWedgeReprobeAtMs
             }
+            // The second rung is exempt from the flap floor. Failures 2→6 span roughly 46 s of
+            // backoff, so the floor would otherwise swallow the very probe that raises the
+            // alert. The floor exists to bound repeated *measurement* probes across recoveries,
+            // not to suppress a confirmed outage.
+            val isAlertRung = onCountBranch && managed.nextWedgeProbeAt >= WEDGE_NOTIFY_AFTER
+            val probeDue = scheduledDue &&
+                (isAlertRung || nowMs - managed.lastWedgeProbeAtMs >= WEDGE_MIN_PROBE_GAP_MS)
             if (probeDue && !managed.wedgeAlertPosted) {
-                managed.nextWedgeReprobeAtMs = nowMs + WEDGE_REPROBE_INTERVAL_MS
+                managed.lastWedgeProbeAtMs = nowMs
+                if (onCountBranch && managed.nextWedgeProbeAt < WEDGE_NOTIFY_AFTER) {
+                    // Measurement rung done. Stay on the count branch so the alert rung still
+                    // fires the moment the streak reaches WEDGE_NOTIFY_AFTER.
+                    managed.nextWedgeProbeAt = WEDGE_NOTIFY_AFTER
+                } else {
+                    managed.nextWedgeReprobeAtMs = nowMs + WEDGE_REPROBE_INTERVAL_MS
+                }
                 if (!managed.wedgeDetected) {
                     managed.wedgeDetected = true
                     managed.wedgeStartedAtMs = nowMs
@@ -1408,9 +1461,18 @@ class OmiBleForegroundService : Service() {
                 // exact failure being detected. With a backoff floor of 1.5 s that link can
                 // easily reappear inside the 8 s probe window, and the alert would be
                 // suppressed for an outage that never ends.
+                // The streak test is what keeps the alert at WEDGE_NOTIFY_AFTER now that the
+                // probe measures from WEDGE_PROBE_AFTER. Without it, lowering the probe
+                // threshold would also lower the alert threshold, and the user would be told
+                // to toggle Bluetooth on every two-failure blip — most of which resolve on
+                // their own within a couple of minutes. Read fresh here rather than captured
+                // before the probe: the 8 s scan is exactly when a short outage grows into a
+                // real one, and a streak that has since reached six deserves the alert.
                 val post = synchronized(syncLock) {
                     val m = managedDevices[addr]
-                    if (m != null && m.wedgeDetected && !m.wedgeAlertPosted) {
+                    if (m != null && m.wedgeDetected && !m.wedgeAlertPosted &&
+                        m.consecutiveConnectFailures >= WEDGE_NOTIFY_AFTER
+                    ) {
                         m.wedgeAlertPosted = true
                         true
                     } else {
