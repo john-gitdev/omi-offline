@@ -1026,6 +1026,63 @@ events**, when judging how often it is happening; and the recurrence cadence —
 three hours after six clean hours — is itself the signal that the phone's initiator has entered a bad
 state, whatever puts it there.
 
+**Episode 4 (04:21:50 → 04:22:31 UTC) is toggle-cured and captured.** A separate export holds the
+line the earlier captures lacked: `connect failed after 36754ms: bluetooth_off` @ 04:22:26.923,
+killing an attempt begun @ 04:21:50.169; forced reconnect @ 04:22:29, **connected @ 04:22:31.099**
+(device-ready 2042 ms). `estab_fail_count` **100** @ 04:22:40 — a fifth consecutive flat reading.
+
+**The estab counter is demonstrably alive, which validates the discriminator this whole file leans
+on.** It read **93 at Wedge 8 (2026-08-12)** and **100 from 2026-08-16 onward** — +7 over four days.
+So "flat at 100" across every episode below is a live counter declining to move, not a dead one.
+Worth stating because five identical readings in a row is exactly what a broken counter looks like.
+
+**Local time: UTC−7.** The device's `up 11h 6m` in the 21:24:15 snapshot matches `live_uptime_ms`
+39 908 535 (11h 05m 08s) read at 04:22:40 UTC, which fixes the offset. Every episode here is
+therefore **Sunday evening, 18:19 → 21:22 local** — Wedge 9 at 18:19–19:13, then 20:44, 21:07, 21:21.
+That closes §3 discriminator 3: this is not an overnight outage clearing at wake-up, it is a user
+awake, on their phone, and installing an APK mid-outage. Range is out on those grounds too.
+
+### Wedge 9 — the strongest open lead: the peripheral is advertising **slow**
+
+The same snapshot reports **`adv=slow`** — the live advertising interval (`advModes`, `0x0062` off 92),
+not `lastFailAdv`, which reads `fast` and refers to the last 0x3e failure, i.e. something historical
+since the counter has not moved today. Do not conflate the two; CLAUDE.md warns that has happened
+twice already.
+
+Why the device is on the slow interval: it is in **manual standby**, and standby parks the mic. The
+park path in `aad.c` sets `adv_slow_req` deliberately — *"Nothing will produce a mic frame until the
+gate reopens, so the VAD-sleep transition that normally drops advertising to the 1 s interval can
+never fire from here on. Ask for it now or the radio stays on the 100–150 ms fast interval for the
+whole standby"*. The snapshot's `silentFor=1 406 991 ms` (23m 27s) confirms the mic had been parked
+that long, and every `DIAG_MIC_STATE` record all evening carries `arg1=32769`, manual standby.
+
+It fits four otherwise-awkward observations at once:
+
+- **The probe's 2 packets in ≥14.5 s.** At a 100–150 ms interval that count is absurd; at 1 s, with
+  −88/−93 dBm, it is ordinary. This was the single weirdest number in the episode.
+- **Flat estab.** §2's table offers "deaf RX **or** nothing reached the air" — this is a third
+  reading it has no row for: *something* reached the air, just rarely enough that the phone never
+  caught one to answer. The Omi cannot log a CONNECT_IND it was never sent.
+- **Every failure `-1`, `last_real_gatt_status` always null.** Pure acquisition timeout — the phone
+  never got far enough to receive any GATT status at all.
+- **Recovery is instant once it lands** (324 ms – 2 s device-ready). Consistent with "it only ever
+  needed to catch one advertisement".
+
+**What argues against it being the whole story**, and it is not weak: the post-toggle connect at
+04:22:31 succeeded in 2042 ms *while also on slow adv*. So slow advertising alone does not block a
+connection. The honest synthesis is that it is a **contributing factor that widens the acquisition
+window** — slow interval × marginal RSSI × whatever phasing the phone's initiator is in — rather
+than the cause. It also does not by itself explain why an adapter cycle is what fixes it, though a
+controller reset re-phasing scan window against advertising interval is a real mechanism when the two
+are unfavourably aligned.
+
+**The test, and it is cheap.** `adv` is on the diagnostics page. Read it right after a *healthy*
+connect and right after a *recovered* one: advertising stops while connected, so the value reflects
+the interval that was in force when the phone found the device. If healthy connects correlate with
+`fast` and episodes with `slow`, this is it. The stronger version: hold the device out of standby
+(start a manual recording, which unparks the mic and restores the fast interval) across a window that
+would normally produce an episode, and see whether they stop.
+
 **And the log itself is lossy.** 141 of 547 lines in the source log fail to parse — **26 %** — with
 the signature of one record's head overwritten by another's (line 38 holds a record truncated at
 `…(count fi` with a second record's JSON spliced into it). Three unsynchronized writers share the
