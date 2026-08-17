@@ -1007,7 +1007,19 @@ of a distribution. After the 02:13:55 cure there were four clean sessions (02:14
 Both carry the Wedge 9 signature — all `-1`, no real GATT status — and `estab_fail_count` is **100 at
 02:14:05 and still 100 at 04:08:43**, a tight 1h 55m bracket containing both. So both are central-side
 too, and the class is not "an outage that needs a toggle" but **a central-side failure whose duration
-varies from seconds to an hour**; the toggle-required episodes are simply the ones that ran long. Two
+varies from seconds to an hour**; the toggle-required episodes are simply the ones that ran long.
+
+**Caveat on "self-cleared", and it is load-bearing for the paragraph above.** No `bluetooth_off`
+appears anywhere in the capture except the 02:13:46 Wedge 9 cure, and the 03:46:11 → 03:46:55 →
+03:47:34 spacing is native's own backoff rather than the 2 s `STATE_ON` → `triggerReconnection` a
+toggle produces. But **absence cannot be proven from this log**: an overwrite destroys a record
+whole, so a toggle line could have vanished without leaving a tail. What makes it unlikely is that a
+toggle emits a *cluster* — `onBluetoothStateChanged("off")`, the per-device `bluetooth_off`
+disconnect, `Bluetooth on, reconnecting in 2s`, `("on")` — spread over seconds, and overwrites need
+concurrent writes microseconds apart, so losing all of them together is implausible. Treat these two
+as self-cleared with that reservation, and re-test the claim on a 0.34.9 log where the question does
+not arise. The operator did report toggling to clear a wedge on this day; on the evidence here that
+was a **fourth episode, after 04:08:45**, outside this capture. Two
 consequences for reading these logs: a self-clearing episode of this class is invisible in the event
 stream (sub-threshold ⟹ no snapshot, no probe), so **count `-1` connect failures, not `ble_wedge`
 events**, when judging how often it is happening; and the recurrence cadence — three episodes in the
