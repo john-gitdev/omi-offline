@@ -77,6 +77,14 @@ correctly when a bin was missing.
 | INCONCLUSIVE | `scan_failed` | Framework refused the scan (e.g. `SCANNING_TOO_FREQUENTLY`). No opinion. |
 | UNAVAILABLE | `probe_unavailable` | No adapter / off / no permission. Treated as "present" for the alert. |
 
+**`probe_ms` is a constant, not a measurement — do not compute a packet rate from it.** It logs
+`PROBE_DURATION_MS` verbatim, while the scan is stopped by a main-looper `postDelayed` that in a
+backgrounded app fires late. Wedge 9 reported `probe_ms=8000` with `first_seen_ms=14530`, i.e. the
+scan actually ran ≥14.5 s. `first_seen_ms` *is* real (measured against the scan start), so when it
+exceeds `probe_ms` the excess is the overrun — and `adv_packets` is then not comparable with any
+other probe's. Until the writer records the true window, treat a low packet count as a lower bound on
+sparseness, never as evidence of a specific rate.
+
 ### Firmware counters — `device_conn_fail` / WARN line (read on each successful connect)
 
 The peripheral's own view, persisted across reboots — **only the delta across an outage
@@ -175,6 +183,7 @@ Record the sub-class in the "Recovery trigger" column below.
 | 6b | 2026-08-02 10:45→15:23 | 4h 37m 30s | SILENT ×10, then **ADVERTISING @ −91 dBm** | **NOT A WEDGE — out of range**; cleared when the user woke up | **No** | *(not in excerpt)* | — | 147 |
 | 7 | 2026-08-04 03:07→03:08 | 1m 38s | *(none — sub-threshold)* | **BT toggle** (`error=bluetooth_off` → reconnect in 2.5 s) | **Yes** | +0 (flat at 19) | fast | *none — all `-1`* |
 | 8 | 2026-08-12 22:39→23:24 | 45m 38s | SILENT ×3 | **BT toggle** (`error=bluetooth_off` → reconnect in 8 s) | **Yes** | +0 (flat at 93) | fast | **147** |
+| 9 | 2026-08-17 01:19→02:13 | 54m 06s | **ADVERTISING @ −93/−88 dBm** | **BT toggle** (`error=bluetooth_off` → reconnect in 9 s); an app *restart* 4 min earlier did not | **Yes** | *(unread — see entry)* | fast | *none — all `-1`* |
 
 **Wedge 5 is SOLVED** — see the resolution block below. Root cause: the post-disconnect
 `bt_le_adv_start()` in `transport.c` was fire-and-forget, so a single failure left the device
@@ -207,6 +216,14 @@ also carries the firmware exoneration Wedge 3 could not: its build runs the post
 watchdog *and* the event log, and neither `DIAG_ADV_START_FAIL` nor `DIAG_ADV_WATCHDOG_RESCUE`
 appears anywhere in the outage window. So for this episode the Wedge 5 root cause is affirmatively
 ruled out on device evidence rather than inferred, and the fault sits on the central.
+
+**Wedge 9 is the first toggle-required episode with a non-SILENT probe**, and it adds a discriminator
+the class never had: **an app restart is not a toggle.** The app was *upgraded* (0.34.5 → 0.34.7) 4½
+minutes before the cure, so the process, the foreground service, every `BluetoothGatt` and all of
+native's bookkeeping were rebuilt from nothing — and the next two connects failed exactly as before.
+The adapter cycle then fixed it in 9 s. Whatever holds this class is **below the app**, in the
+Bluetooth daemon or the controller; no amount of app-side state hygiene can reach it. That is worth
+more than it sounds, because §6 has several candidate interventions that amount to app-side resets.
 
 Wedge 5 is the first **unresolved** episode on record — it is still failing when the log ends —
 and the first where `screen_interactive=true` for the entire outage, which removes screen-wake
@@ -884,6 +901,78 @@ failed closed, and the last ~52 minutes of a force-captured recording would have
 ordinary auto audio: VAD-split, with its quiet stretches discarded. A connectivity wedge is normally
 "no data loss, it all syncs later"; this is the one place where wedge *duration* can cost audio, and
 the bound is the priority cap plus 30 minutes.
+
+---
+
+### Detail — Wedge 9 (2026-08-17, ~54 min) — fourth toggle-required; first ADVERTISING probe, and an app restart that did nothing
+
+- Log source: app 0.34.5 → 0.34.7 (upgraded mid-outage), firmware `oo-3.0.6`, device
+  `C3:94:71:EA:A8:D5`, `uptime_ms=295441727` at detection.
+- Preceded by a clean session, same shape as Wedge 8: the 00:19 and 00:49 scheduled cycles both
+  connected in **445 ms / 754 ms** to device-ready, found 0 files, and disconnected on purpose. No
+  mid-transfer failure, no bond event, no reboot. First failure on the next scheduled cycle @ 01:19:49.
+- `ble_wedge` @ 01:28:51 — `consecutive_failures=6`, `retry_count=1`, `last_gatt_status=-1`,
+  **`last_real_gatt_status=null`**, `omi_in_gatt_list=false`, `omi_acl_connected=false`,
+  `bond_state=bonded`, `adapter_state=on`, `contending_le_links=1` (Garmin `Instinct 2X Solar`),
+  `classic_profiles=[]`, `sco_active=false`, `screen_interactive=false`, `doze_mode=false`.
+- `scan_probe` @ 01:29:21 — **2 adv packets → ADVERTISING**, `rssi_min=-93 rssi_max=-88 rssi_last=-88`,
+  `first_seen_ms=14530`. **Read that packet count with the caveat in §2** — the window was not 8 s
+  (see below), so it is 2 packets in ≥14.5 s.
+- Statuses: **every failure `-1`**, `last_real_gatt_status` null throughout — the Wedge 3 / 7
+  signature, not Wedge 8's real `147`s. Android never delivered a status, i.e. no CONNECT_IND was
+  ever answered.
+- Backoff ladder ran 01:30:30 → 01:35:30 → 01:45:29 → 02:00:29, all `retry_exhausted`; three
+  user-initiated force connects (01:25, 01:45, 01:55) failed identically.
+- **An app restart is not a toggle — this is the entry's main contribution.** `app_start` @ 02:09:17
+  with `app_version_changed=true` (0.34.5 → 0.34.7): an APK upgrade, so the process died and every
+  piece of app-side state — `managedDevices`, the GATT client objects, the queue — was rebuilt.
+  The two connects after it (02:10:53, 02:12:23) failed exactly like the twelve before it.
+- **Bluetooth toggle in window? YES** — @ 02:13:46 `error=bluetooth_off` + `Bluetooth state changed:
+  off`, reconnect requested @ 02:13:49, **connected @ 02:13:55** (device-ready 6559 ms). Cured in 9 s
+  by the thing the app restart could not do.
+- **No `ble_wedge_recovered`.** `wedgeDetected` lives in `managedDevices`, which is in-memory in
+  `OmiBleForegroundService`, so the 02:09 process death took it. (`cancelRecoveryProbeAndResetStreak()`
+  deliberately does *not* clear it, so a bare toggle would have preserved it — it was the restart.)
+  Cost: no env diff across the recovery, which is what §3 says to read. **Fix worth making: persist
+  `wedgeDetected` / `wedgeStartedAtMs` so an outage survives a restart** — a mid-outage app update is
+  exactly when a user reaches for one.
+- **estab context: unread, and this is the gap.** `estab_fail_count` was **100** @ 19:14:46, 19:15:36
+  and 19:43:20, and never read again — the log ends 4 s after the recovery connect, *before*
+  `_finishDeviceSetup` reads the counters. It is a lifetime NVS-persisted counter with no cap
+  (`transport.c:400,3056`), so **the delta is still recoverable from the device today**: still 100 ⟹
+  the Omi never heard the CONNECT_INDs ⟹ central-side, class confirmed at n=4; >100 ⟹ the links
+  reached the Omi and died at establishment ⟹ a different fault. Read it before the next outage
+  muddies it.
+- **Range is not cleanly ruled out, and this entry does not pretend otherwise.** Against range: the
+  restart-vs-toggle asymmetry above; all-`-1` with `last_real_gatt_status=null` (Wedge 6, the real
+  range case, produced real `8`/`147`); and the cure landing 9 s after an adapter cycle at unchanged
+  geometry. For range: −88…−93 dBm is weak (§3 sets the floor at ≲−95, so this sits just inside), 2
+  packets is very sparse, and the recovery connect took **6559 ms** against 445–3022 ms on the healthy
+  connects either side — §3 discriminator 4 reads a slow weak recovery as range. The estab delta above
+  settles it; nothing else in this log does.
+- **Bucket: toggle-required** (probe ADVERTISING, so not filed as absent), with the range caveat noted.
+
+**Instrumentation defect this episode exposed — `probe_ms` is a constant, not a measurement.**
+`first_seen_ms=14530` exceeds the reported `probe_ms=8000`, which is only possible because the two
+come from different clocks: `first_seen_ms` is measured against the real scan start
+(`WedgeDiagnostics.kt:625`) while `probe_ms` logs `PROBE_DURATION_MS` verbatim (`:676`) and the scan is
+stopped by a `handler.postDelayed` on the **main looper** (`:125, :691`). The runnable fired ≥6.5 s
+late — a backgrounded, screen-off, mid-outage app — so the scan really ran ≥14.5 s. Two consequences:
+this probe's density is worse than it reads, and **`adv_packets` is not comparable across probes**,
+which is the number §3 discriminator 1 leans on to separate a wedge from plain range. Log
+`SystemClock.elapsedRealtime() - startedAt` as the actual window instead. One line, and it retires the
+ambiguity this entry had to leave open.
+
+**And the log itself is lossy.** 141 of 547 lines in the source log fail to parse — **26 %** — with
+the signature of one record's head overwritten by another's (line 38 holds a record truncated at
+`…(count fi` with a second record's JSON spliced into it). Three unsynchronized writers share the
+file: Dart's `debug_log_manager._append` (`writeAsString(mode: FileMode.append)`, which seeks to EOF
+at open rather than using `O_APPEND`), the background/processing isolates through the same path, and
+native's `WedgeDiagnostics.logEvent`, which spawns **a new `Thread` per event** to
+`FileOutputStream(file, true)`. `debug_log_manager.dart:173` already names the race and works around
+it by decoding leniently — which saves the *file*, not the *records*. A destroyed head is
+unrecoverable and unremarked, and it can be a `ble_wedge_recovered` or a `gatt_command stalled`. Any
+future forensics here is reading a log that silently drops a quarter of itself.
 
 ---
 
