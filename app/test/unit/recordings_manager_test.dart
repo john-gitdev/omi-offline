@@ -1622,6 +1622,7 @@ void main() {
       bool isDraft = false,
       bool hardStart = false,
       bool hardEnd = false,
+      bool? recordedManual,
     }) async {
       final dateDir = Directory(p.join(tempDir.path, 'recordings', coverageDateOf(startMs)))
         ..createSync(recursive: true);
@@ -1634,8 +1635,9 @@ void main() {
         ..setUint32(0, durationMs * 16, Endian.little) // totalSamples @ 16 kHz
         ..setUint32(4, durationMs, Endian.little);
       meta[416] = 0; // keyLen
-      // [3] bit0 isSilero, bit1 hardStart, bit2 hardEnd
-      meta[420] = (hardStart ? 0x02 : 0x00) | (hardEnd ? 0x04 : 0x00);
+      // [3] bit0 isSilero, bit1 hardStart, bit2 hardEnd, bit3 modeKnown, bit4 manual
+      final mode = recordedManual == null ? 0x00 : (0x08 | (recordedManual ? 0x10 : 0x00));
+      meta[420] = (hardStart ? 0x02 : 0x00) | (hardEnd ? 0x04 : 0x00) | mode;
       File(p.join(dateDir.path, 'recording_$startMs$suffix.meta')).writeAsBytesSync(meta);
       return wav;
     }
@@ -1657,6 +1659,43 @@ void main() {
           reason: 'closed means promoted to a finalized recording');
       expect(next.existsSync(), isTrue, reason: 'the boundary recording keeps its own file');
       expect(next.lengthSync(), 44 + nextMs * 32, reason: 'and nothing was prepended to it');
+    });
+
+    // The mode stamp is written ONCE, by VadAudioProcessor._saveMetadata, and then
+    // has to survive every later rewrite of the .meta it shares a byte with. Both
+    // rewrites are read-modify-write and both were checked by inspection; these pin
+    // them, because a regression here is invisible (the recording still plays, it
+    // just quietly stops naming its mode — or worse, names the wrong one).
+    test('draft promotion preserves the mode stamp', () async {
+      final draft =
+          await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true, recordedManual: true);
+      await writeStitchable(startMs: nextStart, durationMs: nextMs, hardStart: true);
+
+      await RecordingsManager().stitchDraftRecordingsForTest();
+
+      final promoted = File(draft.path.replaceAll('_draft.wav', '.meta')).readAsBytesSync();
+      expect(Conversation.modeFromFlagByte(promoted[417 + promoted[416] + 3]), true,
+          reason: 'promotion writes flag byte [1] only — byte [3] must come through untouched');
+    });
+
+    test('stitching an appended recording preserves the draft\'s mode stamp', () async {
+      // The append path reuses the draft's meta buffer wholesale and OR-s in only
+      // the appended file's hardEnd. So the DRAFT's mode wins (correct: a recording
+      // is labelled with the mode it started in), and the OR must not clobber it.
+      final draft =
+          await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true, recordedManual: true);
+      await writeStitchable(startMs: nextStart, durationMs: nextMs, hardEnd: true, recordedManual: false);
+
+      await RecordingsManager().stitchDraftRecordingsForTest();
+
+      // The carried hardEnd then closes the draft in the same pass, so the meta to
+      // inspect is the promoted one — which means this covers BOTH rewrites: the
+      // append's OR and the promotion's flag-byte-[1] write.
+      final meta = File(draft.path.replaceAll('_draft.wav', '.meta')).readAsBytesSync();
+      final flagByte = meta[417 + meta[416] + 3];
+      expect(flagByte & 0x04, 0x04, reason: 'the appended recording\'s hardEnd was carried onto the draft');
+      expect(Conversation.modeFromFlagByte(flagByte), true,
+          reason: 'and neither the OR nor the promotion disturbed the draft\'s own mode bits');
     });
 
     test('an ordinary next recording at the same zero gap is still stitched (control)', () async {
