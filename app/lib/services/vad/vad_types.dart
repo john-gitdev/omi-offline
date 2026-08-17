@@ -137,8 +137,11 @@ class ModeSettings {
   /// here rather than inferred from the numbers because inference collides:
   /// manual is `vadEnabled=false, split=0, minSpeech=0`, and an auto mode with
   /// Silero switched off and the split set to 0 is a legal configuration that
-  /// looks identical. Null = not known (an entry stored before this field
-  /// existed, which [fromJson] resolves to the live value).
+  /// looks identical.
+  ///
+  /// Null = not known, which is what an entry written before this field existed
+  /// decodes to. Alone among these fields it does **not** fall back to the live
+  /// value in [fromJson] — see the note there.
   final bool? manual;
 
   const ModeSettings({
@@ -164,6 +167,20 @@ class ModeSettings {
   /// A field missing from an older build's stored entry falls back to the live
   /// value, so the entry degrades to current behaviour for that one field rather
   /// than inventing a default.
+  ///
+  /// **[manual] is the exception, and must stay one.** That rule works for the
+  /// other six because they are *behaviours*: a missing one degrades to how the
+  /// app behaves today, which is defensible. [manual] is a *claim about the
+  /// past* — which mode this already-recorded audio was captured in — so the
+  /// live value does not degrade it, it fabricates it. Concretely: an entry
+  /// written by a build without this field is re-hydrated on the next decode,
+  /// and `_recordModeSwitch` decodes the history before flipping
+  /// `prefs.manualMode`, so the live value there is the OUTGOING mode. An entry
+  /// recorded two switches ago would be stamped with it and written straight
+  /// back — durably relabelling a backlog with a mode it was never recorded in,
+  /// which is the whole failure the switch history exists to prevent. Null
+  /// leaves the `.meta` mode bits unwritten and the row falls back to its
+  /// pre-feature label.
   factory ModeSettings.fromJson(Map<String, dynamic> j) {
     final live = ProcessingSettings.fromPrefs().mode;
     return ModeSettings(
@@ -173,7 +190,7 @@ class ModeSettings {
       minDurationMs: j['minDurationMs'] as int? ?? live.minDurationMs,
       minSpeechMs: j['minSpeechMs'] as int? ?? live.minSpeechMs,
       maxChunkMs: j['maxChunkMs'] as int? ?? live.maxChunkMs,
-      manual: j['manual'] as bool? ?? live.manual,
+      manual: j['manual'] as bool?, // no live fallback — see above
     );
   }
 }
