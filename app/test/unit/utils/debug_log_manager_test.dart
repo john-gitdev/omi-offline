@@ -12,28 +12,45 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class MockPathProvider extends Fake with MockPlatformInterfaceMixin implements PathProviderPlatform {
   String? docsPath;
+  String? tempPath;
   @override
   Future<String?> getApplicationDocumentsPath() async => docsPath;
+  @override
+  Future<String?> getTemporaryPath() async => tempPath;
+}
+
+/// The UTC day stamp `shareFileName` appends.
+String _utcStamp() {
+  final d = DateTime.now().toUtc();
+  return '${d.year.toString().padLeft(4, '0')}'
+      '${d.month.toString().padLeft(2, '0')}'
+      '${d.day.toString().padLeft(2, '0')}';
 }
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   late Directory docsDir;
+  // Separate from docsDir: prepareShareFile writes its named copy under the
+  // temp dir precisely so the export never lands among the live log files.
+  late Directory tempDir;
   late MockPathProvider mockPathProvider;
 
   setUpAll(() {
     docsDir = Directory.systemTemp.createTempSync('debug_log_manager_test');
+    tempDir = Directory.systemTemp.createTempSync('debug_log_manager_tmp');
   });
 
   tearDownAll(() {
-    if (docsDir.existsSync()) {
-      docsDir.deleteSync(recursive: true);
+    for (final d in [docsDir, tempDir]) {
+      if (d.existsSync()) d.deleteSync(recursive: true);
     }
   });
 
   setUp(() async {
-    mockPathProvider = MockPathProvider()..docsPath = docsDir.path;
+    mockPathProvider = MockPathProvider()
+      ..docsPath = docsDir.path
+      ..tempPath = tempDir.path;
     PathProviderPlatform.instance = mockPathProvider;
 
     SharedPreferences.setMockInitialValues({'devLogsToFileEnabled': true});
@@ -52,8 +69,8 @@ void main() {
   tearDown(() async {
     // Clear logs
     await DebugLogManager.clear();
-    // Delete files in directory to start fresh
-    for (var entity in docsDir.listSync()) {
+    // Delete files in both directories to start fresh
+    for (var entity in [...docsDir.listSync(), ...tempDir.listSync()]) {
       entity.deleteSync(recursive: true);
     }
   });
@@ -72,14 +89,48 @@ void main() {
       expect(fileName.endsWith('.log'), isTrue);
     });
 
-    test('shareFileName stamps os/app/fw and the share date', () async {
-      final name = DebugLogManager.shareFileName(os: 'android', appVersion: '0.33.8', fwVersion: 'oo-3.0.2');
+    test('shareFileName stamps app/fw and the share date, with no OS segment', () async {
+      final name = DebugLogManager.shareFileName(appVersion: '0.33.8', fwVersion: 'oo-3.0.2');
 
-      final d = DateTime.now().toUtc();
-      final stamp = '${d.year.toString().padLeft(4, '0')}'
-          '${d.month.toString().padLeft(2, '0')}'
-          '${d.day.toString().padLeft(2, '0')}';
-      expect(name, 'android_0.33.8_oo-3.0.2_omi_offline_debug_$stamp.log');
+      expect(name, '0.33.8_oo-3.0.2_omi_offline_debug_${_utcStamp()}.log');
+      // Android-only fork — the old leading `android_` distinguished nothing.
+      expect(name.startsWith('android_'), isFalse);
+    });
+
+    test('prepareShareFile hands over a file whose own name is the share name', () async {
+      // The name has to be the basename on disk, not XFile.name or the share
+      // subject: share_plus returns a path-bearing XFile untouched, and its
+      // Android side names the content URI from File(path).name. Targets that
+      // read the display name (Files / "internal storage") saw the placeholder.
+      await DebugLogManager.logInfo('shipped in the export');
+
+      final exported = await DebugLogManager.prepareShareFile(appVersion: '0.33.8', fwVersion: 'oo-3.0.2');
+
+      expect(exported, isNotNull);
+      expect(exported!.uri.pathSegments.last, '0.33.8_oo-3.0.2_omi_offline_debug_${_utcStamp()}.log');
+      expect(await exported.readAsString(), contains('shipped in the export'));
+      // The live log keeps its fixed name — the background isolate and the
+      // native wedge writer both find it by that.
+      expect((await DebugLogManager.getLogFile())!.uri.pathSegments.last, 'omi_debug_current.log');
+    });
+
+    test('prepareShareFile clears earlier exports instead of accumulating copies', () async {
+      await DebugLogManager.logInfo('entry');
+
+      final stale = await DebugLogManager.prepareShareFile(appVersion: '0.33.7', fwVersion: 'oo-3.0.1');
+      final fresh = await DebugLogManager.prepareShareFile(appVersion: '0.33.8', fwVersion: 'oo-3.0.2');
+
+      expect(fresh!.existsSync(), isTrue);
+      // Differing versions mean the names never collide, so without the sweep
+      // every share would leave another copy of a 20 MB-capped log behind.
+      expect(stale!.existsSync(), isFalse);
+      expect(fresh.parent.listSync().length, 1);
+    });
+
+    test('prepareShareFile returns null when there is no log to share', () async {
+      await DebugLogManager.setEnabled(false); // deletes every log file
+
+      expect(await DebugLogManager.prepareShareFile(appVersion: '0.33.8', fwVersion: 'oo-3.0.2'), isNull);
     });
 
     test('appends logInfo correctly', () async {
