@@ -31,6 +31,22 @@ class ProcessingSettings {
   // force-capture can't keep swallowing auto recordings. See VadAudioProcessor.
   final int priorityRecordCapMinutes;
 
+  /// Which recording mode this audio was captured in, stamped into the `.meta`
+  /// so the recordings list can say `Manual` / `Auto/VAD` / `Auto/AAD` instead of
+  /// the bare codec label. Purely descriptive — nothing in the processing path
+  /// branches on it, and it must stay that way: the flat vad* fields above are
+  /// what actually decide how audio is cut, and a second source of truth for the
+  /// same decision is the 2026-08-14 split-state bug waiting to happen.
+  ///
+  /// **Nullable, meaning "not known".** Not every construction site has an
+  /// honest answer: discard recovery (RecordingsController.recoverDiscard)
+  /// hand-builds a synthetic settings object to re-derive one span, and the mode
+  /// that span was recorded in is not recoverable from a discard record. Null
+  /// there leaves the mode bits unwritten, which renders as the pre-feature
+  /// label rather than a confident guess. A non-nullable field with a default
+  /// would have stamped every recovered discard with whatever that default was.
+  final bool? manual;
+
   const ProcessingSettings({
     required this.vadEnabled,
     required this.speechThreshold,
@@ -42,6 +58,7 @@ class ProcessingSettings {
     required this.audioSaveFormat,
     required this.omiEnabled,
     required this.priorityRecordCapMinutes,
+    this.manual,
   });
 
   /// The mode-shaped half of these settings — the six fields a recording-mode
@@ -53,6 +70,7 @@ class ProcessingSettings {
         minDurationMs: minDurationMs,
         minSpeechMs: minSpeechMs,
         maxChunkMs: maxChunkMs,
+        manual: manual,
       );
 
   /// These settings with the mode-shaped fields replaced by [m].
@@ -62,6 +80,12 @@ class ProcessingSettings {
   /// here. Freezing them alongside the mode would keep processing a backlog with
   /// a replaced Omi's id, or writing a file format the user has since changed
   /// away from.
+  ///
+  /// [manual] comes from [m], not from here: it is the most mode-shaped field
+  /// there is, and the whole point of a pass is that its audio predates the
+  /// switch. Taking the live value would label a pre-switch backlog with the
+  /// mode the user just moved to — the exact mislabelling the history exists to
+  /// stop, only in the sidecar instead of the cut.
   ProcessingSettings withMode(ModeSettings m) => ProcessingSettings(
         vadEnabled: m.vadEnabled,
         speechThreshold: m.speechThreshold,
@@ -73,6 +97,7 @@ class ProcessingSettings {
         audioSaveFormat: audioSaveFormat,
         omiEnabled: omiEnabled,
         priorityRecordCapMinutes: priorityRecordCapMinutes,
+        manual: m.manual,
       );
 
   factory ProcessingSettings.fromPrefs() {
@@ -88,6 +113,7 @@ class ProcessingSettings {
       audioSaveFormat: p.audioSaveFormat,
       omiEnabled: p.omiEnabled,
       priorityRecordCapMinutes: p.priorityRecordMaxMinutes,
+      manual: p.manualMode,
     );
   }
 }
@@ -107,6 +133,14 @@ class ModeSettings {
   final int minSpeechMs;
   final int maxChunkMs;
 
+  /// The mode LABEL for this span — see [ProcessingSettings.manual]. Carried
+  /// here rather than inferred from the numbers because inference collides:
+  /// manual is `vadEnabled=false, split=0, minSpeech=0`, and an auto mode with
+  /// Silero switched off and the split set to 0 is a legal configuration that
+  /// looks identical. Null = not known (an entry stored before this field
+  /// existed, which [fromJson] resolves to the live value).
+  final bool? manual;
+
   const ModeSettings({
     required this.vadEnabled,
     required this.speechThreshold,
@@ -114,6 +148,7 @@ class ModeSettings {
     required this.minDurationMs,
     required this.minSpeechMs,
     required this.maxChunkMs,
+    this.manual,
   });
 
   Map<String, dynamic> toJson() => {
@@ -123,6 +158,7 @@ class ModeSettings {
         'minDurationMs': minDurationMs,
         'minSpeechMs': minSpeechMs,
         'maxChunkMs': maxChunkMs,
+        'manual': manual,
       };
 
   /// A field missing from an older build's stored entry falls back to the live
@@ -137,6 +173,7 @@ class ModeSettings {
       minDurationMs: j['minDurationMs'] as int? ?? live.minDurationMs,
       minSpeechMs: j['minSpeechMs'] as int? ?? live.minSpeechMs,
       maxChunkMs: j['maxChunkMs'] as int? ?? live.maxChunkMs,
+      manual: j['manual'] as bool? ?? live.manual,
     );
   }
 }
