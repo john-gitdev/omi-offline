@@ -26,13 +26,14 @@ void main() {
     await SharedPreferencesUtil.init();
   });
 
-  ModeSettings mode({required int splitMs, int minSpeechMs = 0}) => ModeSettings(
+  ModeSettings mode({required int splitMs, int minSpeechMs = 0, bool? manual}) => ModeSettings(
         vadEnabled: splitMs > 0,
         speechThreshold: 0.5,
         silenceDurationToSplitMs: splitMs,
         minDurationMs: 0,
         minSpeechMs: minSpeechMs,
         maxChunkMs: 0x7FFFFFFFFFFFFFFF,
+        manual: manual,
       );
 
   /// Real firmware `timerStart` from the 2026-08-14 log. Test timestamps are
@@ -55,6 +56,65 @@ void main() {
       // The sentinel is the largest int Dart holds; a JSON round trip that
       // widened it to a double would silently disable the max-duration cap.
       expect(restored[0].settings.maxChunkMs, 0x7FFFFFFFFFFFFFFF);
+    });
+
+    // The mode LABEL is the one field that must NOT fall back to the live prefs
+    // when it is missing. The other six are behaviours, so degrading them to
+    // "how the app behaves today" is defensible; this one is a claim about which
+    // mode already-recorded audio was captured in, and the live value fabricates
+    // it rather than degrading it.
+    //
+    // The path is not hypothetical. An entry written by a build without the
+    // field is re-hydrated on the next decode, and _recordModeSwitch decodes the
+    // history BEFORE flipping prefs.manualMode — so a live fallback reads the
+    // OUTGOING mode and writes it straight back into an entry from two switches
+    // ago, durably relabelling that backlog.
+    test('an entry with no stored mode decodes to unknown, never to the live mode', () {
+      // Exactly what a pre-feature build wrote: the six numbers, no 'manual'.
+      const legacy = '[{"at":$base,"settings":{"vadEnabled":true,"speechThreshold":0.5,'
+          '"silenceDurationToSplitMs":120000,"minDurationMs":0,"minSpeechMs":3000,'
+          '"maxChunkMs":3600000}}]';
+
+      for (final live in [true, false]) {
+        SharedPreferencesUtil().manualMode = live;
+        final restored = ModeSwitchRecord.decode(legacy);
+        expect(restored.single.settings.manual, isNull,
+            reason: 'live manualMode=$live must not leak into an entry that predates the field');
+        // The behavioural fields still take the live fallback where absent —
+        // this test must not be read as switching that off.
+        expect(restored.single.settings.silenceDurationToSplitMs, 120000);
+      }
+    });
+
+    test('a stored mode round-trips both ways and survives re-encoding', () {
+      for (final stored in [true, false]) {
+        final history = [
+          ModeSwitchRecord(
+            atUtcSeconds: base + 10,
+            settings: mode(splitMs: stored ? 0 : 120000, manual: stored),
+          )
+        ];
+        // Twice: the history is decoded and re-encoded on every retirement, so a
+        // field that survives one trip but not two still corrupts over time.
+        final once = ModeSwitchRecord.decode(ModeSwitchRecord.encode(history));
+        final twice = ModeSwitchRecord.decode(ModeSwitchRecord.encode(once));
+        expect(once.single.settings.manual, stored);
+        expect(twice.single.settings.manual, stored);
+      }
+    });
+
+    test('withMode takes the mode from the pass, not the live prefs', () {
+      // A pass exists BECAUSE its audio predates the switch, so the live value is
+      // by definition the mode the user has since moved to.
+      SharedPreferencesUtil().manualMode = false;
+      final live = ProcessingSettings.fromPrefs();
+      expect(live.manual, false, reason: 'guard: the live value is the opposite of the pass');
+
+      final applied = live.withMode(mode(splitMs: 0, manual: true));
+      expect(applied.manual, true, reason: 'the pass governs the label it stamps');
+      // The global fields still come from the live settings.
+      expect(applied.deviceId, live.deviceId);
+      expect(applied.audioSaveFormat, live.audioSaveFormat);
     });
 
     test('an empty history encodes to the empty string, not "[]"', () {
