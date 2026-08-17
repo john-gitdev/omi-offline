@@ -24,6 +24,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
   late bool _uploadOnWifiOnly;
   late int _filterMinDurationSeconds;
   late bool _showDebugMenu;
+  late bool _showRecordingMode;
 
   static const List<int> _kShortRecordingOptions = [0, 10, 30, 60, 120, 300, 600, 1800];
 
@@ -39,6 +40,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
     _uploadOnWifiOnly = SharedPreferencesUtil().uploadOnWifiOnly;
     _filterMinDurationSeconds = SharedPreferencesUtil().filterMinDurationSeconds;
     _showDebugMenu = SharedPreferencesUtil().showDebugMenu;
+    _showRecordingMode = SharedPreferencesUtil().showRecordingMode;
   }
 
   void _markDirty() {
@@ -107,6 +109,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
     prefs.uploadOnWifiOnly = _uploadOnWifiOnly;
     prefs.filterMinDurationSeconds = _filterMinDurationSeconds;
     prefs.showDebugMenu = _showDebugMenu;
+    prefs.showRecordingMode = _showRecordingMode;
 
     if (mounted) setState(() => _isDirty = false);
   }
@@ -507,6 +510,36 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                   value: _use24HourTime,
                   onChanged: (value) {
                     setState(() => _use24HourTime = value);
+                    _markDirty();
+                  },
+                  activeThumbColor: Colors.deepPurpleAccent,
+                ),
+              ),
+
+              // Recording mode designation — whether a recording row names the
+              // mode it was captured in instead of the bare detector label.
+              // Display only; the mode is stamped into the .meta either way, so
+              // toggling this never reprocesses anything.
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Show Recording Mode',
+                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                  subtitle: Text(
+                    _showRecordingMode
+                        ? 'Recordings are labelled Manual, Auto/VAD or Auto/AAD.'
+                        : 'Off — recordings show only VAD or AAD.',
+                    style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                  ),
+                  value: _showRecordingMode,
+                  onChanged: (value) {
+                    setState(() => _showRecordingMode = value);
                     _markDirty();
                   },
                   activeThumbColor: Colors.deepPurpleAccent,
