@@ -121,6 +121,24 @@ class OmiBleForegroundService : Service() {
         private const val PREFS_NAME = "ble_config"
         private const val PREFS_KEY = "managed_device"
         private const val PREFS_USER_DISCONNECTED = "user_disconnected"
+
+        // An open outage, so it survives the process dying mid-outage. Wedge 9 lost its
+        // `ble_wedge_recovered` exactly this way: the user updated the app 4 minutes before
+        // the link came back, `managedDevices` went with the process, and the recovery had
+        // nothing left to close against — costing the environment diff that §3 of
+        // BLE_Research.md says to read. A mid-outage restart is not an edge case; it is what
+        // a frustrated user does.
+        //
+        // Stored as **wall clock**, not the `elapsedRealtime()` the in-memory field uses:
+        // that clock resets on device reboot, so a persisted copy of it would compute a
+        // duration for the wrong epoch entirely.
+        //
+        // Not keyed by device address, deliberately — the app supports one Omi at a time
+        // (CLAUDE.md), and PREFS_KEY above already stores a single managed device. The
+        // record is cleared on recovery and on unmanageDevice, so it cannot leak onto a
+        // replacement unit.
+        private const val PREFS_WEDGE_OPEN = "wedge_open"
+        private const val PREFS_WEDGE_STARTED_WALL = "wedge_started_wall_ms"
         private const val DEFAULT_NOTIF_TITLE = "Omi Offline"
         private const val DEFAULT_NOTIF_TEXT = "Connecting..."
         // Settle a stranded "Connecting…" notification this long after it's shown.
@@ -282,7 +300,13 @@ class OmiBleForegroundService : Service() {
         var wedgeAlertPosted: Boolean = false,
         // elapsedRealtime() when the current outage was first detected, so recovery can
         // report how long it lasted. 0 when no outage is open.
-        var wedgeStartedAtMs: Long = 0
+        var wedgeStartedAtMs: Long = 0,
+        // True when wedgeDetected was restored from disk rather than latched in this
+        // process — i.e. the outage outlived a restart. Reported on the recovery record so
+        // `failures_before_recovery` is read correctly: the streak is deliberately NOT
+        // restored (see restoreOpenWedge), so on a restored outage that number counts only
+        // the failures since the restart, not the whole outage.
+        var wedgeRestored: Boolean = false
     )
 
     private val managedDevices = ConcurrentHashMap<String, ManagedDevice>()
@@ -408,19 +432,29 @@ class OmiBleForegroundService : Service() {
             var recoveredFromWedge = false
             var wedgeStartedAtMs = 0L
             var failuresBeforeRecovery = 0
+            var wedgeRestored = false
             synchronized(syncLock) {
                 recoveredFromWedge = managed.wedgeDetected
                 wedgeStartedAtMs = managed.wedgeStartedAtMs
                 failuresBeforeRecovery = managed.consecutiveConnectFailures
+                wedgeRestored = managed.wedgeRestored
                 managed.consecutiveConnectFailures = 0
                 managed.retryCount = 0
                 managed.wedgeDetected = false
+                managed.wedgeRestored = false
                 managed.wedgeAlertPosted = false
                 managed.nextWedgeProbeAt = WEDGE_NOTIFY_AFTER
                 managed.nextWedgeReprobeAtMs = 0
                 managed.wedgeStartedAtMs = 0
                 managed.lastRealGattStatus = null
             }
+
+            // Unconditional, not gated on recoveredFromWedge: this is the one place that can
+            // prove the link is usable, so it must also clear a persisted record that no
+            // ManagedDevice picked up — e.g. one written by a build before the restore path
+            // existed, or left by an outage whose device was unmanaged before it recovered.
+            // A stale flag would reopen a phantom outage on every future restart.
+            clearOpenWedge()
 
             // The outage is over — stop the tight recovery alarm and reset its backoff. Posted
             // to the main handler where recoveryProbeAttempts lives (we're on a binder thread).
@@ -439,6 +473,7 @@ class OmiBleForegroundService : Service() {
                     address = addr,
                     wedgeStartedAtMs = wedgeStartedAtMs,
                     failuresBeforeRecovery = failuresBeforeRecovery,
+                    restoredAcrossRestart = wedgeRestored,
                 )
             }
 
@@ -534,6 +569,59 @@ class OmiBleForegroundService : Service() {
         }
     }
 
+    // ── Open-outage persistence ──
+
+    /**
+     * Record that an outage is open, so a process death does not lose it. Called at the
+     * moment [ManagedDevice.wedgeDetected] latches, which is once per outage.
+     */
+    private fun persistOpenWedge(startedWallMs: Long) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putBoolean(PREFS_WEDGE_OPEN, true)
+            .putLong(PREFS_WEDGE_STARTED_WALL, startedWallMs)
+            .apply()
+    }
+
+    /** The outage is over (or was never real). Idempotent — called on every recovery. */
+    private fun clearOpenWedge() {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .remove(PREFS_WEDGE_OPEN)
+            .remove(PREFS_WEDGE_STARTED_WALL)
+            .apply()
+    }
+
+    /**
+     * Build a [ManagedDevice], reopening a persisted outage onto it if one was left behind.
+     *
+     * Only the *record-keeping* half is restored — `wedgeDetected` and a reconstructed
+     * `wedgeStartedAtMs` — never `consecutiveConnectFailures`. Restoring the streak would
+     * immediately put it past `AUTONOMOUS_RETRY_STOP_AFTER`, so native would decline to run
+     * its own retry ladder at all after a restart, and nothing would replace it: the
+     * recovery alarm is armed by the handoff in `handleRetryLogic`, which a restored streak
+     * skips straight past. The fresh ladder a restart currently gets is worth keeping. The
+     * cost is that `failures_before_recovery` counts only this process's failures, which is
+     * why `wedgeRestored` is reported alongside it.
+     *
+     * `wedgeStartedAtMs` is rebuilt as an `elapsedRealtime()` anchor so every existing
+     * reader works unchanged. Both clamps below matter: a device reboot resets
+     * `elapsedRealtime()` to ~0 while the stored wall clock stays in the past, and the wall
+     * clock itself can jump backwards (NTP), either of which would otherwise produce an
+     * anchor in the future and a negative duration.
+     */
+    private fun newManagedDevice(addr: String, bond: Boolean): ManagedDevice {
+        val device = ManagedDevice(address = addr, requiresBond = bond)
+        val cfg = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        if (!cfg.getBoolean(PREFS_WEDGE_OPEN, false)) return device
+        val startedWallMs = cfg.getLong(PREFS_WEDGE_STARTED_WALL, 0L)
+        val now = android.os.SystemClock.elapsedRealtime()
+        val ageMs = (System.currentTimeMillis() - startedWallMs).coerceIn(0L, now)
+        device.wedgeDetected = true
+        device.wedgeRestored = true
+        device.wedgeStartedAtMs = now - ageMs
+        Log.i(TAG, "Reopened persisted outage for $addr (age ${ageMs}ms) — recovery will close the record")
+        return device
+    }
+
     // ── Managed device lifecycle ──
 
     fun manageDevice(address: String, requiresBond: Boolean) {
@@ -575,7 +663,7 @@ class OmiBleForegroundService : Service() {
         }
 
         if (!isBluetoothEnabled) {
-            managedDevices[addr] = ManagedDevice(address = addr, requiresBond = bond)
+            managedDevices[addr] = newManagedDevice(addr, bond)
             bleManager.mainHandler.post {
                 bleManager.flutterApi?.onPeripheralDisconnected(addr, "bluetooth_off") {}
             }
@@ -684,7 +772,7 @@ class OmiBleForegroundService : Service() {
             return
         }
 
-        managedDevices[addr] = ManagedDevice(address = addr, requiresBond = bond)
+        managedDevices[addr] = newManagedDevice(addr, bond)
         connectToDevice(addr, "manageDevice")
     }
 
@@ -853,6 +941,11 @@ class OmiBleForegroundService : Service() {
         cancelWedgeAlert(addr)
         // ...and its recovery alarm; the user asked to be off, so stop background reconnects.
         cancelRecoveryProbe()
+        // ...and the persisted record of it. An outage the user resolved by disconnecting has
+        // no recovery to wait for, and leaving the flag set would reopen it as a phantom on
+        // the next restart — including after a Forget Device, where it would attach to
+        // whatever is paired next.
+        clearOpenWedge()
 
         // Stop OS-level presence observation BEFORE closing the GATT. Without
         // this, OnePlus/Xiaomi stacks immediately re-establish a passive LE link
@@ -1173,6 +1266,9 @@ class OmiBleForegroundService : Service() {
         var backoffDelay = 0L
         var willRetry = false
         var lastRealStatus: Int? = null
+        // Non-null only on the attempt that latches a new outage, carrying its wall-clock
+        // start for the persisted record. See persistOpenWedge.
+        var latchedWedgeAtWallMs: Long? = null
         synchronized(syncLock) {
             // Any failed attempt counts. The previous rule (only status -1) keyed the outage
             // detector on our own local timeout, which fired before Android could deliver a
@@ -1199,6 +1295,9 @@ class OmiBleForegroundService : Service() {
                 if (!managed.wedgeDetected) {
                     managed.wedgeDetected = true
                     managed.wedgeStartedAtMs = nowMs
+                    // Snapshot under the lock, write after it: persisting is the caller's
+                    // job below, so the lock never spans a SharedPreferences edit.
+                    latchedWedgeAtWallMs = System.currentTimeMillis()
                 }
                 startProbe = true
             }
@@ -1246,6 +1345,10 @@ class OmiBleForegroundService : Service() {
                 bleManager.flutterApi?.onPeripheralDisconnected(addr, "retry_exhausted") {}
             }
         }
+
+        // Outside the lock, and before the probe: the probe takes ~8 s and the process can
+        // die inside it, which is precisely the case this record exists to survive.
+        latchedWedgeAtWallMs?.let { persistOpenWedge(it) }
 
         if (startProbe) {
             // Snapshot the outage into the debug log now, while it is happening. An outage
