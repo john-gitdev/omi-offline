@@ -2190,6 +2190,24 @@ class DeviceProvider extends ChangeNotifier
           'sd_worker_stack_used': dropStats.sdWorkerStackUsed,
           'codec_stack_used': dropStats.codecStackUsed,
           'live_uptime_ms': dropStats.currentUptimeMs,
+          // The advertising interval in force when this connect succeeded — advertising
+          // stops once connected, so the value read here is the one that won the link.
+          // Logged because it is the baseline half of the slow-advertising lead
+          // (BLE_Research.md, Wedge 9): the outage half comes from the scan probe's packet
+          // rate, and without a healthy-connect distribution to compare against there is
+          // nothing to correlate it with. It was already parsed and shown on the Sync page
+          // but never recorded, so it existed only if someone happened to look.
+          'adv_active': dropStats.advActiveSlow ? 'slow' : 'fast',
+          'adv_desired': dropStats.advDesiredSlow ? 'slow' : 'fast',
+          // Mic liveness, from the same read. This is how long the mic has delivered
+          // nothing, which is what puts the device into slow advertising in the first place:
+          // manual standby parks the mic, and the park path requests the slow interval.
+          // Logging it alongside makes the causal chain checkable from a single line.
+          // Uses the getter, which does the u32-wrap-safe delta and returns null when the
+          // firmware doesn't report it — a plain subtraction goes negative across the ~49.7
+          // day wrap and reads as "the mic is alive", hiding a fault in the worst direction.
+          'mic_silent_for_ms': dropStats.micSilentForMs,
+          'vad_voiced_ms': dropStats.voicedMs,
         });
 
         // Priority Recording diagnostics (0x0062, offsets 44–56). A start with no
