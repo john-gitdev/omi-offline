@@ -149,9 +149,10 @@ object WedgeDiagnostics {
      * appearing on its own would silently re-enable a feature the user turned off.
      *
      * Dart writes a single fixed-name file (`omi_debug_current.log`); the descriptive dated
-     * name is supplied to the share sheet as metadata and the file on disk keeps its
-     * placeholder name. `maxByOrNull` is kept so a stray from the retired
-     * `omi_debug_YYYYMMDD.log` scheme cannot win — the placeholder's 'c' outranks a digit.
+     * name belongs to a throwaway copy the share action makes under the cache dir, so the
+     * live file this appends to always keeps its placeholder name. `maxByOrNull` is kept so
+     * a stray from the retired `omi_debug_YYYYMMDD.log` scheme cannot win — the placeholder's
+     * 'c' outranks a digit.
      */
     private fun currentLogFile(context: Context): File? = try {
         candidateLogDirs(context)
