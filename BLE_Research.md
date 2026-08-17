@@ -183,7 +183,7 @@ Record the sub-class in the "Recovery trigger" column below.
 | 6b | 2026-08-02 10:45→15:23 | 4h 37m 30s | SILENT ×10, then **ADVERTISING @ −91 dBm** | **NOT A WEDGE — out of range**; cleared when the user woke up | **No** | *(not in excerpt)* | — | 147 |
 | 7 | 2026-08-04 03:07→03:08 | 1m 38s | *(none — sub-threshold)* | **BT toggle** (`error=bluetooth_off` → reconnect in 2.5 s) | **Yes** | +0 (flat at 19) | fast | *none — all `-1`* |
 | 8 | 2026-08-12 22:39→23:24 | 45m 38s | SILENT ×3 | **BT toggle** (`error=bluetooth_off` → reconnect in 8 s) | **Yes** | +0 (flat at 93) | fast | **147** |
-| 9 | 2026-08-17 01:19→02:13 | 54m 06s | **ADVERTISING @ −93/−88 dBm** | **BT toggle** (`error=bluetooth_off` → reconnect in 9 s); an app *restart* 4 min earlier did not | **Yes** | *(unread — see entry)* | fast | *none — all `-1`* |
+| 9 | 2026-08-17 01:19→02:13 | 54m 06s | **ADVERTISING @ −93/−88 dBm** | **BT toggle** (`error=bluetooth_off` → reconnect in 9 s); an app *restart* 4 min earlier did not | **Yes** | +0 (flat at 100) | fast | *none — all `-1`* |
 
 **Wedge 5 is SOLVED** — see the resolution block below. Root cause: the post-disconnect
 `bt_le_adv_start()` in `transport.c` was fire-and-forget, so a single failure left the device
@@ -224,6 +224,9 @@ native's bookkeeping were rebuilt from nothing — and the next two connects fai
 The adapter cycle then fixed it in 9 s. Whatever holds this class is **below the app**, in the
 Bluetooth daemon or the controller; no amount of app-side state hygiene can reach it. That is worth
 more than it sounds, because §6 has several candidate interventions that amount to app-side resets.
+Its `estab_fail_count` is **flat at 100** either side of the outage, so the class signature now reads:
+flat estab + toggle-cured + **restart-immune**, with `-1` still not part of it (Wedge 8 carried real
+`147`s). Four episodes, one fault.
 
 Wedge 5 is the first **unresolved** episode on record — it is still failing when the log ends —
 and the first where `screen_interactive=true` for the entire outage, which removes screen-wake
@@ -936,21 +939,24 @@ the bound is the priority cap plus 30 minutes.
   Cost: no env diff across the recovery, which is what §3 says to read. **Fix worth making: persist
   `wedgeDetected` / `wedgeStartedAtMs` so an outage survives a restart** — a mid-outage app update is
   exactly when a user reaches for one.
-- **estab context: unread, and this is the gap.** `estab_fail_count` was **100** @ 19:14:46, 19:15:36
-  and 19:43:20, and never read again — the log ends 4 s after the recovery connect, *before*
-  `_finishDeviceSetup` reads the counters. It is a lifetime NVS-persisted counter with no cap
-  (`transport.c:400,3056`), so **the delta is still recoverable from the device today**: still 100 ⟹
-  the Omi never heard the CONNECT_INDs ⟹ central-side, class confirmed at n=4; >100 ⟹ the links
-  reached the Omi and died at establishment ⟹ a different fault. Read it before the next outage
-  muddies it.
-- **Range is not cleanly ruled out, and this entry does not pretend otherwise.** Against range: the
-  restart-vs-toggle asymmetry above; all-`-1` with `last_real_gatt_status=null` (Wedge 6, the real
-  range case, produced real `8`/`147`); and the cure landing 9 s after an adapter cycle at unchanged
-  geometry. For range: −88…−93 dBm is weak (§3 sets the floor at ≲−95, so this sits just inside), 2
-  packets is very sparse, and the recovery connect took **6559 ms** against 445–3022 ms on the healthy
-  connects either side — §3 discriminator 4 reads a slow weak recovery as range. The estab delta above
-  settles it; nothing else in this log does.
-- **Bucket: toggle-required** (probe ADVERTISING, so not filed as absent), with the range caveat noted.
+- **estab context: `estab_fail_count` +0 — flat at 100.** Read **100** @ 19:14:46, 19:15:36 and
+  19:43:20 (before), and **still 100** when the operator read it off the Sync page the following day
+  (after). The log itself ends 4 s after the recovery connect, before `_finishDeviceSetup` reads the
+  counters, so the "after" side came from a later manual read — which is sound here precisely because
+  the counter is lifetime and NVS-persisted with no cap (`transport.c:400,3056`): a later reading that
+  is still 100 bounds the delta across the outage *and* everything since at zero. Per §2, flat ⟹
+  **the Omi never heard the CONNECT_INDs** ⟹ central side.
+- **Range is ruled out, though not by the estab delta alone.** Flat estab is consistent with both a
+  deaf central and an out-of-range peripheral — §2's row says "deaf RX **or nothing reached the air**"
+  — so it narrows the fault to the phone's transmit/initiator path without separating the two. Three
+  other facts do that: the probe **heard the peripheral** at −88…−93 dBm, so the air path in that
+  direction was intact and the device was demonstrably advertising; the cure landed **9 s after an
+  adapter cycle at unchanged geometry**, which range cannot explain; and a full process rebuild
+  minutes earlier changed nothing. The remaining range indicators — weak RSSI, 2 sparse packets, and a
+  **6559 ms** recovery connect against 445–3022 ms on the healthy connects either side (§3
+  discriminator 4) — are real but are outweighed by the toggle asymmetry, which no RF explanation
+  survives.
+- **Bucket: toggle-required, central-side.** n=4 for the class.
 
 **Instrumentation defect this episode exposed — `probe_ms` is a constant, not a measurement.**
 `first_seen_ms=14530` exceeds the reported `probe_ms=8000`, which is only possible because the two
