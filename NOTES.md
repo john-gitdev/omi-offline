@@ -1117,7 +1117,7 @@ Three events land in the `omi_debug_*.log` that `DebugLogManager` owns, in its o
 | Event | When | Carries |
 |---|---|---|
 | `ble_wedge` | immediately at detection | failure/retry counts, last GATT status, adapter + bond state, every LE link the system holds, whether a stale GATT/ACL link to the Omi exists, screen + Doze state |
-| `ble_wedge_scan_probe` | 8 s later | `adv_packets`, RSSI min/max/last, `verdict` |
+| `ble_wedge_scan_probe` | ≥8 s later | `adv_packets`, RSSI min/max/last, `verdict`, `probe_ms` + `probe_requested_ms` |
 | `ble_wedge_recovered` | on the next successful connect | how long the outage lasted, failures before recovery, and the **same environment snapshot** `ble_wedge` took (adapter state, contending LE links + count, screen + Doze) |
 
 The environment snapshot appears on **both** `ble_wedge` and `ble_wedge_recovered` so the two can be diffed: a wedge that clears on its own (no `bluetooth_off` disconnect in the log before it) leaves no trace of *why* otherwise. A `contending_le_links` count that fell, `screen_interactive` flipping true, or `doze_mode` exiting between detection and recovery is the most likely cause of a spontaneous recovery — the transient central-side contention the 2026-07-08 experiment reproduced — and the only one these logs can name without adb. Diff `contending_le_links` (contenders only), **not** `le_link_count`: the latter folds in the Omi's own link, which is absent at wedge and present at recovery, so a lone contender dropping cancels against it and both events read the same total.
@@ -1125,6 +1125,8 @@ The environment snapshot appears on **both** `ble_wedge` and `ble_wedge_recovere
 `ble_wedge_scan_probe.verdict` is the point of the exercise:
 - `peripheral_advertising` → the phone can plainly hear the Omi while every connect dies at establishment. Its TX and our RX both work; the link dies in the handshake between them.
 - `no_advertisements_heard` → either the Omi's radio stopped or the phone's never listened. Cross-check against the device's `estab_fail_count`.
+
+**`probe_ms` is the window the scan actually listened for; `probe_requested_ms` is what it asked for.** They differ because the scan is stopped by a main-looper `postDelayed`, which in a backgrounded app runs late — the state every real outage is in. Divide `adv_packets` by `probe_ms`, never by the constant, and read a large gap between the two as its own finding: it measures how starved the main thread was. Logs from app ≤ 0.34.8 carry only `probe_ms` **and it is the constant**, so packet counts from those are not comparable between probes (BLE_Research.md §2).
 
 **The verdict also gates the toggle-Bluetooth alert**, so the probe is load-bearing and runs even when file logging is off. Six failures alone do not mean a wedge — an out-of-range, powered-off, or otherwise-connected Omi produces the same streak, and Android reports the same generic `133` for a device that isn't there as for one whose links keep dying. Only `peripheral_advertising` means "present and unreachable", the one case where toggling Bluetooth is sensible advice. Every path where the probe cannot run reports `true`, preserving the pre-probe behaviour.
 
