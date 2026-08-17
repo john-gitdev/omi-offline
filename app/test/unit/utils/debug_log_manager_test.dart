@@ -197,6 +197,69 @@ void main() {
     });
   });
 
+  group('Concurrent append integrity', () {
+    // Regression for the fault that destroyed 26% of the 2026-08-17 wedge log
+    // (BLE_Research.md, Wedge 9). `Logger.debug`/`info`/`warning` are
+    // synchronous `void` and call the async log methods **un-awaited**, so real
+    // callers routinely have many appends in flight at once. Dart's
+    // `FileMode.append` seeks to EOF at open rather than using O_APPEND, so
+    // before the write lock every one of them opened at the same offset and
+    // overwrote its neighbours.
+    //
+    // Fires un-awaited on purpose: awaiting each call serialises them at the
+    // call site and the bug cannot reproduce. Reverting the mutex in _append
+    // must fail this test.
+    test('interleaved un-awaited appends never tear a line', () async {
+      const count = 200;
+      final pending = <Future<void>>[];
+      for (var i = 0; i < count; i++) {
+        // Deliberately uneven lengths. The corruption signature is a longer
+        // record's tail surviving past a shorter one's end, so equal-length
+        // lines would hide it.
+        pending.add(DebugLogManager.logInfo('line $i ${'x' * (i % 40)}'));
+      }
+      await Future.wait(pending);
+
+      final file = await DebugLogManager.getLogFile();
+      final lines = (await file!.readAsString()).trim().split('\n');
+
+      expect(lines.length, count, reason: 'every append must produce exactly one line');
+      final seen = <int>{};
+      for (final l in lines) {
+        // jsonDecode throws on a spliced or truncated record — the exact
+        // failure a torn append produces.
+        final decoded = jsonDecode(l) as Map<String, dynamic>;
+        expect(decoded['level'], 'INFO');
+        final message = decoded['message'] as String;
+        seen.add(int.parse(message.split(' ')[1]));
+      }
+      // Not just "nothing is malformed": an overwrite loses a record whole, and
+      // that leaves the survivors individually valid.
+      expect(seen.length, count, reason: 'no record may be lost to an overwrite');
+    });
+
+    test('appends interleaved with a concurrent clear() stay well-formed', () async {
+      // clear() deliberately does not take the write lock (see _append). It must
+      // still never leave a half-written line behind.
+      final pending = <Future<void>>[];
+      for (var i = 0; i < 60; i++) {
+        pending.add(DebugLogManager.logInfo('pre-clear $i'));
+      }
+      final clearing = DebugLogManager.clear();
+      for (var i = 0; i < 60; i++) {
+        pending.add(DebugLogManager.logInfo('post-clear $i'));
+      }
+      await Future.wait([...pending, clearing]);
+
+      final file = await DebugLogManager.getLogFile();
+      final content = await file!.readAsString();
+      for (final l in content.trim().split('\n')) {
+        if (l.isEmpty) continue;
+        expect(() => jsonDecode(l), returnsNormally, reason: 'torn line survived a concurrent clear: $l');
+      }
+    });
+  });
+
   group('Advanced logging tests', () {
     test('clear() empties the log file', () async {
       await DebugLogManager.logInfo('This should be cleared');
