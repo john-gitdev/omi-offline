@@ -77,13 +77,17 @@ correctly when a bin was missing.
 | INCONCLUSIVE | `scan_failed` | Framework refused the scan (e.g. `SCANNING_TOO_FREQUENTLY`). No opinion. |
 | UNAVAILABLE | `probe_unavailable` | No adapter / off / no permission. Treated as "present" for the alert. |
 
-**`probe_ms` is a constant, not a measurement — do not compute a packet rate from it.** It logs
-`PROBE_DURATION_MS` verbatim, while the scan is stopped by a main-looper `postDelayed` that in a
-backgrounded app fires late. Wedge 9 reported `probe_ms=8000` with `first_seen_ms=14530`, i.e. the
-scan actually ran ≥14.5 s. `first_seen_ms` *is* real (measured against the scan start), so when it
-exceeds `probe_ms` the excess is the overrun — and `adv_packets` is then not comparable with any
-other probe's. Until the writer records the true window, treat a low packet count as a lower bound on
-sparseness, never as evidence of a specific rate.
+**`probe_ms` — check the app version before you divide by it.**
+
+- **App ≥ 0.34.9**: `probe_ms` is the **measured** window and `probe_requested_ms` the constant that
+  was asked for. A packet rate is meaningful. The **gap between the two is its own signal** — it is
+  how late a main-looper post ran, i.e. how starved the app's main thread was during the outage.
+- **App ≤ 0.34.8**: `probe_ms` logs `PROBE_DURATION_MS` verbatim and measures nothing, while the scan
+  is stopped by a main-looper `postDelayed` that in a backgrounded app fires late. Wedge 9 reported
+  `probe_ms=8000` alongside `first_seen_ms=14530`, i.e. the scan actually ran ≥14.5 s. `first_seen_ms`
+  *is* real on those builds (measured against the scan start), so when it exceeds `probe_ms` the
+  excess is the overrun. On these logs `adv_packets` is **not comparable between probes**: treat a low
+  count as a lower bound on sparseness, never as evidence of a rate.
 
 ### Firmware counters — `device_conn_fail` / WARN line (read on each successful connect)
 
@@ -940,12 +944,22 @@ the bound is the priority cap plus 30 minutes.
   `wedgeDetected` / `wedgeStartedAtMs` so an outage survives a restart** — a mid-outage app update is
   exactly when a user reaches for one.
 - **estab context: `estab_fail_count` +0 — flat at 100.** Read **100** @ 19:14:46, 19:15:36 and
-  19:43:20 (before), and **still 100** when the operator read it off the Sync page the following day
-  (after). The log itself ends 4 s after the recovery connect, before `_finishDeviceSetup` reads the
-  counters, so the "after" side came from a later manual read — which is sound here precisely because
-  the counter is lifetime and NVS-persisted with no cap (`transport.c:400,3056`): a later reading that
-  is still 100 bounds the delta across the outage *and* everything since at zero. Per §2, flat ⟹
+  19:43:20, and **still 100** when the operator read it off the Sync page the next day. **Neither
+  bracket is tight, and that is fine — but know why before quoting this.** The last pre-outage
+  reading is 19:43:20, **5h 36m before** the first failure: eleven connects succeeded in between
+  (20:19, 20:50, 21:19 … 00:49) and none of them logged counters, their `device_version` events
+  carrying no `uptime_ms` — which per `logDeviceVersion`'s contract means the diagnostics read was
+  skipped because a sync held the storage lock. On the other side the log ends 4 s after the recovery
+  connect, before `_finishDeviceSetup` reads counters, so "after" is a manual read a day later. The
+  conclusion survives both gaps because the counter is **monotonic** (`atomic_inc` only,
+  `transport.c:2298`), lifetime, NVS-persisted and uncapped (`:400, :3056`): flat across a superset
+  interval implies flat across every subinterval, the outage included. The extra coverage costs
+  nothing — it only means a rise could not have been pinned to a window, and there was no rise. The
+  single loophole, a persist lost across a reboot, reads *lower* than 100, not equal. Per §2, flat ⟹
   **the Omi never heard the CONNECT_INDs** ⟹ central side.
+  **Lesson for the next episode: read the Sync page at the first sign of an outage**, so the "before"
+  anchor is minutes old rather than hours. The counters are only logged when the storage lock is free,
+  so a busy sync schedule can silently starve the record for hours at a time.
 - **Range is ruled out, though not by the estab delta alone.** Flat estab is consistent with both a
   deaf central and an out-of-range peripheral — §2's row says "deaf RX **or nothing reached the air**"
   — so it narrows the fault to the phone's transmit/initiator path without separating the two. Three
@@ -965,9 +979,10 @@ come from different clocks: `first_seen_ms` is measured against the real scan st
 stopped by a `handler.postDelayed` on the **main looper** (`:125, :691`). The runnable fired ≥6.5 s
 late — a backgrounded, screen-off, mid-outage app — so the scan really ran ≥14.5 s. Two consequences:
 this probe's density is worse than it reads, and **`adv_packets` is not comparable across probes**,
-which is the number §3 discriminator 1 leans on to separate a wedge from plain range. Log
-`SystemClock.elapsedRealtime() - startedAt` as the actual window instead. One line, and it retires the
-ambiguity this entry had to leave open.
+which is the number §3 discriminator 1 leans on to separate a wedge from plain range.
+**Fixed in app 0.34.9**: `probe_ms` now carries the measured window and `probe_requested_ms` the
+constant, so probes from 0.34.9 on are comparable — and the gap between the two is a bonus reading of
+how starved the main thread was. Wedge 9's own probe stays uncomparable; nothing can recover that.
 
 **And the log itself is lossy.** 141 of 547 lines in the source log fail to parse — **26 %** — with
 the signature of one record's head overwritten by another's (line 38 holds a record truncated at
