@@ -1073,6 +1073,84 @@ void main() {
       expect(flagByte3(saved[0]) & 0x04, 0x04, reason: 'the auto recording was closed by the 0xFFFFFFF8');
       expect(flagByte3(saved[1]) & 0x04, 0x04, reason: 'the priority recording was closed by the 0xFFFFFFFC');
       expect(flagByte3(flushed) & 0x04, 0, reason: 'the tail was closed by the end of the run, not a boundary');
+
+      // The mode pair shares the same byte and must not disturb — or be
+      // disturbed by — the boundary flags asserted above. markerSettings()
+      // leaves `manual` unset, so these recordings carry no mode.
+      expect(flagByte3(saved[1]) & 0x18, 0, reason: 'no mode claimed when the caller supplied none');
+    });
+
+    // The mode is stamped at the single funnel every persisted recording passes
+    // through, in the same byte as isSilero/hardStart/hardEnd. Two bits, so
+    // "unknown" stays expressible: a .meta from before this feature reads 0, and
+    // one bit would relabel the whole back catalogue as whichever mode 0 meant.
+    group('recording-mode stamp (.meta flag byte [3], bits 0x08/0x10)', () {
+      ProcessingSettings modeSettings(bool? manual) => ProcessingSettings(
+            vadEnabled: false,
+            speechThreshold: 0.5,
+            silenceDurationToSplitMs: 120000,
+            minDurationMs: 0,
+            minSpeechMs: 0,
+            maxChunkMs: 0x7FFFFFFFFFFFFFFF,
+            deviceId: '',
+            audioSaveFormat: 'wav',
+            omiEnabled: false,
+            priorityRecordCapMinutes: 0,
+            manual: manual,
+          );
+
+      /// A plain bin: 0xFFFFFFFB header + [n] frames, no markers.
+      File plainBin(String name, int n) {
+        final builder = BytesBuilder();
+        final hdr = ByteData(36);
+        hdr.setUint32(0, 0xFFFFFFFB, Endian.little);
+        hdr.setUint32(4, 28, Endian.little);
+        hdr.setUint64(8, kBase, Endian.little);
+        hdr.setUint64(16, 0, Endian.little);
+        hdr.setUint32(24, 0, Endian.little);
+        hdr.setUint32(28, 1, Endian.little);
+        builder.add(hdr.buffer.asUint8List());
+        final fhdr = ByteData(4)..setUint32(0, 4, Endian.little);
+        for (int i = 0; i < n; i++) {
+          builder.add(fhdr.buffer.asUint8List());
+          builder.add(List.filled(4, 0));
+        }
+        return File('${tempDir.path}/$name')..writeAsBytesSync(builder.toBytes());
+      }
+
+      Future<int> stampFor(bool? manual, String name) async {
+        final proc = VadAudioProcessor.fromSettings(settings: modeSettings(manual), outputDir: tempDir.path);
+        await proc.processSegmentFile(plainBin(name, 20), DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+        final flushed = await proc.flushRemaining();
+        await proc.destroy();
+        expect(flushed, isNotNull, reason: 'the run should have written a recording to inspect');
+        final meta = File(flushed!.replaceAll(RegExp(r'\.(wav|m4a)$'), '.meta')).readAsBytesSync();
+        return meta[417 + meta[416] + 3];
+      }
+
+      test('manual mode sets modeKnown AND manual', () async {
+        expect(await stampFor(true, 'mode_manual.bin') & 0x18, 0x18);
+      });
+
+      test('auto mode sets modeKnown ALONE — the manual bit must stay clear', () async {
+        expect(await stampFor(false, 'mode_auto.bin') & 0x18, 0x08);
+      });
+
+      // The reachable case: RecordingsController.recoverDiscard hand-builds a
+      // synthetic ProcessingSettings to re-derive one discarded span, and the mode
+      // that span was recorded in is not recoverable from a discard record. A
+      // non-nullable field with a default would have stamped every recovered
+      // discard with a mode nobody verified.
+      test('an unknown mode writes NEITHER bit, so the reader still says unknown', () async {
+        final byte = await stampFor(null, 'mode_unknown.bin');
+        expect(byte & 0x18, 0);
+        expect(Conversation.modeFromFlagByte(byte), isNull);
+      });
+
+      test('the production reader agrees with the byte the processor wrote', () async {
+        expect(Conversation.modeFromFlagByte(await stampFor(true, 'mode_rt_manual.bin')), true);
+        expect(Conversation.modeFromFlagByte(await stampFor(false, 'mode_rt_auto.bin')), false);
+      });
     });
 
     // The firmware rotates the bin at a priority stop, so a 0xFFFFFFFC sits at the
