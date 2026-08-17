@@ -7,6 +7,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/utils/mutex.dart';
 
 /// Lightweight debug log manager to persist important diagnostics when
 /// developer debug logging is enabled.
@@ -23,6 +24,19 @@ class DebugLogManager {
   // Keep the `omi_debug_` prefix and `.log` suffix: the native wedge-diagnostics
   // writer (`WedgeDiagnostics.currentLogFile`) locates this file by that pattern
   // and appends to it from outside Dart.
+  //
+  // THREE WRITERS SHARE THIS FILE and only one of them can be locked from here:
+  // this isolate (serialised by `_writeLock`), any background isolate (its own
+  // copy of that lock — statics are per-isolate), and native `WedgeDiagnostics`.
+  // `_writeLock` therefore closes the dominant race and not the other two. What
+  // is left is small and bounded: each remaining writer is individually
+  // serialised, so a collision needs one writer's open→write window (microseconds)
+  // to straddle another's write, and native emits only a couple of records per
+  // outage. Every tear diagnosed in the 2026-08-17 log was same-isolate.
+  // If a future log still shows torn lines, the escalation is a file per writer
+  // merged by timestamp at read/share time — do not reach for it before then,
+  // since it touches `_ensureFile`, `listLogFiles`, `getRecentLogs` and
+  // `prepareShareFile` all at once.
   static const String _tempFileName = 'omi_debug_current.log';
 
   // Where `prepareShareFile` materializes the named copy. A subdirectory of the
@@ -139,14 +153,44 @@ class DebugLogManager {
     } catch (_) {}
   }
 
+  // Serializes appends within this isolate. Without it the log destroys its own
+  // records: `Logger.debug`/`info`/`warning` are synchronous `void` functions
+  // that call into here **un-awaited** (`logger.dart`), so N log calls become N
+  // detached `_append` futures that interleave across the three awaits below.
+  //
+  // That is fatal because **Dart's `FileMode.append` is not `O_APPEND`** — it
+  // resolves the write position with a seek at *open* time, not at write time.
+  // Concurrent appends therefore all open at the same offset and land on top of
+  // each other instead of after each other. The 2026-08-17 wedge log lost **26 %
+  // of its lines** this way (141 of 547), with the signature that identifies it:
+  // where a 146-byte record was overwritten by a 138-byte one, exactly the
+  // trailing 8 bytes survive as an orphan fragment on the next line, and the
+  // shorter record's head is gone for good. See BLE_Research.md, Wedge 9.
+  //
+  // FIFO, so file order still matches call order — and therefore the timestamps,
+  // which are taken by the caller before it gets here.
+  //
+  // Not reentrant: nothing called while it is held may log or re-enter _append.
+  // `_ensureFile`, `_rotateIfNeeded` and the write below all satisfy that.
+  // `clear()` / `setEnabled()` deliberately do NOT take it — they are
+  // user-initiated, and the worst a concurrent append can do is write one line
+  // into a file that is being replaced anyway.
+  static final Mutex _writeLock = Mutex();
+
   static Future<void> _append(String line) async {
     if (!isEnabled) return;
+    await _writeLock.acquire();
     try {
       final f = await _ensureFile();
+      // Under the lock on purpose: rotation rewrites the file wholesale
+      // (`FileMode.write`), so an append racing it would write at an offset the
+      // truncate has already invalidated.
       await _rotateIfNeeded(f);
       await f.writeAsString('$line\n', mode: FileMode.append, flush: false);
     } catch (_) {
       // Swallow to avoid impacting app flow
+    } finally {
+      _writeLock.release();
     }
   }
 
