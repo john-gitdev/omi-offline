@@ -15,8 +15,8 @@ class DebugLogManager {
 
   // The on-disk log carries a fixed placeholder name for its whole life. It is
   // a working file, not a deliverable: the descriptive
-  // `<os>_<app>_<fw>_omi_offline_debug_<YYYYMMDD>.log` name is applied only when
-  // the user shares it (see `shareFileName`), so the name reflects the versions
+  // `<app>_<fw>_omi_offline_debug_<YYYYMMDD>.log` name is applied only when the
+  // user shares it (see `prepareShareFile`), so the name reflects the versions
   // and the day it was actually handed over rather than whenever the toggle
   // happened to be flipped.
   //
@@ -24,6 +24,12 @@ class DebugLogManager {
   // writer (`WedgeDiagnostics.currentLogFile`) locates this file by that pattern
   // and appends to it from outside Dart.
   static const String _tempFileName = 'omi_debug_current.log';
+
+  // Where `prepareShareFile` materializes the named copy. A subdirectory of the
+  // temp dir, so wiping stale exports can't touch anything else, and explicitly
+  // NOT `share_plus/` — the plugin's Android side throws outright on a source
+  // file inside its own share cache (`fileIsInShareCache`).
+  static const String _exportDirName = 'log_export';
 
   // Single persistent file is capped here. On overflow the most recent half is
   // kept (see _rotateIfNeeded) rather than the whole file being wiped, so the
@@ -198,12 +204,49 @@ class DebugLogManager {
   /// the date is the day of the share and the versions are the ones in force
   /// then. Lowercase and underscored — no spaces or apostrophes — so it is easy
   /// to work with on upload/save targets.
-  static String shareFileName({required String os, required String appVersion, required String fwVersion}) {
+  ///
+  /// No OS segment: this fork ships Android only (see NOTES.md), so a leading
+  /// `android_` on every log distinguished nothing.
+  static String shareFileName({required String appVersion, required String fwVersion}) {
     final d = DateTime.now().toUtc();
     final y = d.year.toString().padLeft(4, '0');
     final m = d.month.toString().padLeft(2, '0');
     final day = d.day.toString().padLeft(2, '0');
-    return '${os}_${appVersion}_${fwVersion}_omi_offline_debug_$y$m$day.log';
+    return '${appVersion}_${fwVersion}_omi_offline_debug_$y$m$day.log';
+  }
+
+  /// Copies the active log to a temp file that is genuinely *named*
+  /// [shareFileName], and returns it. Returns null when there is no log yet.
+  ///
+  /// The copy is the point. Handing the share sheet the real log path plus a
+  /// `subject` only names it for targets that title an upload from
+  /// `Intent.EXTRA_SUBJECT` (Drive, Gmail); anything that takes the content
+  /// URI's display name instead — Files, "internal storage" — got the
+  /// placeholder `omi_debug_current.log`. Nor does `XFile(name:)` /
+  /// `fileNameOverrides` help: share_plus's `_getFile` returns a path-bearing
+  /// XFile untouched, and its Android side derives the URI's display name from
+  /// `File(path).name`. Only the basename on disk reaches both kinds of target.
+  ///
+  /// The live log can't simply be renamed — it is appended to by the background
+  /// isolate and by the native wedge-diagnostics writer, both of which find it
+  /// by its fixed name.
+  static Future<File?> prepareShareFile({required String appVersion, required String fwVersion}) async {
+    final logs = await listLogFiles();
+    if (logs.isEmpty) return null;
+    final dir = Directory('${(await getTemporaryDirectory()).path}/$_exportDirName');
+    await dir.create(recursive: true);
+    // Drop earlier exports: each is named for the day and the versions in force
+    // at the time, so they never overwrite each other and would otherwise
+    // accumulate whole copies of a log capped at 20 MB. Entry-by-entry rather
+    // than a recursive delete of the directory, which would race the create
+    // above with a share the user is still completing.
+    await for (final stale in dir.list(followLinks: false)) {
+      try {
+        await stale.delete(recursive: true);
+      } catch (_) {}
+    }
+    final dest = File('${dir.path}/${shareFileName(appVersion: appVersion, fwVersion: fwVersion)}');
+    return logs.first.copy(dest.path);
   }
 
   /// Returns the debug log file(s), the active one first — normally just the one.
