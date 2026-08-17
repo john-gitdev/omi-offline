@@ -277,9 +277,14 @@ object WedgeDiagnostics {
      * Snapshot the outage, then probe the air for the peripheral's advertisements.
      *
      * Emits `ble_wedge` immediately (so the state survives even if the process dies mid-probe)
-     * and exactly one `ble_wedge_scan_probe` once the probe resolves — [PROBE_DURATION_MS] later
-     * if it scanned, right away if it could not. Every outage record therefore carries its own
-     * verdict, and a missing one means the process died rather than that the probe stayed silent.
+     * and exactly one `ble_wedge_scan_probe` once the probe resolves — **at least**
+     * [PROBE_DURATION_MS] later if it scanned, right away if it could not. Every outage record
+     * therefore carries its own verdict, and a missing one means the process died rather than
+     * that the probe stayed silent.
+     *
+     * "At least" is not pedantry: the window is closed by a main-looper post, which in a
+     * backgrounded app runs late, so the probe's `probe_ms` reports what it measured and
+     * `probe_requested_ms` what it asked for. Never assume the two agree.
      *
      * [onProbeComplete] receives a [ProbeVerdict] for [address], on the main thread, once the
      * probe window closes. This is the caller's cue to decide whether the outage is a wedge
@@ -525,8 +530,9 @@ object WedgeDiagnostics {
     }
 
     /**
-     * Listen for [addr]'s advertisements for [PROBE_DURATION_MS], log what was heard, and
-     * hand the verdict to [onComplete] on the main thread.
+     * Listen for [addr]'s advertisements for [PROBE_DURATION_MS] — a floor, not a bound; see
+     * `probe_ms` vs `probe_requested_ms` below — log what was heard, and hand the verdict to
+     * [onComplete] on the main thread.
      *
      * Deliberately its own [ScanCallback] and not [OmiBleManager.startScan]: that one owns
      * a single `scanCallback` field used by device discovery, and would be clobbered.
@@ -659,6 +665,17 @@ object WedgeDiagnostics {
             }
             probeInFlight.set(false)
 
+            // The window the scan ACTUALLY listened for, not the one asked for. The stop
+            // below is a main-looper postDelayed, and in a backgrounded, screen-off app —
+            // i.e. every real outage — it can fire well late while results keep arriving on
+            // the binder thread. Wedge 9 logged `first_seen_ms=14530` against a requested
+            // 8000, so the scan ran at least 14.5 s and the packet count was being read as
+            // if it covered 8. Reporting the constant made `adv_packets` incomparable
+            // between probes, which is the number the wedge-vs-out-of-range call turns on
+            // (BLE_Research.md §3). Measured on the same clock as `first_seen_ms`, so the
+            // two can be read against each other; the gap to `probe_requested_ms` is itself
+            // a signal, since it measures how starved the main thread was.
+            val actualMs = SystemClock.elapsedRealtime() - startedAt
             val packets = tally.packets
             val heard = packets > 0
             val scanError = tally.scanError
@@ -669,11 +686,12 @@ object WedgeDiagnostics {
                 scanError != null -> ProbeVerdict.INCONCLUSIVE
                 else -> ProbeVerdict.SILENT
             }
-            Log.i(TAG, "Wedge probe for $addr: $packets adv packets in ${PROBE_DURATION_MS}ms → $verdict")
+            Log.i(TAG, "Wedge probe for $addr: $packets adv packets in ${actualMs}ms → $verdict")
             logEvent(
                 context, "ble_wedge_scan_probe", mapOf(
                     "device" to addr,
-                    "probe_ms" to PROBE_DURATION_MS,
+                    "probe_ms" to actualMs,
+                    "probe_requested_ms" to PROBE_DURATION_MS,
                     "adv_packets" to packets,
                     "first_seen_ms" to (if (tally.firstSeenMs >= 0) tally.firstSeenMs else null),
                     "rssi_min" to (if (heard) tally.rssiMin else null),
@@ -704,12 +722,19 @@ object WedgeDiagnostics {
         address: String,
         wedgeStartedAtMs: Long,
         failuresBeforeRecovery: Int,
+        restoredAcrossRestart: Boolean = false,
     ) {
         val addr = address.uppercase()
         val fields = linkedMapOf<String, Any?>(
             "device" to addr,
             "wedge_duration_ms" to (if (wedgeStartedAtMs > 0) SystemClock.elapsedRealtime() - wedgeStartedAtMs else null),
             "failures_before_recovery" to failuresBeforeRecovery,
+            // The outage outlived a process death, so it was reopened from disk. Two fields
+            // read differently when this is true: `wedge_duration_ms` spans the restart (it
+            // is rebuilt from a persisted wall clock, so it is good to a second rather than
+            // exact), while `failures_before_recovery` counts only the failures since the
+            // restart — the streak is deliberately not restored. See newManagedDevice.
+            "restored_across_restart" to restoredAcrossRestart,
         )
         fields.putAll(environmentSnapshot(context, bleManager, addr))
         logEvent(context, "ble_wedge_recovered", fields)
