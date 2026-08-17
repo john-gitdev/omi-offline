@@ -589,11 +589,24 @@ class OmiDeviceConnection extends DeviceConnection {
     try {
       final data = await transport.readCharacteristic(featuresServiceUuid, featuresCodecCharacteristicUuid);
       if (data.isNotEmpty) {
+        // The device answered. Whatever it said is stable for this connection, including a
+        // byte we don't recognise — that is a real "not opus", not a failure — so cache it.
         if (data[0] == 20) return _cachedAudioCodec = BleAudioCodec.opus;
         if (data[0] == 21) return _cachedAudioCodec = BleAudioCodec.opusFS320;
+        return _cachedAudioCodec = BleAudioCodec.pcm8;
       }
     } catch (_) {}
-    return _cachedAudioCodec = BleAudioCodec.pcm8;
+    // No answer — the read threw or came back empty. Fall back for this call but do NOT
+    // cache: caching here latched pcm8 for the life of the connection and never retried, so
+    // one transient GATT rejection mislabelled the codec until the next disconnect (the only
+    // thing that clears the cache). That rejection is not hypothetical — the 2026-08-17 log
+    // has three of them on a live link at 23:50:21, the storage keep-alive being the likely
+    // collider since it bypasses the GATT queue by design.
+    //
+    // Retrying is cheap and bounded: the two callers are a maxAttempts warmup loop and one
+    // call per WAL rebuild, so a persistently failing read costs a handful of reads, not a
+    // storm.
+    return BleAudioCodec.pcm8;
   }
 
   @override
