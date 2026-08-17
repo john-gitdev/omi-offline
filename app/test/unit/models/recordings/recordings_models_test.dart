@@ -38,6 +38,7 @@ void main() {
     Duration duration = const Duration(minutes: 5),
     bool passthrough = false,
     bool? isSilero,
+    bool? recordedManual,
   }) =>
       Conversation(
         file: file,
@@ -45,6 +46,7 @@ void main() {
         duration: duration,
         passthrough: passthrough,
         isSilero: isSilero,
+        recordedManual: recordedManual,
       );
 
   group('Conversation.endTime', () {
@@ -96,16 +98,86 @@ void main() {
       expect(conv(file: fileOfBytes('s.m4a', 4096), passthrough: true).sizeLabel, '');
     });
 
-    test('appends VAD when isSilero is true', () {
-      expect(conv(file: fileOfBytes('s.m4a', 512), isSilero: true).sizeLabel, '512 B  ·  VAD');
-    });
-
-    test('appends AAD when isSilero is false', () {
-      expect(conv(file: fileOfBytes('s.m4a', 512), isSilero: false).sizeLabel, '512 B  ·  AAD');
-    });
-
-    test('no codec suffix when isSilero is null (legacy meta)', () {
+    test('no designation at all when isSilero is null (legacy meta, no flag byte)', () {
       expect(conv(file: fileOfBytes('s.m4a', 512), isSilero: null).sizeLabel, '512 B');
+    });
+  });
+
+  group('Conversation.modeLabel', () {
+    // Manual drops the detector half: manual mode pins vadEnabled=false, so
+    // every manual recording is AAD by construction and the word says nothing.
+    test('a known manual recording reads Manual, with no detector half', () {
+      expect(
+          conv(file: fileOfBytes('s.m4a', 512), isSilero: false, recordedManual: true).sizeLabel, '512 B  ·  Manual');
+    });
+
+    test('a known auto recording keeps the detector half', () {
+      expect(
+          conv(file: fileOfBytes('s.m4a', 512), isSilero: true, recordedManual: false).sizeLabel, '512 B  ·  Auto/VAD');
+      expect(conv(file: fileOfBytes('t.m4a', 512), isSilero: false, recordedManual: false).sizeLabel,
+          '512 B  ·  Auto/AAD');
+    });
+
+    // The free half of the backfill: Silero only runs when vadEnabled is set,
+    // and manual mode pins it off, so isSilero PROVES not-manual even with no
+    // mode bits on the .meta. No migration, no reprocessing.
+    test('a legacy Silero recording is promoted to Auto/VAD without mode bits', () {
+      expect(
+          conv(file: fileOfBytes('s.m4a', 512), isSilero: true, recordedManual: null).sizeLabel, '512 B  ·  Auto/VAD');
+    });
+
+    // The other half does NOT invert: isSilero==false is manual, auto-with-
+    // Silero-off and auto-with-a-failed-model at once. Guessing "manual"
+    // because manual is the default is what modeKnown exists to prevent.
+    test('a legacy non-Silero recording stays bare AAD — the mode is unknowable', () {
+      expect(conv(file: fileOfBytes('s.m4a', 512), isSilero: false, recordedManual: null).sizeLabel, '512 B  ·  AAD');
+    });
+
+    test('passthrough still suppresses the whole label', () {
+      expect(conv(file: fileOfBytes('s.m4a', 4096), passthrough: true, isSilero: false, recordedManual: true).sizeLabel,
+          '');
+    });
+
+    group('with the display preference off', () {
+      setUp(() => SharedPreferencesUtil().showRecordingMode = false);
+
+      // Off must restore the original strings EXACTLY, including their
+      // silences — it is a display toggle, not a different labelling scheme.
+      test('known modes fall back to the bare detector label', () {
+        expect(conv(file: fileOfBytes('s.m4a', 512), isSilero: false, recordedManual: true).sizeLabel, '512 B  ·  AAD');
+        expect(conv(file: fileOfBytes('t.m4a', 512), isSilero: true, recordedManual: false).sizeLabel, '512 B  ·  VAD');
+      });
+
+      test('a meta with no flag byte still shows nothing', () {
+        expect(conv(file: fileOfBytes('s.m4a', 512), isSilero: null, recordedManual: null).sizeLabel, '512 B');
+      });
+    });
+  });
+
+  group('Conversation.modeFromFlagByte', () {
+    // modeKnown (0x08) gates manual (0x10). Two bits, not one, precisely so
+    // "unknown" stays expressible: every .meta written before this reads 0, and
+    // a single bit would relabel the entire back catalogue as one mode.
+    test('an unstamped byte answers null, not auto', () {
+      expect(Conversation.modeFromFlagByte(0x00), isNull);
+      // hardStart|hardEnd|isSilero all set, mode bits clear — still unknown.
+      expect(Conversation.modeFromFlagByte(0x07), isNull);
+      // manual bit set without modeKnown is not a state the writer produces;
+      // it must not be read as manual.
+      expect(Conversation.modeFromFlagByte(0x10), isNull);
+    });
+
+    test('modeKnown alone means auto; with the manual bit means manual', () {
+      expect(Conversation.modeFromFlagByte(0x08), false);
+      expect(Conversation.modeFromFlagByte(0x18), true);
+    });
+
+    test('the mode bits do not disturb the older flags sharing the byte', () {
+      const byte = 0x01 | 0x02 | 0x04 | 0x08 | 0x10;
+      expect(byte & 0x01, 0x01, reason: 'isSilero survives');
+      expect(byte & 0x02, 0x02, reason: 'hardStart survives');
+      expect(byte & 0x04, 0x04, reason: 'hardEnd survives');
+      expect(Conversation.modeFromFlagByte(byte), true);
     });
   });
 
