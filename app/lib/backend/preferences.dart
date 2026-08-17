@@ -46,6 +46,17 @@ class SharedPreferencesUtil {
   bool get showHighPriorityMarker => getBool('showHighPriorityMarker', defaultValue: true);
   set showHighPriorityMarker(bool v) => saveBool('showHighPriorityMarker', v);
 
+  // UI-visibility only: whether a recording's row names the mode it was captured
+  // in (`Manual` / `Auto/VAD` / `Auto/AAD`) instead of the bare detector label
+  // (`VAD` / `AAD`). Off restores the original strings exactly; it changes
+  // nothing on disk, since the mode is stamped into the .meta either way.
+  //
+  // Read in Conversation.sizeLabel, which is main-isolate display code — and
+  // safe regardless, since getBool falls back to this default when prefs are
+  // uninitialised rather than throwing.
+  bool get showRecordingMode => getBool('showRecordingMode', defaultValue: true);
+  set showRecordingMode(bool v) => saveBool('showRecordingMode', v);
+
   // UI-visibility only: whether "ghost" rows (VAD-dropped / muted stretches, the
   // discards.jsonl entries) show in the conversations list. Hiding them only
   // suppresses the rows — the underlying discard records stay on disk and remain
