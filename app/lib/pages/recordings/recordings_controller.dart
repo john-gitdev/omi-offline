@@ -1884,6 +1884,14 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       audioSaveFormat: _prefs.audioSaveFormat,
       omiEnabled: false,
       priorityRecordCapMinutes: _prefs.priorityRecordMaxMinutes,
+      // Deliberately NOT set: this is a synthetic config for re-deriving one
+      // discarded span, not a mode. The discard record carries no mode, and the
+      // live one is only a guess — a discard can sit for 48 h
+      // (DiscardRecord.discardRetentionWindow), which is ample room for a switch
+      // in between. Null leaves the .meta mode bits unwritten, so the recovered
+      // row falls back to the pre-feature label rather than asserting a mode
+      // nobody verified.
+      manual: null,
     );
 
     // Re-derive ONLY the discarded span, so recovery can't pull in the neighbor
