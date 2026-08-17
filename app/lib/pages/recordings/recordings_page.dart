@@ -974,7 +974,9 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                 // are edited; the icon refreshes on return.
                 IconButton(
                   icon: FaIcon(
-                    _prefs.manualMode ? FontAwesomeIcons.hand : FontAwesomeIcons.wandMagicSparkles,
+                    // handPointer ("you tap it yourself"), not `hand` — the raised
+                    // palm reads as stop/halt rather than manual control.
+                    _prefs.manualMode ? FontAwesomeIcons.handPointer : FontAwesomeIcons.wandMagicSparkles,
                     color: _prefs.manualMode ? Colors.grey.shade300 : Colors.deepPurpleAccent,
                     size: 20,
                   ),
