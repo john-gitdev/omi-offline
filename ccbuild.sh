@@ -13,8 +13,15 @@
 #   ./ccbuild.sh                 firmware + APK
 #   ./ccbuild.sh --fw            firmware only
 #   ./ccbuild.sh --apk           APK only
+#   ./ccbuild.sh --if-changed    skip either half whose artifact is already current
 #   ./ccbuild.sh --fw --keep-build   firmware, leaving build/ intact for incrementals
 #   ./ccbuild.sh --fw --pristine     force a fresh configure, discarding build/
+#
+# --if-changed skips a half when the artifact it would write is already in
+# releases/ and no input has been touched since. --fw/--apk say which halves to
+# consider at all; --if-changed decides whether each still has work to do, and
+# --pristine only says how to build one that does — so combinations read as you
+# would expect.
 #
 # Environment overrides (all auto-detected otherwise):
 #   NCS_ROOT        default C:/ncs
@@ -32,6 +39,7 @@ DO_FW=1
 DO_APK=1
 KEEP_BUILD=0
 PRISTINE=0
+IF_CHANGED=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -39,7 +47,10 @@ while [[ $# -gt 0 ]]; do
     --apk)        DO_FW=0 ;;
     --keep-build) KEEP_BUILD=1 ;;
     --pristine)   PRISTINE=1 ;;
-    -h|--help)    sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --if-changed) IF_CHANGED=1 ;;
+    # Prints the whole leading comment block, however long it grows — the old fixed
+    # line range silently truncated its own usage text the first time one was added.
+    -h|--help)    awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "${BASH_SOURCE[0]}"; exit 0 ;;
     *)            echo "ccbuild: unknown option '$1' (try --help)" >&2; exit 2 ;;
   esac
   shift
@@ -51,8 +62,80 @@ die() { printf '\033[1;31mccbuild: %s\033[0m\n' "$*" >&2; exit 1; }
 # cmake wants Windows-style paths (C:/…), bash gives POSIX (/c/…).
 winpath() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else echo "$1"; fi; }
 
+# ── Is a build necessary? (--if-changed) ────────────────────────────────────────
+# "Not necessary" means the artifact this run would write is already in releases/
+# and nothing feeding it has been touched since. The test is deliberately biased
+# toward building: a missing artifact, an unreadable version, or one newer input
+# is enough. The two failure directions are not symmetric — an unnecessary build
+# costs minutes, while a wrongly skipped one hands you a stale zip or APK that
+# looks freshly built and you find out on the device.
+#
+# mtime rather than a content hash, because a git checkout stamps every restored
+# file with the checkout time and so errs toward rebuilding — the safe direction.
+#
+# Inputs are the repo tree only. An NCS or toolchain update changes the firmware
+# image without touching a file here, and this will not notice — run without
+# --if-changed after one.
+
+# The naming build-apk.sh and build-fw.sh both use for their output.
+short_version() {
+  local clean; clean="$(echo "$1" | tr -d '.-')"
+  if [[ "$clean" == oo* ]]; then echo "$clean"; else echo "oo$clean"; fi
+}
+
+# First input under $2 newer than $1, or nothing. Build outputs are pruned (the
+# build writes them itself), as are editor/tool directories. Two app-specific
+# exclusions, both generated rather than authored: app/test, since tests are not
+# compiled into the APK and a test edit would otherwise cost a ten-minute rebuild,
+# and the plugin/local-properties files any `flutter pub get` rewrites — a plain
+# `bash app/test.sh` run would otherwise mark the APK stale.
+newer_input() {
+  local ref="$1" tree="$2"
+  find "$tree" \
+       -path '*/build' -prune -o \
+       -path '*/.dart_tool' -prune -o \
+       -path '*/.gradle' -prune -o \
+       -path '*/.cxx' -prune -o \
+       -path '*/.claude' -prune -o \
+       -path '*/.idea' -prune -o \
+       -path '*/.vscode' -prune -o \
+       -path "$ROOT_DIR/app/test" -prune -o \
+       -name .flutter-plugins-dependencies -o \
+       -name .flutter-plugins -o \
+       -name local.properties -o \
+       -type f -newer "$ref" -print -quit 2>/dev/null
+}
+
+# True when $1 exists and nothing under $2 is newer; sets SKIP_REASON either way.
+SKIP_REASON=""
+up_to_date() {
+  local artifact="$1" tree="$2"
+  if [[ ! -f "$artifact" ]]; then
+    SKIP_REASON="$(basename "$artifact") is not in releases/"
+    return 1
+  fi
+  local newer; newer="$(newer_input "$artifact" "$tree")"
+  if [[ -n "$newer" ]]; then
+    SKIP_REASON="${newer#"$ROOT_DIR/"} is newer than $(basename "$artifact")"
+    return 1
+  fi
+  SKIP_REASON="nothing under ${tree#"$ROOT_DIR/"} is newer than $(basename "$artifact")"
+  return 0
+}
+
 # ── Firmware ────────────────────────────────────────────────────────────────────
 build_firmware() {
+  local fw_ver
+  fw_ver="$(awk -F'"' '/^CONFIG_BT_DIS_FW_REV_STR=/ {print $2; exit}' "$FW_DIR/omi.conf")"
+  [[ -n "$fw_ver" ]] || die "could not read CONFIG_BT_DIS_FW_REV_STR from $FW_DIR/omi.conf"
+
+  # Ahead of the toolchain hunt on purpose: an up-to-date firmware then skips
+  # cleanly on a machine with no NCS install, instead of dying looking for one.
+  if [[ $IF_CHANGED -eq 1 ]] && up_to_date "$RELEASES_DIR/$(short_version "$fw_ver").zip" "$ROOT_DIR/omi/firmware"; then
+    say "firmware $fw_ver — nothing to do ($SKIP_REASON)"
+    return 0
+  fi
+
   local ncs="${NCS_ROOT:-/c/ncs}"
   [[ -d "$ncs" ]] || die "NCS not found at $ncs — set NCS_ROOT to your nRF Connect SDK install."
 
@@ -77,8 +160,6 @@ build_firmware() {
 
   command -v west >/dev/null 2>&1 || die "west not on PATH even after toolchain setup ($tc)."
 
-  local fw_ver
-  fw_ver="$(awk -F'"' '/^CONFIG_BT_DIS_FW_REV_STR=/ {print $2; exit}' "$FW_DIR/omi.conf")"
   say "firmware $fw_ver  (toolchain $(basename "$tc"), $(basename "$(dirname "$zbase")"))"
 
   # BOARD_ROOT is required: the board lives one level above the app dir, and without
@@ -155,6 +236,12 @@ build_firmware() {
 build_apk() {
   local app_ver
   app_ver="$(awk '/^version:/ {print $2; exit}' "$ROOT_DIR/app/pubspec.yaml")"
+  [[ -n "$app_ver" ]] || die "could not read version from app/pubspec.yaml"
+
+  if [[ $IF_CHANGED -eq 1 ]] && up_to_date "$RELEASES_DIR/$(short_version "$app_ver").apk" "$ROOT_DIR/app"; then
+    say "app $app_ver — nothing to do ($SKIP_REASON)"
+    return 0
+  fi
   say "app $app_ver  (flutter clean + build apk --flavor dev — several minutes)"
   bash "$ROOT_DIR/app/build-apk.sh"
 }
