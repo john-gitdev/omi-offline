@@ -10,18 +10,21 @@
 # Version numbers come from app/pubspec.yaml and CONFIG_BT_DIS_FW_REV_STR as they
 # stand right now.
 #
-#   ./ccbuild.sh                 firmware + APK
+#   ./ccbuild.sh                 firmware + APK, skipping whichever is already current
+#   ./ccbuild.sh --force         build both regardless
 #   ./ccbuild.sh --fw            firmware only
 #   ./ccbuild.sh --apk           APK only
-#   ./ccbuild.sh --if-changed    skip either half whose artifact is already current
 #   ./ccbuild.sh --fw --keep-build   firmware, leaving build/ intact for incrementals
 #   ./ccbuild.sh --fw --pristine     force a fresh configure, discarding build/
 #
-# --if-changed skips a half when the artifact it would write is already in
-# releases/ and no input has been touched since. --fw/--apk say which halves to
-# consider at all; --if-changed decides whether each still has work to do, and
-# --pristine only says how to build one that does — so combinations read as you
-# would expect.
+# A plain run works out for itself what needs building: a half is skipped when the
+# artifact it would write is already in releases/ and no input has been touched
+# since, so an app-only change rebuilds just the APK and costs no firmware time.
+# It says which file made the call either way. --force overrides, and --pristine
+# implies it for the firmware half — discarding build/ to then skip the build
+# would be a strange thing to have asked for. --fw/--apk still say which halves
+# to consider at all. (--if-changed is accepted and does nothing; it is now the
+# default. --no-skip is a synonym for --force.)
 #
 # Environment overrides (all auto-detected otherwise):
 #   NCS_ROOT        default C:/ncs
@@ -39,7 +42,9 @@ DO_FW=1
 DO_APK=1
 KEEP_BUILD=0
 PRISTINE=0
-IF_CHANGED=0
+# Auto-detect by default: the common run is "pick up whatever I just changed", and
+# paying five idle minutes on the untouched half is the whole reason this is here.
+IF_CHANGED=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -47,7 +52,8 @@ while [[ $# -gt 0 ]]; do
     --apk)        DO_FW=0 ;;
     --keep-build) KEEP_BUILD=1 ;;
     --pristine)   PRISTINE=1 ;;
-    --if-changed) IF_CHANGED=1 ;;
+    --force|--no-skip) IF_CHANGED=0 ;;
+    --if-changed) ;;  # the default now; still accepted so old invocations work
     # Prints the whole leading comment block, however long it grows — the old fixed
     # line range silently truncated its own usage text the first time one was added.
     -h|--help)    awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "${BASH_SOURCE[0]}"; exit 0 ;;
@@ -131,10 +137,12 @@ build_firmware() {
 
   # Ahead of the toolchain hunt on purpose: an up-to-date firmware then skips
   # cleanly on a machine with no NCS install, instead of dying looking for one.
-  if [[ $IF_CHANGED -eq 1 ]] && up_to_date "$RELEASES_DIR/$(short_version "$fw_ver").zip" "$ROOT_DIR/omi/firmware"; then
+  if [[ $IF_CHANGED -eq 1 && $PRISTINE -eq 0 ]] &&
+     up_to_date "$RELEASES_DIR/$(short_version "$fw_ver").zip" "$ROOT_DIR/omi/firmware"; then
     say "firmware $fw_ver — nothing to do ($SKIP_REASON)"
     return 0
   fi
+  BUILT=1
 
   local ncs="${NCS_ROOT:-/c/ncs}"
   [[ -d "$ncs" ]] || die "NCS not found at $ncs — set NCS_ROOT to your nRF Connect SDK install."
@@ -242,6 +250,7 @@ build_apk() {
     say "app $app_ver — nothing to do ($SKIP_REASON)"
     return 0
   fi
+  BUILT=1
   say "app $app_ver  (flutter clean + build apk --flavor dev — several minutes)"
   bash "$ROOT_DIR/app/build-apk.sh"
 }
@@ -249,8 +258,14 @@ build_apk() {
 # ── Run ─────────────────────────────────────────────────────────────────────────
 # Firmware first: it is the half that fails fast, and the APK is the slow one. No
 # point spending ten minutes on an APK to then find the firmware would not compile.
+BUILT=0
 [[ $DO_FW  -eq 1 ]] && build_firmware
 [[ $DO_APK -eq 1 ]] && build_apk
 
+# Skipping is the default, so a run that built nothing has to say so outright —
+# otherwise it reads as a build that finished suspiciously fast.
+if [[ $BUILT -eq 0 ]]; then
+  say "everything already current — nothing rebuilt (--force builds anyway)"
+fi
 say "done — artifacts in releases/"
 ls -lh "$RELEASES_DIR" 2>/dev/null | tail -n +2 | awk '{printf "  %s  %s\n", $5, $9}'
