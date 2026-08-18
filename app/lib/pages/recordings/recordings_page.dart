@@ -71,7 +71,57 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
     if (show != _showBackToTop) setState(() => _showBackToTop = show);
   }
 
-  void _enterSelection(String date, RecordingRowType type, String id) {
+  // ─── Selection scroll anchor ────────────────────────────────────────────
+  // Entering selection mode collapses the list to the active day and drops both
+  // the Unorganized section and every marker sub-row, so the row just
+  // long-pressed would otherwise jump — usually far up the page, often out of
+  // view. Leaving selection mode puts it all back and jumps it a second time.
+  // Both transitions measure the pressed row's top edge before the rebuild and
+  // scroll it back to that same y afterwards, so it stays under the finger.
+  // Only the anchored row wears _anchorRowKey (see BatchCard.anchorId); it is
+  // left set after a transition so the exit half can measure the same row.
+  String? _anchorId;
+  final GlobalKey _anchorRowKey = GlobalKey();
+
+  double? _anchorDy() {
+    final box = _anchorRowKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return null;
+    return box.localToGlobal(Offset.zero).dy;
+  }
+
+  /// Puts the anchored row's top edge back on [targetDy] after the relayout.
+  ///
+  /// "If possible": the collapsed list can be shorter than the scroll offset it
+  /// inherits, which both clamps the offset and can leave the row unbuilt — so
+  /// an out-of-range offset is pulled back in first and the measurement retried
+  /// on the next frame. A row that simply cannot reach [targetDy] (a short day
+  /// at the top of the list) lands as close as the scroll extents allow.
+  void _restoreAnchor(double targetDy, {bool retry = true}) {
+    // scheduleFrame because a post-frame callback only runs if a frame is
+    // actually coming: the retry below can follow a pass that changed nothing,
+    // and nothing else would ask for one.
+    WidgetsBinding.instance.scheduleFrame();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.hasClients) return;
+      final pos = _scrollController.position;
+      if (pos.pixels < pos.minScrollExtent || pos.pixels > pos.maxScrollExtent) {
+        _scrollController.jumpTo(pos.pixels.clamp(pos.minScrollExtent, pos.maxScrollExtent));
+        if (retry) _restoreAnchor(targetDy, retry: false);
+        return;
+      }
+      final dy = _anchorDy();
+      if (dy == null) {
+        if (retry) _restoreAnchor(targetDy, retry: false);
+        return;
+      }
+      final target = (pos.pixels + (dy - targetDy)).clamp(pos.minScrollExtent, pos.maxScrollExtent);
+      if ((target - pos.pixels).abs() < 0.5) return;
+      _scrollController.jumpTo(target);
+    });
+  }
+
+  void _enterSelection(String date, RecordingRowType type, String id, double? anchorDy) {
+    _anchorId = id;
     setState(() {
       _selDate = date;
       _selType = type;
@@ -80,6 +130,7 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
         ..add(id);
     });
     _selBarAnim.forward(from: 0);
+    if (anchorDy != null) _restoreAnchor(anchorDy);
   }
 
   void _toggleSelection(String id) {
@@ -100,11 +151,15 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
     // list) once it's fully off-screen.
     _selBarAnim.reverse().whenComplete(() {
       if (mounted && _selBarAnim.status == AnimationStatus.dismissed) {
+        // Where the pinned row sits now; re-expanding puts every other day back
+        // above it, so it has to be scrolled back to this same spot after.
+        final anchorDy = _anchorDy();
         setState(() {
           _selDate = null;
           _selType = null;
           _selIds.clear();
         });
+        if (anchorDy != null) _restoreAnchor(anchorDy);
       }
     });
   }
@@ -1460,8 +1515,10 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                                               activeSelectionType:
                                                   (_inSelectionMode && batch.dateString == _selDate) ? _selType : null,
                                               selectedIds: _selIds,
-                                              onEnterSelection: (type, id) =>
-                                                  _enterSelection(batch.dateString, type, id),
+                                              anchorId: _anchorId,
+                                              anchorKey: _anchorRowKey,
+                                              onEnterSelection: (type, id, dy) =>
+                                                  _enterSelection(batch.dateString, type, id, dy),
                                               onToggleSelection: _toggleSelection,
                                             );
                                           },
