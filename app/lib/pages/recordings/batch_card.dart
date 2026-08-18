@@ -266,6 +266,18 @@ Widget _selectionCheck(bool selected) => Padding(
       ),
     );
 
+/// On-screen y of a row's top edge, read at long-press time.
+///
+/// Entering selection mode relays the whole list out (it collapses to the
+/// active day, and marker sub-rows disappear), which would otherwise scroll the
+/// row out from under the finger. The page pins the pressed row back to this y
+/// once the new layout is in. Null when there is no laid-out box to measure.
+double? rowAnchorDy(BuildContext context) {
+  final box = context.findRenderObject() as RenderBox?;
+  if (box == null || !box.hasSize) return null;
+  return box.localToGlobal(Offset.zero).dy;
+}
+
 class ConversationTile extends StatelessWidget {
   final Conversation conversation;
   final List<MarkerConversation> markers;
@@ -282,8 +294,9 @@ class ConversationTile extends StatelessWidget {
   final bool selectable;
   final bool selected;
 
-  /// Long-press in normal mode → start a recording-scoped selection here.
-  final VoidCallback onEnterSelection;
+  /// Long-press in normal mode → start a recording-scoped selection here. The
+  /// argument is the row's on-screen top edge (see [rowAnchorDy]).
+  final void Function(double? anchorDy) onEnterSelection;
 
   /// Tap/long-press while selecting → toggle this row in/out of the set.
   final VoidCallback onToggleSelection;
@@ -340,7 +353,8 @@ class ConversationTile extends StatelessWidget {
           onTap: selectionActive
               ? (selectable ? onToggleSelection : null)
               : (isPassthrough ? null : () => onConversationTap(conversation)),
-          onLongPress: selectionActive ? (selectable ? onToggleSelection : null) : onEnterSelection,
+          onLongPress:
+              selectionActive ? (selectable ? onToggleSelection : null) : () => onEnterSelection(rowAnchorDy(context)),
           borderRadius: BorderRadius.circular(8),
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
@@ -425,8 +439,9 @@ class GhostRow extends StatelessWidget {
   final bool selectable;
   final bool selected;
 
-  /// Long-press in normal mode → start a ghost-scoped selection here.
-  final VoidCallback onEnterSelection;
+  /// Long-press in normal mode → start a ghost-scoped selection here. The
+  /// argument is the row's on-screen top edge (see [rowAnchorDy]).
+  final void Function(double? anchorDy) onEnterSelection;
   final VoidCallback onToggleSelection;
 
   const GhostRow({
@@ -467,7 +482,8 @@ class GhostRow extends StatelessWidget {
     final active = selectionActive && selectable;
     Widget row = InkWell(
       onTap: selectionActive ? (selectable ? onToggleSelection : null) : onTap,
-      onLongPress: selectionActive ? (selectable ? onToggleSelection : null) : onEnterSelection,
+      onLongPress:
+          selectionActive ? (selectable ? onToggleSelection : null) : () => onEnterSelection(rowAnchorDy(context)),
       borderRadius: BorderRadius.circular(8),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
@@ -641,8 +657,16 @@ class BatchCard extends StatelessWidget {
   final Set<String> selectedIds;
 
   /// Long-press on a row → enter selection scoped to (this day, that type, id).
-  final void Function(RecordingRowType, String) onEnterSelection;
+  /// The third argument is the row's on-screen top edge, so the page can pin it
+  /// there across the relayout (see [rowAnchorDy]).
+  final void Function(RecordingRowType, String, double?) onEnterSelection;
   final void Function(String) onToggleSelection;
+
+  /// Row the page wants kept in place across a selection-mode relayout — a
+  /// recording path or a discard id — and the key it measures it with. Only the
+  /// card holding that row wears [anchorKey]; ids are unique, so exactly one does.
+  final String? anchorId;
+  final GlobalKey? anchorKey;
 
   const BatchCard({
     super.key,
@@ -668,7 +692,13 @@ class BatchCard extends StatelessWidget {
     this.selectedIds = const {},
     required this.onEnterSelection,
     required this.onToggleSelection,
+    this.anchorId,
+    this.anchorKey,
   });
+
+  /// Tags the pinned row so the page can find where it landed.
+  Widget _anchored(String id, Widget row) =>
+      (anchorKey != null && id == anchorId) ? KeyedSubtree(key: anchorKey, child: row) : row;
 
   @override
   Widget build(BuildContext context) {
@@ -817,13 +847,13 @@ class BatchCard extends StatelessWidget {
             ...items.map((r) {
               if (r.discard != null) {
                 final d = r.discard!;
-                return GhostRow(
+                final ghost = GhostRow(
                   key: ValueKey('ghost_${d.id}'),
                   discard: d,
                   selectionActive: inSelection,
                   selectable: selectingGhosts,
                   selected: selectedIds.contains(d.id),
-                  onEnterSelection: () => onEnterSelection(RecordingRowType.ghost, d.id),
+                  onEnterSelection: (dy) => onEnterSelection(RecordingRowType.ghost, d.id, dy),
                   onToggleSelection: () => onToggleSelection(d.id),
                   onTap: () => showDiscardSheet(
                     context,
@@ -832,18 +862,19 @@ class BatchCard extends StatelessWidget {
                     onDeleteNow: onDeleteDiscard,
                   ),
                 );
+                return _anchored(d.id, ghost);
               }
               final c = r.recording!;
               final fileKey = c.file.path.split('/').last;
               final markers = markerMap[fileKey] ?? [];
               final uploadKey = c.uploadKey;
-              return ConversationTile(
+              final tile = ConversationTile(
                 conversation: c,
                 markers: markers,
                 selectionActive: inSelection,
                 selectable: selectingRecordings,
                 selected: selectedIds.contains(c.file.path),
-                onEnterSelection: () => onEnterSelection(RecordingRowType.recording, c.file.path),
+                onEnterSelection: (dy) => onEnterSelection(RecordingRowType.recording, c.file.path, dy),
                 onToggleSelection: () => onToggleSelection(c.file.path),
                 onConversationTap: onConversationTap,
                 onDeleteMarkerConversation: onDeleteMarkerConversation,
@@ -856,6 +887,7 @@ class BatchCard extends StatelessWidget {
                 ),
                 onMarkerTap: onMarkerTap,
               );
+              return _anchored(c.file.path, tile);
             }),
           ],
         ),
