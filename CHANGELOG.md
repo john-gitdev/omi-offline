@@ -4,9 +4,11 @@ Patch releases are rolled up into their minor version. Each section reflects the
 
 ## App
 
-### 0.34
+### 0.35
 
 - **Fix: long-pressing a recording no longer scrolls it away from you.** Long-pressing a recording or a ghost row starts a selection on that day, and starting one hides everything that is not that day — the other days' cards, the Unorganized section, and the marker rows under each recording. All of that sits above the row you pressed, so the row jumped up the page the instant the selection opened, often out of view entirely, and jumped back down when you left the selection. The list now scrolls itself so the row you pressed stays where it already was on screen, both when the selection opens and when it closes.
+
+### 0.34
 
 - **Change: the Manual mode icon no longer looks like a Stop sign.** The mode indicator in the top bar showed a raised open palm for Manual — an icon whose own description reads "halt, stop" — which suggested the app was refusing something rather than telling you which mode you are in. It is now a pointing hand, matching the icon already used for Button Configuration and reading as "you start and stop this yourself". Automatic keeps its wand. Nothing about the modes themselves changed.
 
