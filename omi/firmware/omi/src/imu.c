@@ -163,9 +163,22 @@ static int lsm6dsl_power_ensure_on(void)
 		return err;
 	}
 
-	/* Give IMU time to be ready for I2C transactions. */
-	k_msleep(LSM6DS_POWER_ON_DELAY_MS);
-	LOG_INF("lsm6dsl_en asserted");
+	/* The settle is for the part BOOTING after its rail comes up, so it is owed once
+	 * per power-up and not once per call. This runs on every time sync, every VAD-sleep
+	 * transition and the power-off path, and slept 50 ms every single time for a rail
+	 * that has been up since the first call.
+	 *
+	 * A static rather than a pin read-back: the pin is a plain GPIO_OUTPUT, so reading
+	 * it is not guaranteed to report the driven level on every SoC, and the two states
+	 * that could invalidate the cache both reset it anyway — a reboot re-runs main(),
+	 * and System OFF resets the SoC on wake. Fails safe in the direction that costs
+	 * 50 ms, never in the direction that talks to an unbooted part. */
+	static bool settled;
+	if (!settled) {
+		k_msleep(LSM6DS_POWER_ON_DELAY_MS);
+		settled = true;
+		LOG_INF("lsm6dsl_en asserted");
+	}
 
 	return 0;
 }
