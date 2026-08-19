@@ -544,10 +544,14 @@ static inline void pack_u32_le(uint8_t *dst, uint32_t v)
 /* Current advertising interval, packed. Defined after adv_desired_mode below. */
 static uint32_t adv_modes_packed(void);
 
-/* Pack the 96-byte drop-counter payload. Shared by the read handler (0x0062)
+/* Lazy per-boot session id. Defined with the marker writers far below; declared here
+ * because the diagnostics payload reports it. */
+static uint32_t ensure_device_session_id(void);
+
+/* Pack the 100-byte drop-counter payload. Shared by the read handler (0x0062)
  * and the notify path (diagnostics_drops_notify) so the wire layout has exactly
  * one definition. */
-static void diagnostics_drops_pack(uint8_t payload[96])
+static void diagnostics_drops_pack(uint8_t payload[100])
 {
     uint32_t block_drops = (uint32_t) atomic_get(&storage_block_drops);
     uint32_t last_drop_ms = (uint32_t) atomic_get(&last_storage_drop_uptime_ms);
@@ -592,7 +596,7 @@ static void diagnostics_drops_pack(uint8_t payload[96])
      * sd_worker & codec peak stack used + ring_max_io_ms + ring_io_errors +
      * Each field is appended at the end so older
      * app builds (which read only the first
-     * 20 / 28 / 32 / 40 / 44 / 60 / 68 / 76 / 84 / 92 bytes) keep working unchanged.
+     * 20 / 28 / 32 / 40 / 44 / 60 / 68 / 76 / 84 / 92 / 96 bytes) keep working unchanged.
      *
      * last_mic_frame_uptime_ms (84) + vad_voiced_ms (88): mic liveness and capture
      * duty. The first, against now_ms, answers "is the mic delivering right now"
@@ -642,6 +646,23 @@ static void diagnostics_drops_pack(uint8_t payload[96])
     pack_u32_le(payload + 84, last_mic_frame);
     pack_u32_le(payload + 88, voiced_ms);
     pack_u32_le(payload + 92, adv_modes_packed());
+    /* device_session_id (96): the id every recording of THIS boot is stamped with.
+     *
+     * It is here, rather than inferred app-side, so that the phone's clock anchor is
+     * atomic: one read hands back the session id and now_ms (offset 16) together, and
+     * two fields from the same read cannot disagree about which boot they describe.
+     * The app pairs them with its own wall clock to place recordings the Omi could not
+     * timestamp (device_clock_anchor.dart). Inferring the live session from synced bin
+     * filenames instead does not work — CMD_LIST_FILES omits the bin currently being
+     * written, so after a reboot with no rotation yet the newest listed file belongs to
+     * the PREVIOUS boot, which is exactly the case the correction exists for.
+     *
+     * ensure_ rather than a plain atomic_get: the id is allocated lazily on first use,
+     * so a boot that has not yet written a marker or a bin would report 0 here and then
+     * stamp its recordings with a different, real id moments later — an anchor bound to
+     * a session that never existed. Forcing allocation on the first diagnostics read
+     * costs one sys_rand32_get() and makes the id the app sees the id it will meet. */
+    pack_u32_le(payload + 96, ensure_device_session_id());
 }
 
 static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
@@ -650,7 +671,7 @@ static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn,
                                               uint16_t len,
                                               uint16_t offset)
 {
-    uint8_t payload[96];
+    uint8_t payload[100];
     diagnostics_drops_pack(payload);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
 }
@@ -774,7 +795,7 @@ static struct bt_gatt_service diagnostics_service = BT_GATT_SERVICE(diagnostics_
  * AUTO_UPDATE_MTU makes this the rare exception, not the rule. */
 static void diagnostics_drops_notify(void)
 {
-    uint8_t payload[96];
+    uint8_t payload[100];
     diagnostics_drops_pack(payload);
     int err = bt_gatt_notify(NULL, &diagnostics_service_attr[4], payload, sizeof(payload));
     if (err && err != -ENOTCONN) {
