@@ -85,13 +85,18 @@ typedef enum {
     DIAG_IMU_POWER_STATE = 19,        /* LSM6DS3TR-C accel/gyro power state, read back from the part
                                        * rather than assumed. Nothing in the built firmware consumes
                                        * motion data (accel.c is not in CMakeLists.txt) — only the
-                                       * 24-bit timestamp counter — so both should be powered down,
-                                       * and a gyro left at the driver's default ODR is ~1 mA off a
-                                       * 150 mAh cell for nothing. lsm6dsl_force_minimal_run_mode()
-                                       * asks for 12.5 Hz accel + 0 Hz gyro, but its own comment
-                                       * admits "not all drivers accept 0 Hz", both return codes were
-                                       * discarded, and logging is compiled out since oo-2.10.0 — so
-                                       * nobody has ever confirmed the request lands.
+                                       * 24-bit timestamp counter.
+                                       * The build settles what this record was first added to hunt:
+                                       * CONFIG_LSM6DSL_{GYRO,ACCEL}_ODR are both 0 and
+                                       * lsm6dsl_init_chip() writes them into ODR_G/ODR_XL, so both
+                                       * halves come up powered down and the feared free-running gyro
+                                       * does not exist. The accel is then deliberately switched back
+                                       * ON at 12.5 Hz — the part gates its timebase when both halves
+                                       * are down, which would stop the timestamp counter and break
+                                       * the System OFF time bridge — but in LOW-POWER mode, since
+                                       * XL_HM_MODE resets to high-performance (~170 uA, and
+                                       * ODR-independent) for samples nobody reads.
+                                       * Healthy reading: CTRL2_G 0, CTRL1_XL 0x10, CTRL6_C 0x10.
                                        * arg0 = bit 15 IMU_PWR_READ_FAILED, bit 1 gyro attr_set
                                        *        returned non-zero, bit 0 accel likewise. Bit 15 is a
                                        *        separate bit and not a magic arg1 value on purpose:
