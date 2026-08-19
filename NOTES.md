@@ -357,6 +357,44 @@ Battery voltage on the 150 mAh LiPo changes on the order of millivolts per minut
   in both on purpose: slave latency would cut idle cost further but delays
   central→peripheral commands by `latency × interval`, and everything on this link is
   command/response.
+- **~~IMU gyro left running (~1 mA)~~ — RULED OUT from the build, no device needed. The accel
+  next to it was the real find, and is now fixed.** The suspicion was that
+  `lsm6dsl_force_minimal_run_mode()` asks the gyro for 0 Hz, discards the return code, admits
+  in its own comment that "not all drivers accept 0 Hz", and has had logging compiled out
+  since `oo-2.10.0` — so nobody had ever confirmed the request lands. Three facts from the
+  tree settle it:
+  - `CONFIG_LSM6DSL_GYRO_ODR` and `CONFIG_LSM6DSL_ACCEL_ODR` are both **0** ("selected at
+    runtime") in the generated `.config`, and `lsm6dsl_init_chip()` writes each straight into
+    ODR_G / ODR_XL. **Both halves come up powered down**, so there was never a free-running
+    gyro to find.
+  - The driver *does* accept 0 Hz — `lsm6dsl_odr_map[0] == 0`, so `freq_to_odr_val(0)` returns
+    index 0 rather than `-EINVAL`. The "not all drivers accept 0 Hz" caveat was never true of
+    this one.
+  - Init order makes the reads meaningful: I2C (prio 50) → the `lsm6dsl_en_pin`
+    `regulator-fixed` with `regulator-boot-on` (75) → LSM6DSL (90), so the part is powered
+    before the driver configures it.
+
+  **What was actually wrong: the accelerometer, and it is not idleness.** The accel must keep
+  running or the part gates its internal timebase and the 24-bit timestamp counter stops — and
+  that counter *is* the System OFF time bridge. So `lsm6dsl_force_minimal_run_mode()` turning
+  the accel **on** at 12.5 Hz is correct and load-bearing, despite the name. But `XL_HM_MODE`
+  (CTRL6_C bit 4) **resets to 0 = high-performance**, and high performance on this part is
+  ODR-independent: 12.5 Hz costs the same ~170 µA as 6.6 kHz. Since nothing reads the samples
+  (`accel.c` is not in `CMakeLists.txt`), that accuracy buys literally nothing.
+  `lsm6dsl_set_accel_low_power()` now sets `XL_HM_MODE = 1` **before** the ODR, so the accel
+  never spends an interval in high-performance mode. Roughly an order of magnitude less, and
+  it lands where it matters most — during System OFF the IMU is one of the very few things
+  still drawing.
+  **Do not "fix" this by powering the accel down.** That stops the timestamp counter and
+  silently breaks the cross-reboot time bridge, which fails in the direction nobody notices
+  until recordings are mis-dated. Confirm on-device via `DIAG_IMU_POWER_STATE` (19): a healthy
+  reading is `CTRL2_G == 0`, `CTRL1_XL == 0x10`, `CTRL6_C == 0x10`.
+  **Two placement bugs are still open** and are the reason the low-power write does not happen
+  at boot: `lsm6dsl_force_minimal_run_mode()` is only ever reached from
+  `lsm6dsl_time_prepare_for_system_off()` (there is no IMU setup in the boot path at all), and
+  that function returns early on `!rtc_is_valid()` — so **before the first time-sync of a boot
+  it never runs**, and the accel sits in high-performance mode until a phone connects. Fixing
+  that is a separate change: call it once from the boot path, unconditionally.
 - **Where the remaining battery actually is: capture duty, not idle.** `aad.c`'s own comment on
   `vad_voiced_ms` says it — the share of the day the VAD holds a recording open "governs how
   much of the day is encoded and written, and so [is] the largest remaining battery lever".
