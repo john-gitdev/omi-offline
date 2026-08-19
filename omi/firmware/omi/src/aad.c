@@ -80,6 +80,14 @@ static uint32_t vad_voiced_ms;
 static atomic_t sd_pause_pending = ATOMIC_INIT(0); /* 1=pause, 2=resume */
 static atomic_t adv_slow_req = ATOMIC_INIT(0);
 static atomic_t adv_fast_req = ATOMIC_INIT(0);
+/* Posted by the VAD-sleep path instead of doing the work inline. The checkpoint is
+ * an unconditional 50 ms rail settle, six I2C round trips and an NVS write — and an
+ * NVS write can trigger a page erase (~85 ms of stalled CPU) when the sector fills.
+ * That ran on the MIC THREAD, via aad_process_audio(), at every silence transition:
+ * up to ~140 ms of stall on the capture path, every 10 s of quiet in auto mode. The
+ * dmic driver's four buffers (400 ms) absorbed it, so nothing was lost — but nothing
+ * about it belonged there. */
+static atomic_t imu_checkpoint_pending = ATOMIC_INIT(0);
 
 /* volatile: written on the button/mic threads (aad_set_threshold) and read on the
  * AAD handler thread — notably the re-read in aad_thread_fn that undoes a pause
@@ -527,6 +535,19 @@ static void aad_thread_fn(void *p1, void *p2, void *p3)
             transport_set_adv_slow();
         if (atomic_cas(&adv_fast_req, 1, 0))
             transport_set_adv_fast();
+
+#ifdef CONFIG_LSM6DSL
+        /* LAST in the pass, deliberately: this is slower than everything above it by
+         * orders of magnitude, so a pause/resume or advertising change posted in the
+         * same breath is serviced before it rather than behind it.
+         *
+         * It cannot delay a resume either. The resume path clears the SD pause INLINE
+         * (see the 0xFFFFFFFD write above) precisely because the async one is too slow
+         * to be trusted with it; what is posted here is the idempotent backstop. */
+        if (atomic_cas(&imu_checkpoint_pending, 1, 0)) {
+            lsm6dsl_time_prepare_for_system_off();
+        }
+#endif
     }
 }
 
@@ -634,9 +655,13 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
                 vad_sleeping = true;
 
 #ifdef CONFIG_LSM6DSL
-                /* Checkpoint the RTC vs IMU timestamp before we stop processing.
-                 * This allows us to recover lost time if we reboot during silence. */
-                lsm6dsl_time_prepare_for_system_off();
+                /* Checkpoint the RTC vs IMU timestamp so a reboot during silence can
+                 * recover the lost wall-clock. Posted, not called: see
+                 * imu_checkpoint_pending. The k_sem_give below is the one that carries
+                 * it, so this must stay above it. Deferring cannot skew the result —
+                 * the checkpoint stores a (UTC, IMU counter) PAIR sampled together, so
+                 * a pair taken a few ms later is equally valid. */
+                atomic_set(&imu_checkpoint_pending, 1);
 #endif
 
                 atomic_set(&sd_pause_pending, 1);
