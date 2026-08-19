@@ -82,6 +82,27 @@ typedef enum {
                                        *          force-wake happens while the threshold is still
                                        *          32769, so "resumed @32769" is normal and does NOT
                                        *          mean capture resumed into standby. */
+    DIAG_IMU_POWER_STATE = 19,        /* LSM6DS3TR-C accel/gyro power state, read back from the part
+                                       * rather than assumed. Nothing in the built firmware consumes
+                                       * motion data (accel.c is not in CMakeLists.txt) — only the
+                                       * 24-bit timestamp counter — so both should be powered down,
+                                       * and a gyro left at the driver's default ODR is ~1 mA off a
+                                       * 150 mAh cell for nothing. lsm6dsl_force_minimal_run_mode()
+                                       * asks for 12.5 Hz accel + 0 Hz gyro, but its own comment
+                                       * admits "not all drivers accept 0 Hz", both return codes were
+                                       * discarded, and logging is compiled out since oo-2.10.0 — so
+                                       * nobody has ever confirmed the request lands.
+                                       * arg0 = [accel_rc u8 high][gyro_rc u8 low], the sensor_attr_set
+                                       *        returns, sign-truncated; 0xFFFF = the register read
+                                       *        itself failed and arg1 is meaningless.
+                                       * arg1 = [CTRL1_XL][CTRL2_G][CTRL6_C][CTRL7_G], high byte first.
+                                       *        ODR_XL/ODR_G are the top nibbles of the first two: 0
+                                       *        means powered down. XL_HM_MODE (CTRL6_C bit 4) and
+                                       *        G_HM_MODE (CTRL7_G bit 7) are set when that part is in
+                                       *        low-power rather than high-performance mode.
+                                       * Emitted only when the state changes (plus the first call after
+                                       * boot): the producer runs on every time sync, i.e. every
+                                       * connect, and a steady state need not refill a 128-slot ring. */
 } diag_event_code_t;
 
 /* arg0 values for DIAG_MIC_STATE. Appended-only, same discipline as the codes. */
