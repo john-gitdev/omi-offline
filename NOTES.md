@@ -357,7 +357,25 @@ Battery voltage on the 150 mAh LiPo changes on the order of millivolts per minut
   in both on purpose: slave latency would cut idle cost further but delays
   central→peripheral commands by `latency × interval`, and everything on this link is
   command/response.
-- **Idle CPU wakeups — OPEN, and the largest remaining item.** Three threads poll on a timer
+- **Where the remaining battery actually is: capture duty, not idle.** `aad.c`'s own comment on
+  `vad_voiced_ms` says it — the share of the day the VAD holds a recording open "governs how
+  much of the day is encoded and written, and so [is] the largest remaining battery lever".
+  Idle work is µA; recording is mA (mic + PDM + the HFXO it holds up, Opus encode, NAND
+  writes). Read `vadVoicedMs` against `nowUptimeMs` (`0x0062`, offsets 88 and 16) off a device
+  after a normal day before optimising anything else.
+  **Do not confuse the two silence timers** — they are unrelated and only one costs power:
+  - `CONFIG_OMI_VAD_HOLD_MS` (`omi.conf`, **10 s**; the Kconfig default of 3 s is overridden)
+    is the **firmware** tail. At 10 s of silence `aad_process_audio()` clears
+    `vad_is_recording`, pauses SD writes and drops advertising to slow (`aad.c:620`). This is
+    the on-device lever. Note it does **not** stop the mic in auto mode — auto never parks, so
+    the mic/PDM/HFXO floor is paid regardless; the hold gates the write + encode tail only.
+  - `vadSplitSeconds` (**120 s** default) is **app-side only** — `VadAudioProcessor` and
+    `RecordingsManager` use it to decide where to *split* already-captured audio during the
+    decode pass on the phone. By the time it is applied the audio is long since encoded and on
+    the card, so it has **zero** effect on device power. Changing it changes recording
+    boundaries in the UI, nothing else.
+
+- **Idle CPU wakeups — `aad.c` done, two left (and both are small).** Three threads poll on a timer
   with nothing to do in the dominant idle state: `aad.c` `aad_thread_fn` at 10 Hz
   (`k_sem_take(&aad_sem, K_MSEC(100))`), `mic.c` `mic_thread_function` at 10 Hz (the
   `k_sleep(K_MSEC(100))` in its `!mic_running` branch — which runs **only** while the mic is
@@ -365,12 +383,13 @@ Battery voltage on the 150 mAh LiPo changes on the order of millivolts per minut
   loop at 2 Hz (`k_msleep(500)`). ~22 wakes/s doing nothing. Same class of defect as the
   25 Hz button poll fixed in "Button: Interrupt-Driven" above; these three never got the same
   treatment. Notes on each, in descending order of value-per-risk:
-  - **`aad.c` — safe, one line.** All seven `atomic_set` of the four flags the loop reads
-    (`wake_pending`, `sd_pause_pending`, `adv_slow_req`, `adv_fast_req`) are already paired
+  - **`aad.c` — DONE.** All seven `atomic_set` of the four flags the loop reads
+    (`wake_pending`, `sd_pause_pending`, `adv_slow_req`, `adv_fast_req`) were already paired
     with `k_sem_give(&aad_sem)` (lines 316/404/460/610–611/630–631/737/848–849), and nothing
-    in the loop body is time-driven, so the 100 ms timeout is pure polling. The semaphore's
+    in the loop body is time-driven, so the 100 ms timeout was pure polling. The semaphore's
     limit of 1 is not a hazard: one pass handles all four flags, so coalesced gives cannot
-    lose an event. `K_MSEC(100)` → `K_FOREVER`.
+    lose an event. Now `K_FOREVER`. **Anything added to that loop must signal the semaphore
+    or it will never run.**
   - **`mic.c` — use a bounded wait, NOT `K_FOREVER`.** Four sites set `mic_running = true`
     (`mic_start`, `mic_resume`, `mic_reset`, `mic_on`) and would each need to signal. More to
     the point, `mic_pause()` and `mic_reset()` both have STOP-failure bail paths that leave
