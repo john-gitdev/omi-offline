@@ -309,19 +309,21 @@ class DiagLogRecord {
           // the order of 1 mA off a 150 mAh cell, which would make it the single largest
           // draw on the device, and until this record existed nothing could see it: the
           // two sensor_attr_set returns were discarded and logging is compiled out.
-          if (arg0 == 0xFFFF) {
-            return 'IMU power state UNREADABLE — the I2C register read failed, ignore arg1';
+          //
+          // Bit 15 carries "could not read" rather than a magic arg1 value, because the
+          // all-good reading is arg1 == 0 — byte-for-byte what a failed read would send.
+          final accelSetFailed = (arg0 & 0x1) != 0;
+          final gyroSetFailed = (arg0 & 0x2) != 0;
+          if ((arg0 & 0x8000) != 0) {
+            final accelRc = (arg1 >> 8) & 0xFF;
+            final gyroRc = arg1 & 0xFF;
+            return 'IMU power state UNREADABLE — I2C register read failed '
+                '(set rc accel=$accelRc gyro=$gyroRc, as signed bytes)';
           }
-          final accelRc = (arg0 >> 8) & 0xFF;
-          final gyroRc = arg0 & 0xFF;
           final accelOdr = (arg1 >> 28) & 0x0F; // CTRL1_XL[7:4]
           final gyroOdr = (arg1 >> 20) & 0x0F; // CTRL2_G[7:4]
           final accelLowPower = ((arg1 >> 8) & 0x10) != 0; // CTRL6_C bit 4 XL_HM_MODE
           final gyroLowPower = (arg1 & 0x80) != 0; // CTRL7_G bit 7 G_HM_MODE
-          // Return codes are sign-truncated to a byte: 0 is success, anything else is
-          // the errno the driver gave back. Shown only when one of them is non-zero,
-          // since a refused request is the interesting case.
-          final rcNote = (accelRc == 0 && gyroRc == 0) ? '' : ' [set rc accel=$accelRc gyro=$gyroRc]';
           // The high-performance-disable bits only mean anything on a part that is
           // running; on a powered-down one they say nothing, so they are not shown.
           final gyroPart = gyroOdr == 0
@@ -331,6 +333,13 @@ class DiagLogRecord {
           final accelPart = accelOdr == 0
               ? 'accel OFF'
               : 'accel ODR=0x${accelOdr.toRadixString(16)}${accelLowPower ? ' low-power' : ' HIGH-PERF'}';
+          // A refused request is worth naming separately from the resulting state: it
+          // says the driver is the problem, not the part.
+          final refused = [
+            if (accelSetFailed) 'accel',
+            if (gyroSetFailed) 'gyro',
+          ];
+          final rcNote = refused.isEmpty ? '' : ' [driver refused: ${refused.join(' + ')}]';
           return 'IMU: $gyroPart, $accelPart$rcNote';
         }
       default:
