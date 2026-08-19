@@ -472,7 +472,19 @@ static void aad_thread_fn(void *p1, void *p2, void *p3)
     LOG_INF("AAD handler thread running");
 
     while (1) {
-        k_sem_take(&aad_sem, K_MSEC(100));
+        /* K_FOREVER, not a poll. Every producer of the four flags read below signals
+         * this semaphore in the same breath as its atomic_set — the WAKE ISR, both
+         * advertising-mode requests, and all three SD pause/resume posts — so a
+         * timeout could only ever wake this thread to find nothing to do. The
+         * limit-1 semaphore cannot drop an event either: a single pass services all
+         * four flags, so gives that coalesce still leave every flag handled.
+         * Anything added here later MUST signal the same way or it will never run.
+         *
+         * This costs no latency: the ISR's k_sem_give is what released this thread
+         * before, not the timeout. And it is nowhere near the audio path — capture
+         * and the pre-roll ring belong to the mic thread (mic.c
+         * process_audio_buffer -> aad_process_audio), never to this one. */
+        k_sem_take(&aad_sem, K_FOREVER);
 
         /* WAKE event from ISR */
         if (atomic_cas(&wake_pending, 1, 0)) {
