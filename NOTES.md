@@ -333,8 +333,59 @@ Battery voltage on the 150 mAh LiPo changes on the order of millivolts per minut
 
 ### Deferred Optimizations
 
-- **BT TX power** (`CONFIG_BT_CTLR_TX_PWR_ANTENNA=8` → 0 or 4 dBm): saves power during every radio tx. Requires testing with phone in pocket/bag to confirm no audio dropouts.
-- **BLE connection interval** (7.5–15ms → 30ms): large power savings from longer radio sleep. Requires empirical validation that Opus streaming (50 fps, 80 B/frame, MTU 498) doesn't overflow buffers or cause audio gaps at the longer interval. The `update_conn_params()` in `transport.c` hardcodes the interval at runtime and would need updating alongside the Kconfig values.
+- **~~BT TX power~~ — WITHDRAWN, the entry was wrong twice over.** It named
+  `CONFIG_BT_CTLR_TX_PWR_ANTENNA=8` in `omi.conf`, which never did anything: that file
+  configures the **application** core, which runs the BLE host only
+  (`boards/omi/Kconfig.defconfig` gives cpuapp `BT_HCI_IPC` and gives `BT_CTLR` to cpunet),
+  so every `BT_CTLR_*` symbol belongs to the **network** core — and `8` is the nRF52840's
+  ceiling, not this chip's, which the line's own comment said out loud. The real setting is
+  `CONFIG_BT_CTLR_TX_PWR_PLUS_3` in `boards/omi/omi_nrf5340_cpunet_defconfig`. The dead line
+  is now gone.
+  **Do not pursue it there either.** Idle TX duty is ~0.1 % — one advertising event per
+  second, three channels, ~320 µs each — so +3 → 0 dBm is worth single-digit µA. Compare the
+  fast→slow advertising change, which cut the *number* of events tenfold and bought
+  300–500 µA (`adv_param_slow`, `transport.c`). Interval is a 10× lever; TX power is a
+  ~1.5× lever on a 0.1 % duty cycle, and it costs 3 dB of link margin on a device whose
+  acquisition is already marginal (BLE_Research.md, Wedge 9, −88/−93 dBm).
+  `CONFIG_BT_CTLR_TX_PWR_DYNAMIC_CONTROL` is already on in that defconfig, so per-role
+  runtime control needs no Kconfig change if this is ever revisited with a PPK2 in hand.
+- **~~BLE connection interval~~ — DONE (`oo-3.0.0`).** Superseded by the two-set scheme in
+  `transport.c`: `CONN_PARAM_IDLE_*` (100–200 ms) and `CONN_PARAM_XFER_*` (7.5–22.5 ms),
+  selected from `storage_transfer_active()` in the idle-disconnect poll. The old entry's
+  worry — that a longer interval would starve the audio path — does not arise, because the
+  transfer set keeps the historic values and only the idle link is slowed. `latency` stays 0
+  in both on purpose: slave latency would cut idle cost further but delays
+  central→peripheral commands by `latency × interval`, and everything on this link is
+  command/response.
+- **Idle CPU wakeups — OPEN, and the largest remaining item.** Three threads poll on a timer
+  with nothing to do in the dominant idle state: `aad.c` `aad_thread_fn` at 10 Hz
+  (`k_sem_take(&aad_sem, K_MSEC(100))`), `mic.c` `mic_thread_function` at 10 Hz (the
+  `k_sleep(K_MSEC(100))` in its `!mic_running` branch — which runs **only** while the mic is
+  parked, i.e. exactly the manual-standby state the `oo-2.10.0` gate created), and `main.c`'s
+  loop at 2 Hz (`k_msleep(500)`). ~22 wakes/s doing nothing. Same class of defect as the
+  25 Hz button poll fixed in "Button: Interrupt-Driven" above; these three never got the same
+  treatment. Notes on each, in descending order of value-per-risk:
+  - **`aad.c` — safe, one line.** All seven `atomic_set` of the four flags the loop reads
+    (`wake_pending`, `sd_pause_pending`, `adv_slow_req`, `adv_fast_req`) are already paired
+    with `k_sem_give(&aad_sem)` (lines 316/404/460/610–611/630–631/737/848–849), and nothing
+    in the loop body is time-driven, so the 100 ms timeout is pure polling. The semaphore's
+    limit of 1 is not a hazard: one pass handles all four flags, so coalesced gives cannot
+    lose an event. `K_MSEC(100)` → `K_FOREVER`.
+  - **`mic.c` — use a bounded wait, NOT `K_FOREVER`.** Four sites set `mic_running = true`
+    (`mic_start`, `mic_resume`, `mic_reset`, `mic_on`) and would each need to signal. More to
+    the point, `mic_pause()` and `mic_reset()` both have STOP-failure bail paths that leave
+    `mic_running` disagreeing with the hardware, so it is not a reliable wait predicate. A
+    missed signal under `K_FOREVER` means the mic never captures again — the 14.5-hour
+    silent-capture failure mode of BLE_Research Wedge 4. A `K_SECONDS(5)` backstop gives
+    10 Hz → 0.2 Hz (99 % of the saving) and self-heals.
+  - **`main.c` — lowest value, highest risk; do last or not at all.** Only 2 of the 22 wakes.
+    `set_led_state()` is a polling display refresher over ~9 asynchronous inputs (mute,
+    charging, connection, battery, threshold/recording state, `is_led_enabled`,
+    `sd_fatal_error`, `marker_flash_count`), none of which notify the loop. The 30 s watchdog
+    leaves plenty of headroom, but that is not the binding constraint — state-change latency
+    is. Note `marker_flash_count` is *decremented once per loop pass*, so the flash duration
+    is measured in passes, not milliseconds: slowing the loop stretches and delays every
+    button flash unless all five setters in `button.c` also signal it.
 - **~~Disable logging in production~~ — DONE (`oo-2.10.0`).** `CONFIG_LOG` was already off; `CONFIG_SERIAL=n` landed in `oo-2.10.0`. See "Firmware: logging is compiled out" below for what that costs and how to get logs back.
 
 ### Mic gating in manual standby (implemented, `oo-2.10.0`)
