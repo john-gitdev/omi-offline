@@ -385,6 +385,16 @@ Battery voltage on the 150 mAh LiPo changes on the order of millivolts per minut
   never spends an interval in high-performance mode. Roughly an order of magnitude less, and
   it lands where it matters most — during System OFF the IMU is one of the very few things
   still drawing.
+  **Confirmed on-device 2026-08-19** (`oo-3.0.8`, first boot after the flash), which turns
+  every inference above into a measurement. `DIAG_IMU_POWER_STATE` returned `arg0 = 0`
+  (bus read fine, and both `sensor_attr_set` calls returned 0 — so the driver really does
+  accept 0 Hz for the gyro) and `arg1 = 0x10021080`:
+  `CTRL1_XL = 0x10` → ODR_XL 0x1, accel at 12.5 Hz; `CTRL2_G = 0x02` → ODR_G 0, gyro
+  powered down; `CTRL6_C = 0x10` → **XL_HM_MODE = 1, low-power mode took**. Exactly the
+  predicted healthy reading.
+  **Still not measured:** that the timestamp counter keeps ticking in low-power mode. The
+  device had an empty SD card that session, so no bin headers were produced and the
+  `imu-probe` lines that answer it never ran.
   **Do not "fix" this by powering the accel down.** That stops the timestamp counter and
   silently breaks the cross-reboot time bridge, which fails in the direction nobody notices
   until recordings are mis-dated. Confirm on-device via `DIAG_IMU_POWER_STATE` (19): a healthy
