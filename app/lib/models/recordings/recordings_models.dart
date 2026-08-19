@@ -37,6 +37,16 @@ class Conversation {
   /// Silero session loaded, and is false for manual mode, for auto with Silero
   /// switched off, AND for auto where the model failed to load.
   final bool? recordedManual;
+
+  /// True when the phone re-filed this recording, because the Omi's own timestamp for
+  /// it was provably wrong (or absent) and a clock anchor for its session could prove
+  /// it. Flag byte [3], bit 0x20.
+  ///
+  /// On disk purely so the revert affordance can exist: the arrow that puts a recording
+  /// back where the Omi filed it is shown only when this bit is set, which is what
+  /// stops a genuine, device-assigned timestamp from ever being demoted by a stray tap.
+  final bool clockCorrected;
+
   final List<String> relativeBins;
 
   const Conversation({
@@ -51,12 +61,18 @@ class Conversation {
     this.capEnded = true,
     this.isSilero,
     this.recordedManual,
+    this.clockCorrected = false,
     this.relativeBins = const [],
   });
 
   /// Decodes the mode pair out of `.meta` flag byte [3]. modeKnown (0x08) gates
   /// manual (0x10), so an unstamped byte answers null rather than "auto".
   static bool? modeFromFlagByte(int flagByte) => (flagByte & 0x08) == 0 ? null : (flagByte & 0x10) != 0;
+
+  /// Decodes the clock-corrected bit out of `.meta` flag byte [3]. A single bit needs
+  /// no known/value pair the way the mode does: every `.meta` written before this
+  /// reads 0, and 0 is the truthful answer for all of them — nothing re-filed them.
+  static bool clockCorrectedFromFlagByte(int flagByte) => (flagByte & 0x20) != 0;
 
   DateTime get endTime => startTime.add(duration);
 
@@ -131,6 +147,7 @@ class Conversation {
           bool capEnded = true;
           bool? isSilero;
           bool? recordedManual;
+          bool clockCorrected = false;
           List<String> relativeBins = const [];
           if (metaBytes.length >= 417) {
             final keyLen = metaBytes[416];
@@ -153,6 +170,7 @@ class Conversation {
               if (metaBytes.length > flagOffset + 3) {
                 isSilero = (metaBytes[flagOffset + 3] & 0x01) != 0;
                 recordedManual = modeFromFlagByte(metaBytes[flagOffset + 3]);
+                clockCorrected = clockCorrectedFromFlagByte(metaBytes[flagOffset + 3]);
               }
 
               // Still derived from whether byte [3] is PRESENT, never from the
@@ -188,6 +206,7 @@ class Conversation {
             capEnded: capEnded,
             isSilero: isSilero,
             recordedManual: recordedManual,
+            clockCorrected: clockCorrected,
             relativeBins: relativeBins,
           );
         }
@@ -249,6 +268,7 @@ class Conversation {
       bool capEnded = true; // see Conversation.capEnded — default conservative
       bool? isSilero;
       bool? recordedManual;
+      bool clockCorrected = false;
       if (metaBytes.length >= 417) {
         final keyLen = metaBytes[416];
         if (417 + keyLen <= metaBytes.length) {
@@ -268,6 +288,7 @@ class Conversation {
           if (metaBytes.length > flagOffset + 3) {
             isSilero = (metaBytes[flagOffset + 3] & 0x01) != 0;
             recordedManual = modeFromFlagByte(metaBytes[flagOffset + 3]);
+            clockCorrected = clockCorrectedFromFlagByte(metaBytes[flagOffset + 3]);
           }
         }
       }
@@ -296,6 +317,7 @@ class Conversation {
         capEnded: capEnded,
         isSilero: isSilero,
         recordedManual: recordedManual,
+        clockCorrected: clockCorrected,
       );
     } catch (_) {
       return null;
@@ -355,6 +377,7 @@ class Conversation {
           bool capEnded = true;
           bool? isSilero;
           bool? recordedManual;
+          bool clockCorrected = false;
           if (metaBytes.length >= 417) {
             final keyLen = metaBytes[416];
             if (417 + keyLen <= metaBytes.length) {
@@ -376,6 +399,7 @@ class Conversation {
               if (metaBytes.length > flagOffset + 3) {
                 isSilero = (metaBytes[flagOffset + 3] & 0x01) != 0;
                 recordedManual = modeFromFlagByte(metaBytes[flagOffset + 3]);
+                clockCorrected = clockCorrectedFromFlagByte(metaBytes[flagOffset + 3]);
               }
             }
           }
@@ -394,6 +418,7 @@ class Conversation {
             capEnded: capEnded,
             isSilero: isSilero,
             recordedManual: recordedManual,
+            clockCorrected: clockCorrected,
           );
         }
       } catch (_) {
