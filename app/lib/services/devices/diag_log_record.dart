@@ -304,11 +304,16 @@ class DiagLogRecord {
       case 19:
         {
           // Read back from the LSM6DS3TR-C rather than assumed. Nothing in the firmware
-          // consumes motion data — only the 24-bit timestamp counter — so both parts
-          // should read as powered down. A gyro left at the driver's default ODR is on
-          // the order of 1 mA off a 150 mAh cell, which would make it the single largest
-          // draw on the device, and until this record existed nothing could see it: the
-          // two sensor_attr_set returns were discarded and logging is compiled out.
+          // consumes motion data — only the 24-bit timestamp counter.
+          //
+          // The healthy reading is NOT "both off", which is what this originally looked
+          // for. The gyro is off (the driver writes ODR_G = 0 at init, so the ~1 mA
+          // free-running gyro this record was added to hunt never existed), but the accel
+          // is deliberately ON at 12.5 Hz: the part gates its internal timebase when both
+          // halves are powered down, which stops the timestamp counter and breaks the
+          // cross-restart time bridge. So `accel OFF` is a FAULT here, not tidiness — and
+          // the thing worth watching is whether it is in low-power mode, since
+          // high-performance costs ~170 uA at any rate for samples nobody reads.
           //
           // Bit 15 carries "could not read" rather than a magic arg1 value, because the
           // all-good reading is arg1 == 0 — byte-for-byte what a failed read would send.
@@ -330,9 +335,12 @@ class DiagLogRecord {
               ? 'gyro OFF'
               : 'gyro RUNNING (ODR=0x${gyroOdr.toRadixString(16)}'
                   '${gyroLowPower ? ', low-power' : ', high-perf'}) — ~1 mA, nothing reads it';
+          // Inverted against the gyro on purpose: the accel is the timestamp counter's
+          // keep-alive, so OFF is the bad answer and the mode is what costs.
           final accelPart = accelOdr == 0
-              ? 'accel OFF'
-              : 'accel ODR=0x${accelOdr.toRadixString(16)}${accelLowPower ? ' low-power' : ' HIGH-PERF'}';
+              ? 'accel OFF — timestamp counter STOPPED, restart time bridge is dead'
+              : 'accel ODR=0x${accelOdr.toRadixString(16)}'
+                  '${accelLowPower ? ' low-power' : ' HIGH-PERF (~170 uA, nothing reads it)'}';
           // A refused request is worth naming separately from the resulting state: it
           // says the driver is the problem, not the part.
           final refused = [
