@@ -143,3 +143,88 @@ ClockVerdict clockVerdict({
   final off = (expected - claimedStartMs).abs();
   return off > anchor.plausibleDriftMs ? ClockVerdict.correctWrong : ClockVerdict.alreadyCorrect;
 }
+
+/// The anchors the app is holding, keyed by hardware session.
+///
+/// A set rather than one current anchor, for two reasons.
+///
+/// The anchor outlives its session. It records "session S's uptime 0 was at wall clock
+/// T", and that stays true forever — S ending does not invalidate it. Recordings from S
+/// can still be sitting unsynced on the SD card when the Omi reboots into S', and they
+/// arrive placeable only if S's anchor survived S'. Keeping one slot would throw away
+/// the answer at the moment the device rebooted, which is precisely when the Omi's own
+/// clock is least trustworthy.
+///
+/// And a user reverting a re-filed recording has to discard *that session's* anchor,
+/// or the next processing pass silently re-files it. That is a keyed delete, which
+/// needs keyed storage.
+///
+/// Bounded and oldest-first, because nothing here is worth unbounded growth: an anchor
+/// is only ever consulted for recordings still on disk, and a device that has rebooted
+/// [maxEntries] times since a recording was made has long since had it synced.
+class DeviceClockAnchorSet {
+  /// Oldest first. Bounded — see the class doc.
+  static const int maxEntries = 8;
+
+  final List<DeviceClockAnchor> anchors;
+
+  const DeviceClockAnchorSet(this.anchors);
+
+  const DeviceClockAnchorSet.empty() : anchors = const [];
+
+  bool get isEmpty => anchors.isEmpty;
+
+  /// The anchor for [sessionId], or null if this session was never observed live.
+  ///
+  /// Null is the honest answer and the caller must treat it as "leave the recording
+  /// alone": a session the phone never saw running cannot be placed, because the gap
+  /// between two sessions is unmeasurable once the counters have reset.
+  DeviceClockAnchor? forSession(int? sessionId) {
+    if (sessionId == null || sessionId == 0) return null;
+    for (final a in anchors) {
+      if (a.sessionId == sessionId) return a;
+    }
+    return null;
+  }
+
+  /// Adds [anchor], replacing any existing anchor for the same session.
+  ///
+  /// Replacing rather than keeping the first: a later observation of the same session
+  /// is strictly better evidence. It is taken over a longer baseline, so any error in
+  /// the phone's own reading (BLE round-trip, a moment's scheduling delay) is a smaller
+  /// fraction of the span it is being used to measure.
+  DeviceClockAnchorSet upsert(DeviceClockAnchor anchor) {
+    final next = anchors.where((a) => a.sessionId != anchor.sessionId).toList()..add(anchor);
+    if (next.length > maxEntries) {
+      next.removeRange(0, next.length - maxEntries);
+    }
+    return DeviceClockAnchorSet(next);
+  }
+
+  /// Drops [sessionId]'s anchor. Used by the revert action — without it the next
+  /// processing pass would re-apply the correction the user just undid.
+  DeviceClockAnchorSet without(int sessionId) =>
+      DeviceClockAnchorSet(anchors.where((a) => a.sessionId != sessionId).toList());
+
+  String encode() => jsonEncode(anchors.map((a) => a.toJson()).toList());
+
+  /// Never throws: this is decoded on the connect and processing paths, where a
+  /// corrupt preference must cost the correction feature and nothing else.
+  static DeviceClockAnchorSet decode(String? raw) {
+    if (raw == null || raw.isEmpty) return const DeviceClockAnchorSet.empty();
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return const DeviceClockAnchorSet.empty();
+      final out = <DeviceClockAnchor>[];
+      for (final e in decoded) {
+        if (e is Map<String, dynamic>) {
+          final a = DeviceClockAnchor.fromJson(e);
+          if (a != null) out.add(a);
+        }
+      }
+      return DeviceClockAnchorSet(out);
+    } catch (_) {
+      return const DeviceClockAnchorSet.empty();
+    }
+  }
+}
