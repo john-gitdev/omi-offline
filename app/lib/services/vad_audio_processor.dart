@@ -929,8 +929,33 @@ class VadAudioProcessor {
       if (fileLength >= 36 && byteData.getUint32(0, Endian.little) == 0xFFFFFFFB) {
         final utcStartMs = byteData.getUint64(8, Endian.little);
         final uptimeStartMs = byteData.getUint64(16, Endian.little);
-        currentImuTicks = byteData.getUint32(24, Endian.little);
+        final int imuTicksInHeader = byteData.getUint32(24, Endian.little);
+        currentImuTicks = imuTicksInHeader;
         final sessionIdInHeader = byteData.getUint32(28, Endian.little);
+
+        // Probe for the IMU timestamp counter, one line per bin. The counter is the
+        // Omi's only way to measure time across a restart, and two things about it are
+        // unverified — both answerable from these lines after a plain sync, with no RTT
+        // and no debugger:
+        //
+        //  1. Does it advance while the accelerometer is OFF? The accel is only switched
+        //     on at the first time-sync of a boot, so any bin with clock=UNKNOWN was
+        //     written with it off. If dTicks moves across two such bins, the accel is not
+        //     the counter's keep-alive and could stay off for good.
+        //  2. Does the sensor driver wipe it? Zephyr's lsm6dsl sets CTRL3_C.BOOT on every
+        //     init, before the firmware reads the counter. If ticks restart near zero at
+        //     a session change rather than carrying on, the cross-restart bridge has never
+        //     recovered anything.
+        //
+        // Raw values rather than a verdict: the interesting comparison is between
+        // consecutive lines, and a wrong verdict baked in here would be harder to see
+        // through than the numbers. Cheap enough (one line per ~10 min of audio) to leave
+        // in permanently.
+        final int? dTicks = _lastImuTicks == null ? null : (imuTicksInHeader - _lastImuTicks!) & 0x00FFFFFF;
+        Logger.debug('VadAudioProcessor: imu-probe ${segmentFile.path.split('/').last} '
+            'session=$sessionIdInHeader ticks=$imuTicksInHeader '
+            'dTicks=${dTicks ?? '-'}${dTicks == null ? '' : ' (~${(dTicks * 6.4).toInt()}ms)'} '
+            'uptime=${uptimeStartMs}ms clock=${utcStartMs > 946684800000 ? 'known' : 'UNKNOWN'}');
 
         if (sliced) {
           // Byte-slice recover: the slice starts mid-bin, so the header's start
