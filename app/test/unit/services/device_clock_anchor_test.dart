@@ -115,4 +115,71 @@ void main() {
       expect(DeviceClockAnchor.decode('[1,2,3]'), isNull);
     });
   });
+
+  group('DeviceClockAnchorSet', () {
+    const a1 = DeviceClockAnchor(sessionId: 1, deviceUptimeMs: 1000, wallClockMs: wall);
+    const a2 = DeviceClockAnchor(sessionId: 2, deviceUptimeMs: 2000, wallClockMs: wall);
+
+    test('an unseen session has no anchor, so its recordings are left alone', () {
+      const set = DeviceClockAnchorSet.empty();
+      expect(set.forSession(1), isNull);
+      expect(set.isEmpty, isTrue);
+    });
+
+    test('a session id of 0 or null never matches — 0 is "firmware did not say"', () {
+      final set = const DeviceClockAnchorSet.empty().upsert(a1);
+      expect(set.forSession(0), isNull);
+      expect(set.forSession(null), isNull);
+    });
+
+    test('holds several sessions at once, so a reboot does not strand the old one', () {
+      final set = const DeviceClockAnchorSet.empty().upsert(a1).upsert(a2);
+      expect(set.forSession(1), isNotNull);
+      expect(set.forSession(2), isNotNull);
+    });
+
+    test('a later observation of the same session replaces the earlier one', () {
+      const later = DeviceClockAnchor(sessionId: 1, deviceUptimeMs: 9000, wallClockMs: wall + 8000);
+      final set = const DeviceClockAnchorSet.empty().upsert(a1).upsert(later);
+      expect(set.anchors.length, 1);
+      expect(set.forSession(1)!.deviceUptimeMs, 9000);
+    });
+
+    test('drops the oldest once full, rather than growing without bound', () {
+      var set = const DeviceClockAnchorSet.empty();
+      for (var i = 1; i <= DeviceClockAnchorSet.maxEntries + 3; i++) {
+        set = set.upsert(DeviceClockAnchor(sessionId: i, deviceUptimeMs: i * 1000, wallClockMs: wall));
+      }
+      expect(set.anchors.length, DeviceClockAnchorSet.maxEntries);
+      expect(set.forSession(1), isNull, reason: 'oldest evicted');
+      expect(set.forSession(DeviceClockAnchorSet.maxEntries + 3), isNotNull, reason: 'newest kept');
+    });
+
+    test('without() removes one session — the revert path, which must not re-apply', () {
+      final set = const DeviceClockAnchorSet.empty().upsert(a1).upsert(a2).without(1);
+      expect(set.forSession(1), isNull);
+      expect(set.forSession(2), isNotNull);
+    });
+
+    test('round-trips through encode/decode', () {
+      final set = const DeviceClockAnchorSet.empty().upsert(a1).upsert(a2);
+      final back = DeviceClockAnchorSet.decode(set.encode());
+      expect(back.anchors.length, 2);
+      expect(back.forSession(2)!.deviceUptimeMs, 2000);
+    });
+
+    test('junk decodes to empty rather than throwing into the connect path', () {
+      expect(DeviceClockAnchorSet.decode('not json').isEmpty, isTrue);
+      expect(DeviceClockAnchorSet.decode('{"not":"a list"}').isEmpty, isTrue);
+      expect(DeviceClockAnchorSet.decode('').isEmpty, isTrue);
+      expect(DeviceClockAnchorSet.decode(null).isEmpty, isTrue);
+    });
+
+    test('skips malformed entries but keeps the good ones', () {
+      const raw = '[{"sessionId":1,"deviceUptimeMs":1000,"wallClockMs":$wall},{"sessionId":"x"}]';
+      final set = DeviceClockAnchorSet.decode(raw);
+      expect(set.anchors.length, 1);
+      expect(set.forSession(1), isNotNull);
+    });
+  });
 }
