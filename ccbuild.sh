@@ -207,6 +207,27 @@ build_firmware() {
       PRISTINE=1
     fi
   fi
+  # Same class of problem, different trigger: editing a Kconfig value in omi.conf does
+  # NOT reliably re-run the Zephyr configure step in an existing build dir. Bumping
+  # CONFIG_BT_DIS_FW_REV_STR and rebuilding with --keep-build produced an image still
+  # carrying the OLD version — silently, and in the worst possible place: the zip is
+  # named from omi.conf (so it looks right on disk) while the DIS characteristic inside
+  # reports the stale one. The app fingerprints the GATT cache on exactly that string,
+  # so a wrong DIS version means a missed cache refresh after a flash.
+  #
+  # Compare what the build dir was configured with against what omi.conf says now, and
+  # reconfigure from scratch if they differ. Only reachable with --keep-build or an IDE
+  # build; a plain run deletes build/ on the way out and starts clean anyway.
+  if [[ $PRISTINE -eq 0 && -f "$FW_BUILD_DIR/omi/zephyr/.config" ]]; then
+    local built_ver
+    built_ver="$(awk -F'"' '/^CONFIG_BT_DIS_FW_REV_STR=/ {print $2; exit}' "$FW_BUILD_DIR/omi/zephyr/.config")"
+    if [[ -n "$built_ver" && "$built_ver" != "$fw_ver" ]]; then
+      say "build/ is configured for $built_ver but omi.conf now says $fw_ver"
+      say "reconfiguring from scratch so the image reports the version it is named after"
+      PRISTINE=1
+    fi
+  fi
+
   if [[ $PRISTINE -eq 1 && -d "$FW_DIR/build" ]]; then
     rm -rf "$FW_DIR/build"
   fi
