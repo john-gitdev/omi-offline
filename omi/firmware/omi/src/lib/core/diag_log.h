@@ -92,17 +92,25 @@ typedef enum {
                                        * admits "not all drivers accept 0 Hz", both return codes were
                                        * discarded, and logging is compiled out since oo-2.10.0 — so
                                        * nobody has ever confirmed the request lands.
-                                       * arg0 = [accel_rc u8 high][gyro_rc u8 low], the sensor_attr_set
-                                       *        returns, sign-truncated; 0xFFFF = the register read
-                                       *        itself failed and arg1 is meaningless.
-                                       * arg1 = [CTRL1_XL][CTRL2_G][CTRL6_C][CTRL7_G], high byte first.
-                                       *        ODR_XL/ODR_G are the top nibbles of the first two: 0
-                                       *        means powered down. XL_HM_MODE (CTRL6_C bit 4) and
-                                       *        G_HM_MODE (CTRL7_G bit 7) are set when that part is in
-                                       *        low-power rather than high-performance mode.
+                                       * arg0 = bit 15 IMU_PWR_READ_FAILED, bit 1 gyro attr_set
+                                       *        returned non-zero, bit 0 accel likewise. Bit 15 is a
+                                       *        separate bit and not a magic arg1 value on purpose:
+                                       *        the all-good reading packs to arg1 == 0, which is
+                                       *        exactly what a failed read would report.
+                                       * arg1 = when bit 15 is CLEAR: [CTRL1_XL][CTRL2_G][CTRL6_C]
+                                       *        [CTRL7_G], high byte first. ODR_XL/ODR_G are the top
+                                       *        nibbles of the first two: 0 means powered down.
+                                       *        XL_HM_MODE (CTRL6_C bit 4) and G_HM_MODE (CTRL7_G
+                                       *        bit 7) are set when that part is in low-power rather
+                                       *        than high-performance mode.
+                                       *        When bit 15 is SET: [accel_rc u8][gyro_rc u8] in the
+                                       *        low two bytes — the errnos, all the evidence there is
+                                       *        when the bus will not answer.
                                        * Emitted only when the state changes (plus the first call after
-                                       * boot): the producer runs on every time sync, i.e. every
-                                       * connect, and a steady state need not refill a 128-slot ring. */
+                                       * boot), failures included: the producer runs on every VAD-sleep
+                                       * transition as well as every time sync, so in auto mode an
+                                       * undeduplicated failure would emit tens of FORCED records an
+                                       * hour and evict the whole 128-slot ring. */
 } diag_event_code_t;
 
 /* arg0 values for DIAG_MIC_STATE. Appended-only, same discipline as the codes. */

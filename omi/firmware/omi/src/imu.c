@@ -63,39 +63,66 @@ static const struct device *const lsm6dsl_dev = DEVICE_DT_GET(DT_ALIAS(lsm6dsl))
  * Only the timestamp counter is used from this chip, so ODR_XL and ODR_G should both
  * read 0. A gyro left at the driver's default is on the order of 1 mA off a 150 mAh
  * cell, which would make it the largest single draw on the device. */
+/* arg0 bits for DIAG_IMU_POWER_STATE. Bit 15 is the discriminator and deliberately
+ * cannot be produced by the two rc flags: the all-good reading (gyro and accel both
+ * powered down, no high-performance bits) packs to arg1 == 0, which is byte-for-byte
+ * what a failed read would otherwise report, so "could not read" has to be carried
+ * somewhere a real reading can never reach. */
+#define IMU_PWR_READ_FAILED  BIT(15)
+#define IMU_PWR_ACCEL_SET_RC BIT(0) /* sensor_attr_set(accel) returned non-zero */
+#define IMU_PWR_GYRO_SET_RC  BIT(1) /* sensor_attr_set(gyro) returned non-zero  */
+
+/* Reads back what the part is actually doing and records it, because asking is not
+ * knowing: a driver that returns 0 has promised only that it accepted the request,
+ * and one that refuses 0 Hz outright was — until this — completely silent, since the
+ * return codes were discarded and logging is compiled out (oo-2.10.0).
+ *
+ * Only the timestamp counter is used from this chip, so ODR_XL and ODR_G should both
+ * read 0. A gyro left at the driver's default is on the order of 1 mA off a 150 mAh
+ * cell, which would make it the largest single draw on the device. */
 static void lsm6dsl_report_power_state(int accel_rc, int gyro_rc)
 {
+	uint16_t flags = (accel_rc != 0 ? IMU_PWR_ACCEL_SET_RC : 0) | (gyro_rc != 0 ? IMU_PWR_GYRO_SET_RC : 0);
+	uint32_t payload;
+
 	/* CTRL1_XL/CTRL2_G and CTRL6_C/CTRL7_G are adjacent pairs — two bursts, not four
 	 * single-byte reads, so this costs the I2C bus almost nothing. */
 	uint8_t regs[4] = {0};
 	if (i2c_burst_read_dt(&lsm6dsl_i2c, LSM6DS_REG_CTRL1_XL, &regs[0], 2) != 0 ||
 	    i2c_burst_read_dt(&lsm6dsl_i2c, LSM6DS_REG_CTRL6_C, &regs[2], 2) != 0) {
-		/* 0xFFFF marks arg1 as meaningless rather than as "everything powered down",
-		 * which is what a zeroed payload would otherwise read as. */
-		diag_log_event_forced(DIAG_IMU_POWER_STATE, 0, 0xFFFFu, 0);
-		return;
+		/* Registers unknown, so hand back the two errnos instead — they are all the
+		 * evidence there is when the bus itself will not answer. */
+		flags |= IMU_PWR_READ_FAILED;
+		payload = ((uint32_t)(accel_rc & 0xFF) << 8) | (uint32_t)(gyro_rc & 0xFF);
+	} else {
+		payload = ((uint32_t)regs[0] << 24) | ((uint32_t)regs[1] << 16) | ((uint32_t)regs[2] << 8) |
+			  (uint32_t)regs[3];
 	}
 
-	uint32_t packed = ((uint32_t)regs[0] << 24) | ((uint32_t)regs[1] << 16) |
-			  ((uint32_t)regs[2] << 8) | (uint32_t)regs[3];
-	uint16_t rcs = (uint16_t)(((accel_rc & 0xFF) << 8) | (gyro_rc & 0xFF));
-
-	/* This runs on every time sync, i.e. every connect. Report only a change (and the
-	 * first call after boot) so a steady state does not evict the 128-slot ring. */
+	/* One dedup covering BOTH outcomes, and the failure path needs it most: this runs
+	 * on every VAD-sleep transition as well as every time sync, so in auto mode a dead
+	 * I2C bus would emit tens of forced records an hour and evict the whole 128-slot
+	 * ring — destroying the log exactly when something is wrong with the device.
+	 *
+	 * The three statics are written from three threads (the rtc work handler, the mic
+	 * thread via aad_process_audio, the button thread). Deliberately unlocked: they are
+	 * naturally aligned and word-sized, so no read can tear, and the worst a race can
+	 * do is emit one duplicate record or skip one redundant one. A mutex here would
+	 * cost more than the thing it protects. */
 	static bool reported;
-	static uint32_t last_packed;
-	static uint16_t last_rcs;
-	if (reported && packed == last_packed && rcs == last_rcs) {
+	static uint32_t last_payload;
+	static uint16_t last_flags;
+	if (reported && payload == last_payload && flags == last_flags) {
 		return;
 	}
 	reported = true;
-	last_packed = packed;
-	last_rcs = rcs;
+	last_payload = payload;
+	last_flags = flags;
 
 	/* Forced past the runtime gate for the same reason DIAG_BOND_STATE is: the first
 	 * emit rides the time sync that lands with the connect, seconds before the app has
 	 * opened the gate, so a gated emit would be dropped exactly when it is wanted. */
-	diag_log_event_forced(DIAG_IMU_POWER_STATE, 0, rcs, packed);
+	diag_log_event_forced(DIAG_IMU_POWER_STATE, 0, flags, payload);
 }
 
 static void lsm6dsl_force_minimal_run_mode(void)
