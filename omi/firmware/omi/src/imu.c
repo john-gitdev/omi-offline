@@ -37,6 +37,7 @@ LOG_MODULE_REGISTER(imu, CONFIG_LOG_DEFAULT_LEVEL);
 #define LSM6DS_REG_CTRL1_XL         0x10 /* ODR_XL in bits [7:4]; 0 = accel powered down */
 #define LSM6DS_REG_CTRL2_G          0x11 /* ODR_G  in bits [7:4]; 0 = gyro powered down  */
 #define LSM6DS_REG_CTRL6_C          0x15 /* bit 4 XL_HM_MODE: 1 = accel low-power mode   */
+#define LSM6DS_CTRL6_XL_HM_MODE     BIT(4)
 #define LSM6DS_REG_CTRL7_G          0x16 /* bit 7 G_HM_MODE:  1 = gyro low-power mode    */
 #define LSM6DS_WAKE_UP_DUR_TIMER_HR BIT(4)
 
@@ -55,14 +56,6 @@ static const struct i2c_dt_spec lsm6dsl_i2c = I2C_DT_SPEC_GET(DT_ALIAS(lsm6dsl))
 static const struct gpio_dt_spec lsm6dsl_en = GPIO_DT_SPEC_GET(DT_NODELABEL(lsm6dsl_en_pin), enable_gpios);
 static const struct device *const lsm6dsl_dev = DEVICE_DT_GET(DT_ALIAS(lsm6dsl));
 
-/* Reads back what the part is actually doing and records it, because asking is not
- * knowing: a driver that returns 0 has promised only that it accepted the request,
- * and one that refuses 0 Hz outright was — until this — completely silent, since the
- * return codes were discarded and logging is compiled out (oo-2.10.0).
- *
- * Only the timestamp counter is used from this chip, so ODR_XL and ODR_G should both
- * read 0. A gyro left at the driver's default is on the order of 1 mA off a 150 mAh
- * cell, which would make it the largest single draw on the device. */
 /* arg0 bits for DIAG_IMU_POWER_STATE. Bit 15 is the discriminator and deliberately
  * cannot be produced by the two rc flags: the all-good reading (gyro and accel both
  * powered down, no high-performance bits) packs to arg1 == 0, which is byte-for-byte
@@ -73,13 +66,20 @@ static const struct device *const lsm6dsl_dev = DEVICE_DT_GET(DT_ALIAS(lsm6dsl))
 #define IMU_PWR_GYRO_SET_RC  BIT(1) /* sensor_attr_set(gyro) returned non-zero  */
 
 /* Reads back what the part is actually doing and records it, because asking is not
- * knowing: a driver that returns 0 has promised only that it accepted the request,
- * and one that refuses 0 Hz outright was — until this — completely silent, since the
- * return codes were discarded and logging is compiled out (oo-2.10.0).
+ * knowing: a driver that returns 0 has promised only that it accepted the request.
  *
- * Only the timestamp counter is used from this chip, so ODR_XL and ODR_G should both
- * read 0. A gyro left at the driver's default is on the order of 1 mA off a 150 mAh
- * cell, which would make it the largest single draw on the device. */
+ * What the build settles, so the record does not have to: CONFIG_LSM6DSL_GYRO_ODR and
+ * CONFIG_LSM6DSL_ACCEL_ODR are both 0 ("selected at runtime"), and lsm6dsl_init_chip()
+ * writes each straight into ODR_G/ODR_XL — so the part comes up with BOTH halves
+ * powered down, and the feared free-running gyro does not exist. The driver also does
+ * accept 0 Hz (lsm6dsl_odr_map[0] == 0), so the old "not all drivers accept 0 Hz"
+ * caveat does not apply to this one. This record is now confirmation rather than a
+ * hunt: it is the only way to tell a part that took the request from one whose bus
+ * never answered.
+ *
+ * Expected healthy reading: CTRL2_G == 0 (gyro down) and CTRL1_XL == 0x10 with
+ * CTRL6_C == 0x10 — accel at 12.5 Hz in LOW-POWER mode, which is not idleness but the
+ * timestamp counter's keep-alive; see lsm6dsl_force_minimal_run_mode(). */
 static void lsm6dsl_report_power_state(int accel_rc, int gyro_rc)
 {
 	uint16_t flags = (accel_rc != 0 ? IMU_PWR_ACCEL_SET_RC : 0) | (gyro_rc != 0 ? IMU_PWR_GYRO_SET_RC : 0);
@@ -125,6 +125,58 @@ static void lsm6dsl_report_power_state(int accel_rc, int gyro_rc)
 	diag_log_event_forced(DIAG_IMU_POWER_STATE, 0, flags, payload);
 }
 
+/* Puts the accelerometer in low-power mode (CTRL6_C.XL_HM_MODE = 1).
+ *
+ * The accel is not on because anyone wants its samples — nothing in the built firmware
+ * reads them. It is on because the timestamp counter needs it: the part gates its
+ * internal timebase when BOTH halves are powered down, and that counter is the whole
+ * System OFF time bridge (lsm6dsl_time_prepare_for_system_off saves it, and
+ * lsm6dsl_time_boot_adjust_rtc spends it on the next boot). So the accel has to keep
+ * running — but nothing says it has to run WELL.
+ *
+ * XL_HM_MODE resets to 0, which is high-performance mode, and high performance on this
+ * part is ODR-independent: 12.5 Hz costs the same ~170 uA as 6.6 kHz. Low-power mode at
+ * 12.5 Hz is roughly an order of magnitude less. Since the samples are discarded, the
+ * accuracy that buys is worth exactly nothing, and the saving lands where it matters
+ * most — during System OFF the IMU is one of the only things still drawing.
+ *
+ * Deliberately a raw register write rather than a sensor API call: Zephyr's lsm6dsl
+ * driver exposes no attribute for XL_HM_MODE, and the rest of this file already talks
+ * to the part over I2C directly for the timestamp registers. */
+static int lsm6dsl_set_accel_low_power(void)
+{
+	if (!device_is_ready(lsm6dsl_i2c.bus)) {
+		LOG_WRN("lsm6dsl i2c bus not ready");
+		return -ENODEV;
+	}
+
+	uint8_t ctrl6;
+	int err = i2c_reg_read_byte_dt(&lsm6dsl_i2c, LSM6DS_REG_CTRL6_C, &ctrl6);
+	if (err) {
+		LOG_WRN("Failed to read CTRL6_C (err %d)", err);
+		return err;
+	}
+
+	if (ctrl6 & LSM6DS_CTRL6_XL_HM_MODE) {
+		return 0;
+	}
+
+	ctrl6 |= LSM6DS_CTRL6_XL_HM_MODE;
+	err = i2c_reg_write_byte_dt(&lsm6dsl_i2c, LSM6DS_REG_CTRL6_C, ctrl6);
+	if (err) {
+		LOG_WRN("Failed to write CTRL6_C XL_HM_MODE=1 (err %d)", err);
+		return err;
+	}
+
+	LOG_DBG("Accel low-power mode set (CTRL6_C=0x%02x)", ctrl6);
+	return 0;
+}
+
+/* The minimum the part can run at and still keep its timestamp counter ticking — which
+ * is the only thing this chip is used for. Both halves come up powered down from
+ * lsm6dsl_init_chip() (CONFIG_LSM6DSL_*_ODR are both 0), so this does not quiet a
+ * running sensor; it turns the accel ON, as cheaply as it can, and leaves the gyro
+ * where init already left it. */
 static void lsm6dsl_force_minimal_run_mode(void)
 {
 	if (lsm6dsl_dev == NULL || !device_is_ready(lsm6dsl_dev)) {
@@ -132,11 +184,23 @@ static void lsm6dsl_force_minimal_run_mode(void)
 		return;
 	}
 
-	/* 12.5 Hz = 12 + 0.5 (in micro). */
+	/* Low power BEFORE the ODR, so the accel never spends even one interval in the
+	 * high-performance mode CTRL6_C resets to. */
+	int lp_rc = lsm6dsl_set_accel_low_power();
+	if (lp_rc) {
+		LOG_WRN("Failed to set accel low-power mode (err %d)", lp_rc);
+	}
+
+	/* 12.5 Hz = 12 + 0.5 (in micro). The driver keys off val1 alone, so this maps to
+	 * lsm6dsl_odr_map[1] == 12 — the slowest rate that is not power-down. */
 	struct sensor_value odr = { .val1 = 12, .val2 = 500000 };
 	int accel_rc = sensor_attr_set(lsm6dsl_dev, SENSOR_CHAN_ACCEL_XYZ, SENSOR_ATTR_SAMPLING_FREQUENCY, &odr);
 
-	/* Best-effort attempt to stop gyro to save power. Not all drivers accept 0 Hz. */
+	/* Redundant against a driver that already wrote ODR_G = CONFIG_LSM6DSL_GYRO_ODR = 0
+	 * at init, and kept because it costs one I2C write and covers the case where
+	 * something else has since woken the gyro. This driver does accept 0 Hz —
+	 * lsm6dsl_odr_map[0] == 0 — so the old "not all drivers accept 0 Hz" caveat was
+	 * never true here; the returned rc is reported either way. */
 	struct sensor_value gyro_odr = { .val1 = 0, .val2 = 0 };
 	int gyro_rc = sensor_attr_set(lsm6dsl_dev, SENSOR_CHAN_GYRO_XYZ, SENSOR_ATTR_SAMPLING_FREQUENCY, &gyro_odr);
 
