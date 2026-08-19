@@ -6,6 +6,8 @@ Patch releases are rolled up into their minor version. Each section reflects the
 
 ### 0.35
 
+- **New (dev): the event log spells out whether the Omi's motion sensor is switched off.** The Omi contains an accelerometer and gyroscope, and nothing in the recorder reads either of them — only the chip's clock counter, which is used to recover the time across a restart. The firmware asks for both to be switched off, but nobody has ever checked that the request was honoured, and a gyroscope left running would be the single biggest drain on the battery. The Debug Tools event log now shows the answer in plain words rather than a raw code — `IMU: gyro OFF, accel OFF` if all is well, or the opposite with what it is costing. Requires the matching firmware and the event-log toggle switched on.
+
 - **Fix: long-pressing a recording no longer scrolls it away from you.** Long-pressing a recording or a ghost row starts a selection on that day, and starting one hides everything that is not that day — the other days' cards, the Unorganized section, and the marker rows under each recording. All of that sits above the row you pressed, so the row jumped up the page the instant the selection opened, often out of view entirely, and jumped back down when you left the selection. The list now scrolls itself so the row you pressed stays where it already was on screen, both when the selection opens and when it closes.
 
 ### 0.34
@@ -366,6 +368,10 @@ Patch releases are rolled up into their minor version. Each section reflects the
 ## Firmware
 
 ### oo-3.0
+
+- **New (dev): the Omi checks whether its motion sensor really is switched off, instead of assuming.** The accelerometer and gyroscope are not read by anything — only the chip's built-in clock counter is, which is how the Omi recovers the time after a restart — so both should be powered down. The firmware asks for that, but the request could always have been refused: the answer was thrown away, and since `oo-2.10.0` there is no logging left to notice. A gyroscope left running draws roughly as much as everything else on the device put together, so it is worth knowing rather than assuming. The Omi now reads the sensor's own registers back and records what it finds, so a Debug Tools snapshot answers it outright.
+
+- **Change: an internal handler thread stopped waking ten times a second to do nothing.** The part of the firmware that reacts to the microphone's wake signal, to pauses in card writing, and to advertising-speed changes was checking for those events on a timer as well as being told about them directly. Every producer already announces itself, so the timer only ever woke it up to find nothing waiting. It now sleeps until something actually happens. No behaviour changes — nothing reacts any slower, and audio capture never ran through this path at all. Worth a rounding error of battery on its own; done because a check that can never find anything is a defect.
 
 - **Change: the radio idles between transfers instead of running flat out.** The connection was negotiated once, for the speed a file transfer needs, and stayed there for as long as it was up — waking the radio about ninety times a second even with nothing to send, which is most of the time a connection exists. It now runs at that speed only while a recording is transferring or a firmware update is being flashed, and at roughly a tenth of it otherwise.
 
