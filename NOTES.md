@@ -389,12 +389,23 @@ Battery voltage on the 150 mAh LiPo changes on the order of millivolts per minut
   silently breaks the cross-reboot time bridge, which fails in the direction nobody notices
   until recordings are mis-dated. Confirm on-device via `DIAG_IMU_POWER_STATE` (19): a healthy
   reading is `CTRL2_G == 0`, `CTRL1_XL == 0x10`, `CTRL6_C == 0x10`.
-  **Two placement bugs are still open** and are the reason the low-power write does not happen
-  at boot: `lsm6dsl_force_minimal_run_mode()` is only ever reached from
-  `lsm6dsl_time_prepare_for_system_off()` (there is no IMU setup in the boot path at all), and
-  that function returns early on `!rtc_is_valid()` — so **before the first time-sync of a boot
-  it never runs**, and the accel sits in high-performance mode until a phone connects. Fixing
-  that is a separate change: call it once from the boot path, unconditionally.
+  **The low-power write has no gap, despite the odd placement.**
+  `lsm6dsl_force_minimal_run_mode()` is the only thing in the tree that writes an accel ODR at
+  all, and it is reached from exactly one place —`lsm6dsl_time_prepare_for_system_off()`, which
+  returns early on `!rtc_is_valid()`. `lsm6dsl_time_boot_adjust_rtc()` never touches ODR. So
+  before the first time-sync of a boot the accel is **OFF** (the driver's init left it there),
+  not sitting in high-performance mode, and from the first time-sync on it is switched on
+  low-power-first. There is no window in which it runs high-performance. (An earlier revision
+  of this entry claimed otherwise; it was wrong.)
+  What the placement *does* mean is that **there is no IMU setup in the boot path at all** — the
+  timestamp counter is only enabled by a time-sync or a System OFF prep. That is a time-bridge
+  question, not a power one.
+  **Unverified, and it would matter more:** `lsm6dsl_init_chip()` opens by setting
+  `CTRL3_C.BOOT`, on every boot, before `lsm6dsl_time_boot_adjust_rtc()` gets to read the
+  counter. If that reboot clears TIMESTAMP0..2 the cross-restart bridge recovers nothing and
+  has never worked — the failure is silent either way, since a zero delta just looks like a
+  fast reboot. Worth confirming on-device before any further work on the bridge; the
+  `boot adjust: ts_now=` / `delta_ticks=` log lines answer it directly.
 - **Where the remaining battery actually is: capture duty, not idle.** `aad.c`'s own comment on
   `vad_voiced_ms` says it — the share of the day the VAD holds a recording open "governs how
   much of the day is encoded and written, and so [is] the largest remaining battery lever".
