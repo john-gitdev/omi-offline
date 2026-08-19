@@ -218,6 +218,18 @@ class DeviceDropStats {
   /// Prevents reporting a peak of 96 as `96/120` (healthy-looking) on firmware whose
   /// real ceiling is 100.
   final int sdQueueMax;
+
+  /// The firmware's per-boot `device_session_id` — the id every recording made in
+  /// this hardware session is stamped with in its `.meta`.
+  ///
+  /// Appended at offset 96; `0` on older firmware, and unambiguous because the
+  /// firmware never issues 0 (`ensure_device_session_id()` re-rolls until non-zero).
+  ///
+  /// Read together with [currentUptimeMs] from the same payload, this is what makes a
+  /// clock anchor trustworthy: the two fields come from one read, so they cannot
+  /// disagree about which boot they describe. See `device_clock_anchor.dart`.
+  final int deviceSessionId;
+
   final DateTime readAt;
 
   const DeviceDropStats({
@@ -246,6 +258,7 @@ class DeviceDropStats {
     this.voicedMs = 0,
     this.advModesRaw = 0,
     this.sdQueueMax = 120,
+    this.deviceSessionId = 0,
     required this.readAt,
   });
 
