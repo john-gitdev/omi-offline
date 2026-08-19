@@ -406,6 +406,23 @@ Battery voltage on the 150 mAh LiPo changes on the order of millivolts per minut
   has never worked — the failure is silent either way, since a zero delta just looks like a
   fast reboot. Worth confirming on-device before any further work on the bridge; the
   `boot adjust: ts_now=` / `delta_ticks=` log lines answer it directly.
+- **The auto-mode mic never parks, and that is deliberate — it buys the pre-roll.**
+  `mic_should_run()` (`aad.c`) returns true outright whenever `vad_threshold != 32769`,
+  and 32769 is the manual-standby value, so in auto mode the mic, the PDM peripheral and
+  the HFXO that PDM holds up are powered continuously whether the room is silent or not.
+  That is milliamps, all day, and it dwarfs every µA item in this section.
+  **It is not an oversight.** Auto mode keeps the mic hot so the *beginning* of an
+  utterance is already captured when the VAD decides to keep it. Park the mic and the
+  T5838's AAD wake, the PDM restart and the settling time all happen after the sound has
+  started, so every recording opens with a clipped word.
+  The hardware to do otherwise is present and wired: `pdm_wake_pin` (P1.2) has a real ISR
+  in `aad.c`, and `mic_pause()` / `mic_resume()` / `aad_note_capture_gap()` /
+  `mic_prearm` / `force_wake_until_ms` are all already used by manual standby. What is
+  missing is only the decision, because the trade is pre-roll for battery and that is a
+  product call, not an optimisation. **Do not "fix" this as if it were a bug** — the
+  owner has weighed it (2026-08-19) and is keeping the pre-roll for now. Anyone
+  revisiting it needs a PPK2 to size the saving and real speech to judge the clipping,
+  not a code review.
 - **Where the remaining battery actually is: capture duty, not idle.** `aad.c`'s own comment on
   `vad_voiced_ms` says it — the share of the day the VAD holds a recording open "governs how
   much of the day is encoded and written, and so [is] the largest remaining battery lever".
