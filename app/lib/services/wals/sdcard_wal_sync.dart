@@ -1131,12 +1131,15 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   Future<SyncLocalFilesResponse?> _claimFullSync(Future<SyncLocalFilesResponse?> run) {
     _inFlightFullSync = run;
-    // Swallow on the cleanup branch only — `run` itself is returned intact, so a
-    // real caller still sees the error. Without the onError this would surface as
-    // an unhandled async error whenever a sync throws.
-    unawaited(run.then<void>((_) {}, onError: (_) {}).whenComplete(() {
+    // whenComplete FIRST, registered here at claim time, so the field is cleared
+    // before any continuation a later caller attaches to the same future. That is
+    // what lets rotateAndSync await the run and then reliably see the slot free
+    // rather than racing its own cleanup. Swallow after, on the cleanup branch
+    // only — `run` is returned intact, so a real caller still sees the error;
+    // without the onError a throwing sync surfaces as an unhandled async error.
+    unawaited(run.whenComplete(() {
       if (identical(_inFlightFullSync, run)) _inFlightFullSync = null;
-    }));
+    }).then<void>((_) {}, onError: (_) {}));
     return run;
   }
 
@@ -1757,21 +1760,34 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     );
   }
 
-  /// Non-async for the same reason as [syncAll] — see the note there.
+  /// Force Sync: **queues** behind a sync already in flight, then rotates.
   ///
-  /// A Force Sync landing on a running background sync joins it rather than
-  /// reporting a skip. It does NOT get its own CMD_ROTATE_FILE, which is the
-  /// honest trade: the user asked for "everything up to now", and a sync already
-  /// in flight is delivering exactly that. Rotating underneath it would seal a bin
-  /// the running loop has already listed.
+  /// It deliberately does NOT join one. Sealing the active bin is the entire
+  /// point of this call — it is what lets the caller finalize drafts, because
+  /// after the rotate nothing belonging to them is left on the device. Joining
+  /// returns without a rotate, so the user's explicit "capture everything up to
+  /// now" quietly becomes an ordinary sync, and a join landing in the moment
+  /// after a run finished would return having done nothing at all.
+  ///
+  /// Waiting is the right cost: the running sync is already fetching what the
+  /// user wants, and the rotate afterwards picks up whatever it could not see.
+  /// Bounded, because each wait reopens the slot to any caller — after a few
+  /// losses, join rather than starve. That fallback carries `rotated: false`, so
+  /// the caller stays in draft mode.
   @override
   Future<SyncLocalFilesResponse?> rotateAndSync({
     IWalSyncProgressListener? progress,
-  }) {
-    final inFlight = _inFlightFullSync;
-    if (inFlight != null) {
-      Logger.debug('SDCardWalSync: rotateAndSync joining the full sync already in flight');
-      return inFlight;
+  }) async {
+    for (var attempt = 0; attempt < 3; attempt++) {
+      final inFlight = _inFlightFullSync;
+      if (inFlight == null) break;
+      Logger.debug('SDCardWalSync: rotateAndSync waiting for the sync in flight before rotating');
+      await inFlight.then<void>((_) {}, onError: (_) {});
+    }
+    final stillRunning = _inFlightFullSync;
+    if (stillRunning != null) {
+      Logger.warning('SDCardWalSync: rotateAndSync never got a turn — joining without a rotate');
+      return stillRunning;
     }
     return _claimFullSync(_rotateAndSyncInner(progress: progress));
   }
