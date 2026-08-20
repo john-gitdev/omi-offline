@@ -1213,6 +1213,87 @@ void main() {
     });
   });
 
+  // A sync that never ran and a sync that ran and found nothing were the same
+  // value (null) until 0.35.x, so a run that issued zero BLE commands reported to
+  // the user as a completed sync — and stamped lastSyncCompletedMs, which
+  // suppressed BackgroundSyncWorker's next attempt for a whole interval. These
+  // pin the two apart. See IWalSync.syncAll.
+  group('syncAll null means "did not run", never "nothing to sync"', () {
+    late MockDeviceConnection mockConn;
+    late SDCardWalSyncImpl sync;
+
+    setUp(() {
+      globalRejectDeleteTimestamps = {};
+      globalDeletedTimestamps = [];
+      mockConn = MockDeviceConnection();
+      sync = SDCardWalSyncImpl(
+        MockWalSyncListener(),
+        connectionProvider: (_) async => mockConn,
+        inactivityTimeout: const Duration(seconds: 1),
+      );
+    });
+
+    tearDown(() async {
+      sync.cancelSync();
+      await mockConn.close();
+    });
+
+    test('an empty card returns a response, not null — the device WAS asked', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      mockConn.files = [];
+
+      final result = await sync.syncAll();
+
+      expect(result, isNotNull,
+          reason: 'CMD_LIST_FILES went out and the card held nothing — that is a completed sync, '
+              'and callers key their "Skipped" state and lastSyncCompletedMs stamp off null');
+      expect(result!.newConversationIds, isEmpty);
+      expect(result.isPartial, isFalse);
+    });
+
+    test('no registered device returns null — this is the 4.7s connect-setup window', () async {
+      // setDevice deliberately NOT called: the link can be up and the battery
+      // readable while the WAL layer still has no device, because
+      // _onDeviceConnected calls setDevice last.
+      expect(sync.hasDevice, isFalse);
+      mockConn.files = [];
+
+      expect(await sync.syncAll(), isNull);
+    });
+
+    test('hasDevice flips only once setDevice has registered the device', () async {
+      expect(sync.hasDevice, isFalse);
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      expect(sync.hasDevice, isTrue);
+      await sync.setDevice(null);
+      expect(sync.hasDevice, isFalse);
+    });
+
+    test('a syncAll landing on an in-flight one returns null, not a false completion', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      mockConn.files = [
+        StorageFile(index: 0, size: 300000, timestamp: 1787206371, sessionId: 1),
+      ];
+
+      final first = sync.syncAll();
+      // Let the first call actually claim the flag before colliding with it.
+      // NB: `_isSyncing = true` is set AFTER the connection-lookup await (and
+      // `_resetSyncState()` clears it immediately before), so there is a real
+      // window where two calls entering together both clear the guard. That is a
+      // separate defect from the false-completion this group covers — pumping
+      // here tests the guard's job, not that window.
+      while (!sync.isSyncing) {
+        await Future.delayed(Duration.zero);
+      }
+
+      expect(await sync.syncAll(), isNull,
+          reason: 'this is the second of the two false "completes" in the 2026-08-19 log');
+
+      sync.cancelSync();
+      await first.catchError((_) => null);
+    });
+  });
+
   group('Conversation Metadata Robustness', () {
     test('Conversation.fromFile handles missing uploadKey in meta', () async {
       final audioFile = File('${tempDir.path}/recording_1773961625000.m4a')..createSync(recursive: true);
