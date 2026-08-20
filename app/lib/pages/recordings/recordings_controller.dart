@@ -193,8 +193,14 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   Timer? _forceSyncCooldownTimer;
 
-  /// Hands Force Sync straight back. Safe to call on any run — only
-  /// [startForcePipeline] ever arms the cooldown, so this is a no-op elsewhere.
+  /// Hands Force Sync straight back.
+  ///
+  /// The cooldown is the price of a **rotation** — call this whenever the run did
+  /// not get one (skipped, joined a sync already in flight, errored, or never
+  /// reached the device). Call it only from [_runForcePipeline], which is the one
+  /// place that knows: a shared settle path like `_transitionToError` also runs
+  /// for ordinary pipelines, and would clear a cooldown armed by an earlier Force
+  /// Sync that legitimately did rotate.
   void _releaseForceSyncCooldown() {
     _forceSyncCooldownTimer?.cancel();
     _forceSyncCooldownTimer = null;
@@ -715,10 +721,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   void _transitionToError(String activeStage, String message) {
     if (_isDisposed) return;
     _isForcePipeline = false;
-    // An error is when the user most wants to try again — holding Force Sync for
-    // five minutes after a run that failed is the same punitive charge as holding
-    // it after one that skipped. A rotate that errored sealed nothing anyway.
-    _releaseForceSyncCooldown();
     _lastActiveStage = activeStage;
     Logger.error(
       'RecordingsController: Pipeline error [$activeStage]: $message',
@@ -856,6 +858,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       // in-flight background sync) hits exactly that guard.
       _deviceReached = result != null;
       _prefs.lastSyncPartial = result?.isPartial ?? false;
+      // The cooldown is the price of a rotation; without one, charge nothing.
+      if (!(result?.rotated ?? false)) _releaseForceSyncCooldown();
       if (result == null) {
         Logger.warning('RecordingsController: force sync did not run — recording a skip');
       } else if (!result.rotated) {
@@ -876,6 +880,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       // still a real (partial) sync, so keep _deviceReached false only for the
       // former.
       _deviceReached = e is! DeviceConnectionException;
+      // No result means no confirmed rotate — a rotation failure throws outright,
+      // and a mid-transfer failure leaves us unable to tell. Err toward handing
+      // the button back: one extra rotation costs a bin, while locking a user out
+      // for five minutes after a failure is the complaint this whole cooldown
+      // rework came from.
+      _releaseForceSyncCooldown();
       if (gen != _pipelineGeneration) return; // watchdog already recovered
       if (_spState == SyncProcessState.stopping) {
         // User cancelled — honor the choice they made in the cancel dialog.
@@ -1511,10 +1521,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _prefs.lastSyncSkipped = true;
     _prefs.lastSyncStatusMs = now;
     _isForcePipeline = false;
-    // Nothing was pulled, so nothing was rotated — there is no reason to hold the
-    // user off Force Sync for five minutes. Charging the cooldown for a run that
-    // never reached the device is the same mistake as reporting it complete.
-    _releaseForceSyncCooldown();
     _transitionTo(SyncProcessState.idle);
     if (_isAppForeground()) {
       _settleNotification();
