@@ -392,9 +392,11 @@ Battery voltage on the 150 mAh LiPo changes on the order of millivolts per minut
   `CTRL1_XL = 0x10` → ODR_XL 0x1, accel at 12.5 Hz; `CTRL2_G = 0x02` → ODR_G 0, gyro
   powered down; `CTRL6_C = 0x10` → **XL_HM_MODE = 1, low-power mode took**. Exactly the
   predicted healthy reading.
-  **Still not measured:** that the timestamp counter keeps ticking in low-power mode. The
-  device had an empty SD card that session, so no bin headers were produced and the
-  `imu-probe` lines that answer it never ran.
+  **Now measured too (2026-08-19, same device, once bins existed):** the counter keeps
+  ticking in low-power mode, accurately. Between two bins of one session with no
+  checkpoint in between, it advanced 6521 ticks — 41 734 ms at 6.4 ms/tick — across
+  41 885 ms of uptime, i.e. **99.6 %**. The one way this change could have failed
+  silently does not happen.
   **Do not "fix" this by powering the accel down.** That stops the timestamp counter and
   silently breaks the cross-reboot time bridge, which fails in the direction nobody notices
   until recordings are mis-dated. Confirm on-device via `DIAG_IMU_POWER_STATE` (19): a healthy
@@ -771,6 +773,56 @@ turns the module back on. Note that if you do, four of the six counters
 permanent 0 — only `tx_queue` and `storage` are actually fed.
 
 ---
+
+## The app's IMU Bridge never matches — the checkpoint resets the counter under it
+
+**Measured 2026-08-19, `oo-3.0.8`.** `VadAudioProcessor` tries to carry a recording across
+a reboot without splitting it (`imuGapMatches`, `vad_audio_processor.dart`): it subtracts
+the previous bin's `imu_ticks` from the new one's and, if the result matches the wall-clock
+gap, treats the audio as continuous. The premise is that the counter free-runs across the
+restart. It does not.
+
+`lsm6dsl_time_prepare_for_system_off()` calls `lsm6dsl_timestamp_reset()` — and that
+function is the **periodic checkpoint**, posted on every VAD-sleep transition, not just the
+power-off path. So `imu_ticks` in a bin header is "time since the last checkpoint", never
+"time since boot", and the two sides of the subtraction are counted from different origins.
+
+The observed crossing, straight from the probe lines:
+
+    session A, last bin:  ticks=37748
+    session B, first bin: ticks=0
+    dTicks = (0 - 37748) & 0xFFFFFF = 16739468  ->  ~107132595 ms = 29.8 h
+
+That is the whole 24-bit wrap, not a reboot gap. It fails the `gapDiff < 5000` test, so the
+recording splits — **the failure is safe**, and the symptom is only a split at a reboot that
+might have been avoidable. Within a session the same subtraction is meaningful *only* when
+no checkpoint intervened (99.6 % tracking when none did; 16 % and 0.2 % across two that did).
+
+**The firmware-side bridge is fine and must not be "fixed" alongside it.** `boot_adjust_rtc`
+compares against a base saved by the same checkpoint that did the reset, so both sides share
+an origin and the arithmetic is coherent. Only the app's cross-session comparison is
+unfounded.
+
+Anyone repairing the app side needs an origin that survives — a checkpoint sequence number
+in the bin header, or simply not resetting the counter — not a wider tolerance on the
+existing subtraction.
+
+## LFCLK runs on the RC oscillator, not a crystal (~217 ppm measured)
+
+**Measured 2026-08-19** from six clock anchors taken across one 8.4-minute session. Each
+pairs the Omi's uptime with the phone's wall clock, so each implies a boot instant; they
+drift monotonically by **109 ms over 503 s = 217 ppm**, or ~19 s/day.
+
+That settles the open question: `omi.conf` sets no `CLOCK_CONTROL_NRF_K32SRC_*`, so Zephyr's
+default (`K32SRC_XTAL`) applies — but there is no `lfxo` node anywhere in the board DTS, and
+nRF53 selects two-stage LFXO start, which begins on the RC and only switches once a crystal
+reports ready. 217 ppm is RC territory; a fitted crystal would be tens of ppm. So no crystal
+is being used, whatever the Kconfig nominally asks for.
+
+Harmless for the clock-anchor design — `plausibleDriftMs` budgets 1000 ppm, so the measured
+figure sits 4.6x inside it, and 550x inside the 60 s floor at that session length. It is four
+orders of magnitude away from the ~29.8 h aliasing error the rule has to separate from, which
+is the whole reason that constant never needed tuning.
 
 ## Firmware: IMU Time-Bridge Wrap Limit (~29.8 h)
 
