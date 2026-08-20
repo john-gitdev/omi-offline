@@ -178,6 +178,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   // sync runner's stopping branch, reset at the start of each pipeline run.
   bool _processAfterCancel = false;
 
+  // TEMPORARY (testing): was 1 minute. A Force Sync that skipped — which is what
+  // this whole branch is about — still burned the full minute, so the only way
+  // back to a sync was Settings → Debug Tools. Restore to `Duration(minutes: 1)`
+  // before this ships; the cooldown exists because every Force Sync sends
+  // CMD_ROTATE_FILE, and hammering it seals a run of near-empty bins.
+  static const _forceSyncCooldown = Duration.zero;
+
   bool _forceSyncOnCooldown = false;
   bool get forceSyncOnCooldown => _forceSyncOnCooldown;
 
@@ -786,7 +793,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     notifyListeners();
 
     _forceSyncCooldownTimer?.cancel();
-    _forceSyncCooldownTimer = Timer(const Duration(minutes: 1), () {
+    _forceSyncCooldownTimer = Timer(_forceSyncCooldown, () {
       if (!_isDisposed) {
         _forceSyncOnCooldown = false;
         notifyListeners();
