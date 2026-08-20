@@ -1299,6 +1299,34 @@ void main() {
       expect(identical(results[0], results[1]), isTrue);
     });
 
+    // Force Sync finalizes drafts, and is only entitled to because its rotate
+    // seals the active bin — the one CMD_LIST_FILES never reports — so nothing
+    // belonging to the draft is left on the device. A JOINED run never rotates,
+    // so it must not carry the flag that licenses finalizing. Getting this wrong
+    // promotes a recording that stops mid-audio and prunes its source bins, and
+    // nothing else in the suite would catch it.
+    test('a joined rotateAndSync does not claim to have rotated', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      mockConn.files = [];
+
+      final running = sync.syncAll();
+      final forced = sync.rotateAndSync();
+      final results = await Future.wait([running, forced]);
+
+      expect(results[1]!.rotated, isFalse,
+          reason: 'no CMD_ROTATE_FILE went out, so the caller must stay in draft mode');
+    });
+
+    test('a rotateAndSync that really rotates says so', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      mockConn.files = [];
+
+      final result = await sync.rotateAndSync();
+
+      expect(result, isNotNull);
+      expect(result!.rotated, isTrue, reason: 'the rotate was ACKed, so finalizing drafts is safe');
+    });
+
     // The 2026-08-19 11:48 PDT sequence, end to end: the pipeline fires while
     // _onDeviceConnected is still caching settings, so the WAL layer has no
     // device. It used to return null here and report a completed sync having sent
