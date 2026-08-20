@@ -2660,8 +2660,10 @@ class RecordingsManager {
   /// anchor, so the next pass reads `alreadyCorrect` and does nothing; and a user who
   /// reverts drops the anchor, so nothing re-applies it.
   static Future<int> applyClockAnchors() async {
-    final anchors = DeviceClockAnchorSet.decode(SharedPreferencesUtil().deviceClockAnchors);
+    final prefs = SharedPreferencesUtil();
+    final anchors = DeviceClockAnchorSet.decode(prefs.deviceClockAnchors);
     if (anchors.isEmpty) return 0;
+    var ledger = ClockCorrectionLedger.decode(prefs.clockCorrectionLedger);
 
     final directory = await getApplicationDocumentsDirectory();
     final recordingsDir = Directory('${directory.path}/recordings');
@@ -2680,6 +2682,11 @@ class RecordingsManager {
         final sid = conv.sessionId;
         if (sid == null || sid == 0) continue;
         if (anchors.forSession(sid) == null) continue;
+        // The user undid this session's correction. Their decision outranks the anchor,
+        // and permanently: the anchor is re-observed on every connect while the Omi stays
+        // on this boot, so without this the very next pass would re-file the session and
+        // silently reverse them.
+        if (ledger.isReverted(sid)) continue;
         bySession.putIfAbsent(sid, () => []).add(conv);
       }
     }
@@ -2718,12 +2725,18 @@ class RecordingsManager {
       if (base == null) continue;
 
       final newStartMs = anchor.startMsFor(base.startUptime!);
+      // Captured BEFORE the move, because the move is what destroys it: the offset lives
+      // only in the filenames, and promoteSessionToDate rewrites them. Without this an
+      // undo has nothing to restore.
+      final originalOffsetMs = base.startTime.millisecondsSinceEpoch - (base.startUptime! * 1000);
       try {
         await promoteSessionToDate(
           base,
           DateTime.fromMillisecondsSinceEpoch(newStartMs),
           markClockCorrected: true,
         );
+        ledger = ledger.recordCorrection(entry.key, originalOffsetMs);
+        prefs.clockCorrectionLedger = ledger.encode();
         moved++;
         Logger.debug('RecordingsManager: clock anchor re-filed session ${entry.key} '
             '(${convs.length} recording(s)) to ${DateTime.fromMillisecondsSinceEpoch(newStartMs)}');
@@ -2745,18 +2758,28 @@ class RecordingsManager {
     if (sessionId == null || sessionId == 0) return;
 
     final prefs = SharedPreferencesUtil();
-    prefs.deviceClockAnchors = DeviceClockAnchorSet.decode(prefs.deviceClockAnchors).without(sessionId).encode();
 
-    // Back to where the Omi filed it: the device's own start for this recording is its
-    // uptime read as milliseconds since the epoch, which is what the processor wrote
-    // before any anchor existed.
+    // Both halves are needed, and dropping the anchor is the lesser one. The anchor comes
+    // straight back on the next diagnostics read — every reconnect, while the Omi stays on
+    // this boot — so only the ledger entry makes the rejection stick.
+    prefs.deviceClockAnchors = DeviceClockAnchorSet.decode(prefs.deviceClockAnchors).without(sessionId).encode();
+    final ledger = ClockCorrectionLedger.decode(prefs.clockCorrectionLedger);
+    prefs.clockCorrectionLedger = ledger.markReverted(sessionId).encode();
+
     final uptime = conv.startUptime;
-    if (uptime == null || uptime <= 0) {
-      Logger.debug('RecordingsManager: cannot revert session $sessionId — no startUptime to restore.');
+    // The offset these recordings carried before the app moved them. It cannot be derived
+    // now — the move rewrote the filenames it lived in — so a session with no ledger entry
+    // is one this build cannot put back, and saying so beats inventing a date. (Reading
+    // the uptime as an epoch, which an earlier version of this did, lands in 1970 rather
+    // than on whatever the Omi had filed.)
+    final originalOffsetMs = ledger.originalOffsetFor(sessionId);
+    if (uptime == null || uptime <= 0 || originalOffsetMs == null) {
+      Logger.debug('RecordingsManager: session $sessionId marked as user-rejected, but its original '
+          'timestamps are not recorded — files left where they are.');
       notifyRecordingsChanged();
       return;
     }
-    await promoteSessionToDate(conv, DateTime.fromMillisecondsSinceEpoch(uptime * 1000));
+    await promoteSessionToDate(conv, DateTime.fromMillisecondsSinceEpoch((uptime * 1000) + originalOffsetMs));
     await _clearClockCorrectedForSession(sessionId);
     notifyRecordingsChanged();
   }

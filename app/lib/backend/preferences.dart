@@ -553,6 +553,16 @@ class SharedPreferencesUtil {
   String get deviceClockAnchors => getString('deviceClockAnchors');
   set deviceClockAnchors(String v) => saveString('deviceClockAnchors', v);
 
+  /// What the clock-anchor pass has done to each session, and what the user rejected —
+  /// a JSON object keyed by session id. See [ClockCorrectionLedger].
+  ///
+  /// Separate from [deviceClockAnchors] because it has to outlive them. An anchor is
+  /// re-observed on every connect, so "the user undid this" cannot be expressed by
+  /// removing one; and once a correction has renamed the files, the timestamps they had
+  /// exist nowhere else.
+  String get clockCorrectionLedger => getString('clockCorrectionLedger');
+  set clockCorrectionLedger(String v) => saveString('clockCorrectionLedger', v);
+
   // Firebase user UID and email — stored in plain SharedPreferences (non-sensitive identifiers).
   String get omiAuthUid => getString('omiAuthUid');
   set omiAuthUid(String v) => saveString('omiAuthUid', v);

@@ -228,3 +228,91 @@ class DeviceClockAnchorSet {
     }
   }
 }
+
+/// What the app did to a session's timestamps, and whether the user rejected it.
+///
+/// Two things have to survive a correction, and neither can be recovered afterwards.
+///
+/// **What the timestamps were.** A correction rewrites filenames, and nothing else
+/// records the times they had. Without the original offset kept here, "undo" has nothing
+/// to put back — it can only invent something, and the obvious guess (uptime read as an
+/// epoch) lands in 1970 rather than on the date the Omi actually filed.
+///
+/// **That the user said no.** Dropping the session's anchor is *not* enough on its own.
+/// The anchor is re-captured from any later diagnostics read, and while the Omi stays on
+/// the same boot that is every reconnect — so the next processing pass would find the
+/// session disagreeing with a fresh anchor and re-file it, silently undoing the user's
+/// decision. A rejection has to be remembered against the session, not against the
+/// anchor.
+class ClockCorrectionLedger {
+  /// Bounded for the same reason the anchors are: entries are only consulted for
+  /// recordings still on disk.
+  static const int maxEntries = 16;
+
+  /// sessionId → (original offset in ms, user rejected the correction).
+  final Map<int, ({int originalOffsetMs, bool reverted})> entries;
+
+  const ClockCorrectionLedger(this.entries);
+
+  const ClockCorrectionLedger.empty() : entries = const {};
+
+  /// True when the user has undone this session's correction. [applyClockAnchors] must
+  /// leave such a session alone however convincing a later anchor looks.
+  bool isReverted(int? sessionId) => sessionId != null && (entries[sessionId]?.reverted ?? false);
+
+  /// The offset the session's recordings carried before the app moved them, or null if
+  /// this session was never corrected (so there is nothing to restore).
+  int? originalOffsetFor(int? sessionId) => sessionId == null ? null : entries[sessionId]?.originalOffsetMs;
+
+  /// Records that [sessionId] was corrected, remembering the offset it had first.
+  ///
+  /// Keeps an existing entry's offset if there is one: the first correction is the one
+  /// that moved the recordings away from the device's own timestamps, so its offset is
+  /// the one an undo has to restore. A second pass would otherwise overwrite it with the
+  /// app's own previous answer.
+  ClockCorrectionLedger recordCorrection(int sessionId, int originalOffsetMs) {
+    if (entries.containsKey(sessionId)) return this;
+    final next = Map<int, ({int originalOffsetMs, bool reverted})>.from(entries);
+    next[sessionId] = (originalOffsetMs: originalOffsetMs, reverted: false);
+    while (next.length > maxEntries) {
+      next.remove(next.keys.first);
+    }
+    return ClockCorrectionLedger(next);
+  }
+
+  /// Marks [sessionId] as rejected by the user, keeping its original offset.
+  ClockCorrectionLedger markReverted(int sessionId) {
+    final existing = entries[sessionId];
+    final next = Map<int, ({int originalOffsetMs, bool reverted})>.from(entries);
+    next[sessionId] = (originalOffsetMs: existing?.originalOffsetMs ?? 0, reverted: true);
+    while (next.length > maxEntries) {
+      next.remove(next.keys.first);
+    }
+    return ClockCorrectionLedger(next);
+  }
+
+  String encode() => jsonEncode({
+        for (final e in entries.entries) e.key.toString(): {'o': e.value.originalOffsetMs, 'r': e.value.reverted},
+      });
+
+  /// Never throws — a corrupt preference must cost the undo affordance, nothing else.
+  static ClockCorrectionLedger decode(String? raw) {
+    if (raw == null || raw.isEmpty) return const ClockCorrectionLedger.empty();
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return const ClockCorrectionLedger.empty();
+      final out = <int, ({int originalOffsetMs, bool reverted})>{};
+      decoded.forEach((k, v) {
+        final id = int.tryParse(k.toString());
+        if (id == null || v is! Map) return;
+        final o = v['o'];
+        final r = v['r'];
+        if (o is! int) return;
+        out[id] = (originalOffsetMs: o, reverted: r == true);
+      });
+      return ClockCorrectionLedger(out);
+    } catch (_) {
+      return const ClockCorrectionLedger.empty();
+    }
+  }
+}
