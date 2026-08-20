@@ -715,6 +715,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   void _transitionToError(String activeStage, String message) {
     if (_isDisposed) return;
     _isForcePipeline = false;
+    // An error is when the user most wants to try again — holding Force Sync for
+    // five minutes after a run that failed is the same punitive charge as holding
+    // it after one that skipped. A rotate that errored sealed nothing anyway.
+    _releaseForceSyncCooldown();
     _lastActiveStage = activeStage;
     Logger.error(
       'RecordingsController: Pipeline error [$activeStage]: $message',
@@ -838,8 +842,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final syncs = ServiceManager.instance().wal.getSyncs();
     // Force Sync needs the wait more than the ordinary pipeline does, not less:
     // it is user-initiated (so it is tapped exactly when someone has just opened
-    // the app onto a fresh connect) and startForcePipeline puts it on a one-minute
-    // cooldown, so skipping here costs the user a minute having done nothing.
+    // the app onto a fresh connect) and startForcePipeline puts it on a cooldown,
+    // so skipping here would cost the user that wait having done nothing.
     await _awaitSyncableDevice(syncs, settle: false);
     notifyListeners();
     _persistProgress();
@@ -854,6 +858,17 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       _prefs.lastSyncPartial = result?.isPartial ?? false;
       if (result == null) {
         Logger.warning('RecordingsController: force sync did not run — recording a skip');
+      } else if (!result.rotated) {
+        // Joined a plain sync already in flight, so CMD_ROTATE_FILE never went
+        // out. The device's active bin is still open, still accumulating, and
+        // still absent from CMD_LIST_FILES — so the tail of any in-progress
+        // recording is on the device, not here. Finalizing drafts on that would
+        // promote a recording that stops mid-audio and prune the bins it was
+        // built from. Exactly the reasoning as the isPartial branch below; the
+        // user still gets the sync, just not the "seal it now" half.
+        Logger.warning('RecordingsController: force sync joined a running sync — no rotation, '
+            'processing in draft mode so an in-progress recording is not finalized short');
+        _isForcePipeline = false;
       }
     } catch (e) {
       // A connection-null throw means we never reached the device (out of range
