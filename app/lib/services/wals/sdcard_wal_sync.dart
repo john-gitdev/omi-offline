@@ -49,6 +49,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   @override
   bool get isSyncing => _isSyncing;
   @override
+  bool get hasDevice => _device != null;
+  @override
   bool get isDeviceRecordingFailed => false;
   @override
   Future<void>? get cancelFuture => _cancelCompleter?.future;
@@ -1091,7 +1093,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   Future<SyncLocalFilesResponse?> syncAll({
     IWalSyncProgressListener? progress,
   }) async {
-    if (_isSyncing || _device == null) return null;
+    if (_isSyncing || _device == null) {
+      Logger.debug(
+          'SDCardWalSync: skipping syncAll — ${_isSyncing ? 'a sync is already in flight' : 'no device registered yet'}');
+      return null;
+    }
 
     final dev = _device!;
     final connection = _connectionProvider != null
@@ -1155,7 +1161,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       return w.status == WalStatus.miss && w.storage == WalStorage.sdcard;
     }).toList();
 
-    if (wals.isEmpty) return null;
+    // Non-null: the device WAS asked (CMD_LIST_FILES went out above) and holds
+    // nothing syncable. That is a completed sync, and it must not be reported as
+    // a skip — null is reserved for "the sync never ran", which is what the
+    // callers key their "Skipped" state and their lastSyncCompletedMs stamp off.
+    if (wals.isEmpty) {
+      return SyncLocalFilesResponse(newConversationIds: [], updatedConversationIds: []);
+    }
 
     // The fast path can only read and delete index 0, and it relies on each file it
     // finishes being deleted so the NEXT one it wants becomes index 0. A file we already
@@ -1532,7 +1544,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     required Wal wal,
     IWalSyncProgressListener? progress,
   }) async {
-    if (_isSyncing) return null;
+    if (_isSyncing) {
+      Logger.debug('SDCardWalSync: skipping syncWal — a sync is already in flight');
+      return null;
+    }
 
     final connection = _device != null
         ? (_connectionProvider != null
@@ -1696,7 +1711,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   Future<SyncLocalFilesResponse?> rotateAndSync({
     IWalSyncProgressListener? progress,
   }) async {
-    if (_isSyncing || _device == null) return null;
+    if (_isSyncing || _device == null) {
+      Logger.debug(
+          'SDCardWalSync: skipping rotateAndSync — ${_isSyncing ? 'a sync is already in flight' : 'no device registered yet'}');
+      return null;
+    }
 
     final dev = _device!;
     final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
