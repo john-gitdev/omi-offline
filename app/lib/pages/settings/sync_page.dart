@@ -305,13 +305,17 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       Logger.debug('DebugTools: Calling syncAll()');
       final result = await ServiceManager.instance().wal.getSyncs().syncAll(progress: this);
       deviceProvider.restartBackgroundSyncTimer();
+      // null means the sync never ran — see IWalSync.syncAll. It used to be
+      // reported here as "All synced!", which is the same lie the recordings page
+      // told: a run that issued no command at all reading as a clean card.
       Logger.debug(
-        'DebugTools: syncAll complete — result=${result == null ? 'null (nothing to sync)' : 'SyncLocalFilesResponse'}',
+        'DebugTools: syncAll returned ${result == null ? 'null — the sync DID NOT RUN' : 'a response — the sync ran'}',
       );
       if (!mounted) return;
       setState(() {
         if (result == null) {
-          _statusMessage = 'All synced! No new segments found.';
+          _statusMessage =
+              'Sync skipped — the device was never asked (not registered yet, or a sync is already running).';
         } else {
           _statusMessage = 'Sync Complete. Raw segments downloaded.';
         }
