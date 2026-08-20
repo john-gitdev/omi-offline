@@ -928,10 +928,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   /// solved this by deferring on `_pendingBackgroundSync` until after `setDevice`
   /// (see DeviceProvider) — this is the foreground equivalent.
   ///
-  /// Bounded, and deliberately falls through rather than failing: if the device
-  /// never registers, syncAll's own guard returns null and the run records a
-  /// skip. Waiting longer than the sync interval would be worse than skipping.
-  static const Duration _syncableDeviceTimeout = Duration(seconds: 12);
+  /// Waits on the signal rather than polling, and generously: the point is to
+  /// SYNC, not to report a tidy skip. A skip only means "we could not reach your
+  /// Omi", which is what it meant before this window existed. If the device is
+  /// simply disconnected, deviceReady stays pending and we settle to a skip after
+  /// the timeout — that is the honest answer and the next cycle retries.
+  static const Duration _syncableDeviceTimeout = Duration(seconds: 20);
 
   Future<void> _awaitSyncableDevice(SDCardWalSync syncs) async {
     if (syncs.hasDevice) {
@@ -939,13 +941,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       await Future.delayed(const Duration(seconds: 1));
       return;
     }
-    final deadline = DateTime.now().add(_syncableDeviceTimeout);
-    while (!syncs.hasDevice && DateTime.now().isBefore(deadline)) {
-      await Future.delayed(const Duration(milliseconds: 250));
-    }
-    if (!syncs.hasDevice) {
+    Logger.debug('RecordingsController: waiting for the WAL layer to be handed the device');
+    try {
+      await syncs.deviceReady.timeout(_syncableDeviceTimeout);
+      Logger.debug('RecordingsController: device registered — syncing');
+    } on TimeoutException {
       Logger.warning('RecordingsController: no device registered with the WAL layer after '
-          '${_syncableDeviceTimeout.inSeconds}s — the sync will record a skip');
+          '${_syncableDeviceTimeout.inSeconds}s — the Omi is not reachable, recording a skip');
     }
   }
 
