@@ -178,17 +178,31 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   // sync runner's stopping branch, reset at the start of each pipeline run.
   bool _processAfterCancel = false;
 
-  // TEMPORARY (testing): was 1 minute. A Force Sync that skipped — which is what
-  // this whole branch is about — still burned the full minute, so the only way
-  // back to a sync was Settings → Debug Tools. Restore to `Duration(minutes: 1)`
-  // before this ships; the cooldown exists because every Force Sync sends
-  // CMD_ROTATE_FILE, and hammering it seals a run of near-empty bins.
-  static const _forceSyncCooldown = Duration.zero;
+  // Every Force Sync sends CMD_ROTATE_FILE, so hammering it seals a run of
+  // near-empty bins (and inflates emptyBinRotations, which is meant to be read as
+  // a health signal). Five minutes rather than the original one: a rotation is
+  // only worth taking when enough new audio has accumulated to be worth sealing.
+  //
+  // Only armed for a run that actually reached the device — see
+  // _releaseForceSyncCooldown. A cooldown charged for a sync that never happened
+  // is what made the old one feel punitive, and at five minutes it would be worse.
+  static const _forceSyncCooldown = Duration(minutes: 5);
 
   bool _forceSyncOnCooldown = false;
   bool get forceSyncOnCooldown => _forceSyncOnCooldown;
 
   Timer? _forceSyncCooldownTimer;
+
+  /// Hands Force Sync straight back. Safe to call on any run — only
+  /// [startForcePipeline] ever arms the cooldown, so this is a no-op elsewhere.
+  void _releaseForceSyncCooldown() {
+    _forceSyncCooldownTimer?.cancel();
+    _forceSyncCooldownTimer = null;
+    if (_forceSyncOnCooldown) {
+      _forceSyncOnCooldown = false;
+      if (!_isDisposed) notifyListeners();
+    }
+  }
 
   static const _kSpState = 'sp_state';
   static const _kSpSyncedCount = 'sp_synced_count';
@@ -1482,6 +1496,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _prefs.lastSyncSkipped = true;
     _prefs.lastSyncStatusMs = now;
     _isForcePipeline = false;
+    // Nothing was pulled, so nothing was rotated — there is no reason to hold the
+    // user off Force Sync for five minutes. Charging the cooldown for a run that
+    // never reached the device is the same mistake as reporting it complete.
+    _releaseForceSyncCooldown();
     _transitionTo(SyncProcessState.idle);
     if (_isAppForeground()) {
       _settleNotification();
