@@ -101,8 +101,14 @@ abstract class SDCardWalSync implements IWalSync {
   /// calls [setDevice], so there is a window — 4.7s on the device this was
   /// diagnosed from — where BLE is connected, the battery reads fine, and a sync
   /// started here would return null having asked the device nothing. Callers that
-  /// kick a sync off connect must wait on this rather than on a fixed delay.
+  /// kick a sync off connect must wait on [deviceReady] rather than a fixed delay.
   bool get hasDevice;
+
+  /// Completes once [setDevice] has registered a device — the signal a caller
+  /// waits on so a sync started during connect setup runs when the WAL layer is
+  /// ready, instead of returning null and postponing real work to the next cycle.
+  /// `setDevice(null)` resets it to pending, so it tracks the current attachment.
+  Future<void> get deviceReady;
   Future<void>? get cancelFuture;
   void setGlobalProgressListener(IWalSyncProgressListener? listener);
   bool get isDeviceRecordingFailed;
