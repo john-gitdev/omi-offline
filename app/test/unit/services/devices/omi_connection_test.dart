@@ -298,6 +298,35 @@ void main() {
       expect(s.msSinceLastBlockDrop, isNull, reason: 'no block drop recorded');
     });
 
+    test('performGetDropStats reads device_session_id from a 100-byte payload', () async {
+      // The anchor's whole correctness argument is that the session id and the uptime
+      // come from ONE read, so pin that they are decoded from the same payload.
+      transport.reads[OmiDeviceConnection.diagnosticsDropsCharacteristicUuid] = concat([
+        ...List.generate(4, (_) => le32(0)), // offsets 0..15
+        le32(777000), // currentUptimeMs (offset 16)
+        ...List.generate(19, (_) => le32(0)), // offsets 20..95
+        le32(0xDEADBEEF), // device_session_id (offset 96)
+      ]);
+      final s = await connection.performGetDropStats();
+      expect(s, isNotNull);
+      expect(s!.deviceSessionId, 0xDEADBEEF);
+      expect(s.currentUptimeMs, 777000);
+    });
+
+    test('device_session_id reads 0 on firmware that stops at 96 bytes', () async {
+      // 0 is not a session — the firmware never issues it — so the anchor treats it as
+      // "this device cannot say which boot it is in" and declines to capture.
+      transport.reads[OmiDeviceConnection.diagnosticsDropsCharacteristicUuid] = concat([
+        ...List.generate(4, (_) => le32(0)),
+        le32(777000), // currentUptimeMs (offset 16)
+        ...List.generate(19, (_) => le32(0)), // through offset 95
+      ]);
+      final s = await connection.performGetDropStats();
+      expect(s, isNotNull);
+      expect(s!.deviceSessionId, 0);
+      expect(s.currentUptimeMs, 777000, reason: 'the older prefix still parses');
+    });
+
     test('performGetDropStats returns null on a short (<20 byte) payload', () async {
       transport.reads[OmiDeviceConnection.diagnosticsDropsCharacteristicUuid] = concat([le32(1), le32(2)]);
       expect(await connection.performGetDropStats(), isNull);

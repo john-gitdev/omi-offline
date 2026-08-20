@@ -8,6 +8,8 @@ import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/gen/pigeon_communicator.g.dart';
 import 'package:omi/services/bridges/ble_bridge.dart';
+import 'package:omi/services/device_clock_anchor.dart';
+import 'package:omi/services/devices/device_drop_stats.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_crash_log.dart';
 import 'package:omi/services/devices/diag_log_record.dart';
@@ -1987,6 +1989,43 @@ class DeviceProvider extends ChangeNotifier
     }
   }
 
+  /// Records "this session's uptime U was at wall clock T" from a diagnostics read.
+  ///
+  /// Both halves come from the SAME read — [DeviceDropStats.deviceSessionId] and
+  /// [DeviceDropStats.currentUptimeMs], stamped by [DeviceDropStats.readAt] — which is
+  /// the whole reason the session id was added to the 0x0062 payload. Pairing an uptime
+  /// with a session id learned from somewhere else (a synced bin filename, an earlier
+  /// read) reintroduces the possibility that they describe different boots, and an
+  /// anchor bound to the wrong boot re-files correct recordings to a wrong date, which
+  /// is worse than not correcting at all.
+  ///
+  /// Fire-and-forget on purpose: this sits on the connect path, and persisting an
+  /// anchor must never delay bringing the link up or block the sync behind it.
+  void _captureClockAnchor(DeviceDropStats stats) {
+    // 0 = firmware older than the 100-byte payload. The firmware never issues 0 as a
+    // real id, so this is "cannot tell me which session it is in", not a session.
+    if (stats.deviceSessionId == 0) return;
+
+    // A phone whose own clock is unset would anchor every recording to 1970. The
+    // threshold is the same pre-time-sync epoch the WAL layer uses to decide a device
+    // timestamp is meaningless.
+    final wallMs = stats.readAt.millisecondsSinceEpoch;
+    if (wallMs < 946684800000) {
+      Logger.debug('Clock anchor: skipped — phone clock reads before 2000');
+      return;
+    }
+
+    final prefs = SharedPreferencesUtil();
+    final anchor = DeviceClockAnchor(
+      sessionId: stats.deviceSessionId,
+      deviceUptimeMs: stats.currentUptimeMs,
+      wallClockMs: wallMs,
+    );
+    final updated = DeviceClockAnchorSet.decode(prefs.deviceClockAnchors).upsert(anchor);
+    prefs.deviceClockAnchors = updated.encode();
+    Logger.debug('Clock anchor: $anchor (holding ${updated.anchors.length})');
+  }
+
   Future<void> _finishDeviceSetup(BtDevice device) async {
     if (_disposed || connectedDevice?.id != device.id) return;
 
@@ -2144,6 +2183,17 @@ class DeviceProvider extends ChangeNotifier
       // consecutive lines means anything.
       final dropStats = await conn.getDropStats();
       if (dropStats != null) {
+        // Opportunistic, and that word is load-bearing: getDropStats() returns null
+        // while a sync holds the storage mutex, so this is NOT "on connect" — it is
+        // "whenever a diagnostics read happens to get through". That is enough. An
+        // anchor is not perishable (it describes a boot, and the boot does not change),
+        // there is one on every connect that is not mid-sync, and a session that never
+        // yields one simply keeps whatever timestamps the Omi assigned. Do not be
+        // tempted to force the read through the mutex to guarantee an anchor: a GATT
+        // read racing the storage notify stream throws Error 133 on Android and costs
+        // the sync, which is a far worse trade than a missing correction.
+        _captureClockAnchor(dropStats);
+
         if (dropStats.failedConnCount > 0 || dropStats.estabFailCount > 0) {
           Logger.warning(
             'Device BLE connect-fail counters: conn=${dropStats.failedConnCount} '

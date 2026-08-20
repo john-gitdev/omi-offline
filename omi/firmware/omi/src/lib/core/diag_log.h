@@ -82,6 +82,40 @@ typedef enum {
                                        *          force-wake happens while the threshold is still
                                        *          32769, so "resumed @32769" is normal and does NOT
                                        *          mean capture resumed into standby. */
+    DIAG_IMU_POWER_STATE = 19,        /* LSM6DS3TR-C accel/gyro power state, read back from the part
+                                       * rather than assumed. Nothing in the built firmware consumes
+                                       * motion data (accel.c is not in CMakeLists.txt) — only the
+                                       * 24-bit timestamp counter.
+                                       * The build settles what this record was first added to hunt:
+                                       * CONFIG_LSM6DSL_{GYRO,ACCEL}_ODR are both 0 and
+                                       * lsm6dsl_init_chip() writes them into ODR_G/ODR_XL, so both
+                                       * halves come up powered down and the feared free-running gyro
+                                       * does not exist. The accel is then deliberately switched back
+                                       * ON at 12.5 Hz — the part gates its timebase when both halves
+                                       * are down, which would stop the timestamp counter and break
+                                       * the System OFF time bridge — but in LOW-POWER mode, since
+                                       * XL_HM_MODE resets to high-performance (~170 uA, and
+                                       * ODR-independent) for samples nobody reads.
+                                       * Healthy reading: CTRL2_G 0, CTRL1_XL 0x10, CTRL6_C 0x10.
+                                       * arg0 = bit 15 IMU_PWR_READ_FAILED, bit 1 gyro attr_set
+                                       *        returned non-zero, bit 0 accel likewise. Bit 15 is a
+                                       *        separate bit and not a magic arg1 value on purpose:
+                                       *        the all-good reading packs to arg1 == 0, which is
+                                       *        exactly what a failed read would report.
+                                       * arg1 = when bit 15 is CLEAR: [CTRL1_XL][CTRL2_G][CTRL6_C]
+                                       *        [CTRL7_G], high byte first. ODR_XL/ODR_G are the top
+                                       *        nibbles of the first two: 0 means powered down.
+                                       *        XL_HM_MODE (CTRL6_C bit 4) and G_HM_MODE (CTRL7_G
+                                       *        bit 7) are set when that part is in low-power rather
+                                       *        than high-performance mode.
+                                       *        When bit 15 is SET: [accel_rc u8][gyro_rc u8] in the
+                                       *        low two bytes — the errnos, all the evidence there is
+                                       *        when the bus will not answer.
+                                       * Emitted only when the state changes (plus the first call after
+                                       * boot), failures included: the producer runs on every VAD-sleep
+                                       * transition as well as every time sync, so in auto mode an
+                                       * undeduplicated failure would emit tens of FORCED records an
+                                       * hour and evict the whole 128-slot ring. */
 } diag_event_code_t;
 
 /* arg0 values for DIAG_MIC_STATE. Appended-only, same discipline as the codes. */

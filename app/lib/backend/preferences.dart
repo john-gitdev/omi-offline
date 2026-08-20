@@ -535,6 +535,34 @@ class SharedPreferencesUtil {
   Future<void> setGattFingerprint(String deviceId, String value) async =>
       await saveString('gattFingerprint_$deviceId', value);
 
+  /// Clock anchors, one per observed hardware session — a JSON array of
+  /// [DeviceClockAnchor]. '' = none held, which is the state until the first connect
+  /// to firmware new enough to report its session id.
+  ///
+  /// This is what lets the phone act as the Omi's clock of record. The Omi forgets the
+  /// time on every restart and its fallback counter wraps every ~29.8 h in the
+  /// direction that makes a long gap look short, so a recording can carry a confident
+  /// wrong date that nothing on the device can contradict. Each anchor pairs one
+  /// session's uptime with the phone's wall clock, which places every recording of that
+  /// session exactly. Written by DeviceProvider on connect, read by the processing
+  /// pass, and pruned per-session when the user reverts a re-filing.
+  ///
+  /// Not per-device-id, deliberately: see "One Omi at a time" in CLAUDE.md. Session ids
+  /// are random u32s, so a replacement Omi's sessions simply never match an anchor and
+  /// its recordings are left alone — the correct outcome, reached without any keying.
+  String get deviceClockAnchors => getString('deviceClockAnchors');
+  set deviceClockAnchors(String v) => saveString('deviceClockAnchors', v);
+
+  /// What the clock-anchor pass has done to each session, and what the user rejected —
+  /// a JSON object keyed by session id. See [ClockCorrectionLedger].
+  ///
+  /// Separate from [deviceClockAnchors] because it has to outlive them. An anchor is
+  /// re-observed on every connect, so "the user undid this" cannot be expressed by
+  /// removing one; and once a correction has renamed the files, the timestamps they had
+  /// exist nowhere else.
+  String get clockCorrectionLedger => getString('clockCorrectionLedger');
+  set clockCorrectionLedger(String v) => saveString('clockCorrectionLedger', v);
+
   // Firebase user UID and email — stored in plain SharedPreferences (non-sensitive identifiers).
   String get omiAuthUid => getString('omiAuthUid');
   set omiAuthUid(String v) => saveString('omiAuthUid', v);

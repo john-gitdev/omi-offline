@@ -1458,6 +1458,10 @@ static int ring_create_segment(void)
             rtc_valid = false;
         }
     }
+    /* Plain read, not ensure_: transport_start() allocates the id before mic_start(),
+     * so it is already non-zero for every bin that can hold audio. Do not reorder those
+     * two in main() — a bin stamped session_id = 0 cannot be matched to a clock anchor,
+     * and the recordings that would lose are the pre-connect ones the correction is for. */
     uint32_t sid = (uint32_t) atomic_get(&device_session_id);
 
     /* Empty-bin diagnostic: previous segment closed holding only its header.

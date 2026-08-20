@@ -164,6 +164,55 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
     if (mounted) Navigator.of(context).pop();
   }
 
+  /// Puts a phone-corrected recording back where the Omi filed it.
+  ///
+  /// Offered only when the `.meta` says the phone moved this recording (flag byte [3]
+  /// bit 0x20). That gate is the safety property: a timestamp the Omi assigned and the
+  /// phone agreed with is never re-datable from here, so the arrow can only ever undo
+  /// the app's own work, never a genuine device timestamp.
+  Future<void> _revertClockCorrection() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: Colors.grey.shade900,
+        title: const Text('Undo date correction', style: TextStyle(color: Colors.white)),
+        content: const Text(
+          'This recording was re-dated using your phone\'s clock, because the Omi could not '
+          'tell what time it was. Undoing puts this recording — and everything else the Omi '
+          'recorded in the same session — back to the time the Omi itself recorded, and stops '
+          'the app correcting that session again.',
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(c).pop(false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(c).pop(true),
+            child: const Text('Undo', style: TextStyle(color: Colors.amber)),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+
+    try {
+      await _player.stop();
+      await RecordingsManager.revertClockCorrection(widget.conversation);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to undo the date correction.')),
+        );
+      }
+      return;
+    }
+    // Pop rather than rebuild: the file this page is playing has been renamed out from
+    // under it, so the conversation this widget holds no longer names anything on disk.
+    if (mounted) Navigator.of(context).pop();
+  }
+
   Future<void> _export() async {
     await SharePlus.instance.share(
       ShareParams(
@@ -256,6 +305,12 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
               icon: const FaIcon(FontAwesomeIcons.calendarDays, color: Colors.amber, size: 20),
               onPressed: _assignDate,
               tooltip: 'Assign date',
+            ),
+          if (widget.conversation.clockCorrected)
+            IconButton(
+              icon: const FaIcon(FontAwesomeIcons.clockRotateLeft, color: Colors.amber, size: 20),
+              onPressed: _revertClockCorrection,
+              tooltip: 'Undo date correction',
             ),
           _buildUploadAction(),
           IconButton(

@@ -12,6 +12,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/models/recordings/recordings_models.dart';
 import 'package:omi/services/audio/aac_encoder.dart';
+import 'package:omi/services/device_clock_anchor.dart';
 import 'package:omi/services/discard_store.dart';
 import 'package:omi/services/recordings_isolate_worker.dart';
 import 'package:omi/services/services.dart';
@@ -2601,11 +2602,221 @@ class RecordingsManager {
     }
   }
 
+  /// Sets flag byte [3] bit 0x20 on [meta] — "the phone re-filed this".
+  ///
+  /// Read-modify-write of a single bit rather than a rewrite of the sidecar: the
+  /// bins-JSON tail is located from the meta's own length, so anything that changes the
+  /// length shifts that tail out from under every reader. Flag byte [3] already exists
+  /// on any `.meta` this can be called for (the processor writes all four), so no byte
+  /// is being added — see the no-fifth-flag-byte rule in CLAUDE.md.
+  ///
+  /// Best-effort: a meta too short to carry flags means a recording written by an older
+  /// build or a torn write. The move still happened and is still right; all that is lost
+  /// is the revert arrow, so this logs and returns rather than failing the correction.
+  static Future<void> _stampClockCorrected(File meta) async {
+    try {
+      if (!await meta.exists()) return;
+      final bytes = await meta.readAsBytes();
+      if (bytes.length < 417) return;
+      final flagOffset = 417 + bytes[416];
+      if (bytes.length <= flagOffset + 3) {
+        Logger.debug('RecordingsManager: ${meta.path} has no flag byte [3]; re-filed but not markable.');
+        return;
+      }
+      if ((bytes[flagOffset + 3] & 0x20) != 0) return;
+      bytes[flagOffset + 3] |= 0x20;
+      await meta.writeAsBytes(bytes, flush: true);
+    } catch (e) {
+      Logger.error('RecordingsManager: failed to stamp clock-corrected flag on ${meta.path}: $e');
+    }
+  }
+
+  /// Re-files recordings whose timestamps the Omi got wrong, using the phone as the
+  /// clock of record. Returns the number of sessions moved.
+  ///
+  /// The Omi has no clock. It learns the time from a phone and forgets it on every
+  /// restart, and the counter it falls back to is 24-bit at 6.4 ms — it wraps every
+  /// ~29.8 h in the direction that makes a long gap look SHORT. So a device left off for
+  /// 31 h comes back believing 1.2 h passed and files a day of audio under a confidently
+  /// wrong date, with nothing on the device able to contradict it.
+  ///
+  /// The phone can, for any session it saw running: an anchor pairs that session's
+  /// uptime with real wall-clock time, and every recording's `.meta` carries the uptime
+  /// it started at, which places the whole session exactly.
+  ///
+  /// Three rules, in [clockVerdict]:
+  ///   - a recording whose own timestamp already agrees is never touched;
+  ///   - one with no timestamp at all is given one;
+  ///   - one the anchor can PROVE wrong is overwritten.
+  /// The gap between "a bit of drift" and "the counter wrapped" is four orders of
+  /// magnitude, so no tuned threshold decides this.
+  ///
+  /// Whole sessions move together, because a session has exactly one offset: if its
+  /// clock was wrong, every recording in it is wrong by the same amount. A session with
+  /// no anchor — one that had already ended before the phone ever saw it — is left
+  /// alone, since the gap between two boots is unmeasurable once both counters reset.
+  ///
+  /// Idempotent by construction. Once moved, a session's recordings agree with their
+  /// anchor, so the next pass reads `alreadyCorrect` and does nothing; and a user who
+  /// reverts drops the anchor, so nothing re-applies it.
+  static Future<int> applyClockAnchors() async {
+    final prefs = SharedPreferencesUtil();
+    final anchors = DeviceClockAnchorSet.decode(prefs.deviceClockAnchors);
+    if (anchors.isEmpty) return 0;
+    var ledger = ClockCorrectionLedger.decode(prefs.clockCorrectionLedger);
+
+    final directory = await getApplicationDocumentsDirectory();
+    final recordingsDir = Directory('${directory.path}/recordings');
+    if (!await recordingsDir.exists()) return 0;
+
+    // Group this session's finalized recordings. Drafts are skipped: they are still
+    // being appended to and are not surfaced, and the pass that promotes them will
+    // produce a finalized file this can correct on a later run.
+    final bySession = <int, List<Conversation>>{};
+    for (final folder in (await recordingsDir.list().toList()).whereType<Directory>()) {
+      for (final f in (await folder.list().toList()).whereType<File>()) {
+        final path = f.path;
+        if (!(path.endsWith('.m4a') || path.endsWith('.wav') || path.endsWith('.ogg'))) continue;
+        if (path.contains('_draft.')) continue;
+        final conv = Conversation.fromFile(f);
+        final sid = conv.sessionId;
+        if (sid == null || sid == 0) continue;
+        if (anchors.forSession(sid) == null) continue;
+        // The user undid this session's correction. Their decision outranks the anchor,
+        // and permanently: the anchor is re-observed on every connect while the Omi stays
+        // on this boot, so without this the very next pass would re-file the session and
+        // silently reverse them.
+        if (ledger.isReverted(sid)) continue;
+        bySession.putIfAbsent(sid, () => []).add(conv);
+      }
+    }
+
+    var moved = 0;
+    for (final entry in bySession.entries) {
+      final anchor = anchors.forSession(entry.key)!;
+      final convs = entry.value;
+
+      var needsMove = false;
+      for (final c in convs) {
+        final verdict = clockVerdict(
+          anchor: anchor,
+          recordedSessionId: c.sessionId,
+          startUptimeSec: c.startUptime,
+          claimedStartMs: c.startTime.millisecondsSinceEpoch,
+          isUnknown: c.isUnknown,
+        );
+        if (verdict == ClockVerdict.correctWrong || verdict == ClockVerdict.fileUnknown) {
+          needsMove = true;
+          break;
+        }
+      }
+      if (!needsMove) continue;
+
+      // The base only supplies the offset, and every recording in the session yields
+      // the same one, so any with a usable uptime will do. The earliest is chosen so
+      // the folder-migration step inside promoteSessionToDate keys off the session's
+      // first recording rather than an arbitrary later one.
+      Conversation? base;
+      for (final c in convs) {
+        final up = c.startUptime;
+        if (up == null || up <= 0) continue;
+        if (base == null || up < base.startUptime!) base = c;
+      }
+      if (base == null) continue;
+
+      final newStartMs = anchor.startMsFor(base.startUptime!);
+      // Captured BEFORE the move, because the move is what destroys it: the offset lives
+      // only in the filenames, and promoteSessionToDate rewrites them. Without this an
+      // undo has nothing to restore.
+      final originalOffsetMs = base.startTime.millisecondsSinceEpoch - (base.startUptime! * 1000);
+      try {
+        await promoteSessionToDate(
+          base,
+          DateTime.fromMillisecondsSinceEpoch(newStartMs),
+          markClockCorrected: true,
+        );
+        ledger = ledger.recordCorrection(entry.key, originalOffsetMs);
+        prefs.clockCorrectionLedger = ledger.encode();
+        moved++;
+        Logger.debug('RecordingsManager: clock anchor re-filed session ${entry.key} '
+            '(${convs.length} recording(s)) to ${DateTime.fromMillisecondsSinceEpoch(newStartMs)}');
+      } catch (e) {
+        Logger.error('RecordingsManager: clock-anchor re-file failed for session ${entry.key}: $e');
+      }
+    }
+    return moved;
+  }
+
+  /// Undoes [applyClockAnchors] for one session, and discards the anchor that did it.
+  ///
+  /// Dropping the anchor is not tidy-up, it is the point: leave it in place and the very
+  /// next processing pass reads the same verdict, re-files the session, and silently
+  /// undoes the user's decision. The anchor is the correction's authority, so revoking
+  /// the correction has to revoke the authority.
+  static Future<void> revertClockCorrection(Conversation conv) async {
+    final sessionId = conv.sessionId;
+    if (sessionId == null || sessionId == 0) return;
+
+    final prefs = SharedPreferencesUtil();
+
+    // Both halves are needed, and dropping the anchor is the lesser one. The anchor comes
+    // straight back on the next diagnostics read — every reconnect, while the Omi stays on
+    // this boot — so only the ledger entry makes the rejection stick.
+    prefs.deviceClockAnchors = DeviceClockAnchorSet.decode(prefs.deviceClockAnchors).without(sessionId).encode();
+    final ledger = ClockCorrectionLedger.decode(prefs.clockCorrectionLedger);
+    prefs.clockCorrectionLedger = ledger.markReverted(sessionId).encode();
+
+    final uptime = conv.startUptime;
+    // The offset these recordings carried before the app moved them. It cannot be derived
+    // now — the move rewrote the filenames it lived in — so a session with no ledger entry
+    // is one this build cannot put back, and saying so beats inventing a date. (Reading
+    // the uptime as an epoch, which an earlier version of this did, lands in 1970 rather
+    // than on whatever the Omi had filed.)
+    final originalOffsetMs = ledger.originalOffsetFor(sessionId);
+    if (uptime == null || uptime <= 0 || originalOffsetMs == null) {
+      Logger.debug('RecordingsManager: session $sessionId marked as user-rejected, but its original '
+          'timestamps are not recorded — files left where they are.');
+      notifyRecordingsChanged();
+      return;
+    }
+    await promoteSessionToDate(conv, DateTime.fromMillisecondsSinceEpoch((uptime * 1000) + originalOffsetMs));
+    await _clearClockCorrectedForSession(sessionId);
+    notifyRecordingsChanged();
+  }
+
+  /// Clears bit 0x20 across a session, so the revert arrow disappears with the revert.
+  static Future<void> _clearClockCorrectedForSession(int sessionId) async {
+    final directory = await getApplicationDocumentsDirectory();
+    final recordingsDir = Directory('${directory.path}/recordings');
+    if (!await recordingsDir.exists()) return;
+    for (final folder in (await recordingsDir.list().toList()).whereType<Directory>()) {
+      for (final f in (await folder.list().toList()).whereType<File>()) {
+        if (!f.path.endsWith('.meta')) continue;
+        try {
+          final bytes = await f.readAsBytes();
+          if (bytes.length < 417) continue;
+          final bd = ByteData.sublistView(bytes);
+          if (bd.getUint32(408, Endian.little) != sessionId) continue;
+          final flagOffset = 417 + bytes[416];
+          if (bytes.length <= flagOffset + 3) continue;
+          if ((bytes[flagOffset + 3] & 0x20) == 0) continue;
+          bytes[flagOffset + 3] &= ~0x20;
+          await f.writeAsBytes(bytes, flush: true);
+        } catch (_) {}
+      }
+    }
+  }
+
   /// Batch-updates the starting timestamp for an entire hardware session.
   ///
   /// This renames and moves all processed recordings, .meta sidecars, .bin raw syncs,
   /// and .edl markers belonging to the same sessionId.
-  static Future<void> promoteSessionToDate(Conversation base, DateTime newStartTime) async {
+  /// [markClockCorrected] stamps flag byte [3] bit 0x20 on every `.meta` this moves,
+  /// marking the recording as re-filed by the phone rather than timestamped by the Omi.
+  /// Only [applyClockAnchors] passes it — the manual date picker leaves the bit alone,
+  /// because a date the user chose by hand has nothing to revert *to*.
+  static Future<void> promoteSessionToDate(Conversation base, DateTime newStartTime,
+      {bool markClockCorrected = false}) async {
     final sessionId = base.sessionId;
     final startUptime = base.startUptime;
     if (startUptime == null || startUptime == 0) {
@@ -2659,6 +2870,7 @@ class RecordingsManager {
 
       if (await metaFile.exists()) await metaFile.rename(newMetaPath);
       await conv.file.rename(newAudioPath);
+      if (markClockCorrected) await _stampClockCorrected(File(newMetaPath));
 
       // Handle legacy .bin sidecar if present
       final oldBinPath = '$basePath.bin';

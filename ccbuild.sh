@@ -161,7 +161,19 @@ build_firmware() {
   fi
   [[ -n "$zbase" && -d "$zbase" ]] || die "no Zephyr tree under $ncs — set ZEPHYR_BASE."
 
-  export PATH="$tc/opt/bin:$tc/opt/bin/Scripts:$tc/opt/zephyr-sdk/arm-zephyr-eabi/bin:$tc/mingw64/bin:$tc/bin:$tc/usr/bin:$PATH"
+  # Both toolchain layouts, because they differ by more than a path separator. The
+  # Windows bundle puts west under opt/bin and runs the system Python; the Linux one
+  # ships a whole sysroot — west lives in usr/local/bin and is a python3.12 script
+  # that will not start until LD_LIBRARY_PATH/PYTHONHOME point back inside the
+  # toolchain. Listing dirs that do not exist is harmless, so both go on PATH
+  # unconditionally; the Linux-only variables are set only when its libdir is really
+  # there, so a Windows run is left exactly as it was.
+  export PATH="$tc/opt/bin:$tc/opt/bin/Scripts:$tc/opt/nanopb/generator-bin:$tc/opt/zephyr-sdk/arm-zephyr-eabi/bin:$tc/opt/zephyr-sdk/riscv64-zephyr-elf/bin:$tc/mingw64/bin:$tc/bin:$tc/usr/bin:$tc/usr/local/bin:$PATH"
+  if [[ -d "$tc/usr/local/lib" ]]; then
+    export LD_LIBRARY_PATH="$tc/lib:$tc/lib/x86_64-linux-gnu:$tc/usr/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export PYTHONHOME="$tc/usr/local"
+    export PYTHONPATH="$tc/usr/local/lib/python3.12:$tc/usr/local/lib/python3.12/site-packages"
+  fi
   export ZEPHYR_BASE="$zbase"
   export ZEPHYR_SDK_INSTALL_DIR="$tc/opt/zephyr-sdk"
   export ZEPHYR_TOOLCHAIN_VARIANT=zephyr
@@ -195,6 +207,27 @@ build_firmware() {
       PRISTINE=1
     fi
   fi
+  # Same class of problem, different trigger: editing a Kconfig value in omi.conf does
+  # NOT reliably re-run the Zephyr configure step in an existing build dir. Bumping
+  # CONFIG_BT_DIS_FW_REV_STR and rebuilding with --keep-build produced an image still
+  # carrying the OLD version — silently, and in the worst possible place: the zip is
+  # named from omi.conf (so it looks right on disk) while the DIS characteristic inside
+  # reports the stale one. The app fingerprints the GATT cache on exactly that string,
+  # so a wrong DIS version means a missed cache refresh after a flash.
+  #
+  # Compare what the build dir was configured with against what omi.conf says now, and
+  # reconfigure from scratch if they differ. Only reachable with --keep-build or an IDE
+  # build; a plain run deletes build/ on the way out and starts clean anyway.
+  if [[ $PRISTINE -eq 0 && -f "$FW_BUILD_DIR/omi/zephyr/.config" ]]; then
+    local built_ver
+    built_ver="$(awk -F'"' '/^CONFIG_BT_DIS_FW_REV_STR=/ {print $2; exit}' "$FW_BUILD_DIR/omi/zephyr/.config")"
+    if [[ -n "$built_ver" && "$built_ver" != "$fw_ver" ]]; then
+      say "build/ is configured for $built_ver but omi.conf now says $fw_ver"
+      say "reconfiguring from scratch so the image reports the version it is named after"
+      PRISTINE=1
+    fi
+  fi
+
   if [[ $PRISTINE -eq 1 && -d "$FW_DIR/build" ]]; then
     rm -rf "$FW_DIR/build"
   fi

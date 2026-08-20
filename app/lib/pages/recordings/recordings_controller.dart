@@ -1383,6 +1383,22 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     // Idempotent (Set-based) — the main processing path already released, but the
     // "nothing to process" early-return reaches here still holding it.
     _releaseWakelock();
+
+    // Re-file anything the Omi mis-dated, now that this run's recordings exist on disk
+    // and this connect's clock anchor has been captured. Here rather than beside
+    // processAll because the "nothing to process" early-return also reaches this point:
+    // an anchor taken on a connect that had no new audio to fetch still answers for
+    // recordings an earlier run already wrote under a wrong clock.
+    //
+    // Cheap when there is nothing to do — no anchors, or no session disagreeing with
+    // one, costs a directory scan and no writes — and it must never take the pipeline
+    // down with it, so a failure is logged and the run settles normally.
+    try {
+      final refiled = await RecordingsManager.applyClockAnchors();
+      if (refiled > 0) await reloadBatchesSilently();
+    } catch (e) {
+      Logger.error('RecordingsController: clock-anchor pass failed ($e) — timestamps left as the Omi filed them.');
+    }
     final now = DateTime.now().millisecondsSinceEpoch;
     if (_deviceReached) {
       _prefs.lastSyncSkipped = false;

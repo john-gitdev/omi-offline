@@ -318,4 +318,49 @@ void main() {
       expect(rec(99).description, contains('unattributed'));
     });
   });
+
+  group('IMU power state', () {
+    // arg1 packs [CTRL1_XL][CTRL2_G][CTRL6_C][CTRL7_G], high byte first.
+    int pack(int ctrl1Xl, int ctrl2G, int ctrl6C, int ctrl7G) =>
+        (ctrl1Xl << 24) | (ctrl2G << 16) | (ctrl6C << 8) | ctrl7G;
+
+    DiagLogRecord rec(int arg0, int arg1) =>
+        DiagLogRecord.fromBytes(encodeRecord(seq: 1, uptimeMs: 1, code: 19, backend: 0, arg0: arg0, arg1: arg1), 0)!;
+
+    test('the healthy reading is gyro off and accel ON in low power, not both off', () {
+      // The accel is the timestamp counter's keep-alive: the part gates its timebase
+      // when both halves are down. 12.5 Hz (ODR 0x1) + XL_HM_MODE set is the target.
+      final d = rec(0, pack(0x10, 0x00, 0x10, 0x00)).description;
+      expect(d, contains('gyro OFF'));
+      expect(d, contains('low-power'));
+      expect(d, isNot(contains('HIGH-PERF')));
+      expect(d, isNot(contains('STOPPED')));
+    });
+
+    test('an accel that is off is reported as a fault, not as tidiness', () {
+      // Both halves powered down stops the counter and silently kills the cross-restart
+      // time bridge — the failure nobody notices until recordings are mis-dated.
+      final d = rec(0, pack(0x00, 0x00, 0x00, 0x00)).description;
+      expect(d, contains('accel OFF'));
+      expect(d, contains('STOPPED'));
+    });
+
+    test('an accel left in high-performance mode names what it costs', () {
+      final d = rec(0, pack(0x10, 0x00, 0x00, 0x00)).description;
+      expect(d, contains('HIGH-PERF'));
+      expect(d, contains('170'));
+    });
+
+    test('a running gyro is still called out', () {
+      final d = rec(0, pack(0x10, 0x10, 0x10, 0x00)).description;
+      expect(d, contains('gyro RUNNING'));
+    });
+
+    test('an unreadable bus is distinguishable from the all-good reading', () {
+      // The all-good reading packs to arg1 == 0 in the original scheme, which is exactly
+      // what a failed read would send — hence the separate bit 15.
+      final d = rec(0x8000, 0x0000).description;
+      expect(d, contains('UNREADABLE'));
+    });
+  });
 }

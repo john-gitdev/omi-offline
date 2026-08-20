@@ -239,7 +239,7 @@ class OmiDeviceConnection extends DeviceConnection {
 
   /// Parse the drop-counter payload (0x0062). Shared by the on-demand read and
   /// the notify listener. Appended fields default to 0/false on shorter payloads
-  /// from older firmware (length grew 20→28→32→40→44→60→68→76→84→92→96 B). Returns null on a
+  /// from older firmware (length grew 20→28→32→40→44→60→68→76→84→92→96→100 B). Returns null on a
   /// too-short read (tells us nothing) rather than a false all-zero reading.
   static DeviceDropStats? _parseDropStats(List<int> data) {
     if (data.length < 20) return null;
@@ -287,6 +287,12 @@ class OmiDeviceConnection extends DeviceConnection {
       // which reads as "fast" rather than unknown — acceptable, since the field only
       // exists to confirm the device reaches slow.
       advModesRaw: data.length >= 96 ? data.getUint32LittleEndian(92) : 0,
+      // Per-boot device_session_id (offset 96), 100-byte firmware; 0 on older builds.
+      // 0 is unambiguous rather than a plausible id — the firmware re-rolls until the
+      // id is non-zero — so the anchor can treat it as "this device cannot tell me
+      // which session it is in" and decline to capture, instead of binding to a
+      // session that does not exist.
+      deviceSessionId: data.length >= 100 ? data.getUint32LittleEndian(96) : 0,
       // Derived, not a wire field: the 76-byte payload is only produced by oo-2.6.2,
       // which is the build that raised SD_REQ_QUEUE_MSGS 100→120. A shorter payload is
       // older firmware still at 100. Keeps the peak-depth denominator honest.

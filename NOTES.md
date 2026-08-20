@@ -333,8 +333,156 @@ Battery voltage on the 150 mAh LiPo changes on the order of millivolts per minut
 
 ### Deferred Optimizations
 
-- **BT TX power** (`CONFIG_BT_CTLR_TX_PWR_ANTENNA=8` → 0 or 4 dBm): saves power during every radio tx. Requires testing with phone in pocket/bag to confirm no audio dropouts.
-- **BLE connection interval** (7.5–15ms → 30ms): large power savings from longer radio sleep. Requires empirical validation that Opus streaming (50 fps, 80 B/frame, MTU 498) doesn't overflow buffers or cause audio gaps at the longer interval. The `update_conn_params()` in `transport.c` hardcodes the interval at runtime and would need updating alongside the Kconfig values.
+- **~~BT TX power~~ — WITHDRAWN, the entry was wrong twice over.** It named
+  `CONFIG_BT_CTLR_TX_PWR_ANTENNA=8` in `omi.conf`, which never did anything: that file
+  configures the **application** core, which runs the BLE host only
+  (`boards/omi/Kconfig.defconfig` gives cpuapp `BT_HCI_IPC` and gives `BT_CTLR` to cpunet),
+  so every `BT_CTLR_*` symbol belongs to the **network** core — and `8` is the nRF52840's
+  ceiling, not this chip's, which the line's own comment said out loud. The real setting is
+  `CONFIG_BT_CTLR_TX_PWR_PLUS_3` in `boards/omi/omi_nrf5340_cpunet_defconfig`. The dead line
+  is now gone.
+  **Do not pursue it there either.** Idle TX duty is ~0.1 % — one advertising event per
+  second, three channels, ~320 µs each — so +3 → 0 dBm is worth single-digit µA. Compare the
+  fast→slow advertising change, which cut the *number* of events tenfold and bought
+  300–500 µA (`adv_param_slow`, `transport.c`). Interval is a 10× lever; TX power is a
+  ~1.5× lever on a 0.1 % duty cycle, and it costs 3 dB of link margin on a device whose
+  acquisition is already marginal (BLE_Research.md, Wedge 9, −88/−93 dBm).
+  `CONFIG_BT_CTLR_TX_PWR_DYNAMIC_CONTROL` is already on in that defconfig, so per-role
+  runtime control needs no Kconfig change if this is ever revisited with a PPK2 in hand.
+- **~~BLE connection interval~~ — DONE (`oo-3.0.0`).** Superseded by the two-set scheme in
+  `transport.c`: `CONN_PARAM_IDLE_*` (100–200 ms) and `CONN_PARAM_XFER_*` (7.5–22.5 ms),
+  selected from `storage_transfer_active()` in the idle-disconnect poll. The old entry's
+  worry — that a longer interval would starve the audio path — does not arise, because the
+  transfer set keeps the historic values and only the idle link is slowed. `latency` stays 0
+  in both on purpose: slave latency would cut idle cost further but delays
+  central→peripheral commands by `latency × interval`, and everything on this link is
+  command/response.
+- **~~IMU gyro left running (~1 mA)~~ — RULED OUT from the build, no device needed. The accel
+  next to it was the real find, and is now fixed.** The suspicion was that
+  `lsm6dsl_force_minimal_run_mode()` asks the gyro for 0 Hz, discards the return code, admits
+  in its own comment that "not all drivers accept 0 Hz", and has had logging compiled out
+  since `oo-2.10.0` — so nobody had ever confirmed the request lands. Three facts from the
+  tree settle it:
+  - `CONFIG_LSM6DSL_GYRO_ODR` and `CONFIG_LSM6DSL_ACCEL_ODR` are both **0** ("selected at
+    runtime") in the generated `.config`, and `lsm6dsl_init_chip()` writes each straight into
+    ODR_G / ODR_XL. **Both halves come up powered down**, so there was never a free-running
+    gyro to find.
+  - The driver *does* accept 0 Hz — `lsm6dsl_odr_map[0] == 0`, so `freq_to_odr_val(0)` returns
+    index 0 rather than `-EINVAL`. The "not all drivers accept 0 Hz" caveat was never true of
+    this one.
+  - Init order makes the reads meaningful: I2C (prio 50) → the `lsm6dsl_en_pin`
+    `regulator-fixed` with `regulator-boot-on` (75) → LSM6DSL (90), so the part is powered
+    before the driver configures it.
+
+  **What was actually wrong: the accelerometer, and it is not idleness.** The accel must keep
+  running or the part gates its internal timebase and the 24-bit timestamp counter stops — and
+  that counter *is* the System OFF time bridge. So `lsm6dsl_force_minimal_run_mode()` turning
+  the accel **on** at 12.5 Hz is correct and load-bearing, despite the name. But `XL_HM_MODE`
+  (CTRL6_C bit 4) **resets to 0 = high-performance**, and high performance on this part is
+  ODR-independent: 12.5 Hz costs the same ~170 µA as 6.6 kHz. Since nothing reads the samples
+  (`accel.c` is not in `CMakeLists.txt`), that accuracy buys literally nothing.
+  `lsm6dsl_set_accel_low_power()` now sets `XL_HM_MODE = 1` **before** the ODR, so the accel
+  never spends an interval in high-performance mode. Roughly an order of magnitude less, and
+  it lands where it matters most — during System OFF the IMU is one of the very few things
+  still drawing.
+  **Confirmed on-device 2026-08-19** (`oo-3.0.8`, first boot after the flash), which turns
+  every inference above into a measurement. `DIAG_IMU_POWER_STATE` returned `arg0 = 0`
+  (bus read fine, and both `sensor_attr_set` calls returned 0 — so the driver really does
+  accept 0 Hz for the gyro) and `arg1 = 0x10021080`:
+  `CTRL1_XL = 0x10` → ODR_XL 0x1, accel at 12.5 Hz; `CTRL2_G = 0x02` → ODR_G 0, gyro
+  powered down; `CTRL6_C = 0x10` → **XL_HM_MODE = 1, low-power mode took**. Exactly the
+  predicted healthy reading.
+  **Now measured too (2026-08-19, same device, once bins existed):** the counter keeps
+  ticking in low-power mode, accurately. Between two bins of one session with no
+  checkpoint in between, it advanced 6521 ticks — 41 734 ms at 6.4 ms/tick — across
+  41 885 ms of uptime, i.e. **99.6 %**. The one way this change could have failed
+  silently does not happen.
+  **Do not "fix" this by powering the accel down.** That stops the timestamp counter and
+  silently breaks the cross-reboot time bridge, which fails in the direction nobody notices
+  until recordings are mis-dated. Confirm on-device via `DIAG_IMU_POWER_STATE` (19): a healthy
+  reading is `CTRL2_G == 0`, `CTRL1_XL == 0x10`, `CTRL6_C == 0x10`.
+  **The low-power write has no gap, despite the odd placement.**
+  `lsm6dsl_force_minimal_run_mode()` is the only thing in the tree that writes an accel ODR at
+  all, and it is reached from exactly one place —`lsm6dsl_time_prepare_for_system_off()`, which
+  returns early on `!rtc_is_valid()`. `lsm6dsl_time_boot_adjust_rtc()` never touches ODR. So
+  before the first time-sync of a boot the accel is **OFF** (the driver's init left it there),
+  not sitting in high-performance mode, and from the first time-sync on it is switched on
+  low-power-first. There is no window in which it runs high-performance. (An earlier revision
+  of this entry claimed otherwise; it was wrong.)
+  What the placement *does* mean is that **there is no IMU setup in the boot path at all** — the
+  timestamp counter is only enabled by a time-sync or a System OFF prep. That is a time-bridge
+  question, not a power one.
+  **Unverified, and it would matter more:** `lsm6dsl_init_chip()` opens by setting
+  `CTRL3_C.BOOT`, on every boot, before `lsm6dsl_time_boot_adjust_rtc()` gets to read the
+  counter. If that reboot clears TIMESTAMP0..2 the cross-restart bridge recovers nothing and
+  has never worked — the failure is silent either way, since a zero delta just looks like a
+  fast reboot. Worth confirming on-device before any further work on the bridge; the
+  `boot adjust: ts_now=` / `delta_ticks=` log lines answer it directly.
+- **The auto-mode mic never parks, and that is deliberate — it buys the pre-roll.**
+  `mic_should_run()` (`aad.c`) returns true outright whenever `vad_threshold != 32769`,
+  and 32769 is the manual-standby value, so in auto mode the mic, the PDM peripheral and
+  the HFXO that PDM holds up are powered continuously whether the room is silent or not.
+  That is milliamps, all day, and it dwarfs every µA item in this section.
+  **It is not an oversight.** Auto mode keeps the mic hot so the *beginning* of an
+  utterance is already captured when the VAD decides to keep it. Park the mic and the
+  T5838's AAD wake, the PDM restart and the settling time all happen after the sound has
+  started, so every recording opens with a clipped word.
+  The hardware to do otherwise is present and wired: `pdm_wake_pin` (P1.2) has a real ISR
+  in `aad.c`, and `mic_pause()` / `mic_resume()` / `aad_note_capture_gap()` /
+  `mic_prearm` / `force_wake_until_ms` are all already used by manual standby. What is
+  missing is only the decision, because the trade is pre-roll for battery and that is a
+  product call, not an optimisation. **Do not "fix" this as if it were a bug** — the
+  owner has weighed it (2026-08-19) and is keeping the pre-roll for now. Anyone
+  revisiting it needs a PPK2 to size the saving and real speech to judge the clipping,
+  not a code review.
+- **Where the remaining battery actually is: capture duty, not idle.** `aad.c`'s own comment on
+  `vad_voiced_ms` says it — the share of the day the VAD holds a recording open "governs how
+  much of the day is encoded and written, and so [is] the largest remaining battery lever".
+  Idle work is µA; recording is mA (mic + PDM + the HFXO it holds up, Opus encode, NAND
+  writes). Read `vadVoicedMs` against `nowUptimeMs` (`0x0062`, offsets 88 and 16) off a device
+  after a normal day before optimising anything else.
+  **Do not confuse the two silence timers** — they are unrelated and only one costs power:
+  - `CONFIG_OMI_VAD_HOLD_MS` (`omi.conf`, **10 s**; the Kconfig default of 3 s is overridden)
+    is the **firmware** tail. At 10 s of silence `aad_process_audio()` clears
+    `vad_is_recording`, pauses SD writes and drops advertising to slow (`aad.c:620`). This is
+    the on-device lever. Note it does **not** stop the mic in auto mode — auto never parks, so
+    the mic/PDM/HFXO floor is paid regardless; the hold gates the write + encode tail only.
+  - `vadSplitSeconds` (**120 s** default) is **app-side only** — `VadAudioProcessor` and
+    `RecordingsManager` use it to decide where to *split* already-captured audio during the
+    decode pass on the phone. By the time it is applied the audio is long since encoded and on
+    the card, so it has **zero** effect on device power. Changing it changes recording
+    boundaries in the UI, nothing else.
+
+- **Idle CPU wakeups — `aad.c` done, two left (and both are small).** Three threads poll on a timer
+  with nothing to do in the dominant idle state: `aad.c` `aad_thread_fn` at 10 Hz
+  (`k_sem_take(&aad_sem, K_MSEC(100))`), `mic.c` `mic_thread_function` at 10 Hz (the
+  `k_sleep(K_MSEC(100))` in its `!mic_running` branch — which runs **only** while the mic is
+  parked, i.e. exactly the manual-standby state the `oo-2.10.0` gate created), and `main.c`'s
+  loop at 2 Hz (`k_msleep(500)`). ~22 wakes/s doing nothing. Same class of defect as the
+  25 Hz button poll fixed in "Button: Interrupt-Driven" above; these three never got the same
+  treatment. Notes on each, in descending order of value-per-risk:
+  - **`aad.c` — DONE.** All seven `atomic_set` of the four flags the loop reads
+    (`wake_pending`, `sd_pause_pending`, `adv_slow_req`, `adv_fast_req`) were already paired
+    with `k_sem_give(&aad_sem)` (lines 316/404/460/610–611/630–631/737/848–849), and nothing
+    in the loop body is time-driven, so the 100 ms timeout was pure polling. The semaphore's
+    limit of 1 is not a hazard: one pass handles all four flags, so coalesced gives cannot
+    lose an event. Now `K_FOREVER`. **Anything added to that loop must signal the semaphore
+    or it will never run.**
+  - **`mic.c` — use a bounded wait, NOT `K_FOREVER`.** Four sites set `mic_running = true`
+    (`mic_start`, `mic_resume`, `mic_reset`, `mic_on`) and would each need to signal. More to
+    the point, `mic_pause()` and `mic_reset()` both have STOP-failure bail paths that leave
+    `mic_running` disagreeing with the hardware, so it is not a reliable wait predicate. A
+    missed signal under `K_FOREVER` means the mic never captures again — the 14.5-hour
+    silent-capture failure mode of BLE_Research Wedge 4. A `K_SECONDS(5)` backstop gives
+    10 Hz → 0.2 Hz (99 % of the saving) and self-heals.
+  - **`main.c` — lowest value, highest risk; do last or not at all.** Only 2 of the 22 wakes.
+    `set_led_state()` is a polling display refresher over ~9 asynchronous inputs (mute,
+    charging, connection, battery, threshold/recording state, `is_led_enabled`,
+    `sd_fatal_error`, `marker_flash_count`), none of which notify the loop. The 30 s watchdog
+    leaves plenty of headroom, but that is not the binding constraint — state-change latency
+    is. Note `marker_flash_count` is *decremented once per loop pass*, so the flash duration
+    is measured in passes, not milliseconds: slowing the loop stretches and delays every
+    button flash unless all five setters in `button.c` also signal it.
 - **~~Disable logging in production~~ — DONE (`oo-2.10.0`).** `CONFIG_LOG` was already off; `CONFIG_SERIAL=n` landed in `oo-2.10.0`. See "Firmware: logging is compiled out" below for what that costs and how to get logs back.
 
 ### Mic gating in manual standby (implemented, `oo-2.10.0`)
@@ -625,6 +773,56 @@ turns the module back on. Note that if you do, four of the six counters
 permanent 0 — only `tx_queue` and `storage` are actually fed.
 
 ---
+
+## The app's IMU Bridge never matches — the checkpoint resets the counter under it
+
+**Measured 2026-08-19, `oo-3.0.8`.** `VadAudioProcessor` tries to carry a recording across
+a reboot without splitting it (`imuGapMatches`, `vad_audio_processor.dart`): it subtracts
+the previous bin's `imu_ticks` from the new one's and, if the result matches the wall-clock
+gap, treats the audio as continuous. The premise is that the counter free-runs across the
+restart. It does not.
+
+`lsm6dsl_time_prepare_for_system_off()` calls `lsm6dsl_timestamp_reset()` — and that
+function is the **periodic checkpoint**, posted on every VAD-sleep transition, not just the
+power-off path. So `imu_ticks` in a bin header is "time since the last checkpoint", never
+"time since boot", and the two sides of the subtraction are counted from different origins.
+
+The observed crossing, straight from the probe lines:
+
+    session A, last bin:  ticks=37748
+    session B, first bin: ticks=0
+    dTicks = (0 - 37748) & 0xFFFFFF = 16739468  ->  ~107132595 ms = 29.8 h
+
+That is the whole 24-bit wrap, not a reboot gap. It fails the `gapDiff < 5000` test, so the
+recording splits — **the failure is safe**, and the symptom is only a split at a reboot that
+might have been avoidable. Within a session the same subtraction is meaningful *only* when
+no checkpoint intervened (99.6 % tracking when none did; 16 % and 0.2 % across two that did).
+
+**The firmware-side bridge is fine and must not be "fixed" alongside it.** `boot_adjust_rtc`
+compares against a base saved by the same checkpoint that did the reset, so both sides share
+an origin and the arithmetic is coherent. Only the app's cross-session comparison is
+unfounded.
+
+Anyone repairing the app side needs an origin that survives — a checkpoint sequence number
+in the bin header, or simply not resetting the counter — not a wider tolerance on the
+existing subtraction.
+
+## LFCLK runs on the RC oscillator, not a crystal (~217 ppm measured)
+
+**Measured 2026-08-19** from six clock anchors taken across one 8.4-minute session. Each
+pairs the Omi's uptime with the phone's wall clock, so each implies a boot instant; they
+drift monotonically by **109 ms over 503 s = 217 ppm**, or ~19 s/day.
+
+That settles the open question: `omi.conf` sets no `CLOCK_CONTROL_NRF_K32SRC_*`, so Zephyr's
+default (`K32SRC_XTAL`) applies — but there is no `lfxo` node anywhere in the board DTS, and
+nRF53 selects two-stage LFXO start, which begins on the RC and only switches once a crystal
+reports ready. 217 ppm is RC territory; a fitted crystal would be tens of ppm. So no crystal
+is being used, whatever the Kconfig nominally asks for.
+
+Harmless for the clock-anchor design — `plausibleDriftMs` budgets 1000 ppm, so the measured
+figure sits 4.6x inside it, and 550x inside the 60 s floor at that session length. It is four
+orders of magnitude away from the ~29.8 h aliasing error the rule has to separate from, which
+is the whole reason that constant never needed tuning.
 
 ## Firmware: IMU Time-Bridge Wrap Limit (~29.8 h)
 

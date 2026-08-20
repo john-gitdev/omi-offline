@@ -139,6 +139,8 @@ class DiagLogRecord {
         return 'mic_power_cycle';
       case 18:
         return 'mic_state';
+      case 19:
+        return 'imu_power_state';
       default:
         return 'code_$code';
     }
@@ -298,6 +300,55 @@ class DiagLogRecord {
             return 'Mic resumed but SILENT — first frames were all zero, mic likely wedged (threshold $arg1)';
           default:
             return 'Mic state — arg0=$arg0 threshold=$arg1';
+        }
+      case 19:
+        {
+          // Read back from the LSM6DS3TR-C rather than assumed. Nothing in the firmware
+          // consumes motion data — only the 24-bit timestamp counter.
+          //
+          // The healthy reading is NOT "both off", which is what this originally looked
+          // for. The gyro is off (the driver writes ODR_G = 0 at init, so the ~1 mA
+          // free-running gyro this record was added to hunt never existed), but the accel
+          // is deliberately ON at 12.5 Hz: the part gates its internal timebase when both
+          // halves are powered down, which stops the timestamp counter and breaks the
+          // cross-restart time bridge. So `accel OFF` is a FAULT here, not tidiness — and
+          // the thing worth watching is whether it is in low-power mode, since
+          // high-performance costs ~170 uA at any rate for samples nobody reads.
+          //
+          // Bit 15 carries "could not read" rather than a magic arg1 value, because the
+          // all-good reading is arg1 == 0 — byte-for-byte what a failed read would send.
+          final accelSetFailed = (arg0 & 0x1) != 0;
+          final gyroSetFailed = (arg0 & 0x2) != 0;
+          if ((arg0 & 0x8000) != 0) {
+            final accelRc = (arg1 >> 8) & 0xFF;
+            final gyroRc = arg1 & 0xFF;
+            return 'IMU power state UNREADABLE — I2C register read failed '
+                '(set rc accel=$accelRc gyro=$gyroRc, as signed bytes)';
+          }
+          final accelOdr = (arg1 >> 28) & 0x0F; // CTRL1_XL[7:4]
+          final gyroOdr = (arg1 >> 20) & 0x0F; // CTRL2_G[7:4]
+          final accelLowPower = ((arg1 >> 8) & 0x10) != 0; // CTRL6_C bit 4 XL_HM_MODE
+          final gyroLowPower = (arg1 & 0x80) != 0; // CTRL7_G bit 7 G_HM_MODE
+          // The high-performance-disable bits only mean anything on a part that is
+          // running; on a powered-down one they say nothing, so they are not shown.
+          final gyroPart = gyroOdr == 0
+              ? 'gyro OFF'
+              : 'gyro RUNNING (ODR=0x${gyroOdr.toRadixString(16)}'
+                  '${gyroLowPower ? ', low-power' : ', high-perf'}) — ~1 mA, nothing reads it';
+          // Inverted against the gyro on purpose: the accel is the timestamp counter's
+          // keep-alive, so OFF is the bad answer and the mode is what costs.
+          final accelPart = accelOdr == 0
+              ? 'accel OFF — timestamp counter STOPPED, restart time bridge is dead'
+              : 'accel ODR=0x${accelOdr.toRadixString(16)}'
+                  '${accelLowPower ? ' low-power' : ' HIGH-PERF (~170 uA, nothing reads it)'}';
+          // A refused request is worth naming separately from the resulting state: it
+          // says the driver is the problem, not the part.
+          final refused = [
+            if (accelSetFailed) 'accel',
+            if (gyroSetFailed) 'gyro',
+          ];
+          final rcNote = refused.isEmpty ? '' : ' [driver refused: ${refused.join(' + ')}]';
+          return 'IMU: $gyroPart, $accelPart$rcNote';
         }
       default:
         return 'Event code=$code backend=$backend arg0=$arg0 arg1=$arg1';
