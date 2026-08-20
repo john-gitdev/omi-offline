@@ -8,10 +8,23 @@ class SyncLocalFilesResponse {
   final List<String> updatedConversationIds;
   final bool isPartial;
 
+  /// True only when this run sent CMD_ROTATE_FILE and it was ACKed, i.e. the
+  /// device's active bin was sealed and then fetched.
+  ///
+  /// Force Sync finalizes drafts, and it is only allowed to because the rotate
+  /// guarantees nothing belonging to that draft is left on the device. A
+  /// [IWalService.rotateAndSync] that JOINS a plain sync already in flight never
+  /// rotates — the active bin is still open, still accumulating, and still
+  /// invisible to CMD_LIST_FILES — so finalizing on its result would promote a
+  /// recording that stops mid-audio and prune the bins it was built from. The
+  /// caller must drop out of force mode when this is false.
+  final bool rotated;
+
   SyncLocalFilesResponse({
     required this.newConversationIds,
     required this.updatedConversationIds,
     this.isPartial = false,
+    this.rotated = false,
   });
 }
 
