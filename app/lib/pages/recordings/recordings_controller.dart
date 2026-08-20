@@ -191,6 +191,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   bool _forceSyncOnCooldown = false;
   bool get forceSyncOnCooldown => _forceSyncOnCooldown;
 
+  /// True while the WAL service has a sync of its own running — which includes a
+  /// background sync this controller never started, and which `spState` does not
+  /// always reflect. Force Sync cannot run against one (it would return without
+  /// rotating, which is not a Force Sync), so the UI checks this to say so rather
+  /// than no-op silently.
+  bool get syncServiceBusy => ServiceManager.instance().wal.getSyncs().isSyncing;
+
   Timer? _forceSyncCooldownTimer;
 
   /// Hands Force Sync straight back.
@@ -858,21 +865,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       // in-flight background sync) hits exactly that guard.
       _deviceReached = result != null;
       _prefs.lastSyncPartial = result?.isPartial ?? false;
-      // The cooldown is the price of a rotation; without one, charge nothing.
-      if (!(result?.rotated ?? false)) _releaseForceSyncCooldown();
       if (result == null) {
+        // Did not run, so nothing was rotated — the cooldown is the price of a
+        // rotation, so charge nothing. The UI tells the user why (see
+        // RecordingsPage._forceSyncButtonPressed).
         Logger.warning('RecordingsController: force sync did not run — recording a skip');
-      } else if (!result.rotated) {
-        // Joined a plain sync already in flight, so CMD_ROTATE_FILE never went
-        // out. The device's active bin is still open, still accumulating, and
-        // still absent from CMD_LIST_FILES — so the tail of any in-progress
-        // recording is on the device, not here. Finalizing drafts on that would
-        // promote a recording that stops mid-audio and prune the bins it was
-        // built from. Exactly the reasoning as the isPartial branch below; the
-        // user still gets the sync, just not the "seal it now" half.
-        Logger.warning('RecordingsController: force sync joined a running sync — no rotation, '
-            'processing in draft mode so an in-progress recording is not finalized short');
-        _isForcePipeline = false;
+        _releaseForceSyncCooldown();
       }
     } catch (e) {
       // A connection-null throw means we never reached the device (out of range

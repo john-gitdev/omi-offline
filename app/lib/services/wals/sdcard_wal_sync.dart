@@ -244,8 +244,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       // Detached — anyone waiting on deviceReady must keep waiting for the next
       // attach rather than seeing a completed future from the last one.
       if (_deviceReady.isCompleted) _deviceReady = Completer<void>();
-    } else if (!_deviceReady.isCompleted) {
-      _deviceReady.complete();
     }
     if (_device != null) {
       // Restore persisted WAL offsets so partial downloads resume correctly after
@@ -293,6 +291,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         }
       }
       listener.onWalUpdated();
+      // Release waiters LAST. "Ready" has to mean the persisted WAL offsets are
+      // restored, not merely that _device is non-null: a waiter freed at the top
+      // of this method races the restore above, and a sync that starts without it
+      // re-reads a partially-downloaded bin from offset 0 — the duplicate
+      // recordings that restore exists to prevent.
+      if (!_deviceReady.isCompleted) _deviceReady.complete();
     }
   }
 
@@ -1760,34 +1764,22 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     );
   }
 
-  /// Force Sync: **queues** behind a sync already in flight, then rotates.
+  /// Force Sync. Non-async for the same reason as [syncAll] — see the note there.
   ///
-  /// It deliberately does NOT join one. Sealing the active bin is the entire
-  /// point of this call — it is what lets the caller finalize drafts, because
-  /// after the rotate nothing belonging to them is left on the device. Joining
-  /// returns without a rotate, so the user's explicit "capture everything up to
-  /// now" quietly becomes an ordinary sync, and a join landing in the moment
-  /// after a run finished would return having done nothing at all.
-  ///
-  /// Waiting is the right cost: the running sync is already fetching what the
-  /// user wants, and the rotate afterwards picks up whatever it could not see.
-  /// Bounded, because each wait reopens the slot to any caller — after a few
-  /// losses, join rather than starve. That fallback carries `rotated: false`, so
-  /// the caller stays in draft mode.
+  /// Unlike [syncAll] this does NOT join a sync already in flight: sealing the
+  /// active bin is the whole point of the call, and it is what lets the caller
+  /// finalize drafts, so a run that returns without a rotate is not a Force Sync
+  /// at all. It reports that it did not run and the UI says so — the earlier
+  /// attempts to be clever here (join anyway, or queue up behind the running sync
+  /// and rotate afterwards) each bought a pile of edge cases to avoid telling the
+  /// user a one-line truth.
   @override
   Future<SyncLocalFilesResponse?> rotateAndSync({
     IWalSyncProgressListener? progress,
-  }) async {
-    for (var attempt = 0; attempt < 3; attempt++) {
-      final inFlight = _inFlightFullSync;
-      if (inFlight == null) break;
-      Logger.debug('SDCardWalSync: rotateAndSync waiting for the sync in flight before rotating');
-      await inFlight.then<void>((_) {}, onError: (_) {});
-    }
-    final stillRunning = _inFlightFullSync;
-    if (stillRunning != null) {
-      Logger.warning('SDCardWalSync: rotateAndSync never got a turn — joining without a rotate');
-      return stillRunning;
+  }) {
+    if (_inFlightFullSync != null) {
+      Logger.debug('SDCardWalSync: skipping rotateAndSync — a sync is already in flight');
+      return Future.value(null);
     }
     return _claimFullSync(_rotateAndSyncInner(progress: progress));
   }
@@ -1837,17 +1829,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
       if (_isCancelled) return null;
 
-      final res = await _syncAllLocked(connection, dev.id, prefetchedWals: wals, progress: progress);
-      if (res == null) return null;
-      // Stamp the rotate onto the result. This is the ONLY place it may be set:
-      // it is what tells the caller that finalizing drafts is safe, and it is
-      // true here precisely because the rotate above was ACKed before the fetch.
-      return SyncLocalFilesResponse(
-        newConversationIds: res.newConversationIds,
-        updatedConversationIds: res.updatedConversationIds,
-        isPartial: res.isPartial,
-        rotated: true,
-      );
+      return await _syncAllLocked(connection, dev.id, prefetchedWals: wals, progress: progress);
     } finally {
       _isSyncing = false;
       listener.onSyncFinished();

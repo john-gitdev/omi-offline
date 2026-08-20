@@ -1290,30 +1290,25 @@ void main() {
 
     // Force Sync must SEAL the active bin — that is what licenses the caller to
     // finalize drafts, because after a rotate nothing belonging to them is left
-    // on the device. Joining a plain sync returns without one, so it queues
-    // instead. Getting this wrong finalizes a recording that stops mid-audio and
-    // prunes the bins it was built from, days before anyone notices.
-    test('rotateAndSync queues behind a sync in flight, then rotates', () async {
+    // on the device. It therefore never joins a plain sync (that would return
+    // without a rotate) and never queues behind one. It reports that it did not
+    // run, and the UI says so.
+    test('rotateAndSync does not run while a sync is in flight', () async {
       await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
       mockConn.files = [];
 
       final running = sync.syncAll();
-      final forced = sync.rotateAndSync();
-      final results = await Future.wait([running, forced]);
+      expect(await sync.rotateAndSync(), isNull,
+          reason: 'a run that cannot rotate is not a Force Sync — say so rather than half-do it');
 
-      expect(identical(results[0], results[1]), isFalse,
-          reason: 'it must run its own rotate+sync, not hand back the other run');
-      expect(results[1]!.rotated, isTrue, reason: 'the user asked for a rotate and must get one');
+      expect(await running, isNotNull);
     });
 
-    test('a rotateAndSync that really rotates says so', () async {
+    test('rotateAndSync runs when nothing else is', () async {
       await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
       mockConn.files = [];
 
-      final result = await sync.rotateAndSync();
-
-      expect(result, isNotNull);
-      expect(result!.rotated, isTrue, reason: 'the rotate was ACKed, so finalizing drafts is safe');
+      expect(await sync.rotateAndSync(), isNotNull);
     });
 
     // The 2026-08-19 11:48 PDT sequence, end to end: the pipeline fires while

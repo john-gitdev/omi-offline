@@ -403,8 +403,27 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
   }
 
   Future<void> _forceSyncButtonPressed() async {
-    if (_controller.spState != SyncProcessState.idle) return;
-    if (_controller.forceSyncOnCooldown) return;
+    // Both of these used to return silently, so a tap during a sync did nothing
+    // at all with no explanation — which is what sent people to Debug Tools. Say
+    // it instead. Force Sync's job is to seal the current recording and fetch it,
+    // and it cannot do that while a sync is already reading the card, so waiting
+    // for that one to finish IS the answer rather than a workaround.
+    if (_controller.spState != SyncProcessState.idle || _controller.syncServiceBusy) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Sync in progress — Force Sync will be available once it finishes.'),
+        ),
+      );
+      return;
+    }
+    if (_controller.forceSyncOnCooldown) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Force Sync was just run. It will be available again shortly.'),
+        ),
+      );
+      return;
+    }
 
     final skipConfirm = _prefs.forceSyncSkipConfirm;
     if (!skipConfirm) {
