@@ -82,6 +82,10 @@ class VadAudioProcessor {
   int? _currentSessionId;
   int? _currentStartUptime;
   int? _currentFrameUptimeMs;
+
+  /// Previous bin's IMU counter, carried only to give the `imu-probe` log line its
+  /// delta. Nothing decides anything on it — see the note where the IMU Bridge used to
+  /// be, in _processSegment.
   int? _lastImuTicks;
 
   // VAD state counters
@@ -933,24 +937,24 @@ class VadAudioProcessor {
         currentImuTicks = imuTicksInHeader;
         final sessionIdInHeader = byteData.getUint32(28, Endian.little);
 
-        // Probe for the IMU timestamp counter, one line per bin. The counter is the
-        // Omi's only way to measure time across a restart, and two things about it are
-        // unverified — both answerable from these lines after a plain sync, with no RTT
-        // and no debugger:
+        // Probe for the IMU timestamp counter, one line per bin. This is the only
+        // visibility into whether the counter — the Omi's sole means of measuring time
+        // across a restart — is running at all, so it stays in permanently; a stopped
+        // counter breaks the firmware time bridge silently otherwise.
         //
-        //  1. Does it advance while the accelerometer is OFF? The accel is only switched
-        //     on at the first time-sync of a boot, so any bin with clock=UNKNOWN was
-        //     written with it off. If dTicks moves across two such bins, the accel is not
-        //     the counter's keep-alive and could stay off for good.
-        //  2. Does the sensor driver wipe it? Zephyr's lsm6dsl sets CTRL3_C.BOOT on every
-        //     init, before the firmware reads the counter. If ticks restart near zero at
-        //     a session change rather than carrying on, the cross-restart bridge has never
-        //     recovered anything.
+        // What it has already settled (2026-08-19, oo-3.0.8):
+        //  - The counter keeps ticking with the accel in LOW-POWER mode: 6521 ticks over
+        //    41885 ms of uptime is 99.6 %. That was the one way the low-power change could
+        //    have failed without anyone noticing.
+        //  - dTicks is only meaningful when no checkpoint fell between the two bins.
+        //    lsm6dsl_timestamp_reset() runs inside the periodic checkpoint, so ticks count
+        //    from the last checkpoint, not from boot. Ratios of ~16 % and ~0.2 % are
+        //    resets, not a faulty counter, and across a session change dTicks is pure
+        //    wrap-around noise.
         //
-        // Raw values rather than a verdict: the interesting comparison is between
-        // consecutive lines, and a wrong verdict baked in here would be harder to see
-        // through than the numbers. Cheap enough (one line per ~10 min of audio) to leave
-        // in permanently.
+        // Raw values rather than a verdict, deliberately: the comparison that matters is
+        // between consecutive lines, and a verdict baked in here would be harder to see
+        // through than the numbers — as the removed IMU Bridge demonstrated.
         final int? dTicks = _lastImuTicks == null ? null : (imuTicksInHeader - _lastImuTicks!) & 0x00FFFFFF;
         Logger.debug('VadAudioProcessor: imu-probe ${segmentFile.path.split('/').last} '
             'session=$sessionIdInHeader ticks=$imuTicksInHeader '
@@ -1026,17 +1030,33 @@ class VadAudioProcessor {
           uptimeGapMs = (startUptimeMs - _currentFrameUptimeMs!).abs();
         }
 
-        // IMU Bridge: Check if the gap can be explained by IMU ticks even if session changed.
-        bool imuGapMatches = false;
-        if (sessionChanged && _lastImuTicks != null && currentImuTicks != null) {
-          final int tickDelta = (currentImuTicks - _lastImuTicks!) & 0x00FFFFFF;
-          final int imuGapMs = (tickDelta * 6.4).toInt();
-          final gapDiff = (gapMs - imuGapMs).abs();
-          if (gapDiff < 5000) {
-            imuGapMatches = true;
-            Logger.debug('VadAudioProcessor: IMU Bridge matched gap of ${imuGapMs}ms across reboot.');
-          }
-        }
+        // The "IMU Bridge" used to sit here: subtract the previous bin's imu_ticks from
+        // this one's, and if the result matched the wall-clock gap, carry a recording
+        // across a reboot instead of splitting it. It was removed (2026-08-19) because it
+        // could never match, and measurement on device says so rather than reasoning.
+        //
+        // Its premise was that the counter free-runs across a restart. It does not:
+        // lsm6dsl_timestamp_reset() lives inside lsm6dsl_time_prepare_for_system_off(),
+        // which is the PERIODIC checkpoint posted on every VAD-sleep transition, not just
+        // the power-off path. So imu_ticks is "time since the last checkpoint", never
+        // "time since boot", and the subtraction ran across two different origins. The
+        // one crossing captured on device produced the entire 24-bit wrap — 37748 -> 0
+        // ticks read as ~29.8 h — rather than a reboot gap.
+        //
+        // It failed safe (the gapDiff test rejected the nonsense and the recording split),
+        // so no field behaviour changes — but do not read that as "the branch was dead
+        // code". It fires perfectly well on a counter that free-runs; two unit tests
+        // asserted exactly that and passed for years, which is precisely why this was
+        // never caught. They were pinning an assumption about the device, not the device.
+        // **A wider tolerance would not revive it** — the reset destroys the information
+        // rather than blurring it.
+        //
+        // If reboot-stitching is ever wanted for real, build it on the clock anchors
+        // (device_clock_anchor.dart), which measure the same gap exactly whenever the
+        // phone saw both sessions running. Do not reach for the IMU counter again, and do
+        // not remove the firmware-side reset to make it work — boot_adjust_rtc compares
+        // against a base that same checkpoint saved, so both of ITS sides share an origin
+        // and that bridge does work.
 
         final bool isClockJump =
             !sessionChanged && (hasUptime ? (uptimeGapMs < 5000 && gapMs.abs() > 10000) : (gapMs.abs() > 10000));
@@ -1049,8 +1069,7 @@ class VadAudioProcessor {
             _markerProtectedUntilMs != null && segmentStartTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
         final bool splitTriggered = !withinMarkerWindow &&
             !_inPriorityRecording &&
-            ((sessionChanged && !imuGapMatches) ||
-                (gapMs > max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) && !isClockJump));
+            (sessionChanged || (gapMs > max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) && !isClockJump));
 
         if (_currentRefs.isNotEmpty && splitTriggered) {
           Logger.debug(
@@ -1081,12 +1100,13 @@ class VadAudioProcessor {
           final filePath = await flushRemaining();
           if (filePath != null) savedFiles.add(filePath);
         } else {
-          // STITCHING: Pad inter-file gaps with silence if it's not a clock jump
-          // and either the gap is significant (>= 10s) OR it's an IMU bridge match.
-          // Never pad during a byte-slice recover: consecutive firmware bins carry
-          // no real inter-file gap, so any "gap" here is an anchor artifact — the
-          // recovered clip must stay equal to the recorded frames (== audioMs).
-          if (!sliced && _currentRefs.isNotEmpty && !isClockJump && (gapMs >= 10000 || imuGapMatches)) {
+          // STITCHING: Pad inter-file gaps with silence if it's not a clock jump and the
+          // gap is significant (>= 10s). Never pad during a byte-slice recover:
+          // consecutive firmware bins carry no real inter-file gap, so any "gap" here is
+          // an anchor artifact — the recovered clip must stay equal to the recorded
+          // frames (== audioMs). (An "or the IMU bridge matched" arm was removed with the
+          // bridge above; it was never true, so this is the condition that always ran.)
+          if (!sliced && _currentRefs.isNotEmpty && !isClockJump && gapMs >= 10000) {
             _currentRefs.add(Duration(milliseconds: gapMs));
             _currentChunkDurationMs += gapMs;
             Logger.debug('VadAudioProcessor: Padding inter-file gap of ${gapMs}ms');
