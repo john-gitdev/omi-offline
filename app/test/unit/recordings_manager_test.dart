@@ -3,6 +3,7 @@ import "dart:typed_data";
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/services/device_clock_anchor.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
@@ -1856,6 +1857,197 @@ void main() {
 
         expect(later.existsSync(), isTrue);
       });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Clock-anchor correction, end to end.
+  //
+  // The pure decision logic is covered in device_clock_anchor_test.dart. This group
+  // covers the layer underneath it — scan, group by session, move, stamp, remember —
+  // which is where all three bugs found in review actually lived. Each of the last two
+  // tests pins one of them.
+  group('clock-anchor correction', () {
+    // A device that had been up 10 h when the phone last looked.
+    const anchorSessionId = 42;
+    const anchorUptimeMs = 10 * 60 * 60 * 1000;
+    const anchorWallMs = 1787000000000;
+    // A recording that began 2 h into that session therefore started 8 h before it.
+    const recUptimeSec = 2 * 60 * 60;
+    const trueStartMs = anchorWallMs - (8 * 60 * 60 * 1000);
+    // What a wrapped IMU guess looks like: ~29.8 h short of the truth.
+    const wrappedStartMs = trueStartMs - 107100000;
+
+    void setAnchor({int sessionId = anchorSessionId}) {
+      SharedPreferencesUtil().deviceClockAnchors = const DeviceClockAnchorSet.empty()
+          .upsert(const DeviceClockAnchor(
+            sessionId: anchorSessionId,
+            deviceUptimeMs: anchorUptimeMs,
+            wallClockMs: anchorWallMs,
+          ))
+          .encode();
+    }
+
+    /// Writes a finalized recording plus its `.meta`, and returns the audio file.
+    File writeRecording({
+      required String dateFolder,
+      required String basename,
+      required int sessionId,
+      required int startUptimeSec,
+      int flagByte3 = 0,
+    }) {
+      final dir = Directory(p.join(tempDir.path, 'recordings', dateFolder))..createSync(recursive: true);
+      final audio = File(p.join(dir.path, '$basename.wav'))..writeAsBytesSync(Uint8List(2048));
+      const keyLen = 0;
+      const flagOffset = 417 + keyLen;
+      final md = ByteData(flagOffset + 4);
+      md.setUint32(4, 1000, Endian.little); // durationMs
+      md.setUint32(408, sessionId, Endian.little);
+      md.setUint32(412, startUptimeSec, Endian.little);
+      final bytes = md.buffer.asUint8List();
+      bytes[416] = keyLen;
+      bytes[flagOffset + 3] = flagByte3;
+      File(p.join(dir.path, '$basename.meta')).writeAsBytesSync(bytes);
+      return audio;
+    }
+
+    /// Every finalized recording on disk, as `basename` -> Conversation.
+    Map<String, Conversation> allRecordings() {
+      final out = <String, Conversation>{};
+      final root = Directory(p.join(tempDir.path, 'recordings'));
+      if (!root.existsSync()) return out;
+      for (final d in root.listSync().whereType<Directory>()) {
+        for (final f in d.listSync().whereType<File>()) {
+          if (!f.path.endsWith('.wav')) continue;
+          out[f.path.split(Platform.pathSeparator).last.split('.').first] = Conversation.fromFile(f);
+        }
+      }
+      return out;
+    }
+
+    test('a provably wrong session is re-filed, and stamped so it can be undone', () async {
+      setAnchor();
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+        flagByte3: 0x18, // modeKnown | manual — must survive the stamp
+      );
+
+      expect(await RecordingsManager.applyClockAnchors(), 1);
+
+      final recs = allRecordings();
+      expect(recs.containsKey('recording_$trueStartMs'), isTrue, reason: 'moved to the anchor-derived time');
+      expect(recs.containsKey('recording_$wrappedStartMs'), isFalse, reason: 'old name gone');
+      final moved = recs['recording_$trueStartMs']!;
+      expect(moved.clockCorrected, isTrue, reason: 'flag 0x20 stamped, so the revert arrow appears');
+      expect(moved.recordedManual, isTrue, reason: 'the stamp must be |=, not a rewrite of byte [3]');
+    });
+
+    test('a recording that already agrees is left exactly alone', () async {
+      setAnchor();
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$trueStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+
+      expect(await RecordingsManager.applyClockAnchors(), 0);
+      final recs = allRecordings();
+      expect(recs.containsKey('recording_$trueStartMs'), isTrue);
+      expect(recs['recording_$trueStartMs']!.clockCorrected, isFalse,
+          reason: 'never stamped, so a genuine timestamp can never grow a revert arrow');
+    });
+
+    test('a session with no anchor is left alone, however wrong it looks', () async {
+      setAnchor();
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: 999, // a boot the phone never saw
+        startUptimeSec: recUptimeSec,
+      );
+
+      expect(await RecordingsManager.applyClockAnchors(), 0);
+      expect(allRecordings().containsKey('recording_$wrappedStartMs'), isTrue);
+    });
+
+    test('a bin stamped session 0 is skipped rather than matched to anything', () async {
+      // Firmware older than the boot-time allocation wrote 0 into every pre-connect bin.
+      // 0 is not a session, and must never be treated as one.
+      setAnchor();
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: 0,
+        startUptimeSec: recUptimeSec,
+      );
+
+      expect(await RecordingsManager.applyClockAnchors(), 0);
+      expect(allRecordings().containsKey('recording_$wrappedStartMs'), isTrue);
+    });
+
+    test('running twice moves nothing the second time', () async {
+      setAnchor();
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+
+      expect(await RecordingsManager.applyClockAnchors(), 1);
+      expect(await RecordingsManager.applyClockAnchors(), 0, reason: 'now agrees with its anchor');
+      expect(allRecordings().length, 1, reason: 'no duplicate left behind');
+    });
+
+    test('undo puts the recording back on the date the Omi filed, not on 1970', () async {
+      // The bug this pins: revert used to hand promoteSessionToDate `uptime * 1000`,
+      // which is roughly right for a recording that never had a timestamp and lands a
+      // wrongly-dated one in 1970 — nowhere near where the device had put it.
+      setAnchor();
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+
+      expect(await RecordingsManager.applyClockAnchors(), 1);
+      final corrected = allRecordings()['recording_$trueStartMs'];
+      expect(corrected, isNotNull);
+
+      await RecordingsManager.revertClockCorrection(corrected!);
+
+      final recs = allRecordings();
+      expect(recs.containsKey('recording_$wrappedStartMs'), isTrue,
+          reason: 'restored to the device timestamp it actually had');
+      expect(recs.containsKey('recording_$trueStartMs'), isFalse);
+      expect(recs['recording_$wrappedStartMs']!.clockCorrected, isFalse,
+          reason: 'the arrow goes away with the correction');
+    });
+
+    test('an undone session stays undone even after the anchor comes back', () async {
+      // The other bug: dropping the anchor is not enough, because it is re-captured on
+      // the next diagnostics read — every reconnect while the Omi is on the same boot.
+      // Without the ledger the next pass re-filed the session and reversed the user.
+      setAnchor();
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+
+      expect(await RecordingsManager.applyClockAnchors(), 1);
+      await RecordingsManager.revertClockCorrection(allRecordings()['recording_$trueStartMs']!);
+
+      setAnchor(); // the phone reconnects and re-observes the very same session
+
+      expect(await RecordingsManager.applyClockAnchors(), 0, reason: 'the rejection outranks a fresh anchor');
+      expect(allRecordings().containsKey('recording_$wrappedStartMs'), isTrue);
     });
   });
 }
