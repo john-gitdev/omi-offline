@@ -50,6 +50,15 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   bool get isSyncing => _isSyncing;
   @override
   bool get hasDevice => _device != null;
+
+  /// Completes when [setDevice] has registered a device, so a caller that wants
+  /// to sync on connect can WAIT for the WAL layer to be usable instead of firing
+  /// at a guessed delay and skipping when it guesses short. Reset to a fresh
+  /// pending future by `setDevice(null)`, so it tracks the current attachment
+  /// rather than latching on the first device ever seen.
+  Completer<void> _deviceReady = Completer<void>();
+  @override
+  Future<void> get deviceReady => _deviceReady.future;
   @override
   bool get isDeviceRecordingFailed => false;
   @override
@@ -231,6 +240,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     List<StorageFile>? prefetchedFiles,
   }) async {
     _device = device;
+    if (device == null) {
+      // Detached — anyone waiting on deviceReady must keep waiting for the next
+      // attach rather than seeing a completed future from the last one.
+      if (_deviceReady.isCompleted) _deviceReady = Completer<void>();
+    } else if (!_deviceReady.isCompleted) {
+      _deviceReady.complete();
+    }
     if (_device != null) {
       // Restore persisted WAL offsets so partial downloads resume correctly after
       // an app restart, and so fully-downloaded-but-not-yet-deleted files are not
@@ -1089,8 +1105,42 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     }
   }
 
+  /// Deliberately NOT `async`: the in-flight claim below has to happen in the
+  /// caller's own microtask. `_isSyncing` is set several awaits deep (after the
+  /// connection lookup, and after up to 3s of storage-lock polling), so two calls
+  /// entering together both cleared that guard and ran two download loops against
+  /// the same index-0 queue. Claiming a Future synchronously closes that window
+  /// AND gives the second caller something better than a skip — the first sync's
+  /// actual result.
   @override
   Future<SyncLocalFilesResponse?> syncAll({
+    IWalSyncProgressListener? progress,
+  }) {
+    final inFlight = _inFlightFullSync;
+    if (inFlight != null) {
+      Logger.debug('SDCardWalSync: syncAll joining the full sync already in flight');
+      return inFlight;
+    }
+    return _claimFullSync(_syncAllInner(progress: progress));
+  }
+
+  /// Tracks the outstanding full sync so a second caller joins it instead of
+  /// being told the sync was skipped. Cleared on completion, and only if this
+  /// run is still the current one.
+  Future<SyncLocalFilesResponse?>? _inFlightFullSync;
+
+  Future<SyncLocalFilesResponse?> _claimFullSync(Future<SyncLocalFilesResponse?> run) {
+    _inFlightFullSync = run;
+    // Swallow on the cleanup branch only — `run` itself is returned intact, so a
+    // real caller still sees the error. Without the onError this would surface as
+    // an unhandled async error whenever a sync throws.
+    unawaited(run.then<void>((_) {}, onError: (_) {}).whenComplete(() {
+      if (identical(_inFlightFullSync, run)) _inFlightFullSync = null;
+    }));
+    return run;
+  }
+
+  Future<SyncLocalFilesResponse?> _syncAllInner({
     IWalSyncProgressListener? progress,
   }) async {
     if (_isSyncing || _device == null) {
@@ -1707,8 +1757,26 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     );
   }
 
+  /// Non-async for the same reason as [syncAll] — see the note there.
+  ///
+  /// A Force Sync landing on a running background sync joins it rather than
+  /// reporting a skip. It does NOT get its own CMD_ROTATE_FILE, which is the
+  /// honest trade: the user asked for "everything up to now", and a sync already
+  /// in flight is delivering exactly that. Rotating underneath it would seal a bin
+  /// the running loop has already listed.
   @override
   Future<SyncLocalFilesResponse?> rotateAndSync({
+    IWalSyncProgressListener? progress,
+  }) {
+    final inFlight = _inFlightFullSync;
+    if (inFlight != null) {
+      Logger.debug('SDCardWalSync: rotateAndSync joining the full sync already in flight');
+      return inFlight;
+    }
+    return _claimFullSync(_rotateAndSyncInner(progress: progress));
+  }
+
+  Future<SyncLocalFilesResponse?> _rotateAndSyncInner({
     IWalSyncProgressListener? progress,
   }) async {
     if (_isSyncing || _device == null) {
