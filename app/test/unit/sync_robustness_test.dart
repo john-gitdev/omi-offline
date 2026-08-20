@@ -1288,24 +1288,12 @@ void main() {
               'not null and not a second sync of its own');
     });
 
-    test('rotateAndSync joins a full sync already in flight', () async {
-      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
-      mockConn.files = [];
-
-      final running = sync.syncAll();
-      final forced = sync.rotateAndSync();
-
-      final results = await Future.wait([running, forced]);
-      expect(identical(results[0], results[1]), isTrue);
-    });
-
-    // Force Sync finalizes drafts, and is only entitled to because its rotate
-    // seals the active bin — the one CMD_LIST_FILES never reports — so nothing
-    // belonging to the draft is left on the device. A JOINED run never rotates,
-    // so it must not carry the flag that licenses finalizing. Getting this wrong
-    // promotes a recording that stops mid-audio and prunes its source bins, and
-    // nothing else in the suite would catch it.
-    test('a joined rotateAndSync does not claim to have rotated', () async {
+    // Force Sync must SEAL the active bin — that is what licenses the caller to
+    // finalize drafts, because after a rotate nothing belonging to them is left
+    // on the device. Joining a plain sync returns without one, so it queues
+    // instead. Getting this wrong finalizes a recording that stops mid-audio and
+    // prunes the bins it was built from, days before anyone notices.
+    test('rotateAndSync queues behind a sync in flight, then rotates', () async {
       await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
       mockConn.files = [];
 
@@ -1313,8 +1301,9 @@ void main() {
       final forced = sync.rotateAndSync();
       final results = await Future.wait([running, forced]);
 
-      expect(results[1]!.rotated, isFalse,
-          reason: 'no CMD_ROTATE_FILE went out, so the caller must stay in draft mode');
+      expect(identical(results[0], results[1]), isFalse,
+          reason: 'it must run its own rotate+sync, not hand back the other run');
+      expect(results[1]!.rotated, isTrue, reason: 'the user asked for a rotate and must get one');
     });
 
     test('a rotateAndSync that really rotates says so', () async {
