@@ -39,9 +39,27 @@ abstract class IWalSyncListener {
 abstract class IWalSync {
   Future<List<Wal>> getMissingWals();
   Future deleteWal(Wal wal);
+
+  /// Runs a full sync and reports **whether it ran**, not whether it found anything.
+  ///
+  /// - non-null — the sync reached the device. An empty [SyncLocalFilesResponse]
+  ///   means CMD_LIST_FILES was issued and the card held nothing; that is a
+  ///   successful sync, not a skipped one.
+  /// - null — the sync **did not run**: no device is registered yet
+  ///   ([SDCardWalSync.hasDevice] is false), one is already in flight, the
+  ///   storage lock never cleared, or the user cancelled. Nothing was asked of
+  ///   the device, so callers must NOT record a completed sync — see
+  ///   `RecordingsController._runPipeline`, which routes null to "Skipped".
+  ///
+  /// Keeping "ran and found nothing" distinct from "never asked" is the whole
+  /// point: they were the same value once, and a sync that never issued a single
+  /// command reported to the user as complete. Every implementation must log its
+  /// reason before returning null.
   Future<SyncLocalFilesResponse?> syncAll({
     IWalSyncProgressListener? progress,
   });
+
+  /// Same null contract as [syncAll] — null means the sync did not run.
   Future<SyncLocalFilesResponse?> syncWal({
     required Wal wal,
     IWalSyncProgressListener? progress,
@@ -76,6 +94,15 @@ abstract class SDCardWalSync implements IWalSync {
   Future<void> setDevice(BtDevice? device, {List<StorageFile>? prefetchedFiles});
   Future<void> deleteAllPendingWals();
   bool get isSyncing;
+
+  /// True once [setDevice] has registered a device, i.e. once [syncAll] can
+  /// actually reach the card. Deliberately NOT the same as "the link is up":
+  /// `_onDeviceConnected` caches settings and pushes the button config before it
+  /// calls [setDevice], so there is a window — 4.7s on the device this was
+  /// diagnosed from — where BLE is connected, the battery reads fine, and a sync
+  /// started here would return null having asked the device nothing. Callers that
+  /// kick a sync off connect must wait on this rather than on a fixed delay.
+  bool get hasDevice;
   Future<void>? get cancelFuture;
   void setGlobalProgressListener(IWalSyncProgressListener? listener);
   bool get isDeviceRecordingFailed;
@@ -109,6 +136,8 @@ abstract class SDCardWalSync implements IWalSync {
 
   /// Send CMD_ROTATE_FILE, wait for ACK (current file sealed, new file open),
   /// then run a normal sync including short segments below the usual threshold.
+  ///
+  /// Same null contract as [IWalSync.syncAll] — null means the sync did not run.
   Future<SyncLocalFilesResponse?> rotateAndSync({IWalSyncProgressListener? progress});
 
   /// Bins (paths relative to `raw_segments/`) whose transfer has NOT delivered
