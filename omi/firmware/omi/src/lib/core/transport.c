@@ -3047,6 +3047,27 @@ int transport_start()
 {
     int err = 0;
 
+    /* Allocate the per-boot session id NOW, before anything can write a bin.
+     *
+     * It used to be allocated lazily by whoever needed it first, and the only callers
+     * were the marker writers — button tap, session end, mute, priority. sd_card.c does
+     * a plain atomic_get() when it names and stamps a bin, so on a boot with no button
+     * press and no phone connection yet, every bin was written with session_id = 0: in
+     * its filename (<ts>_00000000.bin) and in its header. That is the ordinary auto-mode
+     * boot, and those are exactly the recordings the phone's clock correction exists for
+     * — made before a phone arrived, when the device's own clock may be wrong. With a
+     * zero id they carry no session to match an anchor against and were skipped.
+     *
+     * Here rather than deeper in the SD path because main() runs transport_start()
+     * before mic_start(), so this precedes the first audio-bearing bin. The one thing
+     * that can open a bin earlier is app_sd_init()'s mount-time rotation, which by
+     * definition holds no audio.
+     *
+     * Also removes the question of an entropy read inside a GATT handler:
+     * diagnostics_drops_pack() still calls ensure_ for safety, but by then the id is
+     * always already allocated, so sys_rand32_get() no longer runs on the BT RX thread. */
+    (void) ensure_device_session_id();
+
     // Pull the nfsw control high
 #ifdef CONFIG_OMI_ENABLE_RFSW_CTRL
     err = gpio_pin_configure_dt(&rfsw_en, (GPIO_OUTPUT | NRF_GPIO_DRIVE_S0H1));
