@@ -1299,6 +1299,35 @@ void main() {
       expect(identical(results[0], results[1]), isTrue);
     });
 
+    // The 2026-08-19 11:48 PDT sequence, end to end: the pipeline fires while
+    // _onDeviceConnected is still caching settings, so the WAL layer has no
+    // device. It used to return null here and report a completed sync having sent
+    // the card nothing. It must now wait and then actually issue commands.
+    test('a sync starting before setDevice waits for it, then really talks to the device', () async {
+      mockConn.files = [
+        StorageFile(index: 0, size: 300000, timestamp: 1787206371, sessionId: 1),
+      ];
+      globalWriteCount = 0;
+      expect(sync.hasDevice, isFalse);
+
+      // Shape of RecordingsController._awaitSyncableDevice followed by the sync.
+      final pipeline = Future(() async {
+        await sync.deviceReady.timeout(const Duration(seconds: 5));
+        return sync.syncAll();
+      });
+
+      await Future.delayed(const Duration(milliseconds: 50));
+      expect(globalWriteCount, 0, reason: 'nothing may reach the device before it is registered');
+
+      // _onDeviceConnected finally hands the device over.
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+
+      final result = await pipeline;
+      expect(result, isNotNull, reason: 'the sync ran, so it must not report as a skip');
+      expect(globalWriteCount, greaterThan(0),
+          reason: 'CMD_READ_FILE actually went out — the runs in the log sent nothing at all');
+    });
+
     test('deviceReady completes on attach and goes pending again on detach', () async {
       var ready = false;
       unawaited(sync.deviceReady.then((_) => ready = true));
