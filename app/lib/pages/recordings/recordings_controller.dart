@@ -815,6 +815,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     await SyncNotification.preparingSync();
 
     final syncs = ServiceManager.instance().wal.getSyncs();
+    // Force Sync needs the wait more than the ordinary pipeline does, not less:
+    // it is user-initiated (so it is tapped exactly when someone has just opened
+    // the app onto a fresh connect) and startForcePipeline puts it on a one-minute
+    // cooldown, so skipping here costs the user a minute having done nothing.
+    await _awaitSyncableDevice(syncs, settle: false);
     notifyListeners();
     _persistProgress();
 
@@ -935,10 +940,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   /// the timeout — that is the honest answer and the next cycle retries.
   static const Duration _syncableDeviceTimeout = Duration(seconds: 20);
 
-  Future<void> _awaitSyncableDevice(SDCardWalSync syncs) async {
+  /// [settle] preserves the one-second beat `_runPipeline` has always taken when
+  /// the device is already registered. Force Sync never had it and must not grow
+  /// one — it is a button press, and a second of dead air on a tap reads as lag.
+  Future<void> _awaitSyncableDevice(SDCardWalSync syncs, {bool settle = true}) async {
     if (syncs.hasDevice) {
-      // Still give the connect a beat to settle, as the old fixed delay did.
-      await Future.delayed(const Duration(seconds: 1));
+      if (settle) await Future.delayed(const Duration(seconds: 1));
       return;
     }
     Logger.debug('RecordingsController: waiting for the WAL layer to be handed the device');
