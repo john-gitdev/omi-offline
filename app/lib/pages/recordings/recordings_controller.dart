@@ -821,8 +821,14 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     SyncLocalFilesResponse? result;
     try {
       result = await syncs.rotateAndSync(progress: this);
-      _deviceReached = true;
+      // Same null contract as _runPipeline: null means the rotate+sync never ran,
+      // so this is a skip. A Force Sync tapped during device setup (or against an
+      // in-flight background sync) hits exactly that guard.
+      _deviceReached = result != null;
       _prefs.lastSyncPartial = result?.isPartial ?? false;
+      if (result == null) {
+        Logger.warning('RecordingsController: force sync did not run — recording a skip');
+      }
     } catch (e) {
       // A connection-null throw means we never reached the device (out of range
       // / BT off); anything else means we connected but the transfer failed —
@@ -866,10 +872,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
 
     _syncedCount = _totalCount;
-    _lastCompletedStage = 'syncing';
+    // See _runPipeline: only a run that reached the device completes the stage.
+    if (_deviceReached) {
+      _lastCompletedStage = 'syncing';
+      _prefs.saveString(_kSpLastCompleted, 'syncing');
+    }
     notifyListeners();
 
-    _prefs.saveString(_kSpLastCompleted, 'syncing');
     await reloadBatchesSilently();
 
     _markerCount = _batches.fold(
@@ -907,6 +916,39 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
   }
 
+  /// Waits for the WAL layer to have a device before a sync is attempted.
+  ///
+  /// This used to be a flat one-second delay, which was a guess at how long
+  /// `_onDeviceConnected` takes — and it guessed wrong. `setDevice` is called at
+  /// the END of that method, after `_cacheDeviceSettings` and
+  /// `pushActiveButtonConfig`; on the device this was diagnosed from it landed
+  /// 4.7s after the link came up. A pipeline that fired at 1s found
+  /// `hasDevice == false`, got null out of syncAll without a single command going
+  /// to the card, and reported a completed sync. The background path already
+  /// solved this by deferring on `_pendingBackgroundSync` until after `setDevice`
+  /// (see DeviceProvider) — this is the foreground equivalent.
+  ///
+  /// Bounded, and deliberately falls through rather than failing: if the device
+  /// never registers, syncAll's own guard returns null and the run records a
+  /// skip. Waiting longer than the sync interval would be worse than skipping.
+  static const Duration _syncableDeviceTimeout = Duration(seconds: 12);
+
+  Future<void> _awaitSyncableDevice(SDCardWalSync syncs) async {
+    if (syncs.hasDevice) {
+      // Still give the connect a beat to settle, as the old fixed delay did.
+      await Future.delayed(const Duration(seconds: 1));
+      return;
+    }
+    final deadline = DateTime.now().add(_syncableDeviceTimeout);
+    while (!syncs.hasDevice && DateTime.now().isBefore(deadline)) {
+      await Future.delayed(const Duration(milliseconds: 250));
+    }
+    if (!syncs.hasDevice) {
+      Logger.warning('RecordingsController: no device registered with the WAL layer after '
+          '${_syncableDeviceTimeout.inSeconds}s — the sync will record a skip');
+    }
+  }
+
   Future<void> _runPipeline() async {
     final int gen = _pipelineGeneration;
     _isUserTriggered = true;
@@ -924,7 +966,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _acquireWake('pipeline');
     await SyncNotification.preparingSync();
 
-    await Future.delayed(const Duration(seconds: 1));
+    await _awaitSyncableDevice(syncs);
 
     Logger.debug('RecordingsController: _runPipeline start');
 
@@ -933,10 +975,16 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     try {
       final result = await syncs.syncAll(progress: this);
-      _deviceReached = true;
+      // null = the sync never ran (no device registered yet, one already in
+      // flight, storage lock never cleared). Nothing was asked of the device, so
+      // this is a skip, not a completed sync — see IWalSync.syncAll. Reporting it
+      // as reached is what let a run that issued zero commands paint "complete",
+      // and — because _finishPipelineRun then stamps lastSyncCompletedMs —
+      // suppress BackgroundSyncWorker's next attempt for a full interval.
+      _deviceReached = result != null;
       _prefs.lastSyncPartial = result?.isPartial ?? false;
       if (result == null) {
-        Logger.debug('RecordingsController: syncAll returned null (no new segments)');
+        Logger.warning('RecordingsController: sync did not run — recording a skip, will retry next cycle');
       }
     } catch (e) {
       // See _runForcePipeline: a connection-null throw = never reached the
@@ -962,10 +1010,18 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
 
     _syncedCount = _totalCount;
-    _lastCompletedStage = 'syncing';
+    // Only a sync that actually ran completes the syncing stage. Marking it done
+    // on a skip is not cosmetic: resumePipeline and retryFromError both branch on
+    // _lastCompletedStage == 'syncing' and go straight to processing, so a run
+    // that never reached the device would permanently retry the half it already
+    // did and never the half it missed. Processing still runs either way — bins
+    // from an earlier interrupted run are on disk and worth decoding.
+    if (_deviceReached) {
+      _lastCompletedStage = 'syncing';
+      _prefs.saveString(_kSpLastCompleted, 'syncing');
+    }
     notifyListeners();
 
-    _prefs.saveString(_kSpLastCompleted, 'syncing');
     await reloadBatchesSilently();
 
     _markerCount = _batches.fold(
