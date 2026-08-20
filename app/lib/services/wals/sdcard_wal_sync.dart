@@ -1786,7 +1786,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     }
 
     final dev = _device!;
-    final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
+    // Honour _connectionProvider like every other entry point in this class does.
+    // This one reached for ServiceManager directly, which made the rotate path the
+    // only one unreachable from a test — so nothing covered the flag that licenses
+    // Force Sync to finalize drafts.
+    final connection = _connectionProvider != null
+        ? await _connectionProvider!(dev.id)
+        : await ServiceManager.instance().device.ensureConnection(dev.id);
     if (connection == null) throw DeviceConnectionException('No connection');
 
     if (connection.isStorageBusy) {
@@ -1815,7 +1821,17 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
       if (_isCancelled) return null;
 
-      return await _syncAllLocked(connection, dev.id, prefetchedWals: wals, progress: progress);
+      final res = await _syncAllLocked(connection, dev.id, prefetchedWals: wals, progress: progress);
+      if (res == null) return null;
+      // Stamp the rotate onto the result. This is the ONLY place it may be set:
+      // it is what tells the caller that finalizing drafts is safe, and it is
+      // true here precisely because the rotate above was ACKed before the fetch.
+      return SyncLocalFilesResponse(
+        newConversationIds: res.newConversationIds,
+        updatedConversationIds: res.updatedConversationIds,
+        isPartial: res.isPartial,
+        rotated: true,
+      );
     } finally {
       _isSyncing = false;
       listener.onSyncFinished();
