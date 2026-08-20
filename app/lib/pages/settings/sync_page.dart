@@ -314,8 +314,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       if (!mounted) return;
       setState(() {
         if (result == null) {
-          _statusMessage =
-              'Sync skipped — the device was never asked (not registered yet, or a sync is already running).';
+          // Now that a collision joins the running sync and a not-yet-registered
+          // device is waited for, null has one plain meaning left.
+          _statusMessage = 'Sync skipped — could not reach your Omi.';
         } else {
           _statusMessage = 'Sync Complete. Raw segments downloaded.';
         }
