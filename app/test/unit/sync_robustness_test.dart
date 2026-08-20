@@ -1269,28 +1269,53 @@ void main() {
       expect(sync.hasDevice, isFalse);
     });
 
-    test('a syncAll landing on an in-flight one returns null, not a false completion', () async {
+    test('a syncAll landing on an in-flight one JOINS it instead of skipping', () async {
       await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
-      mockConn.files = [
-        StorageFile(index: 0, size: 300000, timestamp: 1787206371, sessionId: 1),
-      ];
+      mockConn.files = [];
 
+      // Entering in the same microtask is the case that used to run two download
+      // loops against the same index-0 queue: the old guard set `_isSyncing`
+      // several awaits deep, so neither call saw the other. Both must now resolve
+      // to the SAME sync — one that really ran — rather than one of them being
+      // reported to the user as a completed or skipped sync of its own.
       final first = sync.syncAll();
-      // Let the first call actually claim the flag before colliding with it.
-      // NB: `_isSyncing = true` is set AFTER the connection-lookup await (and
-      // `_resetSyncState()` clears it immediately before), so there is a real
-      // window where two calls entering together both clear the guard. That is a
-      // separate defect from the false-completion this group covers — pumping
-      // here tests the guard's job, not that window.
-      while (!sync.isSyncing) {
-        await Future.delayed(Duration.zero);
-      }
+      final second = sync.syncAll();
 
-      expect(await sync.syncAll(), isNull,
-          reason: 'this is the second of the two false "completes" in the 2026-08-19 log');
+      final results = await Future.wait([first, second]);
+      expect(results[0], isNotNull);
+      expect(identical(results[0], results[1]), isTrue,
+          reason: 'the joining caller must get the in-flight run\'s own result, '
+              'not null and not a second sync of its own');
+    });
 
-      sync.cancelSync();
-      await first.catchError((_) => null);
+    test('rotateAndSync joins a full sync already in flight', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      mockConn.files = [];
+
+      final running = sync.syncAll();
+      final forced = sync.rotateAndSync();
+
+      final results = await Future.wait([running, forced]);
+      expect(identical(results[0], results[1]), isTrue);
+    });
+
+    test('deviceReady completes on attach and goes pending again on detach', () async {
+      var ready = false;
+      unawaited(sync.deviceReady.then((_) => ready = true));
+      await Future.delayed(Duration.zero);
+      expect(ready, isFalse, reason: 'nothing attached yet');
+
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await Future.delayed(Duration.zero);
+      expect(ready, isTrue);
+
+      // A detach must not leave a completed future behind, or the next sync would
+      // stop waiting and skip against a device that is no longer registered.
+      await sync.setDevice(null);
+      var readyAgain = false;
+      unawaited(sync.deviceReady.then((_) => readyAgain = true));
+      await Future.delayed(Duration.zero);
+      expect(readyAgain, isFalse);
     });
   });
 
