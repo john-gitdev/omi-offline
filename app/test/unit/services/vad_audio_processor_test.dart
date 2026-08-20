@@ -590,7 +590,20 @@ void main() {
       await processor.destroy();
     });
 
-    test('IMU Bridge: stitches audio across reboots using IMU tick delta', () async {
+    test('a reboot splits the recording — the IMU counter cannot bridge it', () async {
+      // This replaced a test that asserted the opposite, and the swap is the point.
+      //
+      // The old test fed file 2 a counter that had carried straight on across the reboot
+      // (100000 -> 102358, exactly the gap in ticks) and asserted the two files stitched.
+      // It passed for years. The firmware never produces that: lsm6dsl_timestamp_reset()
+      // sits inside the PERIODIC checkpoint, so the counter restarts near zero and
+      // imu_ticks means "since the last checkpoint", not "since boot". The test was
+      // pinning an assumption about the device rather than the device.
+      //
+      // Measured on hardware 2026-08-19: 37748 ticks before a reboot, 0 after, which the
+      // old subtraction read as ~29.8 h of wrap-around rather than a gap. So this now
+      // pins what actually happens — a session change splits — with the tick values the
+      // firmware really writes.
       final processor = VadAudioProcessor.fromSettings(
         settings: _settings(minDurationMs: 0),
         outputDir: tempDir.path,
@@ -599,7 +612,6 @@ void main() {
       const utcEpochMs = 1000000000000;
       final startTime = DateTime.fromMillisecondsSinceEpoch(utcEpochMs, isUtc: true);
 
-      // File 1 (Session 1): 5 frames = 100 ms
       final file1 = _makeBinFileWithHeader(
         tempDir,
         5,
@@ -609,15 +621,8 @@ void main() {
         imuTicks: 100000,
         sessionId: 1,
       );
-
       await processor.processSegmentFile(file1, startTime);
 
-      // File 2 (Session 2): Starts 15 seconds after File 1 ends
-      // Gap = 15000 ms
-      // File 1 duration = 100 ms.
-      // Ticks passed during file 1 = 100 / 6.4 = 15
-      // Ticks passed during gap = 15000 / 6.4 = 2343
-      // Expected currentImuTicks = 100000 + 15 + 2343 = 102358
       const gapMs = 15000;
       const nextUtcEpochMs = utcEpochMs + 100 + gapMs;
       final file2Start = DateTime.fromMillisecondsSinceEpoch(nextUtcEpochMs, isUtc: true);
@@ -627,17 +632,15 @@ void main() {
         5,
         name: 'file2_imu.bin',
         utcStartMs: nextUtcEpochMs,
-        uptimeStartMs: 5000, // Re-booted, uptime resets
-        imuTicks: 102358,
-        sessionId: 2, // Re-booted, session ID changes
+        uptimeStartMs: 5000, // rebooted, uptime restarts
+        imuTicks: 0, // rebooted, and the checkpoint reset the counter
+        sessionId: 2,
       );
-
       await processor.processSegmentFile(file2, file2Start);
 
-      // If IMU bridge works, session change doesn't split the file.
-      // It should insert gap padding.
-      // Expected: 100 (file1) + 15000 (padding) + 100 (file2) = 15200 ms
-      expect(processor.currentChunkDurationMs, 15200);
+      // The session change ends the first recording, so only file 2's audio is open —
+      // no stitch, and no 15 s of padding.
+      expect(processor.currentChunkDurationMs, 100);
       await processor.destroy();
     });
 
@@ -718,43 +721,14 @@ void main() {
         await processor.destroy();
       });
 
-      test('IMU Tick Rollover: handles 24-bit rollover correctly', () async {
-        final processor = VadAudioProcessor.fromSettings(
-          settings: _settings(minDurationMs: 0),
-          outputDir: tempDir.path,
-        );
-
-        // Session 1 ends near max 24-bit (0xFFFFFF = 16777215)
-        final file1 = _makeBinFileWithHeader(
-          tempDir,
-          5,
-          name: 'rollover1.bin',
-          utcStartMs: 1000000000000,
-          uptimeStartMs: 10000,
-          imuTicks: 0xFFFF00,
-          sessionId: 1,
-        );
-        await processor.processSegmentFile(file1, DateTime.fromMillisecondsSinceEpoch(1000000000000));
-
-        // Session 2 starts after rollover (e.g. at 0x000100)
-        // Delta = 0x000100 - 0xFFFF00 = 0x000200 (using & 0xFFFFFF)
-        // 0x000200 = 512 ticks = 512 * 6.4ms = 3276.8ms gap
-        final file2 = _makeBinFileWithHeader(
-          tempDir,
-          5,
-          name: 'rollover2.bin',
-          utcStartMs: 1000000003376,
-          uptimeStartMs: 5000,
-          imuTicks: 0x000100,
-          sessionId: 2,
-        );
-        await processor.processSegmentFile(file2, DateTime.fromMillisecondsSinceEpoch(1000000003376));
-
-        // Stitching should occur because gap matches IMU delta
-        expect(processor.currentSessionId, 1); // Stayed in session 1 due to bridge
-        expect(processor.currentChunkDurationMs >= 3376 + 100, true);
-        await processor.destroy();
-      });
+      // A test named "IMU Tick Rollover: handles 24-bit rollover correctly" lived here.
+      // It fed session 2 a counter that had wrapped straight past session 1's value
+      // (0xFFFF00 -> 0x000100) and asserted the two stitched into one recording. It has
+      // been removed with the IMU Bridge it pinned: the firmware resets that counter in
+      // its periodic checkpoint, so it never carries across a reboot at all, wrapped or
+      // otherwise, and the test was asserting a device behaviour that does not exist.
+      // See the note in VadAudioProcessor where the bridge used to be. The real crossing
+      // is covered by 'a reboot splits the recording' above.
     });
   });
 
