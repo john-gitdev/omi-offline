@@ -182,4 +182,69 @@ void main() {
       expect(set.forSession(1), isNotNull);
     });
   });
+
+  group('ClockCorrectionLedger', () {
+    test('a session nobody corrected is neither reverted nor restorable', () {
+      const l = ClockCorrectionLedger.empty();
+      expect(l.isReverted(7), isFalse);
+      expect(l.originalOffsetFor(7), isNull);
+    });
+
+    test('remembers the offset a correction moved the session away from', () {
+      final l = const ClockCorrectionLedger.empty().recordCorrection(7, -1234);
+      expect(l.originalOffsetFor(7), -1234);
+      expect(l.isReverted(7), isFalse);
+    });
+
+    test('a second correction does not overwrite the first offset', () {
+      // The first is the one that moved the recordings off the device's own timestamps,
+      // so it is the one an undo has to restore. Overwriting it would leave the undo
+      // restoring the app's own previous answer.
+      final l = const ClockCorrectionLedger.empty().recordCorrection(7, -1234).recordCorrection(7, 999);
+      expect(l.originalOffsetFor(7), -1234);
+    });
+
+    test('a revert sticks, and keeps the offset it needs to restore', () {
+      final l = const ClockCorrectionLedger.empty().recordCorrection(7, -1234).markReverted(7);
+      expect(l.isReverted(7), isTrue);
+      expect(l.originalOffsetFor(7), -1234);
+    });
+
+    test('a revert is remembered even for a session with no recorded correction', () {
+      final l = const ClockCorrectionLedger.empty().markReverted(7);
+      expect(l.isReverted(7), isTrue, reason: 'the rejection must outlive a missing offset');
+      expect(l.originalOffsetFor(7), 0);
+    });
+
+    test('one session reverting does not touch another', () {
+      final l = const ClockCorrectionLedger.empty().recordCorrection(1, 10).recordCorrection(2, 20).markReverted(1);
+      expect(l.isReverted(1), isTrue);
+      expect(l.isReverted(2), isFalse);
+      expect(l.originalOffsetFor(2), 20);
+    });
+
+    test('round-trips, carrying the reverted flag', () {
+      final l = const ClockCorrectionLedger.empty().recordCorrection(1, 10).recordCorrection(2, 20).markReverted(2);
+      final back = ClockCorrectionLedger.decode(l.encode());
+      expect(back.originalOffsetFor(1), 10);
+      expect(back.isReverted(1), isFalse);
+      expect(back.isReverted(2), isTrue);
+      expect(back.originalOffsetFor(2), 20);
+    });
+
+    test('junk decodes to empty rather than throwing into the processing pass', () {
+      expect(ClockCorrectionLedger.decode('not json').entries, isEmpty);
+      expect(ClockCorrectionLedger.decode('[1,2,3]').entries, isEmpty);
+      expect(ClockCorrectionLedger.decode('').entries, isEmpty);
+      expect(ClockCorrectionLedger.decode(null).entries, isEmpty);
+    });
+
+    test('stays bounded', () {
+      var l = const ClockCorrectionLedger.empty();
+      for (var i = 1; i <= ClockCorrectionLedger.maxEntries + 5; i++) {
+        l = l.recordCorrection(i, i);
+      }
+      expect(l.entries.length, ClockCorrectionLedger.maxEntries);
+    });
+  });
 }
