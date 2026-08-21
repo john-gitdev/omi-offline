@@ -1269,23 +1269,34 @@ void main() {
       expect(sync.hasDevice, isFalse);
     });
 
-    test('a syncAll landing on an in-flight one JOINS it instead of skipping', () async {
+    // Entering in the same microtask is the case that used to run two download
+    // loops against the same index-0 queue: the old guard set `_isSyncing`
+    // several awaits deep, so neither call saw the other.
+    //
+    // The second is DENIED, not joined. A sync fixes its file list at its own
+    // CMD_LIST_FILES and never re-lists, so handing the second caller the running
+    // sync's result would give them an answer that predates whatever the device
+    // has closed since — stale, while reading as a fresh sync.
+    test('a second syncAll entering together is denied, not joined', () async {
       await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
       mockConn.files = [];
 
-      // Entering in the same microtask is the case that used to run two download
-      // loops against the same index-0 queue: the old guard set `_isSyncing`
-      // several awaits deep, so neither call saw the other. Both must now resolve
-      // to the SAME sync — one that really ran — rather than one of them being
-      // reported to the user as a completed or skipped sync of its own.
       final first = sync.syncAll();
       final second = sync.syncAll();
 
       final results = await Future.wait([first, second]);
-      expect(results[0], isNotNull);
-      expect(identical(results[0], results[1]), isTrue,
-          reason: 'the joining caller must get the in-flight run\'s own result, '
-              'not null and not a second sync of its own');
+      expect(results[0], isNotNull, reason: 'the first one runs');
+      expect(results[1], isNull, reason: 'the second did not run, and must not report as though it did');
+    });
+
+    test('a sync can run again once the previous one has settled', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      mockConn.files = [];
+
+      expect(await sync.syncAll(), isNotNull);
+      // The claim must be released the moment the run settles, or a caller
+      // arriving right after a sync finished is denied for no reason.
+      expect(await sync.syncAll(), isNotNull);
     });
 
     // Force Sync must SEAL the active bin — that is what licenses the caller to

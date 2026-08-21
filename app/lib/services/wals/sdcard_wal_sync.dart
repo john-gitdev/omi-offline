@@ -1113,34 +1113,41 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   /// caller's own microtask. `_isSyncing` is set several awaits deep (after the
   /// connection lookup, and after up to 3s of storage-lock polling), so two calls
   /// entering together both cleared that guard and ran two download loops against
-  /// the same index-0 queue. Claiming a Future synchronously closes that window
-  /// AND gives the second caller something better than a skip — the first sync's
-  /// actual result.
+  /// the same index-0 queue. Claiming a Future synchronously closes that window.
+  ///
+  /// A sync arriving while one is running is **denied**, not joined. Joining
+  /// looks helpful and is not: the running sync fixed its file list at its own
+  /// CMD_LIST_FILES and never re-lists, so anything the device closed since is
+  /// absent from it. The caller would be handed a stale result that reads as a
+  /// fresh sync — the same lie as the phantom completion this class was fixed
+  /// for, just harder to spot. Denying keeps one rule for every entry point and
+  /// leaves the retry to [SharedPreferencesUtil.lastSyncSkipped], which marks the
+  /// next check due immediately.
   @override
   Future<SyncLocalFilesResponse?> syncAll({
     IWalSyncProgressListener? progress,
   }) {
-    final inFlight = _inFlightFullSync;
-    if (inFlight != null) {
-      Logger.debug('SDCardWalSync: syncAll joining the full sync already in flight');
-      return inFlight;
+    if (_inFlightFullSync != null) {
+      Logger.debug('SDCardWalSync: skipping syncAll — a sync is already in flight');
+      return Future.value(null);
     }
     return _claimFullSync(_syncAllInner(progress: progress));
   }
 
-  /// Tracks the outstanding full sync so a second caller joins it instead of
-  /// being told the sync was skipped. Cleared on completion, and only if this
-  /// run is still the current one.
+  /// The synchronous claim on a full sync. Its job is to make "is a sync running?"
+  /// answerable without an await, so two callers entering together cannot both
+  /// start one. Cleared on completion, and only if this run is still the current
+  /// one.
   Future<SyncLocalFilesResponse?>? _inFlightFullSync;
 
   Future<SyncLocalFilesResponse?> _claimFullSync(Future<SyncLocalFilesResponse?> run) {
     _inFlightFullSync = run;
-    // whenComplete FIRST, registered here at claim time, so the field is cleared
-    // before any continuation a later caller attaches to the same future. That is
-    // what lets rotateAndSync await the run and then reliably see the slot free
-    // rather than racing its own cleanup. Swallow after, on the cleanup branch
-    // only — `run` is returned intact, so a real caller still sees the error;
-    // without the onError a throwing sync surfaces as an unhandled async error.
+    // whenComplete FIRST, registered here at claim time, so the slot is free the
+    // moment the run settles rather than a couple of microtasks later — otherwise
+    // a caller arriving right after a sync finished is denied for no reason.
+    // Swallow after, on the cleanup branch only: `run` is returned intact so a
+    // real caller still sees the error, and without the onError a throwing sync
+    // surfaces as an unhandled async error.
     unawaited(run.whenComplete(() {
       if (identical(_inFlightFullSync, run)) _inFlightFullSync = null;
     }).then<void>((_) {}, onError: (_) {}));

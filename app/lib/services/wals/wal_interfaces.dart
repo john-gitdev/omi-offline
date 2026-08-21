@@ -55,6 +55,15 @@ abstract class IWalSync {
   /// point: they were the same value once, and a sync that never issued a single
   /// command reported to the user as complete. Every implementation must log its
   /// reason before returning null.
+  ///
+  /// **One rule for every entry point: a sync requested while one is already
+  /// running is denied.** Not queued, not joined. A sync fixes its file list at
+  /// its own CMD_LIST_FILES and never re-lists, so handing a second caller the
+  /// running sync's result gives them an answer that predates anything the device
+  /// has closed since — stale, while looking like a fresh sync. Denying is also
+  /// the only rule that holds for [IWalService.rotateAndSync], which additionally
+  /// must not report success without its rotate. The retry costs nothing:
+  /// `lastSyncSkipped` makes the next check due immediately.
   Future<SyncLocalFilesResponse?> syncAll({
     IWalSyncProgressListener? progress,
   });
@@ -143,21 +152,15 @@ abstract class SDCardWalSync implements IWalSync {
   /// Send CMD_ROTATE_FILE, wait for ACK (current file sealed, new file open),
   /// then run a normal sync including short segments below the usual threshold.
   ///
-  /// Same null contract as [IWalSync.syncAll] — null means the sync did not run —
-  /// but it reaches null differently, and the difference is deliberate:
+  /// Same null contract as [IWalSync.syncAll], including the one rule: denied
+  /// while a sync is already running.
   ///
-  /// - [IWalSync.syncAll] **joins** a sync already in flight. Its contract is
-  ///   "fetch what is on the card", and the running sync is already doing exactly
-  ///   that, so the honest answer is that run's result.
-  /// - This one **does not**. Its contract is "seal what is being recorded right
-  ///   now, then fetch it", and a run that skipped the rotate has not done that.
-  ///   Sealing is also what entitles the caller to finalize drafts — after a
-  ///   rotate, nothing belonging to them is left on the device — so a joined run
-  ///   returning success would finalize a recording that stops mid-audio.
-  ///
-  /// So this returns null and the UI says a sync is in progress. Trying to be
-  /// clever here (join anyway, or queue behind the running sync and rotate after)
-  /// each bought a pile of edge cases to avoid telling the user one sentence.
+  /// It matters twice over here. Sealing the active bin is what entitles the
+  /// caller to finalize drafts — after a rotate, nothing belonging to them is
+  /// left on the device — so a run that returned success without rotating would
+  /// finalize a recording that stops mid-audio and prune the bins it was built
+  /// from. The UI says a sync is in progress; see
+  /// `RecordingsPage._forceSyncButtonPressed`.
   Future<SyncLocalFilesResponse?> rotateAndSync({IWalSyncProgressListener? progress});
 
   /// Bins (paths relative to `raw_segments/`) whose transfer has NOT delivered

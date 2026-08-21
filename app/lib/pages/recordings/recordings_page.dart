@@ -1214,6 +1214,14 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                   onCancelTap: () => unawaited(_showCancelModal()),
                   onDismissTap: () => controller.dismissSuccess(),
                   onActionTap: () {
+                    // Same guard as pull-to-refresh: spState idle does not mean
+                    // the card is free, because a background sync leaves it idle.
+                    if (controller.syncServiceBusy) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Sync already in progress')),
+                      );
+                      return;
+                    }
                     if (controller.spState == SyncProcessState.idle) {
                       controller.startPipeline();
                     } else if (controller.spState == SyncProcessState.resume) {
@@ -1415,8 +1423,14 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                                 return RefreshIndicator(
                                   color: Colors.deepPurpleAccent,
                                   onRefresh: () {
-                                    if (controller.spState != SyncProcessState.idle &&
-                                        controller.spState != SyncProcessState.error) {
+                                    // syncServiceBusy as well as spState: a
+                                    // background sync this controller never
+                                    // started leaves spState idle, and pulling
+                                    // down then produced a run that was denied
+                                    // and recorded as a skip with no explanation.
+                                    if ((controller.spState != SyncProcessState.idle &&
+                                            controller.spState != SyncProcessState.error) ||
+                                        controller.syncServiceBusy) {
                                       ScaffoldMessenger.of(context).showSnackBar(
                                         const SnackBar(
                                           content: Text('Sync already in progress'),
