@@ -143,7 +143,21 @@ abstract class SDCardWalSync implements IWalSync {
   /// Send CMD_ROTATE_FILE, wait for ACK (current file sealed, new file open),
   /// then run a normal sync including short segments below the usual threshold.
   ///
-  /// Same null contract as [IWalSync.syncAll] — null means the sync did not run.
+  /// Same null contract as [IWalSync.syncAll] — null means the sync did not run —
+  /// but it reaches null differently, and the difference is deliberate:
+  ///
+  /// - [IWalSync.syncAll] **joins** a sync already in flight. Its contract is
+  ///   "fetch what is on the card", and the running sync is already doing exactly
+  ///   that, so the honest answer is that run's result.
+  /// - This one **does not**. Its contract is "seal what is being recorded right
+  ///   now, then fetch it", and a run that skipped the rotate has not done that.
+  ///   Sealing is also what entitles the caller to finalize drafts — after a
+  ///   rotate, nothing belonging to them is left on the device — so a joined run
+  ///   returning success would finalize a recording that stops mid-audio.
+  ///
+  /// So this returns null and the UI says a sync is in progress. Trying to be
+  /// clever here (join anyway, or queue behind the running sync and rotate after)
+  /// each bought a pile of edge cases to avoid telling the user one sentence.
   Future<SyncLocalFilesResponse?> rotateAndSync({IWalSyncProgressListener? progress});
 
   /// Bins (paths relative to `raw_segments/`) whose transfer has NOT delivered
