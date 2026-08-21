@@ -49,6 +49,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   @override
   bool get isSyncing => _isSyncing;
   @override
+  bool get isSyncInFlight => _inFlightFullSync != null;
+  @override
   bool get hasDevice => _device != null;
 
   /// Completes when [setDevice] has registered a device, so a caller that wants
@@ -1771,15 +1773,14 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     );
   }
 
-  /// Force Sync. Non-async for the same reason as [syncAll] — see the note there.
+  /// Force Sync. Non-async, and denied while a sync is running, exactly as
+  /// [syncAll] is — see the note there for both reasons.
   ///
-  /// Unlike [syncAll] this does NOT join a sync already in flight: sealing the
-  /// active bin is the whole point of the call, and it is what lets the caller
-  /// finalize drafts, so a run that returns without a rotate is not a Force Sync
-  /// at all. It reports that it did not run and the UI says so — the earlier
-  /// attempts to be clever here (join anyway, or queue up behind the running sync
-  /// and rotate afterwards) each bought a pile of edge cases to avoid telling the
-  /// user a one-line truth.
+  /// It matters twice over here: sealing the active bin is the whole point of the
+  /// call, and it is what lets the caller finalize drafts, so a run that returned
+  /// without a rotate would not merely be stale — it would finalize a recording
+  /// whose tail is still on the device. The UI says a sync is in progress; see
+  /// `RecordingsPage._forceSyncButtonPressed`.
   @override
   Future<SyncLocalFilesResponse?> rotateAndSync({
     IWalSyncProgressListener? progress,

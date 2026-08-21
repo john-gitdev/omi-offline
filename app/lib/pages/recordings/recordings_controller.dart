@@ -193,17 +193,23 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   /// True while the WAL service has a sync of its own running — which includes a
   /// background sync this controller never started, and which `spState` does not
-  /// always reflect. Force Sync cannot run against one (it would return without
-  /// rotating, which is not a Force Sync), so the UI checks this to say so rather
-  /// than no-op silently.
-  bool get syncServiceBusy => ServiceManager.instance().wal.getSyncs().isSyncing;
+  /// always reflect. Any new sync would be denied against one, so the UI checks
+  /// this to say so rather than no-op silently.
+  ///
+  /// Reads isSyncInFlight as well as isSyncing on purpose: isSyncing lags the
+  /// claim by three awaits (one of them a 3s poll), and in that window a sync is
+  /// already claimed and denying others while isSyncing still reads false.
+  bool get syncServiceBusy {
+    final syncs = ServiceManager.instance().wal.getSyncs();
+    return syncs.isSyncing || syncs.isSyncInFlight;
+  }
 
   Timer? _forceSyncCooldownTimer;
 
   /// Hands Force Sync straight back.
   ///
   /// The cooldown is the price of a **rotation** — call this whenever the run did
-  /// not get one (skipped, joined a sync already in flight, errored, or never
+  /// not get one (denied because a sync was already running, errored, or never
   /// reached the device). Call it only from [_runForcePipeline], which is the one
   /// place that knows: a shared settle path like `_transitionToError` also runs
   /// for ordinary pipelines, and would clear a cooldown armed by an earlier Force

@@ -104,6 +104,17 @@ abstract class SDCardWalSync implements IWalSync {
   Future<void> deleteAllPendingWals();
   bool get isSyncing;
 
+  /// True from the instant a full sync is claimed until it settles.
+  ///
+  /// Ask this, not [isSyncing], when deciding whether a new sync can start.
+  /// [isSyncing] is set three awaits into the run — after the connection lookup
+  /// and after up to 3s of storage-lock polling — so for that window a sync is
+  /// claimed and will deny any other, while [isSyncing] still reads false. A UI
+  /// gating on [isSyncing] alone waves the user through into a denial it never
+  /// explains. [isSyncing] keeps its own meaning: a transfer is actually moving,
+  /// which is what the progress counters key off.
+  bool get isSyncInFlight;
+
   /// True once [setDevice] has registered a device, i.e. once [syncAll] can
   /// actually reach the card. Deliberately NOT the same as "the link is up":
   /// `_onDeviceConnected` caches settings and pushes the button config before it

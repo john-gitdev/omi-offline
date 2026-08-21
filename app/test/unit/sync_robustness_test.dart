@@ -1289,6 +1289,23 @@ void main() {
       expect(results[1], isNull, reason: 'the second did not run, and must not report as though it did');
     });
 
+    // isSyncing is set three awaits into the run — after the connection lookup
+    // and after up to 3s of storage-lock polling. A UI gating on it alone waves
+    // the user into a denial it never explains, which is the silent no-op this
+    // branch set out to remove. isSyncInFlight is true from the claim onward.
+    test('isSyncInFlight is true from the claim, before isSyncing catches up', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      mockConn.files = [];
+
+      expect(sync.isSyncInFlight, isFalse);
+      final run = sync.syncAll();
+      expect(sync.isSyncInFlight, isTrue, reason: 'claimed synchronously, so the UI can see it immediately');
+      expect(sync.isSyncing, isFalse, reason: 'this is exactly the window isSyncing does not cover');
+
+      await run;
+      expect(sync.isSyncInFlight, isFalse, reason: 'released the moment the run settles');
+    });
+
     test('a sync can run again once the previous one has settled', () async {
       await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
       mockConn.files = [];
