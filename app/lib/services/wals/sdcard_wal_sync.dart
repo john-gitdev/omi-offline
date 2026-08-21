@@ -280,11 +280,16 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           // just loaded. The real rebuild happens when refreshStorageStats() calls
           // setDevice() again with the actual file listing.
           if (prefetchedFiles == null || prefetchedFiles.isNotEmpty) {
-            _wals = await _buildWalsFromFilesLocked(
+            final built = await _buildWalsFromFilesLocked(
               connection,
               _device!.id,
               prefetchedFiles: prefetchedFiles,
             );
+            // Same reasoning as the empty-prefetch guard above: a listing that got
+            // no answer must not erase the persisted WALs restored a few lines up.
+            // Those carry the resume offsets, and dropping them is what makes a
+            // half-downloaded bin restart from 0 and duplicate its audio.
+            if (built != null) _wals = built;
           }
         } finally {
           if (prefetchedFiles == null) {
@@ -350,15 +355,20 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     await connection.acquireStorageLock('getMissingWals');
     try {
-      return await _getMissingWalsLocked(connection, dev.id);
+      // Public contract stays non-null: this is the informational view (start(),
+      // the UI's WAL list), where "no answer" and "nothing there" are equally
+      // uninformative. Only the sync path branches on the difference.
+      return await _getMissingWalsLocked(connection, dev.id) ?? [];
     } finally {
       connection.releaseStorageLock();
     }
   }
 
-  Future<List<Wal>> _getMissingWalsLocked(DeviceConnection connection, String deviceId) async {
+  /// null = the device never answered the listing. See [_buildWalsFromFilesLocked].
+  Future<List<Wal>?> _getMissingWalsLocked(DeviceConnection connection, String deviceId) async {
     final wals = await _buildWalsFromFilesLocked(connection, deviceId);
-    Logger.debug('SDCardWalSync: getMissingWals returned ${wals.length} WALs');
+    Logger.debug('SDCardWalSync: getMissingWals returned '
+        '${wals == null ? 'NO ANSWER (listing failed)' : '${wals.length} WALs'}');
     return wals;
   }
 
@@ -437,19 +447,24 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     await connection.acquireStorageLock('hasFilesToSync');
     try {
-      final files = await connection.listFiles();
+      // No answer is not evidence of files, and this is a bool with no third state.
+      final files = await connection.listFiles() ?? const <StorageFile>[];
       return files.isNotEmpty;
     } finally {
       connection.releaseStorageLock();
     }
   }
 
-  Future<List<Wal>> _buildWalsFromFilesLocked(
+  /// Returns null when the device never answered the listing — distinct from an
+  /// empty list, which is the device answering that it holds nothing. Callers that
+  /// decide whether a sync RAN must branch on it; see [DeviceConnection.listFiles].
+  Future<List<Wal>?> _buildWalsFromFilesLocked(
     DeviceConnection connection,
     String deviceId, {
     List<StorageFile>? prefetchedFiles,
   }) async {
     final files = prefetchedFiles ?? await connection.listFiles();
+    if (files == null) return null;
     if (files.isEmpty) return [];
 
     final codec = await connection.getAudioCodec() ?? BleAudioCodec.pcm8;
@@ -1209,7 +1224,20 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     List<Wal>? prefetchedWals,
     IWalSyncProgressListener? progress,
   }) async {
-    _wals = prefetchedWals ?? await _getMissingWalsLocked(connection, deviceId);
+    final listed = prefetchedWals ?? await _getMissingWalsLocked(connection, deviceId);
+    // No answer means we do not know what the device holds — which is NOT the same
+    // as it holding nothing. Reporting the empty response here is what let a failed
+    // listing paint a completed sync: the UI said "nothing to sync" and the
+    // lastSyncCompletedMs stamp talked the next automatic attempt out of running for
+    // a full interval, while the recordings sat on the card. `null` = did not run,
+    // which the callers already handle as a skip and retry immediately.
+    // _wals is left as it was on purpose: the last known list (and its resume
+    // offsets) is better than an empty one we have no evidence for.
+    if (listed == null) {
+      Logger.warning('SDCardWalSync: sync did not run — the device did not answer CMD_LIST_FILES');
+      return null;
+    }
+    _wals = listed;
     listener.onWalUpdated();
 
     if (_isCancelled) return null;
@@ -1835,7 +1863,27 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
       final wals = await _buildWalsFromFilesLocked(connection, dev.id);
 
+      // Cancel is checked FIRST: a user who cancelled gets "did not run", and is not
+      // charged the cooldown, whatever the listing was doing when they did it.
       if (_isCancelled) return null;
+
+      if (wals == null) {
+        // The rotate DID land — the active bin is sealed and a fresh one started —
+        // so this run reached the device whatever the listing then did. Returning
+        // null would say the opposite: _runForcePipeline reads it as "nothing was
+        // rotated", hands the cooldown back (licensing another rotate, and another
+        // near-empty bin), and misses the isPartial branch that drops force mode —
+        // so processing would finalize every draft on disk while the bin holding
+        // their tail is still on the device. Partial says both true things at once:
+        // we reached it, and we did not get everything.
+        Logger.warning('SDCardWalSync: rotateAndSync rotated but the device did not answer '
+            'CMD_LIST_FILES — reporting a partial sync');
+        return SyncLocalFilesResponse(
+          newConversationIds: [],
+          updatedConversationIds: [],
+          isPartial: true,
+        );
+      }
 
       return await _syncAllLocked(connection, dev.id, prefetchedWals: wals, progress: progress);
     } finally {
@@ -1868,7 +1916,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         listener.onWalUpdated();
       } else {
         Logger.error('SDCardWalSync: CMD_CLEAR_STORAGE failed, falling back to per-file deletion');
-        final files = await connection.listFiles();
+        // No answer leaves nothing to delete this pass; the caller re-runs.
+        final files = await connection.listFiles() ?? const <StorageFile>[];
         for (final file in files) {
           if (_isCancelled) break;
           await Future.delayed(const Duration(milliseconds: 5)); // Prevent UI starvation
