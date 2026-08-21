@@ -305,13 +305,19 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       Logger.debug('DebugTools: Calling syncAll()');
       final result = await ServiceManager.instance().wal.getSyncs().syncAll(progress: this);
       deviceProvider.restartBackgroundSyncTimer();
+      // null means the sync never ran — see IWalSync.syncAll. It used to be
+      // reported here as "All synced!", which is the same lie the recordings page
+      // told: a run that issued no command at all reading as a clean card.
       Logger.debug(
-        'DebugTools: syncAll complete — result=${result == null ? 'null (nothing to sync)' : 'SyncLocalFilesResponse'}',
+        'DebugTools: syncAll returned ${result == null ? 'null — the sync DID NOT RUN' : 'a response — the sync ran'}',
       );
       if (!mounted) return;
       setState(() {
         if (result == null) {
-          _statusMessage = 'All synced! No new segments found.';
+          // Both reasons are live: a sync already running, or the Omi out of
+          // reach. Naming only the second was wrong once syncAll started denying
+          // a collision rather than joining it.
+          _statusMessage = 'Sync skipped — a sync is already running, or the Omi could not be reached.';
         } else {
           _statusMessage = 'Sync Complete. Raw segments downloaded.';
         }
@@ -367,12 +373,18 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       }
 
       Logger.debug('DebugTools: Calling rotateAndSync()');
-      await ServiceManager.instance().wal.getSyncs().rotateAndSync(progress: this);
+      final result = await ServiceManager.instance().wal.getSyncs().rotateAndSync(progress: this);
       deviceProvider.restartBackgroundSyncTimer();
-      Logger.debug('DebugTools: Force sync complete');
+      // The result was discarded here, so this screen printed "Force Sync
+      // Complete." even when rotateAndSync had returned null having done nothing
+      // — the same false completion this whole change is about, in the screen
+      // used to diagnose it. null means it did not run; see IWalService.
+      Logger.debug('DebugTools: rotateAndSync returned ${result == null ? 'null — DID NOT RUN' : 'a response'}');
       if (!mounted) return;
       setState(() {
-        _statusMessage = 'Force Sync Complete.';
+        _statusMessage = result == null
+            ? 'Force Sync skipped — a sync is already running, or the Omi could not be reached.'
+            : 'Force Sync Complete.';
         _isSyncing = false;
       });
     } catch (e) {

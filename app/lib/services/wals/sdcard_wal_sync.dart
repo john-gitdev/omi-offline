@@ -49,6 +49,19 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   @override
   bool get isSyncing => _isSyncing;
   @override
+  bool get isSyncInFlight => _inFlightFullSync != null;
+  @override
+  bool get hasDevice => _device != null;
+
+  /// Completes when [setDevice] has registered a device, so a caller that wants
+  /// to sync on connect can WAIT for the WAL layer to be usable instead of firing
+  /// at a guessed delay and skipping when it guesses short. Reset to a fresh
+  /// pending future by `setDevice(null)`, so it tracks the current attachment
+  /// rather than latching on the first device ever seen.
+  Completer<void> _deviceReady = Completer<void>();
+  @override
+  Future<void> get deviceReady => _deviceReady.future;
+  @override
   bool get isDeviceRecordingFailed => false;
   @override
   Future<void>? get cancelFuture => _cancelCompleter?.future;
@@ -229,6 +242,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     List<StorageFile>? prefetchedFiles,
   }) async {
     _device = device;
+    if (device == null) {
+      // Detached — anyone waiting on deviceReady must keep waiting for the next
+      // attach rather than seeing a completed future from the last one.
+      if (_deviceReady.isCompleted) _deviceReady = Completer<void>();
+    }
     if (_device != null) {
       // Restore persisted WAL offsets so partial downloads resume correctly after
       // an app restart, and so fully-downloaded-but-not-yet-deleted files are not
@@ -275,6 +293,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         }
       }
       listener.onWalUpdated();
+      // Release waiters LAST. "Ready" has to mean the persisted WAL offsets are
+      // restored, not merely that _device is non-null: a waiter freed at the top
+      // of this method races the restore above, and a sync that starts without it
+      // re-reads a partially-downloaded bin from offset 0 — the duplicate
+      // recordings that restore exists to prevent.
+      if (!_deviceReady.isCompleted) _deviceReady.complete();
     }
   }
 
@@ -1087,11 +1111,59 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     }
   }
 
+  /// Deliberately NOT `async`: the in-flight claim below has to happen in the
+  /// caller's own microtask. `_isSyncing` is set several awaits deep (after the
+  /// connection lookup, and after up to 3s of storage-lock polling), so two calls
+  /// entering together both cleared that guard and ran two download loops against
+  /// the same index-0 queue. Claiming a Future synchronously closes that window.
+  ///
+  /// A sync arriving while one is running is **denied**, not joined. Joining
+  /// looks helpful and is not: the running sync fixed its file list at its own
+  /// CMD_LIST_FILES and never re-lists, so anything the device closed since is
+  /// absent from it. The caller would be handed a stale result that reads as a
+  /// fresh sync — the same lie as the phantom completion this class was fixed
+  /// for, just harder to spot. Denying keeps one rule for every entry point and
+  /// leaves the retry to [SharedPreferencesUtil.lastSyncSkipped], which marks the
+  /// next check due immediately.
   @override
   Future<SyncLocalFilesResponse?> syncAll({
     IWalSyncProgressListener? progress,
+  }) {
+    if (_inFlightFullSync != null) {
+      Logger.debug('SDCardWalSync: skipping syncAll — a sync is already in flight');
+      return Future.value(null);
+    }
+    return _claimFullSync(_syncAllInner(progress: progress));
+  }
+
+  /// The synchronous claim on a full sync. Its job is to make "is a sync running?"
+  /// answerable without an await, so two callers entering together cannot both
+  /// start one. Cleared on completion, and only if this run is still the current
+  /// one.
+  Future<SyncLocalFilesResponse?>? _inFlightFullSync;
+
+  Future<SyncLocalFilesResponse?> _claimFullSync(Future<SyncLocalFilesResponse?> run) {
+    _inFlightFullSync = run;
+    // whenComplete FIRST, registered here at claim time, so the slot is free the
+    // moment the run settles rather than a couple of microtasks later — otherwise
+    // a caller arriving right after a sync finished is denied for no reason.
+    // Swallow after, on the cleanup branch only: `run` is returned intact so a
+    // real caller still sees the error, and without the onError a throwing sync
+    // surfaces as an unhandled async error.
+    unawaited(run.whenComplete(() {
+      if (identical(_inFlightFullSync, run)) _inFlightFullSync = null;
+    }).then<void>((_) {}, onError: (_) {}));
+    return run;
+  }
+
+  Future<SyncLocalFilesResponse?> _syncAllInner({
+    IWalSyncProgressListener? progress,
   }) async {
-    if (_isSyncing || _device == null) return null;
+    if (_isSyncing || _device == null) {
+      Logger.debug(
+          'SDCardWalSync: skipping syncAll — ${_isSyncing ? 'a sync is already in flight' : 'no device registered yet'}');
+      return null;
+    }
 
     final dev = _device!;
     final connection = _connectionProvider != null
@@ -1155,7 +1227,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       return w.status == WalStatus.miss && w.storage == WalStorage.sdcard;
     }).toList();
 
-    if (wals.isEmpty) return null;
+    // Non-null: the device WAS asked (CMD_LIST_FILES went out above) and holds
+    // nothing syncable. That is a completed sync, and it must not be reported as
+    // a skip — null is reserved for "the sync never ran", which is what the
+    // callers key their "Skipped" state and their lastSyncCompletedMs stamp off.
+    if (wals.isEmpty) {
+      return SyncLocalFilesResponse(newConversationIds: [], updatedConversationIds: []);
+    }
 
     // The fast path can only read and delete index 0, and it relies on each file it
     // finishes being deleted so the NEXT one it wants becomes index 0. A file we already
@@ -1532,7 +1610,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     required Wal wal,
     IWalSyncProgressListener? progress,
   }) async {
-    if (_isSyncing) return null;
+    if (_isSyncing) {
+      Logger.debug('SDCardWalSync: skipping syncWal — a sync is already in flight');
+      return null;
+    }
 
     final connection = _device != null
         ? (_connectionProvider != null
@@ -1692,14 +1773,42 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     );
   }
 
+  /// Force Sync. Non-async, and denied while a sync is running, exactly as
+  /// [syncAll] is — see the note there for both reasons.
+  ///
+  /// It matters twice over here: sealing the active bin is the whole point of the
+  /// call, and it is what lets the caller finalize drafts, so a run that returned
+  /// without a rotate would not merely be stale — it would finalize a recording
+  /// whose tail is still on the device. The UI says a sync is in progress; see
+  /// `RecordingsPage._forceSyncButtonPressed`.
   @override
   Future<SyncLocalFilesResponse?> rotateAndSync({
     IWalSyncProgressListener? progress,
+  }) {
+    if (_inFlightFullSync != null) {
+      Logger.debug('SDCardWalSync: skipping rotateAndSync — a sync is already in flight');
+      return Future.value(null);
+    }
+    return _claimFullSync(_rotateAndSyncInner(progress: progress));
+  }
+
+  Future<SyncLocalFilesResponse?> _rotateAndSyncInner({
+    IWalSyncProgressListener? progress,
   }) async {
-    if (_isSyncing || _device == null) return null;
+    if (_isSyncing || _device == null) {
+      Logger.debug(
+          'SDCardWalSync: skipping rotateAndSync — ${_isSyncing ? 'a sync is already in flight' : 'no device registered yet'}');
+      return null;
+    }
 
     final dev = _device!;
-    final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
+    // Honour _connectionProvider like every other entry point in this class does.
+    // This one reached for ServiceManager directly, which made the rotate path the
+    // only one unreachable from a test — so nothing covered the flag that licenses
+    // Force Sync to finalize drafts.
+    final connection = _connectionProvider != null
+        ? await _connectionProvider!(dev.id)
+        : await ServiceManager.instance().device.ensureConnection(dev.id);
     if (connection == null) throw DeviceConnectionException('No connection');
 
     if (connection.isStorageBusy) {

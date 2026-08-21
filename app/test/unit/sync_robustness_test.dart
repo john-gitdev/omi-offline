@@ -1213,6 +1213,181 @@ void main() {
     });
   });
 
+  // A sync that never ran and a sync that ran and found nothing were the same
+  // value (null) until 0.35.x, so a run that issued zero BLE commands reported to
+  // the user as a completed sync — and stamped lastSyncCompletedMs, which
+  // suppressed BackgroundSyncWorker's next attempt for a whole interval. These
+  // pin the two apart. See IWalSync.syncAll.
+  group('syncAll null means "did not run", never "nothing to sync"', () {
+    late MockDeviceConnection mockConn;
+    late SDCardWalSyncImpl sync;
+
+    setUp(() {
+      globalRejectDeleteTimestamps = {};
+      globalDeletedTimestamps = [];
+      mockConn = MockDeviceConnection();
+      sync = SDCardWalSyncImpl(
+        MockWalSyncListener(),
+        connectionProvider: (_) async => mockConn,
+        inactivityTimeout: const Duration(seconds: 1),
+      );
+    });
+
+    tearDown(() async {
+      sync.cancelSync();
+      await mockConn.close();
+    });
+
+    test('an empty card returns a response, not null — the device WAS asked', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      mockConn.files = [];
+
+      final result = await sync.syncAll();
+
+      expect(result, isNotNull,
+          reason: 'CMD_LIST_FILES went out and the card held nothing — that is a completed sync, '
+              'and callers key their "Skipped" state and lastSyncCompletedMs stamp off null');
+      expect(result!.newConversationIds, isEmpty);
+      expect(result.isPartial, isFalse);
+    });
+
+    test('no registered device returns null — this is the 4.7s connect-setup window', () async {
+      // setDevice deliberately NOT called: the link can be up and the battery
+      // readable while the WAL layer still has no device, because
+      // _onDeviceConnected calls setDevice last.
+      expect(sync.hasDevice, isFalse);
+      mockConn.files = [];
+
+      expect(await sync.syncAll(), isNull);
+    });
+
+    test('hasDevice flips only once setDevice has registered the device', () async {
+      expect(sync.hasDevice, isFalse);
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      expect(sync.hasDevice, isTrue);
+      await sync.setDevice(null);
+      expect(sync.hasDevice, isFalse);
+    });
+
+    // Entering in the same microtask is the case that used to run two download
+    // loops against the same index-0 queue: the old guard set `_isSyncing`
+    // several awaits deep, so neither call saw the other.
+    //
+    // The second is DENIED, not joined. A sync fixes its file list at its own
+    // CMD_LIST_FILES and never re-lists, so handing the second caller the running
+    // sync's result would give them an answer that predates whatever the device
+    // has closed since — stale, while reading as a fresh sync.
+    test('a second syncAll entering together is denied, not joined', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      mockConn.files = [];
+
+      final first = sync.syncAll();
+      final second = sync.syncAll();
+
+      final results = await Future.wait([first, second]);
+      expect(results[0], isNotNull, reason: 'the first one runs');
+      expect(results[1], isNull, reason: 'the second did not run, and must not report as though it did');
+    });
+
+    // isSyncing is set three awaits into the run — after the connection lookup
+    // and after up to 3s of storage-lock polling. A UI gating on it alone waves
+    // the user into a denial it never explains, which is the silent no-op this
+    // branch set out to remove. isSyncInFlight is true from the claim onward.
+    test('isSyncInFlight is true from the claim, before isSyncing catches up', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      mockConn.files = [];
+
+      expect(sync.isSyncInFlight, isFalse);
+      final run = sync.syncAll();
+      expect(sync.isSyncInFlight, isTrue, reason: 'claimed synchronously, so the UI can see it immediately');
+      expect(sync.isSyncing, isFalse, reason: 'this is exactly the window isSyncing does not cover');
+
+      await run;
+      expect(sync.isSyncInFlight, isFalse, reason: 'released the moment the run settles');
+    });
+
+    test('a sync can run again once the previous one has settled', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      mockConn.files = [];
+
+      expect(await sync.syncAll(), isNotNull);
+      // The claim must be released the moment the run settles, or a caller
+      // arriving right after a sync finished is denied for no reason.
+      expect(await sync.syncAll(), isNotNull);
+    });
+
+    // Force Sync must SEAL the active bin — that is what licenses the caller to
+    // finalize drafts, because after a rotate nothing belonging to them is left
+    // on the device. It therefore never joins a plain sync (that would return
+    // without a rotate) and never queues behind one. It reports that it did not
+    // run, and the UI says so.
+    test('rotateAndSync does not run while a sync is in flight', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      mockConn.files = [];
+
+      final running = sync.syncAll();
+      expect(await sync.rotateAndSync(), isNull,
+          reason: 'a run that cannot rotate is not a Force Sync — say so rather than half-do it');
+
+      expect(await running, isNotNull);
+    });
+
+    test('rotateAndSync runs when nothing else is', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      mockConn.files = [];
+
+      expect(await sync.rotateAndSync(), isNotNull);
+    });
+
+    // The 2026-08-19 11:48 PDT sequence, end to end: the pipeline fires while
+    // _onDeviceConnected is still caching settings, so the WAL layer has no
+    // device. It used to return null here and report a completed sync having sent
+    // the card nothing. It must now wait and then actually issue commands.
+    test('a sync starting before setDevice waits for it, then really talks to the device', () async {
+      mockConn.files = [
+        StorageFile(index: 0, size: 300000, timestamp: 1787206371, sessionId: 1),
+      ];
+      globalWriteCount = 0;
+      expect(sync.hasDevice, isFalse);
+
+      // Shape of RecordingsController._awaitSyncableDevice followed by the sync.
+      final pipeline = Future(() async {
+        await sync.deviceReady.timeout(const Duration(seconds: 5));
+        return sync.syncAll();
+      });
+
+      await Future.delayed(const Duration(milliseconds: 50));
+      expect(globalWriteCount, 0, reason: 'nothing may reach the device before it is registered');
+
+      // _onDeviceConnected finally hands the device over.
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+
+      final result = await pipeline;
+      expect(result, isNotNull, reason: 'the sync ran, so it must not report as a skip');
+      expect(globalWriteCount, greaterThan(0),
+          reason: 'CMD_READ_FILE actually went out — the runs in the log sent nothing at all');
+    });
+
+    test('deviceReady completes on attach and goes pending again on detach', () async {
+      var ready = false;
+      unawaited(sync.deviceReady.then((_) => ready = true));
+      await Future.delayed(Duration.zero);
+      expect(ready, isFalse, reason: 'nothing attached yet');
+
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await Future.delayed(Duration.zero);
+      expect(ready, isTrue);
+
+      // A detach must not leave a completed future behind, or the next sync would
+      // stop waiting and skip against a device that is no longer registered.
+      await sync.setDevice(null);
+      var readyAgain = false;
+      unawaited(sync.deviceReady.then((_) => readyAgain = true));
+      await Future.delayed(Duration.zero);
+      expect(readyAgain, isFalse);
+    });
+  });
+
   group('Conversation Metadata Robustness', () {
     test('Conversation.fromFile handles missing uploadKey in meta', () async {
       final audioFile = File('${tempDir.path}/recording_1773961625000.m4a')..createSync(recursive: true);

@@ -403,8 +403,22 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
   }
 
   Future<void> _forceSyncButtonPressed() async {
-    if (_controller.spState != SyncProcessState.idle) return;
-    if (_controller.forceSyncOnCooldown) return;
+    // Both of these used to return silently, so a tap during a sync did nothing
+    // at all with no explanation — which is what sent people to Debug Tools. Say
+    // it instead. Force Sync's job is to seal the current recording and fetch it,
+    // and it cannot do that while a sync is already reading the card, so waiting
+    // for that one to finish IS the answer rather than a workaround.
+    final blocked = !context.read<DeviceProvider>().isConnected
+        ? 'Omi not connected — Force Sync needs a live connection.'
+        : (_controller.spState != SyncProcessState.idle || _controller.syncServiceBusy)
+            ? 'Sync in progress — Force Sync will be available once it finishes.'
+            : _controller.forceSyncOnCooldown
+                ? 'Force Sync was just run. It will be available again shortly.'
+                : null;
+    if (blocked != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(blocked)));
+      return;
+    }
 
     final skipConfirm = _prefs.forceSyncSkipConfirm;
     if (!skipConfirm) {
@@ -1093,11 +1107,12 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                         : Colors.grey.shade700,
                     size: 20,
                   ),
-                  onPressed: (deviceProvider.isConnected &&
-                          controller.spState == SyncProcessState.idle &&
-                          !controller.forceSyncOnCooldown)
-                      ? _forceSyncButtonPressed
-                      : null,
+                  // Always tappable: the colour above still greys out to show it
+                  // is unavailable, but a disabled IconButton swallows the tap
+                  // entirely, so the handler's explanation never reaches anyone —
+                  // which is what left "nothing happens" as the whole experience.
+                  // _forceSyncButtonPressed says why for every case.
+                  onPressed: _forceSyncButtonPressed,
                   tooltip: 'Force sync',
                 ),
                 IconButton(
@@ -1199,6 +1214,14 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                   onCancelTap: () => unawaited(_showCancelModal()),
                   onDismissTap: () => controller.dismissSuccess(),
                   onActionTap: () {
+                    // Same guard as pull-to-refresh: spState idle does not mean
+                    // the card is free, because a background sync leaves it idle.
+                    if (controller.syncServiceBusy) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Sync already in progress')),
+                      );
+                      return;
+                    }
                     if (controller.spState == SyncProcessState.idle) {
                       controller.startPipeline();
                     } else if (controller.spState == SyncProcessState.resume) {
@@ -1400,8 +1423,14 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                                 return RefreshIndicator(
                                   color: Colors.deepPurpleAccent,
                                   onRefresh: () {
-                                    if (controller.spState != SyncProcessState.idle &&
-                                        controller.spState != SyncProcessState.error) {
+                                    // syncServiceBusy as well as spState: a
+                                    // background sync this controller never
+                                    // started leaves spState idle, and pulling
+                                    // down then produced a run that was denied
+                                    // and recorded as a skip with no explanation.
+                                    if ((controller.spState != SyncProcessState.idle &&
+                                            controller.spState != SyncProcessState.error) ||
+                                        controller.syncServiceBusy) {
                                       ScaffoldMessenger.of(context).showSnackBar(
                                         const SnackBar(
                                           content: Text('Sync already in progress'),

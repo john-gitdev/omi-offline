@@ -1311,8 +1311,18 @@ class DeviceProvider extends ChangeNotifier
         try {
           final result = await walSync.syncAll(progress: _BackgroundSyncProgress());
           SharedPreferencesUtil().lastSyncPartial = result?.isPartial ?? false;
-          SharedPreferencesUtil().lastSyncSkipped = false;
-          SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
+          // null = the sync never ran (see IWalSync.syncAll). Recording it as a
+          // completed sync is worse here than in the UI: BackgroundSyncWorker
+          // gates its next run on lastSyncCompletedMs, so a phantom stamp tells
+          // it "not due yet" and suppresses the next REAL attempt for a full
+          // interval. Leave the stamp alone and flag the skip.
+          final ran = result != null;
+          SharedPreferencesUtil().lastSyncSkipped = !ran;
+          if (ran) {
+            SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
+          } else {
+            Logger.warning('DeviceProvider: background sync did not run — recording a skip, not a completion');
+          }
           SharedPreferencesUtil().lastSyncStatusMs = DateTime.now().millisecondsSinceEpoch;
           await SyncNotification.finishingSync();
         } catch (e) {

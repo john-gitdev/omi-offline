@@ -39,9 +39,36 @@ abstract class IWalSyncListener {
 abstract class IWalSync {
   Future<List<Wal>> getMissingWals();
   Future deleteWal(Wal wal);
+
+  /// Runs a full sync and reports **whether it ran**, not whether it found anything.
+  ///
+  /// - non-null — the sync reached the device. An empty [SyncLocalFilesResponse]
+  ///   means CMD_LIST_FILES was issued and the card held nothing; that is a
+  ///   successful sync, not a skipped one.
+  /// - null — the sync **did not run**: no device is registered yet
+  ///   ([SDCardWalSync.hasDevice] is false), one is already in flight, the
+  ///   storage lock never cleared, or the user cancelled. Nothing was asked of
+  ///   the device, so callers must NOT record a completed sync — see
+  ///   `RecordingsController._runPipeline`, which routes null to "Skipped".
+  ///
+  /// Keeping "ran and found nothing" distinct from "never asked" is the whole
+  /// point: they were the same value once, and a sync that never issued a single
+  /// command reported to the user as complete. Every implementation must log its
+  /// reason before returning null.
+  ///
+  /// **One rule for every entry point: a sync requested while one is already
+  /// running is denied.** Not queued, not joined. A sync fixes its file list at
+  /// its own CMD_LIST_FILES and never re-lists, so handing a second caller the
+  /// running sync's result gives them an answer that predates anything the device
+  /// has closed since — stale, while looking like a fresh sync. Denying is also
+  /// the only rule that holds for [IWalService.rotateAndSync], which additionally
+  /// must not report success without its rotate. The retry costs nothing:
+  /// `lastSyncSkipped` makes the next check due immediately.
   Future<SyncLocalFilesResponse?> syncAll({
     IWalSyncProgressListener? progress,
   });
+
+  /// Same null contract as [syncAll] — null means the sync did not run.
   Future<SyncLocalFilesResponse?> syncWal({
     required Wal wal,
     IWalSyncProgressListener? progress,
@@ -76,6 +103,32 @@ abstract class SDCardWalSync implements IWalSync {
   Future<void> setDevice(BtDevice? device, {List<StorageFile>? prefetchedFiles});
   Future<void> deleteAllPendingWals();
   bool get isSyncing;
+
+  /// True from the instant a full sync is claimed until it settles.
+  ///
+  /// Ask this, not [isSyncing], when deciding whether a new sync can start.
+  /// [isSyncing] is set three awaits into the run — after the connection lookup
+  /// and after up to 3s of storage-lock polling — so for that window a sync is
+  /// claimed and will deny any other, while [isSyncing] still reads false. A UI
+  /// gating on [isSyncing] alone waves the user through into a denial it never
+  /// explains. [isSyncing] keeps its own meaning: a transfer is actually moving,
+  /// which is what the progress counters key off.
+  bool get isSyncInFlight;
+
+  /// True once [setDevice] has registered a device, i.e. once [syncAll] can
+  /// actually reach the card. Deliberately NOT the same as "the link is up":
+  /// `_onDeviceConnected` caches settings and pushes the button config before it
+  /// calls [setDevice], so there is a window — 4.7s on the device this was
+  /// diagnosed from — where BLE is connected, the battery reads fine, and a sync
+  /// started here would return null having asked the device nothing. Callers that
+  /// kick a sync off connect must wait on [deviceReady] rather than a fixed delay.
+  bool get hasDevice;
+
+  /// Completes once [setDevice] has registered a device — the signal a caller
+  /// waits on so a sync started during connect setup runs when the WAL layer is
+  /// ready, instead of returning null and postponing real work to the next cycle.
+  /// `setDevice(null)` resets it to pending, so it tracks the current attachment.
+  Future<void> get deviceReady;
   Future<void>? get cancelFuture;
   void setGlobalProgressListener(IWalSyncProgressListener? listener);
   bool get isDeviceRecordingFailed;
@@ -109,6 +162,16 @@ abstract class SDCardWalSync implements IWalSync {
 
   /// Send CMD_ROTATE_FILE, wait for ACK (current file sealed, new file open),
   /// then run a normal sync including short segments below the usual threshold.
+  ///
+  /// Same null contract as [IWalSync.syncAll], including the one rule: denied
+  /// while a sync is already running.
+  ///
+  /// It matters twice over here. Sealing the active bin is what entitles the
+  /// caller to finalize drafts — after a rotate, nothing belonging to them is
+  /// left on the device — so a run that returned success without rotating would
+  /// finalize a recording that stops mid-audio and prune the bins it was built
+  /// from. The UI says a sync is in progress; see
+  /// `RecordingsPage._forceSyncButtonPressed`.
   Future<SyncLocalFilesResponse?> rotateAndSync({IWalSyncProgressListener? progress});
 
   /// Bins (paths relative to `raw_segments/`) whose transfer has NOT delivered

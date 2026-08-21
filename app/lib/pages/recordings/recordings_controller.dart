@@ -178,10 +178,50 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   // sync runner's stopping branch, reset at the start of each pipeline run.
   bool _processAfterCancel = false;
 
+  // Every Force Sync sends CMD_ROTATE_FILE, so hammering it seals a run of
+  // near-empty bins (and inflates emptyBinRotations, which is meant to be read as
+  // a health signal). Five minutes rather than the original one: a rotation is
+  // only worth taking when enough new audio has accumulated to be worth sealing.
+  //
+  // Only armed for a run that actually reached the device — see
+  // _releaseForceSyncCooldown. A cooldown charged for a sync that never happened
+  // is what made the old one feel punitive, and at five minutes it would be worse.
+  static const _forceSyncCooldown = Duration(minutes: 5);
+
   bool _forceSyncOnCooldown = false;
   bool get forceSyncOnCooldown => _forceSyncOnCooldown;
 
+  /// True while the WAL service has a sync of its own running — which includes a
+  /// background sync this controller never started, and which `spState` does not
+  /// always reflect. Any new sync would be denied against one, so the UI checks
+  /// this to say so rather than no-op silently.
+  ///
+  /// Reads isSyncInFlight as well as isSyncing on purpose: isSyncing lags the
+  /// claim by three awaits (one of them a 3s poll), and in that window a sync is
+  /// already claimed and denying others while isSyncing still reads false.
+  bool get syncServiceBusy {
+    final syncs = ServiceManager.instance().wal.getSyncs();
+    return syncs.isSyncing || syncs.isSyncInFlight;
+  }
+
   Timer? _forceSyncCooldownTimer;
+
+  /// Hands Force Sync straight back.
+  ///
+  /// The cooldown is the price of a **rotation** — call this whenever the run did
+  /// not get one (denied because a sync was already running, errored, or never
+  /// reached the device). Call it only from [_runForcePipeline], which is the one
+  /// place that knows: a shared settle path like `_transitionToError` also runs
+  /// for ordinary pipelines, and would clear a cooldown armed by an earlier Force
+  /// Sync that legitimately did rotate.
+  void _releaseForceSyncCooldown() {
+    _forceSyncCooldownTimer?.cancel();
+    _forceSyncCooldownTimer = null;
+    if (_forceSyncOnCooldown) {
+      _forceSyncOnCooldown = false;
+      if (!_isDisposed) notifyListeners();
+    }
+  }
 
   static const _kSpState = 'sp_state';
   static const _kSpSyncedCount = 'sp_synced_count';
@@ -786,7 +826,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     notifyListeners();
 
     _forceSyncCooldownTimer?.cancel();
-    _forceSyncCooldownTimer = Timer(const Duration(minutes: 1), () {
+    _forceSyncCooldownTimer = Timer(_forceSyncCooldown, () {
       if (!_isDisposed) {
         _forceSyncOnCooldown = false;
         notifyListeners();
@@ -815,20 +855,41 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     await SyncNotification.preparingSync();
 
     final syncs = ServiceManager.instance().wal.getSyncs();
+    // Force Sync needs the wait more than the ordinary pipeline does, not less:
+    // it is user-initiated (so it is tapped exactly when someone has just opened
+    // the app onto a fresh connect) and startForcePipeline puts it on a cooldown,
+    // so skipping here would cost the user that wait having done nothing.
+    await _awaitSyncableDevice(syncs, settle: false);
     notifyListeners();
     _persistProgress();
 
     SyncLocalFilesResponse? result;
     try {
       result = await syncs.rotateAndSync(progress: this);
-      _deviceReached = true;
+      // Same null contract as _runPipeline: null means the rotate+sync never ran,
+      // so this is a skip. A Force Sync tapped during device setup (or against an
+      // in-flight background sync) hits exactly that guard.
+      _deviceReached = result != null;
       _prefs.lastSyncPartial = result?.isPartial ?? false;
+      if (result == null) {
+        // Did not run, so nothing was rotated — the cooldown is the price of a
+        // rotation, so charge nothing. The UI tells the user why (see
+        // RecordingsPage._forceSyncButtonPressed).
+        Logger.warning('RecordingsController: force sync did not run — recording a skip');
+        _releaseForceSyncCooldown();
+      }
     } catch (e) {
       // A connection-null throw means we never reached the device (out of range
       // / BT off); anything else means we connected but the transfer failed —
       // still a real (partial) sync, so keep _deviceReached false only for the
       // former.
       _deviceReached = e is! DeviceConnectionException;
+      // No result means no confirmed rotate — a rotation failure throws outright,
+      // and a mid-transfer failure leaves us unable to tell. Err toward handing
+      // the button back: one extra rotation costs a bin, while locking a user out
+      // for five minutes after a failure is the complaint this whole cooldown
+      // rework came from.
+      _releaseForceSyncCooldown();
       if (gen != _pipelineGeneration) return; // watchdog already recovered
       if (_spState == SyncProcessState.stopping) {
         // User cancelled — honor the choice they made in the cancel dialog.
@@ -866,10 +927,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
 
     _syncedCount = _totalCount;
-    _lastCompletedStage = 'syncing';
+    // See _runPipeline: only a run that reached the device completes the stage.
+    if (_deviceReached) {
+      _lastCompletedStage = 'syncing';
+      _prefs.saveString(_kSpLastCompleted, 'syncing');
+    }
     notifyListeners();
 
-    _prefs.saveString(_kSpLastCompleted, 'syncing');
     await reloadBatchesSilently();
 
     _markerCount = _batches.fold(
@@ -907,6 +971,43 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
   }
 
+  /// Waits for the WAL layer to have a device before a sync is attempted.
+  ///
+  /// This used to be a flat one-second delay, which was a guess at how long
+  /// `_onDeviceConnected` takes — and it guessed wrong. `setDevice` is called at
+  /// the END of that method, after `_cacheDeviceSettings` and
+  /// `pushActiveButtonConfig`; on the device this was diagnosed from it landed
+  /// 4.7s after the link came up. A pipeline that fired at 1s found
+  /// `hasDevice == false`, got null out of syncAll without a single command going
+  /// to the card, and reported a completed sync. The background path already
+  /// solved this by deferring on `_pendingBackgroundSync` until after `setDevice`
+  /// (see DeviceProvider) — this is the foreground equivalent.
+  ///
+  /// Waits on the signal rather than polling, and generously: the point is to
+  /// SYNC, not to report a tidy skip. A skip only means "we could not reach your
+  /// Omi", which is what it meant before this window existed. If the device is
+  /// simply disconnected, deviceReady stays pending and we settle to a skip after
+  /// the timeout — that is the honest answer and the next cycle retries.
+  static const Duration _syncableDeviceTimeout = Duration(seconds: 20);
+
+  /// [settle] preserves the one-second beat `_runPipeline` has always taken when
+  /// the device is already registered. Force Sync never had it and must not grow
+  /// one — it is a button press, and a second of dead air on a tap reads as lag.
+  Future<void> _awaitSyncableDevice(SDCardWalSync syncs, {bool settle = true}) async {
+    if (syncs.hasDevice) {
+      if (settle) await Future.delayed(const Duration(seconds: 1));
+      return;
+    }
+    Logger.debug('RecordingsController: waiting for the WAL layer to be handed the device');
+    try {
+      await syncs.deviceReady.timeout(_syncableDeviceTimeout);
+      Logger.debug('RecordingsController: device registered — syncing');
+    } on TimeoutException {
+      Logger.warning('RecordingsController: no device registered with the WAL layer after '
+          '${_syncableDeviceTimeout.inSeconds}s — the Omi is not reachable, recording a skip');
+    }
+  }
+
   Future<void> _runPipeline() async {
     final int gen = _pipelineGeneration;
     _isUserTriggered = true;
@@ -924,7 +1025,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _acquireWake('pipeline');
     await SyncNotification.preparingSync();
 
-    await Future.delayed(const Duration(seconds: 1));
+    await _awaitSyncableDevice(syncs);
 
     Logger.debug('RecordingsController: _runPipeline start');
 
@@ -933,10 +1034,16 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     try {
       final result = await syncs.syncAll(progress: this);
-      _deviceReached = true;
+      // null = the sync never ran (no device registered yet, one already in
+      // flight, storage lock never cleared). Nothing was asked of the device, so
+      // this is a skip, not a completed sync — see IWalSync.syncAll. Reporting it
+      // as reached is what let a run that issued zero commands paint "complete",
+      // and — because _finishPipelineRun then stamps lastSyncCompletedMs —
+      // suppress BackgroundSyncWorker's next attempt for a full interval.
+      _deviceReached = result != null;
       _prefs.lastSyncPartial = result?.isPartial ?? false;
       if (result == null) {
-        Logger.debug('RecordingsController: syncAll returned null (no new segments)');
+        Logger.warning('RecordingsController: sync did not run — recording a skip, will retry next cycle');
       }
     } catch (e) {
       // See _runForcePipeline: a connection-null throw = never reached the
@@ -962,10 +1069,18 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
 
     _syncedCount = _totalCount;
-    _lastCompletedStage = 'syncing';
+    // Only a sync that actually ran completes the syncing stage. Marking it done
+    // on a skip is not cosmetic: resumePipeline and retryFromError both branch on
+    // _lastCompletedStage == 'syncing' and go straight to processing, so a run
+    // that never reached the device would permanently retry the half it already
+    // did and never the half it missed. Processing still runs either way — bins
+    // from an earlier interrupted run are on disk and worth decoding.
+    if (_deviceReached) {
+      _lastCompletedStage = 'syncing';
+      _prefs.saveString(_kSpLastCompleted, 'syncing');
+    }
     notifyListeners();
 
-    _prefs.saveString(_kSpLastCompleted, 'syncing');
     await reloadBatchesSilently();
 
     _markerCount = _batches.fold(
