@@ -372,12 +372,18 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       }
 
       Logger.debug('DebugTools: Calling rotateAndSync()');
-      await ServiceManager.instance().wal.getSyncs().rotateAndSync(progress: this);
+      final result = await ServiceManager.instance().wal.getSyncs().rotateAndSync(progress: this);
       deviceProvider.restartBackgroundSyncTimer();
-      Logger.debug('DebugTools: Force sync complete');
+      // The result was discarded here, so this screen printed "Force Sync
+      // Complete." even when rotateAndSync had returned null having done nothing
+      // — the same false completion this whole change is about, in the screen
+      // used to diagnose it. null means it did not run; see IWalService.
+      Logger.debug('DebugTools: rotateAndSync returned ${result == null ? 'null — DID NOT RUN' : 'a response'}');
       if (!mounted) return;
       setState(() {
-        _statusMessage = 'Force Sync Complete.';
+        _statusMessage = result == null
+            ? 'Force Sync skipped — a sync is already running, or the Omi could not be reached.'
+            : 'Force Sync Complete.';
         _isSyncing = false;
       });
     } catch (e) {
