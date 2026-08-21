@@ -408,20 +408,15 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
     // it instead. Force Sync's job is to seal the current recording and fetch it,
     // and it cannot do that while a sync is already reading the card, so waiting
     // for that one to finish IS the answer rather than a workaround.
-    if (_controller.spState != SyncProcessState.idle || _controller.syncServiceBusy) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Sync in progress — Force Sync will be available once it finishes.'),
-        ),
-      );
-      return;
-    }
-    if (_controller.forceSyncOnCooldown) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Force Sync was just run. It will be available again shortly.'),
-        ),
-      );
+    final blocked = !context.read<DeviceProvider>().isConnected
+        ? 'Omi not connected — Force Sync needs a live connection.'
+        : (_controller.spState != SyncProcessState.idle || _controller.syncServiceBusy)
+            ? 'Sync in progress — Force Sync will be available once it finishes.'
+            : _controller.forceSyncOnCooldown
+                ? 'Force Sync was just run. It will be available again shortly.'
+                : null;
+    if (blocked != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(blocked)));
       return;
     }
 
@@ -1112,11 +1107,12 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                         : Colors.grey.shade700,
                     size: 20,
                   ),
-                  onPressed: (deviceProvider.isConnected &&
-                          controller.spState == SyncProcessState.idle &&
-                          !controller.forceSyncOnCooldown)
-                      ? _forceSyncButtonPressed
-                      : null,
+                  // Always tappable: the colour above still greys out to show it
+                  // is unavailable, but a disabled IconButton swallows the tap
+                  // entirely, so the handler's explanation never reaches anyone —
+                  // which is what left "nothing happens" as the whole experience.
+                  // _forceSyncButtonPressed says why for every case.
+                  onPressed: _forceSyncButtonPressed,
                   tooltip: 'Force sync',
                 ),
                 IconButton(
