@@ -12,6 +12,16 @@ import 'package:omi/services/devices/transports/native_ble_transport.dart';
 
 import 'errors.dart';
 
+/// What CMD_LIST_FILES came back with.
+///
+/// [complete] is false when the device named more files than it delivered — the
+/// entries present are valid and worth syncing, but they are not the whole card,
+/// so the run that acts on them is a partial sync. The listing can span several
+/// notifications (the device caps its list at 150 files, well past what one fits),
+/// so a lost packet mid-listing is a real case on a busy link, and it is exactly
+/// the case where a caller must not conclude it has seen everything.
+typedef StorageListing = ({List<StorageFile> files, bool complete});
+
 class DeviceConnectionFactory {
   static DeviceConnection? create(BtDevice device, {bool requiresBond = true}) {
     DeviceTransport transport = NativeBleTransport(device.id, requiresBond: requiresBond);
@@ -172,7 +182,7 @@ abstract class DeviceConnection {
   ///
   /// Callers that only want "what is on the device right now" and have nothing
   /// riding on the difference say `?? const []` and keep the old behaviour.
-  Future<List<StorageFile>?> listFiles() async {
+  Future<StorageListing?> listFiles() async {
     if (await isConnected()) return performListFiles();
     return null;
   }
@@ -427,7 +437,8 @@ abstract class DeviceConnection {
   Future<bool> performRotateFile();
   Future<bool> performClearStorage();
 
-  /// null = the device did not answer; [] = it answered and holds no files. See [listFiles].
-  Future<List<StorageFile>?> performListFiles();
+  /// null = the device did not answer; an empty [StorageListing.files] = it
+  /// answered and holds no files. See [listFiles] and [StorageListing].
+  Future<StorageListing?> performListFiles();
   Future<bool> performDeleteFile(StorageFile file, {int? timestamp});
 }
