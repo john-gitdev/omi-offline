@@ -210,16 +210,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   }
 
   @override
-  void start() {
-    getMissingWals().then((wals) {
-      if (!_isSyncing) {
-        _wals = wals;
-        listener.onWalUpdated();
-      }
-    });
-  }
-
-  @override
   Future stop() async {
     _wals = [];
     final dev = _device;
