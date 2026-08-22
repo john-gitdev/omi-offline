@@ -403,13 +403,24 @@ class RecordingsManager {
   /// It can never appear in a recording's `.meta` bin list or in a discard record
   /// either — both are built from decoded frames, and it has none.
   ///
-  /// [incompleteRelBins] is the mid-transfer protection set and is not optional: a
-  /// bin being downloaded RIGHT NOW is also 0 bytes, and deleting one destroys the
-  /// resume target (the next sync rewinds to 0 and re-fetches the whole file,
-  /// duplicating its audio). `Wal.isIncompleteTransfer` requires
-  /// `storageTotalBytes > 0`, so it separates the two cases exactly. A null set
-  /// means the WAL state is unreadable — skip the sweep entirely, the same
-  /// fail-closed rule the `delete_segments` handler follows.
+  /// [incompleteRelBins] is the mid-transfer protection set: a bin whose download
+  /// has just started is also 0 bytes, and it is the next sync's resume target.
+  ///
+  /// Be precise about what that protection is worth, because the neighbouring
+  /// guards protect against something stronger and the difference matters if this
+  /// is ever changed. Deleting a PARTIAL bin loses audio already on the phone and
+  /// duplicates it on the re-fetch — its prefix has been decoded into a draft.
+  /// Deleting a 0-BYTE one loses nothing: there are no bytes, nothing was decoded,
+  /// and the resume offset it "destroys" was 0. What the guard actually buys is
+  /// not yanking a file out from under an open write handle, and not spending a
+  /// re-fetch to get back to where we already were. Keep it — it is free and it
+  /// keeps one rule across every path that deletes a bin — but do not carry the
+  /// stronger claim over from `delete_segments`.
+  ///
+  /// `Wal.isIncompleteTransfer` requires `storageTotalBytes > 0`, so it separates
+  /// a genuinely empty file from a download in flight exactly. A null set means
+  /// the WAL state is unreadable — skip the sweep entirely, the same fail-closed
+  /// rule the `delete_segments` handler follows.
   static Future<List<Batch>> pruneEmptyRawBins(List<Batch> batches, Set<String>? incompleteRelBins) async {
     if (incompleteRelBins == null) return batches;
 
