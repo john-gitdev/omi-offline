@@ -468,8 +468,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     String deviceId, {
     List<StorageFile>? prefetchedFiles,
   }) async {
-    // A prefetched list came from a listing the caller already validated, so it is
-    // complete by construction.
+    // The prefetch path is used only by setDevice, which reads `.wals` and never
+    // this flag — so `true` here is not a claim about the caller's listing, which
+    // refreshStorageStats in fact discards the completeness of. If a future caller
+    // ever routes prefetched files into a SYNC, thread the real StorageListing
+    // through instead of trusting this: a short listing reported complete is
+    // exactly the wrong answer the rest of this change exists to prevent.
     final listing = prefetchedFiles != null ? (files: prefetchedFiles, complete: true) : await connection.listFiles();
     if (listing == null) return null;
     final files = listing.files;
