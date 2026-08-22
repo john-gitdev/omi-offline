@@ -220,6 +220,16 @@ Invariants worth preserving:
 - **A revert needs the ledger, not just the anchor** (`ClockCorrectionLedger`, pref `clockCorrectionLedger`). Discarding the session's anchor is necessary and *not sufficient*: the anchor is re-captured from any later diagnostics read, which is every reconnect while the Omi stays on the same boot, so the next pass would find the session disagreeing with a fresh anchor and re-file it — silently reversing the user. `applyClockAnchors` therefore skips any session the ledger marks reverted, permanently. The ledger also stores the offset the session's recordings carried **before** the first correction, captured before the move because the move is what destroys it — the offset lives only in the filenames `promoteSessionToDate` rewrites. Without it an undo has nothing to restore; reading the uptime as an epoch instead (an earlier version of this) lands the session in 1970 rather than on the date the Omi had filed. A second correction must **not** overwrite that stored offset — the first is the one that moved the recordings off the device's own timestamps.
 - The revert arrow is gated **only** on `.meta` flag `0x20`, so the affordance can only ever undo the app's own work, never a timestamp the Omi assigned and the phone agreed with.
 
+## Dead code
+
+Three rules, because "this looks unused" cost a review round once and will again.
+
+1. **"Dead" is a claim, not an impression.** It gets the same verification as a bug claim — trace the callers before saying it out loud. `SDCardWalSyncImpl.start()` was called "dead", twice, before anyone checked: it is in fact *reached* every launch, it simply can never do its job there (`getMissingWals()` returns at the `_device == null` guard, because `ServiceManager.start()` runs before any device is registered). Reached-but-inert and unreachable are different findings with different fixes.
+
+2. **Once verified: delete it, or give it a stated reason to exist.** Never a third state of "mentioned in a review comment" — that is how a codebase fills up with notes about things nobody will ever action. Two reasons are already precedented here and both are good: it is a **wire/ABI compatibility artifact** (the retired `0x18` opcode that older app builds still emit; `register_button_service()`, whose removal would shift every later handle and cost a re-pair), or it is a **backstop for a state you cannot currently produce but a future flash/version can** (`omi/dfu_wipe_seen`, where the arming half always lags the consuming half by one flash). If neither applies, it goes.
+
+3. **An unreachable inconsistency is not a review finding.** Either it is reachable — then it is a real finding with a real failure mode — or it is not, and the only honest output is "delete this", filed on its own rather than folded into a review of behaviour. A reviewer who reports "these two paths disagree, but one is unreachable" has spent the reader's attention making them re-derive the reachability just to dismiss it.
+
 ## Formatting
 
 There is no pre-commit hook installed in this repo — run formatters manually before committing:
