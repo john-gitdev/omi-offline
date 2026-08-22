@@ -2463,7 +2463,8 @@ class DeviceProvider extends ChangeNotifier
 
     await connection.acquireStorageLock('refreshStorageStats');
     try {
-      final files = await connection.listFiles();
+      final listing = await connection.listFiles();
+      final files = listing?.files;
       final stats = await connection.getStorageFileStats();
       if (stats != null) {
         onStorageStatsUpdated(stats);
