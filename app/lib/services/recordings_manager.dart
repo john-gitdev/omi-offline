@@ -374,6 +374,70 @@ class RecordingsManager {
     }).toList();
   }
 
+  /// Deletes raw bins the DEVICE itself advertised as 0 bytes, and strips them
+  /// from [batches].
+  ///
+  /// The firmware opens a file and rotates it without a frame ever reaching the
+  /// card — its own `emptyBinRotations` counter — which is ordinary in auto mode:
+  /// any explicit rotation landing in a silent stretch closes a bin nothing was
+  /// written to. The sync fetches it (nothing arrives), sees received == the
+  /// advertised 0, deletes the device copy, and leaves a 0-byte bin here.
+  ///
+  /// Nothing ever reclaimed them. A bin is deleted only when a recording that
+  /// consumed it is finalized, and an empty bin feeds no recording — so it stayed
+  /// forever, and its presence alone kept `activeBatches` non-empty. That is not
+  /// cosmetic: it made every processing cycle spawn an isolate and load the Silero
+  /// model to decode nothing at all, on battery, for the life of the install.
+  ///
+  /// Deleting them changes no audio. [VadAudioProcessor.processSegmentFile]
+  /// returns on `fileLength == 0` before it reads the bin header and before it
+  /// touches `_lastSegmentEndTime`, so an empty bin is ALREADY a no-op: it can
+  /// neither end a recording nor bridge the gap between two real bins, and the
+  /// inter-file gap either side of it is computed identically whether it is in the
+  /// list or not. It can never appear in a recording's `.meta` bin list or in a
+  /// discard record either — both are built from decoded frames, and it has none.
+  ///
+  /// [incompleteRelBins] is the mid-transfer protection set and is not optional: a
+  /// bin being downloaded RIGHT NOW is also 0 bytes, and deleting one destroys the
+  /// resume target (the next sync rewinds to 0 and re-fetches the whole file,
+  /// duplicating its audio). `Wal.isIncompleteTransfer` requires
+  /// `storageTotalBytes > 0`, so it separates the two cases exactly: a genuinely
+  /// empty device file is never in the set, a partial download always is. A null
+  /// set means the WAL state is unreadable — skip the sweep entirely, the same
+  /// fail-closed rule the `delete_segments` handler follows.
+  static Future<List<Batch>> pruneEmptyRawBins(List<Batch> batches, Set<String>? incompleteRelBins) async {
+    if (incompleteRelBins == null) return batches;
+
+    final removed = <String>{};
+    final folders = <String>{};
+    for (final file in batches.expand((b) => b.rawSegments)) {
+      final parts = file.path.split('/raw_segments/');
+      if (parts.length != 2) continue;
+      final rel = parts.last;
+      if (incompleteRelBins.contains(rel)) continue;
+      try {
+        if (await file.length() != 0) continue;
+        await file.delete();
+        removed.add(rel);
+        folders.add(file.parent.path);
+      } catch (e) {
+        // A bin that cannot be read or deleted is left exactly where it is; the
+        // next run tries again. Never fatal — this is housekeeping.
+        Logger.debug('RecordingsManager: could not prune empty bin $rel ($e)');
+      }
+    }
+    if (removed.isEmpty) return batches;
+
+    Logger.debug('RecordingsManager: pruned ${removed.length} empty raw bin(s) the device wrote nothing to');
+    for (final folderPath in folders) {
+      final folder = Directory(folderPath);
+      try {
+        if (await folder.exists() && await folder.list().isEmpty) await folder.delete();
+      } catch (_) {}
+    }
+    return stripBinsByRelPath(batches, removed);
+  }
+
   /// Test seam for the mid-transfer bin lookup ([WalSync.incompleteBinRelPaths]).
   /// Production resolves it through [ServiceManager], which unit tests never
   /// initialize — without a stub every run would take the fail-closed branch and
@@ -467,6 +531,12 @@ class RecordingsManager {
     if (autoRun && incompleteRelBins != null) {
       batches = stripBinsByRelPath(batches, incompleteRelBins);
     }
+
+    // Before the gate, not after: an empty bin is exactly what keeps this run
+    // alive to decode nothing. Uses incompleteRelBins directly rather than the
+    // autoRun-gated strip above — a force run deliberately keeps its mid-transfer
+    // bin, and that bin is 0 bytes too.
+    batches = await pruneEmptyRawBins(batches, incompleteRelBins);
 
     final activeBatches = batches.where((b) => b.rawSegments.isNotEmpty).toList();
     final hasDrafts = batches.any((b) => b.draftRecordings.isNotEmpty);
