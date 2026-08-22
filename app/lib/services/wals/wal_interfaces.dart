@@ -82,7 +82,12 @@ abstract class IWalSync {
   });
   void cancelSync();
 
-  void start();
+  /// No `start()`: WAL state is initialised by [SDCardWalSync.setDevice], which is
+  /// the only place that can do it — it loads the persisted WALs AND rebuilds from
+  /// the device listing. The old `start()` ran at app boot, before any device was
+  /// registered, so it could never reach a listing; what it could do was overwrite
+  /// `_wals` from a `.then()` that raced a running `syncAll()`. Deleted rather than
+  /// guarded against.
   Future stop();
 }
 
