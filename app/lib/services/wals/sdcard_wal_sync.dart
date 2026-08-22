@@ -289,7 +289,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             // no answer must not erase the persisted WALs restored a few lines up.
             // Those carry the resume offsets, and dropping them is what makes a
             // half-downloaded bin restart from 0 and duplicate its audio.
-            if (built != null) _wals = built;
+            if (built != null) _wals = built.wals;
           }
         } finally {
           if (prefetchedFiles == null) {
@@ -358,18 +358,19 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       // Public contract stays non-null: this is the informational view (start(),
       // the UI's WAL list), where "no answer" and "nothing there" are equally
       // uninformative. Only the sync path branches on the difference.
-      return await _getMissingWalsLocked(connection, dev.id) ?? [];
+      return (await _getMissingWalsLocked(connection, dev.id))?.wals ?? [];
     } finally {
       connection.releaseStorageLock();
     }
   }
 
   /// null = the device never answered the listing. See [_buildWalsFromFilesLocked].
-  Future<List<Wal>?> _getMissingWalsLocked(DeviceConnection connection, String deviceId) async {
-    final wals = await _buildWalsFromFilesLocked(connection, deviceId);
+  Future<({List<Wal> wals, bool complete})?> _getMissingWalsLocked(DeviceConnection connection, String deviceId) async {
+    final built = await _buildWalsFromFilesLocked(connection, deviceId);
     Logger.debug('SDCardWalSync: getMissingWals returned '
-        '${wals == null ? 'NO ANSWER (listing failed)' : '${wals.length} WALs'}');
-    return wals;
+        '${built == null ? 'NO ANSWER (listing failed)' : '${built.wals.length} WALs'
+            '${built.complete ? '' : ' (listing incomplete — more files remain)'}'}');
+    return built;
   }
 
   /// Re-issues CMD_DELETE_FILE for every WAL this device still lists that we already
@@ -448,8 +449,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     await connection.acquireStorageLock('hasFilesToSync');
     try {
       // No answer is not evidence of files, and this is a bool with no third state.
-      final files = await connection.listFiles() ?? const <StorageFile>[];
-      return files.isNotEmpty;
+      final listing = await connection.listFiles();
+      return listing != null && listing.files.isNotEmpty;
     } finally {
       connection.releaseStorageLock();
     }
@@ -458,14 +459,21 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   /// Returns null when the device never answered the listing — distinct from an
   /// empty list, which is the device answering that it holds nothing. Callers that
   /// decide whether a sync RAN must branch on it; see [DeviceConnection.listFiles].
-  Future<List<Wal>?> _buildWalsFromFilesLocked(
+  ///
+  /// `complete` carries [StorageListing.complete] through: false means the device
+  /// named more files than it delivered, so the WALs built here are a prefix of
+  /// the card and the run that syncs them is a partial sync.
+  Future<({List<Wal> wals, bool complete})?> _buildWalsFromFilesLocked(
     DeviceConnection connection,
     String deviceId, {
     List<StorageFile>? prefetchedFiles,
   }) async {
-    final files = prefetchedFiles ?? await connection.listFiles();
-    if (files == null) return null;
-    if (files.isEmpty) return [];
+    // A prefetched list came from a listing the caller already validated, so it is
+    // complete by construction.
+    final listing = prefetchedFiles != null ? (files: prefetchedFiles, complete: true) : await connection.listFiles();
+    if (listing == null) return null;
+    final files = listing.files;
+    if (files.isEmpty) return (wals: <Wal>[], complete: listing.complete);
 
     final codec = await connection.getAudioCodec() ?? BleAudioCodec.pcm8;
     final wals = <Wal>[];
@@ -561,7 +569,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       }
       wals.add(wal);
     }
-    return wals;
+    return (wals: wals, complete: listing.complete);
   }
 
   @override
@@ -1221,7 +1229,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   Future<SyncLocalFilesResponse?> _syncAllLocked(
     DeviceConnection connection,
     String deviceId, {
-    List<Wal>? prefetchedWals,
+    ({List<Wal> wals, bool complete})? prefetchedWals,
     IWalSyncProgressListener? progress,
   }) async {
     final listed = prefetchedWals ?? await _getMissingWalsLocked(connection, deviceId);
@@ -1237,7 +1245,14 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       Logger.warning('SDCardWalSync: sync did not run — the device did not answer CMD_LIST_FILES');
       return null;
     }
-    _wals = listed;
+    _wals = listed.wals;
+    // A listing the device could not deliver in full names only a prefix of the
+    // card, so whatever this run fetches, it did not fetch everything. That is the
+    // definition of a partial sync — and it carries the consequence that matters:
+    // the caller must not finalize drafts whose tail may sit in a bin this listing
+    // never named. The files it DID name are still synced; the rest come back in
+    // the next listing, which is how a backlog past one packet drains.
+    final bool listingIncomplete = !listed.complete;
     listener.onWalUpdated();
 
     if (_isCancelled) return null;
@@ -1260,7 +1275,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     // a skip — null is reserved for "the sync never ran", which is what the
     // callers key their "Skipped" state and their lastSyncCompletedMs stamp off.
     if (wals.isEmpty) {
-      return SyncLocalFilesResponse(newConversationIds: [], updatedConversationIds: []);
+      return SyncLocalFilesResponse(
+        newConversationIds: [],
+        updatedConversationIds: [],
+        isPartial: listingIncomplete,
+      );
     }
 
     // The fast path can only read and delete index 0, and it relies on each file it
@@ -1285,7 +1304,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     // Ascending = oldest first.
     wals.sort((a, b) => a.fileNum.compareTo(b.fileNum));
 
-    bool anyPartial = false;
+    bool anyPartial = listingIncomplete;
     _downloadStartTime = DateTime.now();
 
     // Protocol settle delay: give firmware storage thread a moment to finish its
@@ -1917,7 +1936,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       } else {
         Logger.error('SDCardWalSync: CMD_CLEAR_STORAGE failed, falling back to per-file deletion');
         // No answer leaves nothing to delete this pass; the caller re-runs.
-        final files = await connection.listFiles() ?? const <StorageFile>[];
+        final files = (await connection.listFiles())?.files ?? const <StorageFile>[];
         for (final file in files) {
           if (_isCancelled) break;
           await Future.delayed(const Duration(milliseconds: 5)); // Prevent UI starvation
