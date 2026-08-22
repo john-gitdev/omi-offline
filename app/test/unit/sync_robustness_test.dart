@@ -151,8 +151,13 @@ class MockDeviceConnection implements DeviceConnection {
   /// which is the device answering that it holds nothing.
   bool listFilesUnanswered = false;
 
+  /// Simulates a listing the device could not deliver in full — it named more
+  /// files than it sent. The entries present are valid; the run is partial.
+  bool listFilesTruncated = false;
+
   @override
-  Future<List<StorageFile>?> listFiles() async => listFilesUnanswered ? null : files;
+  Future<StorageListing?> listFiles() async =>
+      listFilesUnanswered ? null : (files: files, complete: !listFilesTruncated);
 
   @override
   Future<bool> stopStorageSync() async => true;
@@ -343,7 +348,7 @@ class MockDeviceConnection implements DeviceConnection {
   @override
   Future<bool> performClearStorage() => throw UnimplementedError();
   @override
-  Future<List<StorageFile>?> performListFiles() => throw UnimplementedError();
+  Future<StorageListing?> performListFiles() => throw UnimplementedError();
   @override
   Future<Stream<List<int>>> performReadFile(StorageFile file, {int offset = 0}) => throw UnimplementedError();
   @override
@@ -1327,6 +1332,44 @@ void main() {
     // hands the cooldown back (licensing another rotate, and another near-empty
     // bin) and, missing the isPartial branch, finalizes every draft on disk while
     // the bin holding their tail is still on the device.
+    // A listing can span several notifications — the device caps its list at 150
+    // files, far past what one packet holds — so a lost packet mid-listing names a
+    // prefix of the card. Those files are real and worth fetching; what must not
+    // happen is the run reporting itself as having seen everything, because the
+    // caller reads a clean sync as licence to finalize drafts whose tail may sit in
+    // a bin this listing never named.
+    test('a listing delivered short is a partial sync, and still fetches what arrived', () async {
+      Future<void> pump([int count = 5]) async {
+        for (int i = 0; i < count; i++) {
+          await Future.delayed(Duration.zero);
+        }
+      }
+
+      final ts = (DateTime.now().millisecondsSinceEpoch ~/ 1000) + 5000;
+      globalDeletedTimestamps = [];
+      mockConn.files = [StorageFile(index: 0, timestamp: ts, size: 10)];
+      mockConn.listFilesTruncated = true;
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await pump(10);
+
+      final run = sync.syncAll();
+      await mockConn.waitForWrite(1);
+      await pump(10);
+      mockConn.add(ackPacket(0x00));
+      await pump();
+      mockConn.add(dataPacket(0, List<int>.filled(10, 0xAB)));
+      await pump();
+      mockConn.add(eotPacket());
+      await pump(10);
+      final result = await run;
+
+      expect(result, isNotNull, reason: 'entries did arrive — this is an answer, not a failed listing');
+      expect(result!.isPartial, isTrue,
+          reason: 'the device named more files than it delivered, so this run did not see the whole card');
+      expect(globalDeletedTimestamps, contains(ts),
+          reason: 'the file it did name is still fetched and dropped — a short listing must not stall the drain');
+    });
+
     test('rotateAndSync reports partial when the rotate lands and the listing does not', () async {
       await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
       mockConn.files = [];
