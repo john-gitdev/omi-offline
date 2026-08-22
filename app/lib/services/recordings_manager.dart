@@ -374,36 +374,41 @@ class RecordingsManager {
     }).toList();
   }
 
-  /// Deletes raw bins the DEVICE itself advertised as 0 bytes, and strips them
-  /// from [batches].
+  /// Deletes 0-byte raw bins and strips them from [batches].
   ///
-  /// The firmware opens a file and rotates it without a frame ever reaching the
-  /// card — its own `emptyBinRotations` counter — which is ordinary in auto mode:
-  /// any explicit rotation landing in a silent stretch closes a bin nothing was
-  /// written to. The sync fetches it (nothing arrives), sees received == the
-  /// advertised 0, deletes the device copy, and leaves a 0-byte bin here.
+  /// The local file is created before the first byte arrives (see
+  /// `_readStorageBytesToFileLocked`), so any transfer that opens it and then
+  /// delivers nothing leaves one behind. If its WAL is later dropped, nothing is
+  /// left that could ever reclaim it: a bin is deleted only when a recording that
+  /// consumed it is finalized, and a bin with no audio feeds no recording.
   ///
-  /// Nothing ever reclaimed them. A bin is deleted only when a recording that
-  /// consumed it is finalized, and an empty bin feeds no recording — so it stayed
-  /// forever, and its presence alone kept `activeBatches` non-empty. That is not
-  /// cosmetic: it made every processing cycle spawn an isolate and load the Silero
-  /// model to decode nothing at all, on battery, for the life of the install.
+  /// NOT the firmware's `emptyBinRotations`. A rotation that closes a bin nothing
+  /// was written to still carries the 36-byte 0xFFFFFFFB header the ring appends
+  /// right after `start_abs = head_abs`, so it arrives here as a 36-byte file —
+  /// which this sweep deliberately does not touch, because a header-only bin is
+  /// NOT inert: its header re-anchors `segmentStartTime`, the inter-file gap logic
+  /// runs on it, and it moves `_lastSegmentEndTime`. Removing those would merge
+  /// two gaps into one and could split a recording that currently survives.
   ///
-  /// Deleting them changes no audio. [VadAudioProcessor.processSegmentFile]
-  /// returns on `fileLength == 0` before it reads the bin header and before it
-  /// touches `_lastSegmentEndTime`, so an empty bin is ALREADY a no-op: it can
-  /// neither end a recording nor bridge the gap between two real bins, and the
-  /// inter-file gap either side of it is computed identically whether it is in the
-  /// list or not. It can never appear in a recording's `.meta` bin list or in a
-  /// discard record either — both are built from decoded frames, and it has none.
+  /// The cost of keeping a 0-byte bin was never the disk. Its presence alone kept
+  /// `activeBatches` non-empty, so every processing cycle spawned an isolate and
+  /// loaded the Silero model to decode nothing at all, on battery, for the life of
+  /// the install.
+  ///
+  /// Deleting one changes no audio. [VadAudioProcessor.processSegmentFile] returns
+  /// on `fileLength == 0` before it reads any header and before it touches
+  /// `_lastSegmentEndTime`, so a 0-byte bin is ALREADY a no-op: it can neither end
+  /// a recording nor bridge the gap between two real bins, and the inter-file gap
+  /// either side of it is computed identically whether it is in the list or not.
+  /// It can never appear in a recording's `.meta` bin list or in a discard record
+  /// either — both are built from decoded frames, and it has none.
   ///
   /// [incompleteRelBins] is the mid-transfer protection set and is not optional: a
   /// bin being downloaded RIGHT NOW is also 0 bytes, and deleting one destroys the
   /// resume target (the next sync rewinds to 0 and re-fetches the whole file,
   /// duplicating its audio). `Wal.isIncompleteTransfer` requires
-  /// `storageTotalBytes > 0`, so it separates the two cases exactly: a genuinely
-  /// empty device file is never in the set, a partial download always is. A null
-  /// set means the WAL state is unreadable — skip the sweep entirely, the same
+  /// `storageTotalBytes > 0`, so it separates the two cases exactly. A null set
+  /// means the WAL state is unreadable — skip the sweep entirely, the same
   /// fail-closed rule the `delete_segments` handler follows.
   static Future<List<Batch>> pruneEmptyRawBins(List<Batch> batches, Set<String>? incompleteRelBins) async {
     if (incompleteRelBins == null) return batches;
@@ -428,7 +433,7 @@ class RecordingsManager {
     }
     if (removed.isEmpty) return batches;
 
-    Logger.debug('RecordingsManager: pruned ${removed.length} empty raw bin(s) the device wrote nothing to');
+    Logger.debug('RecordingsManager: pruned ${removed.length} orphaned 0-byte raw bin(s)');
     for (final folderPath in folders) {
       final folder = Directory(folderPath);
       try {
