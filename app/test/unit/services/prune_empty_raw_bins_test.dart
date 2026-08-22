@@ -5,12 +5,18 @@ import 'package:omi/services/recordings_manager.dart';
 
 /// Guards `RecordingsManager.pruneEmptyRawBins`.
 ///
-/// An empty bin is one the DEVICE advertised as 0 bytes — the firmware opened a
-/// file and rotated it without a frame reaching the card. Nothing reclaimed them:
-/// a bin is deleted only when a recording that consumed it is finalized, and an
-/// empty bin feeds no recording. Their presence alone kept `activeBatches`
-/// non-empty, so every processing cycle spawned an isolate and loaded the Silero
-/// model to decode nothing.
+/// A 0-byte bin is one whose transfer opened the local file and delivered nothing
+/// — the file is created before the first byte arrives, so any transfer that ends
+/// empty leaves one. Nothing reclaimed them: a bin is deleted only when a
+/// recording that consumed it is finalized, and a bin with no audio feeds no
+/// recording. Their presence alone kept `activeBatches` non-empty, so every
+/// processing cycle spawned an isolate and loaded the Silero model to decode
+/// nothing.
+///
+/// Not the firmware's `emptyBinRotations`: a rotation closing a bin nothing was
+/// written to still carries its 36-byte header, so it arrives as a 36-byte file.
+/// Those are left alone deliberately — a header-only bin re-anchors the segment
+/// start and moves `_lastSegmentEndTime`, so dropping it could change a split.
 ///
 /// The hazard the sweep has to avoid is that a bin being downloaded RIGHT NOW is
 /// also 0 bytes. Deleting one destroys the resume target: the next sync rewinds to
