@@ -163,7 +163,7 @@ int battery_get_millivolt(uint16_t *battery_millivolt)
     }
 
     // Set pin low to enable battery voltage measurement path
-    gpio_pin_set(bat_read_pin.port, bat_read_pin.pin, 0);
+    gpio_pin_set_dt(&bat_read_pin, 0);
 
     if (!device_is_ready(adc_dev)) {
         LOG_ERR("ADC device %s is not ready", adc_dev->name);
@@ -203,7 +203,6 @@ int battery_get_millivolt(uint16_t *battery_millivolt)
 #define QS_SWAP(a, b) do { int16_t _t = (a); (a) = (b); (b) = _t; } while (0)
     int32_t adc_raw_val;
     {
-        int lo = 0, hi = ADC_TOTAL_SAMPLES - 1;
         int k = ADC_TOTAL_SAMPLES / 2; // upper-median index
 
         // First pass: place work[k] (upper median)
@@ -232,7 +231,6 @@ int battery_get_millivolt(uint16_t *battery_millivolt)
             }
             adc_raw_val = ((int32_t)lower + upper) / 2;
         }
-        (void)lo; (void)hi; // suppress unused warnings
     }
 #undef QS_SWAP
 
@@ -338,29 +336,9 @@ int battery_get_percentage(uint8_t *battery_percentage, uint16_t battery_millivo
     return 0;
 }
 
-int battery_charge_start()
-{
-    return 0;
-}
-
-int battery_charge_stop()
-{
-    return 0;
-}
-
-int battery_set_fast_charge()
-{
-    return 0;
-}
-
-int battery_set_slow_charge()
-{
-    return 0;
-}
-
 int battery_charging_state_read()
 {
-    if (gpio_pin_get(bat_chg_pin.port, bat_chg_pin.pin) == 0) {
+    if (gpio_pin_get_dt(&bat_chg_pin) == 0) {
         is_charging = true;
     } else {
         is_charging = false;
@@ -380,7 +358,7 @@ int battery_enable_read()
     }
 
     // Set pin low to enable battery voltage measurement path
-    gpio_pin_set(bat_read_pin.port, bat_read_pin.pin, 0);
+    gpio_pin_set_dt(&bat_read_pin, 0);
     k_msleep(10);
 
     if (!device_is_ready(adc_dev)) {
@@ -437,7 +415,7 @@ int battery_init()
         k_mutex_unlock(&battery_mut);
         return err;
     }
-    battery_charging_callback(NULL, NULL, 0);
+    battery_charging_state_read();
     err = gpio_pin_interrupt_configure_dt(&bat_chg_pin, GPIO_INT_EDGE_BOTH);
     if (err < 0) {
         LOG_ERR("Failed to configure interrupt for bat_chg_pin (%d)", err);
@@ -455,13 +433,6 @@ int battery_init()
     }
 
     k_mutex_unlock(&battery_mut);
-
-    // Charging state read
-    int chargingStateErr;
-    chargingStateErr = battery_charging_state_read();
-    if (chargingStateErr) {
-        LOG_ERR("Failed to read charging state (%d)", chargingStateErr);
-    }
 
     return 0;
 }
