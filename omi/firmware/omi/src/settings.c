@@ -72,7 +72,8 @@ struct conn_fail_record {
 static struct conn_fail_record conn_fail = {0};
 
 /* 6 bytes: 1 tap, 1 tap hold, 2 tap, 2 tap hold, 3 tap, 3 tap hold.
- * Actions: 0=None, 1=Mute, 2=Marker, 3=Toggle LED, 4=Record Start, 5=Record Stop.
+ * Actions: 0=None, 1=Mute, 2=Marker, 3=Toggle LED, 4=Record Start, 5=Record Stop,
+ * 6=Record Toggle (see button_action_t; the write handler rejects anything higher).
  * Default matches the app's manual-mode default (the device boots in manual
  * standby): single-hold=Marker, double=Start, double-hold=Toggle LED, triple=Stop.
  * The app pushes the per-mode config (manual/auto) on connect, so this only

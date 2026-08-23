@@ -32,8 +32,8 @@ LOG_MODULE_REGISTER(imu, CONFIG_LOG_DEFAULT_LEVEL);
 #define LSM6DS_CTRL10_TIMER_EN      BIT(5)
 
 /* Accel/gyro control registers, read back so the power state can be verified rather
- * than assumed. Nothing in the built firmware consumes motion data — accel.c is the
- * only reader and is not in CMakeLists.txt — so both parts should be idle. */
+ * than assumed. Nothing in the firmware consumes motion data at all — the IMU is here
+ * for its timestamp counter — so both parts should be idle. */
 #define LSM6DS_REG_CTRL1_XL         0x10 /* ODR_XL in bits [7:4]; 0 = accel powered down */
 #define LSM6DS_REG_CTRL2_G          0x11 /* ODR_G  in bits [7:4]; 0 = gyro powered down  */
 #define LSM6DS_REG_CTRL6_C          0x15 /* bit 4 XL_HM_MODE: 1 = accel low-power mode   */

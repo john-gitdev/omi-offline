@@ -697,7 +697,7 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
     }
 
     /* Peak-hold the input level between diagnostic emissions (see
-     * VAD_DIAG_LEVEL_INTERVAL_MS). Saturate at UINT16_MAX so a full-scale frame
+     * VAD_DIAG_LEVEL_WINDOW_MS). Saturate at UINT16_MAX so a full-scale frame
      * can't wrap arg0 and read as silence — the one value we must never fake. */
     uint16_t avg_u16 = (avg > UINT16_MAX) ? UINT16_MAX : (uint16_t) avg;
     if (avg_u16 > vad_diag_level_max) {
