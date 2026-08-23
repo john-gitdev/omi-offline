@@ -361,6 +361,14 @@ int main(void)
      * CONFIG_OMI_DIAG_LOG is off). Starts disabled — the app enables it at runtime. */
     diag_log_init();
 
+#ifdef CONFIG_OMI_ENABLE_MONITOR
+    /* Same reason, and it must stay AHEAD of transport_start(): the pusher that
+     * starts there feeds monitor_inc_tx_queue_write() / monitor_inc_storage_write(),
+     * and monitor_init() calls monitor_reset() — so initialising later would zero
+     * counts that had already accrued. */
+    monitor_init();
+#endif
+
 #ifdef CONFIG_HWINFO
     {
         uint32_t this_cause = 0;
@@ -484,10 +492,6 @@ int main(void)
     if (!sd_fatal_error) {
         boot_ready_fade();
     }
-
-#ifdef CONFIG_OMI_ENABLE_MONITOR
-    monitor_init();
-#endif
 
     LOG_INF("Ready\n");
 

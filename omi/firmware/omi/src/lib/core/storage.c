@@ -313,18 +313,31 @@ static int send_file_list_response(struct bt_conn *conn)
     
     /* First packet overhead: 1 (type) + 4 (count) = 5 bytes. Entry: [idx:4][ts:4][sz:4][sid:4] = 16 bytes
      *
-     * Both floors are MAX(..., 1) and that is load-bearing, not defensive. On a link
-     * still at the 23-byte default ATT MTU, max_payload is 20 and the first-packet
-     * arithmetic yields 0 — the inner loop below then advances files_processed by
-     * nothing, so the outer while() never terminates and the storage thread spins
-     * forever, servicing no further command until reboot. Reachable: the app can send
-     * CMD_LIST_FILES before the MTU exchange completes (mtu_recheck_work retries it six
-     * times at 800 ms precisely because the link can sit at 23). With the floor, the
-     * packet is oversized for that MTU and bt_gatt_notify rejects it — STORAGE_NOTIFY
-     * logs and moves on, the loop drains, and the app re-lists once the MTU is up. */
-    int first_packet_max = MAX((max_payload - 5) / 16, 1);
+     * Refuse outright below the first packet's minimum, rather than trying and
+     * sending something wrong. On a link still at the 23-byte default ATT MTU
+     * max_payload is 20, and (20 - 5) / 16 is 0 — the inner loop then advances
+     * files_processed by nothing, the outer while() never terminates, and the storage
+     * thread spins forever, servicing no further command until reboot. Reachable: the
+     * app can send CMD_LIST_FILES before the MTU exchange completes (mtu_recheck_work
+     * retries it six times at 800 ms precisely because the link can sit at 23).
+     *
+     * A floor of one entry per packet terminates the loop but answers WRONG: only the
+     * first packet carries the count, it is the one that then exceeds the MTU and gets
+     * rejected, and the app reads the next packet's leading index field as the count —
+     * fabricating a file entry out of two real ones. STORAGE_NOT_READY is the honest
+     * answer and one the app already understands (omi_connection.dart treats it as a
+     * failed listing and retries) rather than as an empty card. */
+    if (max_payload < 5 + 16) {
+        LOG_WRN("CMD_LIST_FILES: ATT MTU %u too small for a list entry — asking the app to retry", mtu);
+        uint8_t ack[2] = {PACKET_ACK, STORAGE_NOT_READY};
+        STORAGE_NOTIFY(conn, ack, sizeof(ack));
+        return 0;
+    }
+    /* Both are >= 1 from here: max_payload >= 21 makes (max_payload - 5) / 16 >= 1,
+     * and the later-packet budget is larger still. */
+    int first_packet_max = (max_payload - 5) / 16;
     /* Subsequent packets overhead: 1 (type) = 1 byte */
-    int later_packet_max = MAX((max_payload - 1) / 16, 1);
+    int later_packet_max = (max_payload - 1) / 16;
 
     int files_processed = 0;
     uint32_t total_included = 0;
