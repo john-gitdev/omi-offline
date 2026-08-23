@@ -20,6 +20,9 @@
 #include "lib/core/codec.h"
 #include "lib/core/config.h"
 #include "lib/core/diag_log.h"
+#ifdef CONFIG_OMI_ENABLE_MONITOR
+#include "lib/core/monitor.h"
+#endif
 #include "rtc.h"
 #include "imu.h"
 
@@ -410,10 +413,14 @@ int main(void)
 #ifdef CONFIG_OMI_ENABLE_BATTERY
     ret = battery_init();
     if (ret) {
-        LOG_ERR("Battery init failed (err %d)", ret);
-        return ret;
+        /* Log and continue. Returning here left main() dead BEFORE watchdog_init(),
+         * so the device ran with no LED state machine and no uptime bookkeeping —
+         * and recording needs none of the ADC. A missing battery reading costs the
+         * charge indicator and the critical-voltage shutdown, not the recorder. */
+        LOG_ERR("Battery init failed (err %d) — continuing without battery monitoring", ret);
+    } else {
+        LOG_INF("Battery initialized");
     }
-    LOG_INF("Battery initialized");
 #endif
 
     suspend_unused_modules();
@@ -435,8 +442,11 @@ int main(void)
     set_mic_callback(mic_handler);
     ret = mic_start();
     if (ret) {
-        LOG_ERR("Mic failed %d", ret);
-        return ret;
+        /* Do NOT return: this point is past watchdog_init(), so leaving main() means
+         * nothing ever feeds the watchdog and the device reboots every 30 s, forever.
+         * Come up deaf but reachable instead — the same choice sd_fatal_error makes
+         * for a dead card — so the fault can be read over BLE and flashed out of. */
+        LOG_ERR("Mic failed %d — continuing without capture", ret);
     }
 
     /* Honour a mute that arrived before the mic existed. transport_start() runs
@@ -474,6 +484,10 @@ int main(void)
     if (!sd_fatal_error) {
         boot_ready_fade();
     }
+
+#ifdef CONFIG_OMI_ENABLE_MONITOR
+    monitor_init();
+#endif
 
     LOG_INF("Ready\n");
 
