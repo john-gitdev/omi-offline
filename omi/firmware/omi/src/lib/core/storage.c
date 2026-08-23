@@ -37,10 +37,6 @@ BUILD_ASSERT(MAX_AUDIO_FILES <= 255, "file index is a uint8_t in the BLE storage
 static char current_read_filename[MAX_FILENAME_LEN] = {0};
 static uint32_t current_read_offset = 0;
 
-#define MAX_PACKET_LENGTH 256
-#define OPUS_ENTRY_LENGTH 80
-#define FRAME_PREFIX_LENGTH 3
-
 /* Control commands */
 #define CMD_STOP_SYNC      0x03
 
@@ -315,10 +311,20 @@ static int send_file_list_response(struct bt_conn *conn)
     uint16_t mtu = bt_gatt_get_mtu(conn);
     uint16_t max_payload = (mtu > 3) ? (mtu - 3) : 20;
     
-    /* First packet overhead: 1 (type) + 4 (count) = 5 bytes. Entry: [idx:4][ts:4][sz:4][sid:4] = 16 bytes */
-    int first_packet_max = (max_payload - 5) / 16;
+    /* First packet overhead: 1 (type) + 4 (count) = 5 bytes. Entry: [idx:4][ts:4][sz:4][sid:4] = 16 bytes
+     *
+     * Both floors are MAX(..., 1) and that is load-bearing, not defensive. On a link
+     * still at the 23-byte default ATT MTU, max_payload is 20 and the first-packet
+     * arithmetic yields 0 — the inner loop below then advances files_processed by
+     * nothing, so the outer while() never terminates and the storage thread spins
+     * forever, servicing no further command until reboot. Reachable: the app can send
+     * CMD_LIST_FILES before the MTU exchange completes (mtu_recheck_work retries it six
+     * times at 800 ms precisely because the link can sit at 23). With the floor, the
+     * packet is oversized for that MTU and bt_gatt_notify rejects it — STORAGE_NOTIFY
+     * logs and moves on, the loop drains, and the app re-lists once the MTU is up. */
+    int first_packet_max = MAX((max_payload - 5) / 16, 1);
     /* Subsequent packets overhead: 1 (type) = 1 byte */
-    int later_packet_max = (max_payload - 1) / 16;
+    int later_packet_max = MAX((max_payload - 1) / 16, 1);
 
     int files_processed = 0;
     uint32_t total_included = 0;
@@ -844,6 +850,13 @@ void storage_write(void)
                     uint8_t ack[2] = {PACKET_ACK, STORAGE_NOT_READY};
                     STORAGE_NOTIFY(conn, ack, sizeof(ack));
                 }
+                /* The put at the bottom of the loop is the only one; skipping it here
+                 * leaked the ref get_current_connection() took at the top. With
+                 * CONFIG_BT_MAX_CONN=1 a single leak keeps the conn object out of the
+                 * pool after disconnect, so the device never accepts another link until
+                 * it reboots — and this branch is reached exactly when the SD card has
+                 * failed, turning "records nothing" into "records nothing, unreachable". */
+                put_current_connection(conn);
                 continue;
             }
 
