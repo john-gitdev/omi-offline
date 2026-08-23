@@ -144,8 +144,8 @@ class MockDeviceConnection extends DeviceConnection {
   }
 
   @override
-  Future<List<StorageFile>> performListFiles() async {
-    return [];
+  Future<StorageListing?> performListFiles() async {
+    return (files: <StorageFile>[], complete: true);
   }
 
   @override

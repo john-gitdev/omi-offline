@@ -30,7 +30,8 @@ class WalService implements IWalService, IWalSyncListener {
 
   @override
   void start() {
-    _sdSync.start();
+    // Nothing to start on the sync itself — see IWalSync, which no longer declares
+    // start(). Registering the device (setDevice) is what initialises WAL state.
     _status = WalServiceStatus.ready;
   }
 

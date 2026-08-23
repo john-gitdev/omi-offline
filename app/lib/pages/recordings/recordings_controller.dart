@@ -877,6 +877,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         // RecordingsPage._forceSyncButtonPressed).
         Logger.warning('RecordingsController: force sync did not run — recording a skip');
         _releaseForceSyncCooldown();
+        // And drop out of force mode, for the same reason the isPartial branch
+        // below does: nothing was rotated and nothing was fetched, so the tail of
+        // every draft on disk is still on the device. Left set, the processing pass
+        // runs with finalizeDrafts:true and promotes those drafts anyway — stamping
+        // a recording complete that stops mid-audio, and pruning the source bins its
+        // continuation would have stitched onto.
+        _isForcePipeline = false;
       }
     } catch (e) {
       // A connection-null throw means we never reached the device (out of range

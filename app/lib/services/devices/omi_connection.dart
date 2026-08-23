@@ -854,15 +854,15 @@ class OmiDeviceConnection extends DeviceConnection {
   }
 
   @override
-  Future<List<StorageFile>> performListFiles() async {
+  Future<StorageListing?> performListFiles() async {
     return await _performListFilesLocked();
   }
 
-  Future<List<StorageFile>> _performListFilesLocked() async {
+  Future<StorageListing?> _performListFilesLocked() async {
     await _listFilesSub?.cancel();
     _listFilesSub = null;
     final int gen = ++_listFilesGeneration;
-    final currentCompleter = Completer<List<StorageFile>>();
+    final currentCompleter = Completer<StorageListing?>();
     final buffer = <int>[];
     bool isStale() => gen != _listFilesGeneration;
 
@@ -871,14 +871,16 @@ class OmiDeviceConnection extends DeviceConnection {
       unawaited(stop());
     }
 
-    void success(List<StorageFile> files) {
+    // `null` completes the call as "the device did not answer" — never as an empty
+    // card. See DeviceConnection.listFiles for why the two must stay distinct.
+    void success(StorageListing? listing) {
       _cccdRetryTimer?.cancel();
       _timeoutTimer?.cancel();
       _listFilesGeneration++;
       final sub = _listFilesSub;
       _listFilesSub = null;
       unawaited(sub?.cancel());
-      if (!currentCompleter.isCompleted) currentCompleter.complete(files);
+      if (!currentCompleter.isCompleted) currentCompleter.complete(listing);
     }
 
     try {
@@ -911,7 +913,13 @@ class OmiDeviceConnection extends DeviceConnection {
               // We have at least the count, so we can try parsing.
               _parseAndSuccess(buffer, success);
             } else {
-              success([]); // Empty list or malformed
+              // EOT with not even the 4-byte count: the device never told us how
+              // many files it has. NOT an empty card — the firmware answers an
+              // empty card with [PACKET_DATA][0,0,0,0] then EOT, so the count
+              // always arrives (storage.c send_file_list_response).
+              Logger.warning('OmiDeviceConnection: CMD_LIST_FILES ended with no count field '
+                  '(${buffer.length} B) — reporting no answer, not an empty card');
+              success(null);
             }
           }
           return;
@@ -965,7 +973,12 @@ class OmiDeviceConnection extends DeviceConnection {
       });
       return await currentCompleter.future;
     } catch (e) {
-      return [];
+      // Timeout, STORAGE_NOT_READY, an unexpected packet type, a stream/write
+      // failure — every one of them used to return [], which the sync layer read
+      // as "the card is empty" and reported as a completed sync. Say so instead.
+      Logger.warning('OmiDeviceConnection: CMD_LIST_FILES did not answer ($e) — '
+          'reporting no answer, not an empty card');
+      return null;
     }
   }
 
@@ -1148,7 +1161,7 @@ class OmiDeviceConnection extends DeviceConnection {
     return false;
   }
 
-  void _parseAndSuccess(List<int> buffer, void Function(List<StorageFile>) success) {
+  void _parseAndSuccess(List<int> buffer, void Function(StorageListing?) success) {
     final count = buffer.getUint32LittleEndian(0);
     final files = <StorageFile>[];
     final totalExpected = 4 + (count * 16);
@@ -1169,7 +1182,24 @@ class OmiDeviceConnection extends DeviceConnection {
       Logger.debug(
           'OmiDeviceConnection: file[$i] index=${files[i].index} ts=${files[i].timestamp} size=${files[i].size} sid=${files[i].sessionId}');
     }
+    // A truncated reply that still carried entries stays usable: those files are
+    // fetched, and the rest come back in the next listing. It is reported as
+    // incomplete rather than trusted as the whole card, because it is not — the
+    // caller must treat the run as a partial sync (see StorageListing).
+    // Carrying NO entries against a non-zero count cannot be passed on at all: it
+    // is byte-for-byte what an empty card looks like to the caller, and that is
+    // the confusion this whole distinction exists to prevent.
+    if (count > 0 && files.isEmpty) {
+      Logger.warning('OmiDeviceConnection: CMD_LIST_FILES said $count files and delivered none '
+          '(${buffer.length} B) — reporting no answer, not an empty card');
+      success(null);
+      return;
+    }
+    if (files.length != count) {
+      Logger.warning('OmiDeviceConnection: CMD_LIST_FILES delivered ${files.length} of $count entries — '
+          'syncing what arrived and reporting a partial sync; the rest should appear in the next listing');
+    }
     Logger.debug('OmiDeviceConnection: Successfully parsed ${files.length} files (count field said $count)');
-    success(files);
+    success((files: files, complete: files.length == count));
   }
 }

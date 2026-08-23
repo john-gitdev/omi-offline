@@ -144,11 +144,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (SharedPreferencesUtil().devLogsToFileEnabled) _startLogPolling();
     // Refresh the Adjustment Mode bin count whenever the Debug menu is opened.
     unawaited(_refreshAdjustmentBinCount());
-    // Do NOT call start() here. start() fires getMissingWals() asynchronously and
-    // overwrites _wals via .then(), which races with syncAll() between the moment it
-    // takes its local `wals` snapshot and when it sets _isSyncing = true.
-    // _wals is already populated by setDevice() when the device connected, and
-    // syncAll() refreshes it internally if empty.
+    // Nothing to kick off here: _wals is populated by setDevice() when the device
+    // connected, and syncAll() refreshes it internally if empty. (This used to warn
+    // against calling IWalSync.start(), whose .then() raced syncAll() for _wals —
+    // that method is gone now, deleted for exactly that reason.)
   }
 
   void _startDropPolling() {

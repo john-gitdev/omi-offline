@@ -43,13 +43,20 @@ abstract class IWalSync {
   /// Runs a full sync and reports **whether it ran**, not whether it found anything.
   ///
   /// - non-null — the sync reached the device. An empty [SyncLocalFilesResponse]
-  ///   means CMD_LIST_FILES was issued and the card held nothing; that is a
-  ///   successful sync, not a skipped one.
+  ///   means CMD_LIST_FILES was issued, the device **answered**, and the card held
+  ///   nothing; that is a successful sync, not a skipped one.
   /// - null — the sync **did not run**: no device is registered yet
   ///   ([SDCardWalSync.hasDevice] is false), one is already in flight, the
-  ///   storage lock never cleared, or the user cancelled. Nothing was asked of
-  ///   the device, so callers must NOT record a completed sync — see
-  ///   `RecordingsController._runPipeline`, which routes null to "Skipped".
+  ///   storage lock never cleared, the user cancelled, or CMD_LIST_FILES went
+  ///   unanswered (timed out, arrived unusable, or the link was already down).
+  ///   Nothing was learned from the device, so callers must NOT record a
+  ///   completed sync — see `RecordingsController._runPipeline`, which routes
+  ///   null to "Skipped".
+  ///
+  /// An unanswered listing is **not** an empty card. It reads as one at the wire
+  /// level — both produce no files — and reporting it as a completed sync is what
+  /// let a device holding hours of audio show as "nothing to sync" while the
+  /// lastSyncCompletedMs stamp suppressed the next automatic attempt.
   ///
   /// Keeping "ran and found nothing" distinct from "never asked" is the whole
   /// point: they were the same value once, and a sync that never issued a single
@@ -75,7 +82,12 @@ abstract class IWalSync {
   });
   void cancelSync();
 
-  void start();
+  /// No `start()`: WAL state is initialised by [SDCardWalSync.setDevice], which is
+  /// the only place that can do it — it loads the persisted WALs AND rebuilds from
+  /// the device listing. The old `start()` ran at app boot, before any device was
+  /// registered, so it could never reach a listing; what it could do was overwrite
+  /// `_wals` from a `.then()` that raced a running `syncAll()`. Deleted rather than
+  /// guarded against.
   Future stop();
 }
 
@@ -164,7 +176,11 @@ abstract class SDCardWalSync implements IWalSync {
   /// then run a normal sync including short segments below the usual threshold.
   ///
   /// Same null contract as [IWalSync.syncAll], including the one rule: denied
-  /// while a sync is already running.
+  /// while a sync is already running. One case resolves differently here: a
+  /// rotate that lands and is then followed by an **unanswered listing** reports
+  /// `isPartial`, not null. The rotation is real — the device was reached, and the
+  /// caller's Force Sync cooldown is earned — but nothing was fetched, so the
+  /// caller must still not finalize drafts.
   ///
   /// It matters twice over here. Sealing the active bin is what entitles the
   /// caller to finalize drafts — after a rotate, nothing belonging to them is

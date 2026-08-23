@@ -374,6 +374,86 @@ class RecordingsManager {
     }).toList();
   }
 
+  /// Deletes 0-byte raw bins and strips them from [batches].
+  ///
+  /// The local file is created before the first byte arrives (see
+  /// `_readStorageBytesToFileLocked`), so any transfer that opens it and then
+  /// delivers nothing leaves one behind. If its WAL is later dropped, nothing is
+  /// left that could ever reclaim it: a bin is deleted only when a recording that
+  /// consumed it is finalized, and a bin with no audio feeds no recording.
+  ///
+  /// NOT the firmware's `emptyBinRotations`. A rotation that closes a bin nothing
+  /// was written to still carries the 36-byte 0xFFFFFFFB header the ring appends
+  /// right after `start_abs = head_abs`, so it arrives here as a 36-byte file —
+  /// which this sweep deliberately does not touch, because a header-only bin is
+  /// NOT inert: its header re-anchors `segmentStartTime`, the inter-file gap logic
+  /// runs on it, and it moves `_lastSegmentEndTime`. Removing those would merge
+  /// two gaps into one and could split a recording that currently survives.
+  ///
+  /// The cost of keeping a 0-byte bin was never the disk. Its presence alone kept
+  /// `activeBatches` non-empty, so every processing cycle spawned an isolate and
+  /// loaded the Silero model to decode nothing at all, on battery, for the life of
+  /// the install.
+  ///
+  /// Deleting one changes no audio. [VadAudioProcessor.processSegmentFile] returns
+  /// on `fileLength == 0` before it reads any header and before it touches
+  /// `_lastSegmentEndTime`, so a 0-byte bin is ALREADY a no-op: it can neither end
+  /// a recording nor bridge the gap between two real bins, and the inter-file gap
+  /// either side of it is computed identically whether it is in the list or not.
+  /// It can never appear in a recording's `.meta` bin list or in a discard record
+  /// either — both are built from decoded frames, and it has none.
+  ///
+  /// [incompleteRelBins] is the mid-transfer protection set: a bin whose download
+  /// has just started is also 0 bytes, and it is the next sync's resume target.
+  ///
+  /// Be precise about what that protection is worth, because the neighbouring
+  /// guards protect against something stronger and the difference matters if this
+  /// is ever changed. Deleting a PARTIAL bin loses audio already on the phone and
+  /// duplicates it on the re-fetch — its prefix has been decoded into a draft.
+  /// Deleting a 0-BYTE one loses nothing: there are no bytes, nothing was decoded,
+  /// and the resume offset it "destroys" was 0. What the guard actually buys is
+  /// not yanking a file out from under an open write handle, and not spending a
+  /// re-fetch to get back to where we already were. Keep it — it is free and it
+  /// keeps one rule across every path that deletes a bin — but do not carry the
+  /// stronger claim over from `delete_segments`.
+  ///
+  /// `Wal.isIncompleteTransfer` requires `storageTotalBytes > 0`, so it separates
+  /// a genuinely empty file from a download in flight exactly. A null set means
+  /// the WAL state is unreadable — skip the sweep entirely, the same fail-closed
+  /// rule the `delete_segments` handler follows.
+  static Future<List<Batch>> pruneEmptyRawBins(List<Batch> batches, Set<String>? incompleteRelBins) async {
+    if (incompleteRelBins == null) return batches;
+
+    final removed = <String>{};
+    final folders = <String>{};
+    for (final file in batches.expand((b) => b.rawSegments)) {
+      final parts = file.path.split('/raw_segments/');
+      if (parts.length != 2) continue;
+      final rel = parts.last;
+      if (incompleteRelBins.contains(rel)) continue;
+      try {
+        if (await file.length() != 0) continue;
+        await file.delete();
+        removed.add(rel);
+        folders.add(file.parent.path);
+      } catch (e) {
+        // A bin that cannot be read or deleted is left exactly where it is; the
+        // next run tries again. Never fatal — this is housekeeping.
+        Logger.debug('RecordingsManager: could not prune empty bin $rel ($e)');
+      }
+    }
+    if (removed.isEmpty) return batches;
+
+    Logger.debug('RecordingsManager: pruned ${removed.length} orphaned 0-byte raw bin(s)');
+    for (final folderPath in folders) {
+      final folder = Directory(folderPath);
+      try {
+        if (await folder.exists() && await folder.list().isEmpty) await folder.delete();
+      } catch (_) {}
+    }
+    return stripBinsByRelPath(batches, removed);
+  }
+
   /// Test seam for the mid-transfer bin lookup ([WalSync.incompleteBinRelPaths]).
   /// Production resolves it through [ServiceManager], which unit tests never
   /// initialize — without a stub every run would take the fail-closed branch and
@@ -467,6 +547,12 @@ class RecordingsManager {
     if (autoRun && incompleteRelBins != null) {
       batches = stripBinsByRelPath(batches, incompleteRelBins);
     }
+
+    // Before the gate, not after: an empty bin is exactly what keeps this run
+    // alive to decode nothing. Uses incompleteRelBins directly rather than the
+    // autoRun-gated strip above — a force run deliberately keeps its mid-transfer
+    // bin, and that bin is 0 bytes too.
+    batches = await pruneEmptyRawBins(batches, incompleteRelBins);
 
     final activeBatches = batches.where((b) => b.rawSegments.isNotEmpty).toList();
     final hasDrafts = batches.any((b) => b.draftRecordings.isNotEmpty);

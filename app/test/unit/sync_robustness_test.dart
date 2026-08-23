@@ -146,8 +146,18 @@ class MockDeviceConnection implements DeviceConnection {
 
   List<StorageFile> files = [];
 
+  /// Simulates a listing the device never answered — the link was down, the
+  /// listing timed out, or the reply was unusable. Distinct from `files = []`,
+  /// which is the device answering that it holds nothing.
+  bool listFilesUnanswered = false;
+
+  /// Simulates a listing the device could not deliver in full — it named more
+  /// files than it sent. The entries present are valid; the run is partial.
+  bool listFilesTruncated = false;
+
   @override
-  Future<List<StorageFile>> listFiles() async => files;
+  Future<StorageListing?> listFiles() async =>
+      listFilesUnanswered ? null : (files: files, complete: !listFilesTruncated);
 
   @override
   Future<bool> stopStorageSync() async => true;
@@ -338,7 +348,7 @@ class MockDeviceConnection implements DeviceConnection {
   @override
   Future<bool> performClearStorage() => throw UnimplementedError();
   @override
-  Future<List<StorageFile>> performListFiles() => throw UnimplementedError();
+  Future<StorageListing?> performListFiles() => throw UnimplementedError();
   @override
   Future<Stream<List<int>>> performReadFile(StorageFile file, {int offset = 0}) => throw UnimplementedError();
   @override
@@ -1267,6 +1277,109 @@ void main() {
       expect(sync.hasDevice, isTrue);
       await sync.setDevice(null);
       expect(sync.hasDevice, isFalse);
+    });
+
+    // The third case, and the one the 2026-08-21 log caught: the sync DID run, it
+    // DID take the storage lock, and the listing came back with nothing — because
+    // it failed, not because the card was empty. Both produce no files, so the
+    // caller cannot tell them apart from the list alone, and reporting the failure
+    // as an empty card is what let a device holding three closed 10-minute bins
+    // show as "nothing to sync" while lastSyncCompletedMs suppressed the next
+    // automatic attempt for a full interval.
+    test('an unanswered listing returns null — it is not an empty card', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      mockConn.files = [
+        StorageFile(index: 0, timestamp: 1787334441, size: 3087516, sessionId: 3394048838),
+      ];
+      mockConn.listFilesUnanswered = true;
+
+      expect(await sync.syncAll(), isNull,
+          reason: 'no answer means we do not know what the device holds — that is a skip, '
+              'and the caller must retry rather than stamp a completed sync');
+    });
+
+    test('an answered empty card and an unanswered listing do not report the same thing', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+
+      mockConn.files = [];
+      expect(await sync.syncAll(), isNotNull, reason: 'answered, and holds nothing — a completed sync');
+
+      mockConn.listFilesUnanswered = true;
+      expect(await sync.syncAll(), isNull, reason: 'same empty file list, opposite meaning');
+    });
+
+    // A listing with no answer must not erase what we already knew. _wals carries
+    // the resume offsets restored from disk, and dropping them is what makes a
+    // half-downloaded bin restart from 0 and decode its audio a second time.
+    test('an unanswered listing leaves the known WAL list alone', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      mockConn.files = [
+        StorageFile(index: 0, timestamp: 1787334441, size: 3087516, sessionId: 3394048838),
+      ];
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      expect(await sync.hasFilesToSync(), isTrue, reason: 'the listing answered, so the WAL is known');
+
+      mockConn.listFilesUnanswered = true;
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      expect(await sync.hasFilesToSync(), isTrue,
+          reason: 'hasFilesToSync reads the cached WAL list first — a listing with no answer '
+              'must not have wiped it');
+    });
+
+    // Force Sync rotates BEFORE it lists, so a listing that then fails leaves a
+    // run that genuinely reached the device and genuinely sealed the active bin.
+    // Reporting null there would tell RecordingsController nothing was rotated: it
+    // hands the cooldown back (licensing another rotate, and another near-empty
+    // bin) and, missing the isPartial branch, finalizes every draft on disk while
+    // the bin holding their tail is still on the device.
+    // A listing can span several notifications — the device caps its list at 150
+    // files, far past what one packet holds — so a lost packet mid-listing names a
+    // prefix of the card. Those files are real and worth fetching; what must not
+    // happen is the run reporting itself as having seen everything, because the
+    // caller reads a clean sync as licence to finalize drafts whose tail may sit in
+    // a bin this listing never named.
+    test('a listing delivered short is a partial sync, and still fetches what arrived', () async {
+      Future<void> pump([int count = 5]) async {
+        for (int i = 0; i < count; i++) {
+          await Future.delayed(Duration.zero);
+        }
+      }
+
+      final ts = (DateTime.now().millisecondsSinceEpoch ~/ 1000) + 5000;
+      globalDeletedTimestamps = [];
+      mockConn.files = [StorageFile(index: 0, timestamp: ts, size: 10)];
+      mockConn.listFilesTruncated = true;
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await pump(10);
+
+      final run = sync.syncAll();
+      await mockConn.waitForWrite(1);
+      await pump(10);
+      mockConn.add(ackPacket(0x00));
+      await pump();
+      mockConn.add(dataPacket(0, List<int>.filled(10, 0xAB)));
+      await pump();
+      mockConn.add(eotPacket());
+      await pump(10);
+      final result = await run;
+
+      expect(result, isNotNull, reason: 'entries did arrive — this is an answer, not a failed listing');
+      expect(result!.isPartial, isTrue,
+          reason: 'the device named more files than it delivered, so this run did not see the whole card');
+      expect(globalDeletedTimestamps, contains(ts),
+          reason: 'the file it did name is still fetched and dropped — a short listing must not stall the drain');
+    });
+
+    test('rotateAndSync reports partial when the rotate lands and the listing does not', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      mockConn.files = [];
+      mockConn.listFilesUnanswered = true;
+
+      final result = await sync.rotateAndSync();
+
+      expect(result, isNotNull, reason: 'the rotate landed — this run reached the device');
+      expect(result!.isPartial, isTrue,
+          reason: 'nothing was fetched, so the caller must drop force mode and keep its drafts');
     });
 
     // Entering in the same microtask is the case that used to run two download

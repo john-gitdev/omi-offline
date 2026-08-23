@@ -2463,11 +2463,12 @@ class DeviceProvider extends ChangeNotifier
 
     await connection.acquireStorageLock('refreshStorageStats');
     try {
-      final files = await connection.listFiles();
+      final listing = await connection.listFiles();
+      final files = listing?.files;
       final stats = await connection.getStorageFileStats();
       if (stats != null) {
         onStorageStatsUpdated(stats);
-      } else {
+      } else if (files != null) {
         isDeviceStorageSupport = files.isNotEmpty;
         if (files.isNotEmpty) {
           final usedBytes = files.fold(0, (sum, f) => sum + f.size);
@@ -2477,8 +2478,13 @@ class DeviceProvider extends ChangeNotifier
           storageFullPercentage = 0;
         }
       }
-      // Also update the WAL sync's view of the world
-      await walSync.setDevice(dev, prefetchedFiles: files);
+      // else: neither read answered. Leave the last known values alone rather than
+      // concluding "this device has no storage" from silence.
+
+      // Also update the WAL sync's view of the world. An empty list here means
+      // "register the device, skip the rebuild" (see setDevice), which is exactly
+      // what a listing with no answer should do.
+      await walSync.setDevice(dev, prefetchedFiles: files ?? const []);
     } finally {
       connection.releaseStorageLock();
       notifyListeners();
