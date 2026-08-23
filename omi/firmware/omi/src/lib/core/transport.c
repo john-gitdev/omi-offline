@@ -1454,13 +1454,16 @@ static void exchange_func(struct bt_conn *conn, uint8_t att_err, struct bt_gatt_
 #ifdef CONFIG_OMI_ENABLE_BATTERY
 #define BATTERY_REFRESH_INTERVAL_CONNECTED 60000     // 60 seconds while connected
 #define BATTERY_REFRESH_INTERVAL_DISCONNECTED 300000 // 5 minutes while offline
-#define CONFIG_OMI_BATTERY_CRITICAL_MV 3500          // mV
+/* Not a Kconfig symbol, despite the CONFIG_-prefixed name this used to carry: it is
+ * defined here and appears in no Kconfig file, so adding the real option later would
+ * have made autoconf.h and this line collide. Named like its neighbours instead. */
+#define BATTERY_CRITICAL_MV 3500 // mV
 /* Below this percentage the 150mAh cell's internal resistance rises sharply, so
  * a brownout mid-write is more likely. We flush once here so everything captured
  * so far is durable, but recording CONTINUES — a recorder should capture to the
  * critical-voltage shutdown, not stop at 15%. littlefs is power-loss resilient,
  * so a brownout costs at most the last unsynced frames; the clean shutdown still
- * happens at CONFIG_OMI_BATTERY_CRITICAL_MV. */
+ * happens at BATTERY_CRITICAL_MV. */
 #define BATTERY_LOW_SD_FLUSH_THRESHOLD 15 // %
 uint8_t battery_percentage = 100;
 bool battery_ready = false;
@@ -1541,14 +1544,14 @@ void broadcast_battery_level(struct k_work *work_item)
             sd_flushed_for_low_battery = false;
         }
 
-        if (battery_millivolt < CONFIG_OMI_BATTERY_CRITICAL_MV) {
+        if (battery_millivolt < BATTERY_CRITICAL_MV) {
             LOG_WRN("Battery critical level reached (%d mV). Initiating shutdown.", battery_millivolt);
             /* Deliberately NOT rebooting on TURNOFF_BAILED here, unlike the 4-tap-hold
              * and CMD_POWER_OFF paths.
              *
              * Those two are user-initiated on a device that may have days of charge
              * left, so a bailed teardown stranding the mic is worth a reboot to clear.
-             * This one is the opposite: it only fires below CONFIG_OMI_BATTERY_CRITICAL_MV,
+             * This one is the opposite: it only fires below BATTERY_CRITICAL_MV,
              * and whatever makes turnoff_all() bail (a GPIO configure or watchdog
              * deinit failure) is deterministic — it will bail again on the next boot,
              * and the one after that. Rebooting would give an unattended device a
