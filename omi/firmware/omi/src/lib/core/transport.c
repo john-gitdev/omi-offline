@@ -24,14 +24,12 @@
  * (uint16_t promotes to int in r0, void return ignored) but formally UB, unchecked against the
  * real prototype, and a hard error under GCC 14 / C23. */
 #include "aad.h"
-#include "accel.h"
 #include "button.h"
 #include "config.h"
 #include "features.h"
 #include "haptic.h"
 #include "lib/battery/battery.h"
 #include "mic.h"
-#include "speaker.h"
 #ifdef CONFIG_OMI_ENABLE_MONITOR
 #include "monitor.h"
 #endif
@@ -62,20 +60,16 @@ static bool storage_full_warned = false;
 extern atomic_t is_connected;
 extern bool is_charging;
 static atomic_t pusher_stop_flag;
+/* Set once k_thread_create() has returned for pusher_thread. transport_off() must
+ * not k_thread_join() a k_thread that was never created: a zeroed one has an
+ * uninitialised join wait queue, so the join dereferences NULL rather than timing
+ * out. Reachable whenever transport_start() returns early — a failed bt_enable() or
+ * ring-buffer init — after which a 4-tap-hold or the critical-battery path still
+ * calls transport_off(). */
+static bool pusher_started;
 
 struct bt_conn *current_connection = NULL;
 static K_MUTEX_DEFINE(conn_mutex);
-uint16_t current_mtu = 0;
-uint16_t current_packet_index = 0;
-
-#ifdef CONFIG_OMI_ENABLE_SPEAKER
-static ssize_t audio_data_write_handler(struct bt_conn *conn,
-                                        const struct bt_gatt_attr *attr,
-                                        const void *buf,
-                                        uint16_t len,
-                                        uint16_t offset,
-                                        uint8_t flags);
-#endif
 
 static struct bt_conn_cb _callback_references;
 static ssize_t settings_dim_ratio_write_handler(struct bt_conn *conn,
@@ -469,7 +463,7 @@ static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_ha
 //   uptime_seconds: how long the PREVIOUS session ran before it ended (crash or clean shutdown)
 //
 // Characteristic B:   19B10062-E8F2-537E-4F6C-D104768A1214
-// Returns 96 bytes LE (fields appended over time; older apps read a prefix):
+// Returns 100 bytes LE (fields appended over time; older apps read a prefix):
 //   [uint32 storage_block_drops]   storage_block_drops since boot (each = ~5 Opus frames lost)
 //   [uint32 last_drop_uptime_ms]   k_uptime_get() at the most recent block drop (0 = none)
 //   [uint32 sd_stream_drops]       stat_dropped_frames from sd_card.c (queue-full audio frame drops)
@@ -494,6 +488,21 @@ static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_ha
 //   [uint32 ring_max_io_ms]        ring: slowest SD primitive since boot, packed
 //                                  (tag<<24)|ms, tag 1=write 2=read 3=CTRL_SYNC (offset 76)
 //   [uint32 ring_io_errors]        ring: write/CTRL_SYNC failures (EIO) since boot (offset 80)
+//   [uint32 last_mic_frame_uptime_ms] k_uptime_get() at the last processed mic frame (offset 84).
+//                                  now_ms MINUS this is "how long since the mic delivered" —
+//                                  frames land every 100 ms, so seconds means parked and
+//                                  minutes means stopped. Sampled BEFORE now_ms on purpose.
+//   [uint32 vad_voiced_ms]         total ms the VAD has held a recording open since boot
+//                                  (offset 88). Against now_ms this is the capture duty cycle.
+//   [uint32 adv_modes]             [active u8][desired u8] advertising interval (offset 92),
+//                                  0 = fast (100-150 ms), 1 = slow (~1 s). NOT the same as
+//                                  last_failed_adv_slow at offset 24, which is the mode during
+//                                  the last FAILED connection. Advertising stops while
+//                                  connected, so `active` read here is the interval in force
+//                                  when the phone found the device.
+//   [uint32 device_session_id]     the per-boot session id every recording of this boot is
+//                                  stamped with (offset 96). Paired with current_uptime_ms
+//                                  from the SAME read, it is the app's clock anchor.
 static struct bt_uuid_128 diagnostics_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10060, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 diagnostics_characteristic_uuid =
@@ -589,7 +598,7 @@ static void diagnostics_drops_pack(uint8_t payload[100])
     uint32_t ring_max_io = sd_get_ring_max_io_ms();
     uint32_t ring_io_errs = sd_get_ring_io_errors();
 
-    /* 96 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
+    /* 100 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
      * codec_drops + sd_msgq peak depth + write-fairness activations + establishment
      * failures + Priority Recording lifecycle (starts / stops / marker drops /
      * empty-bin rotations) + session-end emit attempts + pause-gate marker saves +
@@ -781,11 +790,11 @@ static struct bt_gatt_attr diagnostics_service_attr[] = {
 
 static struct bt_gatt_service diagnostics_service = BT_GATT_SERVICE(diagnostics_service_attr);
 
-/* Notify the 96-byte drop payload to every subscribed client. The value
+/* Notify the 100-byte drop payload to every subscribed client. The value
  * attribute is index 4: [0]=service, [1]/[2]=0x0061 decl/value,
  * [3]/[4]=0x0062 decl/value, [5]=CCC.
  *
- * A 96-byte notification needs ATT_MTU >= 99; on a link that never negotiated up
+ * A 100-byte notification needs ATT_MTU >= 103; on a link that never negotiated up
  * from the 23-byte default bt_gatt_notify returns -EMSGSIZE and the update is lost.
  * This is a *live* convenience path — the same payload is always available via a
  * plain READ (ATT read-blob is not MTU-bounded), which is the app's fallback — so we
@@ -957,10 +966,9 @@ struct bt_gatt_service button_service = BT_GATT_SERVICE(button_service_attr);
  * built to run disconnected.
  *
  * The service itself stays registered, and is worth keeping: register_button_service()
- * runs early in transport_start() — after the optional accel service, but ahead of
- * haptic, speaker, settings, features, time-sync, battery, storage, diagnostics, mute
- * and led — so dropping it would shift the handles of every one of those and cost a
- * re-pair. It is among the most expensive services in the table to remove and free to
+ * runs first in transport_start(), ahead of haptic, settings, features, time-sync,
+ * battery, storage, diagnostics, mute and led — so dropping it would shift the handles
+ * of every one of those and cost a re-pair. It is among the most expensive services in the table to remove and free to
  * keep.
  *
  * That also makes it the natural home for a future device→app push channel, which
@@ -1207,38 +1215,9 @@ static const struct bt_data bt_sd[] = {
     BT_DATA_BYTES(BT_DATA_UUID16_ALL, BT_UUID_16_ENCODE(BT_UUID_DIS_VAL)),
 };
 
-//   [uint32 last_mic_frame_uptime_ms] k_uptime_get() at the last processed mic frame (offset 84).
-//                                  now_ms MINUS this is "how long since the mic delivered" —
-//                                  frames land every 100 ms, so seconds means parked and
-//                                  minutes means stopped. Sampled BEFORE now_ms on purpose.
-//   [uint32 vad_voiced_ms]         total ms the VAD has held a recording open since boot
-//                                  (offset 88). Against now_ms this is the capture duty cycle.
-//   [uint32 adv_modes]             [active u8][desired u8] advertising interval (offset 92),
-//                                  0 = fast (100-150 ms), 1 = slow (~1 s). NOT the same as
-//                                  last_failed_adv_slow at offset 24, which is the mode during
-//                                  the last FAILED connection. Advertising stops while
-//                                  connected, so `active` read here is the interval in force
-//                                  when the phone found the device.
 //
 // State and Characteristics
 //
-
-#ifdef CONFIG_OMI_ENABLE_SPEAKER
-static ssize_t audio_data_write_handler(struct bt_conn *conn,
-                                        const struct bt_gatt_attr *attr,
-                                        const void *buf,
-                                        uint16_t len,
-                                        uint16_t offset,
-                                        uint8_t flags)
-{
-    uint16_t amount = 400;
-    int16_t *int16_buf = (int16_t *) buf;
-    uint8_t *data = (uint8_t *) buf;
-    bt_gatt_notify(conn, attr, &amount, sizeof(amount));
-    amount = speak(len, buf);
-    return len;
-}
-#endif
 
 static ssize_t settings_dim_ratio_write_handler(struct bt_conn *conn,
                                                 const struct bt_gatt_attr *attr,
@@ -1415,12 +1394,10 @@ features_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, voi
 {
     uint32_t features = 0;
 
-#ifdef CONFIG_OMI_ENABLE_SPEAKER
-    features |= OMI_FEATURE_SPEAKER;
-#endif
-#ifdef CONFIG_OMI_ENABLE_ACCELEROMETER
-    features |= OMI_FEATURE_ACCELEROMETER;
-#endif
+    /* OMI_FEATURE_SPEAKER / OMI_FEATURE_ACCELEROMETER are never set: this fork
+     * builds neither driver (the Consumer hardware has no speaker, and the IMU is
+     * used only for its timestamp counter). Their bits stay reserved in features.h
+     * because the app's OmiFeatures mirrors the numbering. */
 #ifdef CONFIG_OMI_ENABLE_BUTTON
     features |= OMI_FEATURE_BUTTON;
 #endif
@@ -1467,9 +1444,6 @@ static void exchange_func(struct bt_conn *conn, uint8_t att_err, struct bt_gatt_
     } else {
         uint16_t mtu = bt_gatt_get_mtu(conn);
         LOG_INF("MTU exchange successful. New MTU: %u (Payload: %u)", mtu, mtu - 3);
-        // Update current_mtu based on the negotiated value, considering header
-        // Note: bt_gatt_get_mtu includes the ATT header (3 bytes)
-        current_mtu = mtu; // Store the full MTU size
     }
 }
 
@@ -1480,13 +1454,16 @@ static void exchange_func(struct bt_conn *conn, uint8_t att_err, struct bt_gatt_
 #ifdef CONFIG_OMI_ENABLE_BATTERY
 #define BATTERY_REFRESH_INTERVAL_CONNECTED 60000     // 60 seconds while connected
 #define BATTERY_REFRESH_INTERVAL_DISCONNECTED 300000 // 5 minutes while offline
-#define CONFIG_OMI_BATTERY_CRITICAL_MV 3500          // mV
+/* Not a Kconfig symbol, despite the CONFIG_-prefixed name this used to carry: it is
+ * defined here and appears in no Kconfig file, so adding the real option later would
+ * have made autoconf.h and this line collide. Named like its neighbours instead. */
+#define BATTERY_CRITICAL_MV 3500 // mV
 /* Below this percentage the 150mAh cell's internal resistance rises sharply, so
  * a brownout mid-write is more likely. We flush once here so everything captured
  * so far is durable, but recording CONTINUES — a recorder should capture to the
  * critical-voltage shutdown, not stop at 15%. littlefs is power-loss resilient,
  * so a brownout costs at most the last unsynced frames; the clean shutdown still
- * happens at CONFIG_OMI_BATTERY_CRITICAL_MV. */
+ * happens at BATTERY_CRITICAL_MV. */
 #define BATTERY_LOW_SD_FLUSH_THRESHOLD 15 // %
 uint8_t battery_percentage = 100;
 bool battery_ready = false;
@@ -1567,14 +1544,14 @@ void broadcast_battery_level(struct k_work *work_item)
             sd_flushed_for_low_battery = false;
         }
 
-        if (battery_millivolt < CONFIG_OMI_BATTERY_CRITICAL_MV) {
+        if (battery_millivolt < BATTERY_CRITICAL_MV) {
             LOG_WRN("Battery critical level reached (%d mV). Initiating shutdown.", battery_millivolt);
             /* Deliberately NOT rebooting on TURNOFF_BAILED here, unlike the 4-tap-hold
              * and CMD_POWER_OFF paths.
              *
              * Those two are user-initiated on a device that may have days of charge
              * left, so a bailed teardown stranding the mic is worth a reboot to clear.
-             * This one is the opposite: it only fires below CONFIG_OMI_BATTERY_CRITICAL_MV,
+             * This one is the opposite: it only fires below BATTERY_CRITICAL_MV,
              * and whatever makes turnoff_all() bail (a GPIO configure or watchdog
              * deinit failure) is deterministic — it will bail again on the next boot,
              * and the one after that. Rebooting would give an unattended device a
@@ -2274,7 +2251,6 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
     current_connection = bt_conn_ref(conn);
     k_mutex_unlock(&conn_mutex);
     uint16_t mtu = bt_gatt_get_mtu(conn);
-    current_mtu = MAX(mtu, CONFIG_BT_L2CAP_TX_MTU);
 
     LOG_INF("Transport connected");
 
@@ -2357,7 +2333,6 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
         current_connection = NULL;
     }
     k_mutex_unlock(&conn_mutex);
-    current_mtu = 0;
 
     /* Advertising must come back, or the device is invisible until someone reboots it:
      * slow mode sets BT_LE_ADV_OPT_ONE_TIME, and Zephyr does not auto-restart that.
@@ -2427,7 +2402,6 @@ static void _le_data_length_updated(struct bt_conn *conn, struct bt_conn_le_data
             info->tx_max_time,
             info->rx_max_len,
             info->rx_max_time);
-    // Note: current_mtu is updated in exchange_func after MTU negotiation
 }
 
 static struct bt_conn_cb _callback_references = {
@@ -2632,7 +2606,6 @@ static struct k_thread pusher_thread;
 
 #define OPUS_PREFIX_LENGTH 1
 #define OPUS_PADDED_LENGTH 80
-#define MAX_WRITE_SIZE 440
 static uint16_t buffer_offset = 0;
 static K_MUTEX_DEFINE(storage_temp_mutex);
 /* True when the block currently accumulating in storage_temp_data contains a
@@ -2959,9 +2932,11 @@ int transport_off()
     // Stop pusher thread when transport is turned off
     atomic_set(&pusher_stop_flag, 1);
     k_sem_give(&tx_queue_sem); // unblock pusher if waiting
-    int ret = k_thread_join(&pusher_thread, K_MSEC(500));
-    if (ret != 0) {
-        LOG_WRN("Pusher thread did not terminate in time (err %d)", ret);
+    if (pusher_started) {
+        int ret = k_thread_join(&pusher_thread, K_MSEC(500));
+        if (ret != 0) {
+            LOG_WRN("Pusher thread did not terminate in time (err %d)", ret);
+        }
     }
 
     /* Snapshot+null under the mutex so a concurrent _transport_disconnected
@@ -3000,7 +2975,6 @@ int transport_off()
 
     // Ensure all Bluetooth resources are cleaned up
     atomic_set(&is_connected, 0);
-    current_mtu = 0;
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     storage_is_on = false;
@@ -3171,21 +3145,13 @@ int transport_start()
 
     LOG_INF("Transport bluetooth initialized");
 
-    //  Enable accelerometer
-#ifdef CONFIG_OMI_ENABLE_ACCELEROMETER
-    err = accel_start();
-    if (err) {
-        LOG_ERR("Accelerometer failed to activate (err %d)", err);
-    } else {
-        LOG_INF("Accelerometer initialized");
-        register_accel_service(current_connection);
-    }
-#endif
-    //  Enable button
+    /* button_init() is NOT called here — main() already called it before this
+     * function. Calling it twice took a second pm_device_runtime_get() reference on
+     * the buttons device that turnoff_all()'s single put never balanced, so the
+     * device never actually suspended on power-off. Only the service registration
+     * belongs to transport. */
 #ifdef CONFIG_OMI_ENABLE_BUTTON
-    button_init();
     register_button_service();
-    // Button work is now interrupt-driven; no startup polling needed.
 #endif
 
 // Initialize and register Haptic service if enabled
@@ -3193,17 +3159,6 @@ int transport_start()
     // Note: haptic_init() is called in main.c
     register_haptic_service();
     LOG_INF("Haptic service registered via transport");
-#endif
-
-#ifdef CONFIG_OMI_ENABLE_SPEAKER
-    err = speaker_init();
-    if (err) {
-        LOG_ERR("Speaker failed to start");
-        return 0;
-    }
-    LOG_INF("Speaker initialized");
-    register_speaker_service();
-
 #endif
 
     // Start advertising
@@ -3276,6 +3231,7 @@ int transport_start()
         LOG_ERR("Failed to create pusher thread");
         return -1;
     }
+    pusher_started = true;
 
     LOG_INF("Pusher successfully started");
 

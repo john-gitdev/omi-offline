@@ -380,7 +380,7 @@ Battery voltage on the 150 mAh LiPo changes on the order of millivolts per minut
   the accel **on** at 12.5 Hz is correct and load-bearing, despite the name. But `XL_HM_MODE`
   (CTRL6_C bit 4) **resets to 0 = high-performance**, and high performance on this part is
   ODR-independent: 12.5 Hz costs the same ~170 µA as 6.6 kHz. Since nothing reads the samples
-  (`accel.c` is not in `CMakeLists.txt`), that accuracy buys literally nothing.
+  (there is no accelerometer driver in the build at all), that accuracy buys literally nothing.
   `lsm6dsl_set_accel_low_power()` now sets `XL_HM_MODE = 1` **before** the ODR, so the accel
   never spends an interval in high-performance mode. Roughly an order of magnitude less, and
   it lands where it matters most — during System OFF the IMU is one of the very few things
@@ -735,39 +735,41 @@ The firmware leverages priority queues to intelligently gate SD card power witho
 
 ---
 
-## Firmware: Parked / Unused Subsystems
+## Firmware: Removed Subsystems
 
-Some source files exist in the tree as reference code but are **not part of the build**. They are not listed in `omi/firmware/omi/CMakeLists.txt`, so the compiler never sees them — zero flash, zero RAM, zero CPU impact. Leaving them parked (rather than deleting) keeps them available for future use.
+Several source files used to sit in the tree as reference code, outside
+`omi/firmware/omi/CMakeLists.txt` so the compiler never saw them. They were deleted
+rather than parked, because git already keeps them and a file that looks like part
+of the firmware but is not costs a reader's attention every time.
 
-### `src/lib/core/accel.c` — IMU BLE broadcast (parked)
+Everything below is at commit `e2b438a` and comes back with:
 
-Defines a BLE service (UUIDs `32403790-…` / `32403791-…`) that would notify accelerometer + gyroscope XYZ over BLE once per second.
+```bash
+git checkout e2b438a -- <path>
+```
 
-**Status:** not in `CMakeLists.txt`; `CONFIG_OMI_ENABLE_ACCELEROMETER=n` in `omi.conf`; the `#ifdef CONFIG_OMI_ENABLE_ACCELEROMETER` blocks in `transport.c` (lines ~521, ~1289) and `button.c` (line ~334) compile to nothing. No consumer: the Flutter app never subscribes to the accel UUID — it only has a placeholder capability-bit constant (`accelerometer = 1 << 1` in `services/devices.dart` and `bt_device.dart`).
+| Removed | What it was | To bring it back |
+|---|---|---|
+| `src/lib/core/accel.c` / `accel.h` | BLE service (`32403790-…` / `32403791-…`) notifying accel + gyro XYZ once per second. No consumer — the app has only the placeholder capability bit. | Restore both files, add `accel.c` to `core_sources` gated on `CONFIG_OMI_ENABLE_ACCELEROMETER`, re-add that Kconfig option and the bring-up in `transport_start()` / teardown in `turnoff_all()`, and write the app-side subscriber. |
+| `src/lib/core/speaker.c` / `speaker.h` | Speaker streaming + its BLE service. The Consumer board has no speaker. | Same shape, under `CONFIG_OMI_ENABLE_SPEAKER`. |
+| `src/lib/core/nfc.c` / `nfc.h` | NFC tag output. Never referenced. | Restore, add to `CMakeLists.txt`, add a caller. |
+| `src/lib/core/usb.h` | Declared `init_usb()`, which was never defined or called. `CONFIG_OMI_ENABLE_USB` is unrelated and still used (it gates the USB interrupt disable in `turnoff_all()` and a capability bit). | — |
+| `src/feedback.c` / `feedback.h` | Eleven `error_*()` hooks, all with zero call sites. | Restore both, add `feedback.c` to `app_sources`, call the hooks. |
+| `src/mcuboot_boot_zephyr.c` | A vendored copy of MCUboot's `boot/zephyr/main.c` with four Omi edits. No build file referenced it. | Restore and wire into the bootloader build if the MCUboot main ever needs patching again. |
+| `scripts/test_button_fsm.c` | A host-compiled mock of the button FSM. It had drifted badly out of sync — three states instead of four (no `STATE_WAIT_FOR_RELEASE`), no `RECORD_START`/`STOP`/`TOGGLE` actions, and a default config that was not `settings.c`'s — so it passed against a design that no longer exists. | Rewrite against the current `check_button_level()` rather than restoring. |
 
-**Do NOT confuse with `src/imu.c`**, which IS built and IS load-bearing. `imu.c` uses the same physical LSM6DS3TR-C chip but only its **24-bit hardware timestamp counter** (via raw I²C register reads, not the sensor API). That counter keeps ticking through `system_off` deep sleep; on boot the firmware reads the delta to recover wall-clock time across reboots/crashes, and stamps `imu_ticks` into each recording header (`sd_card.c:1232`). The Flutter app's "IMU Bridge" (`app/lib/services/vad_audio_processor.dart:319`, `tickDelta * 6.4` ms) uses it to stitch recording segments correctly across a reboot. Removing accel.c does not affect this.
+**Do NOT confuse `accel.c` with `src/imu.c`**, which IS built and IS load-bearing.
+`imu.c` uses the same physical LSM6DS3TR-C chip but only its **24-bit hardware
+timestamp counter** (via raw I²C register reads, not the sensor API). That counter
+keeps ticking through `system_off` deep sleep; on boot the firmware reads the delta to
+recover wall-clock time across reboots/crashes, and stamps `imu_ticks` into each
+recording header. The Flutter app's "IMU Bridge"
+(`app/lib/services/vad_audio_processor.dart`, `tickDelta * 6.4` ms) uses it to stitch
+recording segments correctly across a reboot. Removing `accel.c` did not affect it.
 
-**To enable accel BLE broadcast later:**
-1. Add `src/lib/core/accel.c` to `core_sources` in `CMakeLists.txt`, gated by `if(CONFIG_OMI_ENABLE_ACCELEROMETER) ... endif()` (mirror the `storage.c` pattern at lines 33-35).
-2. Set `CONFIG_OMI_ENABLE_ACCELEROMETER=y` in `omi.conf`.
-3. Add Flutter code to subscribe to UUID `32403791-…` and consume the 24 bytes/sec it produces.
-
-A 3-axis accelerometer alone would cover typical wearable uses (wake-on-motion, worn/not-worn detection, step counting, tap gestures, fall detection, orientation); the gyroscope adds power draw and is only needed for precise rotation tracking.
-
-Bug fixes already applied to `accel.c` (defensive, since the file doesn't currently compile): normalized `accel_start()` to standard `0`=success/negative=error return convention, and seeded the self-rescheduling `accel_work` timer in `register_accel_service()` (previously it was never started).
-
-### Other parked files
-`src/lib/core/nfc.c` and `src/lib/core/speaker.c` are likewise present but not in `CMakeLists.txt` (speaker is conditionally referenced via `CONFIG_OMI_ENABLE_SPEAKER` blocks but the source isn't added to the build).
-
-`src/feedback.c` joined them (2026-08-06). All eleven `error_*()` functions had zero
-call sites while the file was still compiled into every image. Kept rather than deleted
-so the per-subsystem fault hooks can be wired up later — re-add `src/feedback.c` to
-`app_sources` in `CMakeLists.txt` to bring it back.
-
-`src/lib/core/monitor.c` is a third case and needs **no** change: it is in `CMakeLists.txt`,
-but every call site — two in `transport.c`, one in `main.c` — is behind
-`#ifdef CONFIG_OMI_ENABLE_MONITOR`, and `omi.conf` sets that to `n`. Flipping it to `y`
-turns the module back on. Note that if you do, four of the six counters
+`src/lib/core/monitor.c` is a different case and is still present: it is gated in
+`CMakeLists.txt` on `CONFIG_OMI_ENABLE_MONITOR`, which `omi.conf` sets to `n`. Flipping
+it to `y` turns the module on. Note that four of the six counters
 `monitor_log_metrics()` prints (`gatt_notify`, `mic_buffer`, `broadcast_audio`,
 `broadcast_audio_failed`) have no `monitor_inc_*` call site anywhere and will read a
 permanent 0 — only `tx_queue` and `storage` are actually fed.

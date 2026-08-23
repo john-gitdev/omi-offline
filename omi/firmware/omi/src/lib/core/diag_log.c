@@ -64,11 +64,6 @@ void diag_log_set_enabled(bool on)
     atomic_set(&diag_enabled, on ? 1 : 0);
 }
 
-bool diag_log_is_enabled(void)
-{
-    return atomic_get(&diag_enabled) != 0;
-}
-
 /* ------------------------------------------------------------------ */
 /* Enqueue                                                            */
 /* ------------------------------------------------------------------ */
@@ -236,23 +231,6 @@ size_t diag_log_drain(uint8_t *out, size_t max, uint16_t offset)
 /* ------------------------------------------------------------------ */
 /* Getters                                                            */
 /* ------------------------------------------------------------------ */
-
-uint32_t diag_log_max_seq(void)
-{
-    k_spinlock_key_t key = k_spin_lock(&diag_lock);
-    uint32_t v = snap_valid ? snap_max_seq
-                            : (ring_count > 0 ? ring[(ring_head - 1 + DIAG_LOG_RING_DEPTH) % DIAG_LOG_RING_DEPTH].seq : 0);
-    k_spin_unlock(&diag_lock, key);
-    return v;
-}
-
-uint16_t diag_log_record_count(void)
-{
-    k_spinlock_key_t key = k_spin_lock(&diag_lock);
-    uint16_t v = (uint16_t) ring_count;
-    k_spin_unlock(&diag_lock, key);
-    return v;
-}
 
 uint32_t diag_log_dropped_count(void)
 {

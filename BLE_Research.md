@@ -1678,9 +1678,11 @@ device-side from the mcumgr `DFU_PENDING` hook, so do not go looking for them.
 > raised, re-run this table by hand — nothing in the build will warn you, and the fix is to move the
 > partition down, not to widen the bound.
 >
-> Two related facts worth keeping: **`boards/omi/pm_static.yml` is dead** — Partition Manager
+> Two related facts worth keeping: **`boards/omi/pm_static.yml` was dead** — Partition Manager
 > reads `pm_static.yml` from the *application* config dir, not the board dir, and no
-> `PM_STATIC_YML_FILE` is set anywhere, which is why the generated map disagrees with it. And the
+> `PM_STATIC_YML_FILE` is set anywhere, which is why the generated map disagreed with it. It was
+> deleted on 2026-08-23 for exactly that reason (`git checkout e2b438a -- omi/firmware/boards/omi/pm_static.yml`
+> to read it again); references to it below are historical. And the
 > layout is therefore **dynamic**. It is anchored (`align: start: 0x4000` against the end of
 > `flash_primary`), so it does not drift as the app image grows — `app` grows toward it and would
 > fail the build on collision — but a Kconfig change to its size or alignment could move it. That

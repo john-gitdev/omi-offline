@@ -9,7 +9,9 @@
 #define MAX_STORAGE_BYTES 0x1E000000 // 480MB
 #define MAX_WRITE_SIZE 440
 #define MAX_FILENAME_LEN 64
-#define MAX_AUDIO_FILES 150  /* 12h × 12 files/hour (5-min rotation) = 144 max; 150 gives headroom. */
+#define MAX_AUDIO_FILES 150 /* 12h × 6 files/hour (10-min rotation) = 72; explicit rotations
+                             * (app command, BLE connect, priority/manual stop) make real
+                             * files shorter, so 150 is the headroom for that. */
 #define FILE_ROTATION_INTERVAL_MS (10 * 60 * 1000) // 10 minutes in milliseconds
 
 
@@ -263,9 +265,10 @@ uint32_t sd_get_ring_max_io_ms(void);
 uint32_t sd_get_ring_io_errors(void);
 
 /**
- * @brief The storage backend ACTUALLY mounted this boot (STORAGE_BACKEND_LITTLEFS
- *        or STORAGE_BACKEND_RING) — authoritative even after a ring->LittleFS mount
- *        fallback, unlike the persisted selector. Any thread.
+ * @brief The storage backend mounted this boot. There has been exactly one since
+ *        oo-2.9.0 (STORAGE_BACKEND_RING), so this always answers the same thing; it
+ *        stays on the wire because the app's Diagnostics panel reads the field and an
+ *        older app still expects it. Any thread.
  */
 uint8_t sd_get_active_backend(void);
 

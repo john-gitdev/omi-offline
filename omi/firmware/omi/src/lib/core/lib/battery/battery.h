@@ -19,35 +19,9 @@
 #ifndef __BATTERY_H__
 #define __BATTERY_H__
 
-/**
- * @brief Set battery charging to fast charge (100mA).
- *
- * @retval 0 if successful. Negative errno number on error.
- */
-int battery_set_fast_charge(void);
-
-/**
- * @brief Set battery charging to slow charge (50mA).
- *
- * @retval 0 if successful. Negative errno number on error.
- */
-int battery_set_slow_charge(void);
-
-/**
- * @brief Start battery charging.
- *
- * @retval 0 if successful. Negative errno number on error.
- */
-int battery_charge_start(void);
-
-/**
- * @brief Stop battery charging.
- *
- * @retval 0 if successful. Negative errno number on error.
- *
- * @note: want to stop charging to save power during runtime (Disables LED).
- */
-int battery_charge_stop(void);
+/* Charging is controlled entirely by the BQ25101 hardware; the firmware only
+ * observes it. The four battery_set_*_charge / battery_charge_* entry points that
+ * used to sit here were `return 0;` stubs with no callers and were removed. */
 
 /**
  * @brief Calculates the battery voltage using the ADC.

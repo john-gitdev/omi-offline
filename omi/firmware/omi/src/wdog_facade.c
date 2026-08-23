@@ -54,5 +54,30 @@ int watchdog_init(void)
 
 int watchdog_deinit(void)
 {
-    return wdt_disable(wdt_dev);
+    /* NULL when watchdog_init() failed — main() only logs that, so the device runs
+     * on without a watchdog and still reaches here on power-off. wdt_disable(NULL)
+     * would fault. */
+    if (!wdt_dev) {
+        return 0;
+    }
+
+    int rc = wdt_disable(wdt_dev);
+
+    /* -EPERM means "this SoC cannot stop its watchdog", which is the nRF5340's
+     * permanent answer: Zephyr's nrfx driver returns it unless NRFX_WDT_HAS_STOP,
+     * and the STOP task only exists from the nRF54 series onward. Treating that as
+     * a failure made turnoff_all() return TURNOFF_BAILED on EVERY power-off — so
+     * the 4-tap-hold gesture and "Shutdown Omi" cold-rebooted instead of powering
+     * off, and the critical-battery path (which deliberately does not reboot) left
+     * the device awake with BLE down and the mic thread aborted, i.e. permanently
+     * deaf on a nearly-flat cell.
+     *
+     * Nothing is lost by accepting it: sys_poweroff() enters System OFF, which
+     * stops the watchdog in hardware. The disable is only worth attempting for a
+     * part that supports it. */
+    if (rc == -EPERM) {
+        LOG_INF("Watchdog cannot be stopped on this SoC; System OFF will stop it");
+        return 0;
+    }
+    return rc;
 }

@@ -16,7 +16,6 @@
 #include "led.h"
 #include "mic.h"
 #include "rtc.h"
-#include "speaker.h"
 #include "transport.h"
 #include "wdog_facade.h"
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
@@ -819,7 +818,9 @@ int button_regist_callback()
 {
     int ret;
 
-    // Configure GPIO as input with pull-up
+    // Configure GPIO as input. The pull-up and the ACTIVE_LOW sense come from the
+    // devicetree flags, which gpio_pin_configure_dt() ORs in — this call adds none
+    // of its own.
     ret = gpio_pin_configure_dt(&usr_btn, GPIO_INPUT);
     if (ret < 0) {
         LOG_ERR("Failed to configure button GPIO (%d)", ret);
@@ -920,18 +921,6 @@ turnoff_result_t turnoff_all()
     // Always turn off microphone
     mic_off();
     k_msleep(100);
-
-    // Turn off speaker if enabled
-#ifdef CONFIG_OMI_ENABLE_SPEAKER
-    speaker_off();
-    k_msleep(100);
-#endif
-
-    // Turn off accelerometer if enabled
-#ifdef CONFIG_OMI_ENABLE_ACCELEROMETER
-    accel_off();
-    k_msleep(100);
-#endif
 
     if (is_sd_on() && sd_is_boot_ready()) {
         app_sd_off();

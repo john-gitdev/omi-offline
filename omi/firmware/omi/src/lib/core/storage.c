@@ -37,10 +37,6 @@ BUILD_ASSERT(MAX_AUDIO_FILES <= 255, "file index is a uint8_t in the BLE storage
 static char current_read_filename[MAX_FILENAME_LEN] = {0};
 static uint32_t current_read_offset = 0;
 
-#define MAX_PACKET_LENGTH 256
-#define OPUS_ENTRY_LENGTH 80
-#define FRAME_PREFIX_LENGTH 3
-
 /* Control commands */
 #define CMD_STOP_SYNC      0x03
 
@@ -315,7 +311,30 @@ static int send_file_list_response(struct bt_conn *conn)
     uint16_t mtu = bt_gatt_get_mtu(conn);
     uint16_t max_payload = (mtu > 3) ? (mtu - 3) : 20;
     
-    /* First packet overhead: 1 (type) + 4 (count) = 5 bytes. Entry: [idx:4][ts:4][sz:4][sid:4] = 16 bytes */
+    /* First packet overhead: 1 (type) + 4 (count) = 5 bytes. Entry: [idx:4][ts:4][sz:4][sid:4] = 16 bytes
+     *
+     * Refuse outright below the first packet's minimum, rather than trying and
+     * sending something wrong. On a link still at the 23-byte default ATT MTU
+     * max_payload is 20, and (20 - 5) / 16 is 0 — the inner loop then advances
+     * files_processed by nothing, the outer while() never terminates, and the storage
+     * thread spins forever, servicing no further command until reboot. Reachable: the
+     * app can send CMD_LIST_FILES before the MTU exchange completes (mtu_recheck_work
+     * retries it six times at 800 ms precisely because the link can sit at 23).
+     *
+     * A floor of one entry per packet terminates the loop but answers WRONG: only the
+     * first packet carries the count, it is the one that then exceeds the MTU and gets
+     * rejected, and the app reads the next packet's leading index field as the count —
+     * fabricating a file entry out of two real ones. STORAGE_NOT_READY is the honest
+     * answer and one the app already understands (omi_connection.dart treats it as a
+     * failed listing and retries) rather than as an empty card. */
+    if (max_payload < 5 + 16) {
+        LOG_WRN("CMD_LIST_FILES: ATT MTU %u too small for a list entry — asking the app to retry", mtu);
+        uint8_t ack[2] = {PACKET_ACK, STORAGE_NOT_READY};
+        STORAGE_NOTIFY(conn, ack, sizeof(ack));
+        return 0;
+    }
+    /* Both are >= 1 from here: max_payload >= 21 makes (max_payload - 5) / 16 >= 1,
+     * and the later-packet budget is larger still. */
     int first_packet_max = (max_payload - 5) / 16;
     /* Subsequent packets overhead: 1 (type) = 1 byte */
     int later_packet_max = (max_payload - 1) / 16;
@@ -844,6 +863,13 @@ void storage_write(void)
                     uint8_t ack[2] = {PACKET_ACK, STORAGE_NOT_READY};
                     STORAGE_NOTIFY(conn, ack, sizeof(ack));
                 }
+                /* The put at the bottom of the loop is the only one; skipping it here
+                 * leaked the ref get_current_connection() took at the top. With
+                 * CONFIG_BT_MAX_CONN=1 a single leak keeps the conn object out of the
+                 * pool after disconnect, so the device never accepts another link until
+                 * it reboots — and this branch is reached exactly when the SD card has
+                 * failed, turning "records nothing" into "records nothing, unreachable". */
+                put_current_connection(conn);
                 continue;
             }
 
