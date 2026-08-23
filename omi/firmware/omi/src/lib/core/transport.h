@@ -12,7 +12,6 @@ extern bool battery_ready;
 // Safe to call from ISR/interrupt context.
 void transport_notify_battery_soon(void);
 #endif
-extern uint16_t current_mtu;
 
 /**
  * @brief Initialize the BLE transport logic
