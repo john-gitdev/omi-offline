@@ -14,22 +14,10 @@ config OMI_ENABLE_OFFLINE_STORAGE
         "Enable the offline storage support. Requires a SD Card."
 	default n
 
-config OMI_ENABLE_ACCELEROMETER
-    bool "Accelerometer Support"
-    help
-        "Enable the accelerometer support."
-    default n
-
 config OMI_ENABLE_BUTTON
     bool "Button support"
     help
         "Enable the software button support."
-    default n
-
-config OMI_ENABLE_SPEAKER
-    bool "Enable the speaker"
-    help
-        "Enable the speaker support."
     default n
 
 config OMI_ENABLE_BATTERY
@@ -69,15 +57,6 @@ config OMI_ENABLE_VAD_GATE
         "Only forward microphone audio to codec/transport when voice activity
          is detected."
     default n
-
-config OMI_VAD_ABS_THRESHOLD
-    int "VAD average absolute amplitude threshold"
-    range 1 32767
-    default 600
-    depends on OMI_ENABLE_VAD_GATE
-    help
-        "Voice is considered active when average absolute amplitude of one
-         microphone frame is greater than or equal to this threshold."
 
 config OMI_VAD_DEBOUNCE_FRAMES
     int "VAD debounce frames to start recording"

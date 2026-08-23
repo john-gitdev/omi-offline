@@ -7,6 +7,10 @@
  * @brief Defines the bitmask for available Omi features.
  */
 typedef enum {
+    /* Reserved, never set by this firmware: the Consumer hardware has no speaker,
+     * and the IMU is used only for its timestamp counter, so neither driver is
+     * built. The values stay because the app's OmiFeatures mirrors the numbering
+     * (app/lib/backend/schema/bt_device/bt_device.dart) — do not renumber. */
     OMI_FEATURE_SPEAKER = (1 << 0),
     OMI_FEATURE_ACCELEROMETER = (1 << 1),
     OMI_FEATURE_BUTTON = (1 << 2),
