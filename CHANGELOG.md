@@ -383,7 +383,7 @@ Patch releases are rolled up into their minor version. Each section reflects the
 
 ## Firmware
 
-### oo-3.0
+### oo-3.1
 
 - **Fix: "Shutdown Omi" and the 4-tap-hold gesture restarted the Omi instead of switching it off.** Powering down runs a teardown — LEDs, haptic, Bluetooth, microphone, SD card — and the last step of it asked the chip to stop its watchdog timer. This chip cannot: its watchdog has no stop, by design, so the request always failed and the firmware always concluded the shutdown had gone wrong. Both hand-triggered routes recover from that by restarting, so instead of switching off, the Omi rebooted — every time, on every device. The automatic shutdown at critical battery deliberately does *not* restart, because whatever stopped a shutdown usually stops the next one too; there the failure left the Omi awake with Bluetooth already down and the microphone already stopped and unable to restart, running deaf until the cell went flat. That is the shape of the "awake but permanently deaf" failure described under `0.31` above — `0.31` added the restart-on-failure precisely because shutdowns were failing, and this is why they were. Nothing is lost by accepting the refusal: switching the chip off stops the watchdog anyway. Note that the app's own Device Settings text has always said Shutdown leaves the Omi off until a button press or charger; until now it did not.
 
@@ -392,6 +392,8 @@ Patch releases are rolled up into their minor version. Each section reflects the
 - **Fix: an Omi whose SD card failed to start could also stop accepting connections.** When the card does not come up, the Omi still runs and stays reachable — deliberately, so it can be diagnosed and updated. But each time the app asked for the recording list, the firmware quietly held on to a piece of the connection it should have released, and it only has one to give. So after the first such request and the next disconnect, nothing could connect to it again until it was restarted. The card fault itself is unchanged; the Omi now stays reachable through it, as intended.
 
 - **Fix: a microphone that fails to start no longer puts the Omi in a restart loop.** If the microphone could not be brought up at boot, the firmware stopped its own main loop — which is also the thing that reassures the watchdog timer — so the Omi reset itself thirty seconds later, and again after that, indefinitely. It now carries on without capture, staying connectable so the fault can be read out and updated over Bluetooth. The same is now true of a failed battery gauge, which used to leave the Omi running with no status LED at all.
+
+### oo-3.0
 
 - **New (dev): the Omi checks whether its motion sensor really is switched off, instead of assuming.** The accelerometer and gyroscope are not read by anything — only the chip's built-in clock counter is, which is how the Omi recovers the time after a restart — so both should be powered down. The firmware asks for that, but the request could always have been refused: the answer was thrown away, and since `oo-2.10.0` there is no logging left to notice. A gyroscope left running draws roughly as much as everything else on the device put together, so it is worth knowing rather than assuming. The Omi now reads the sensor's own registers back and records what it finds, so a Debug Tools snapshot answers it outright.
 
