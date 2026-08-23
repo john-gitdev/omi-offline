@@ -160,7 +160,6 @@ typedef struct __packed {
 
 void diag_log_init(void);           /* zero state; enabled = false */
 void diag_log_set_enabled(bool on); /* dev-tools toggle target (0x0064 enable bit) */
-bool diag_log_is_enabled(void);
 void diag_log_event(uint8_t code, uint8_t backend, uint16_t arg0, uint32_t arg1);
 
 /* Same enqueue, but bypassing the runtime gate.
@@ -195,8 +194,6 @@ void diag_log_event_forced(uint8_t code, uint8_t backend, uint16_t arg0, uint32_
  * (header + packed records) starting at byte `offset`; returns bytes written. */
 size_t diag_log_drain(uint8_t *out, size_t max, uint16_t offset);
 void diag_log_ack(uint32_t through_seq); /* drop all records with seq <= through_seq */
-uint32_t diag_log_max_seq(void);         /* highest seq in the current snapshot */
-uint16_t diag_log_record_count(void);    /* live record count */
 uint32_t diag_log_dropped_count(void);   /* keep-newest overwrites since last ack */
 
 #else /* !CONFIG_OMI_DIAG_LOG — no-op stubs so call sites compile with zero cost */
@@ -205,10 +202,6 @@ static inline void diag_log_init(void) {}
 static inline void diag_log_set_enabled(bool on)
 {
     (void) on;
-}
-static inline bool diag_log_is_enabled(void)
-{
-    return false;
 }
 static inline void diag_log_event(uint8_t code, uint8_t backend, uint16_t arg0, uint32_t arg1)
 {
@@ -234,14 +227,6 @@ static inline size_t diag_log_drain(uint8_t *out, size_t max, uint16_t offset)
 static inline void diag_log_ack(uint32_t through_seq)
 {
     (void) through_seq;
-}
-static inline uint32_t diag_log_max_seq(void)
-{
-    return 0;
-}
-static inline uint16_t diag_log_record_count(void)
-{
-    return 0;
 }
 static inline uint32_t diag_log_dropped_count(void)
 {
