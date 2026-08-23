@@ -120,8 +120,6 @@ static uint8_t sd_recovery_cycles = 0; /* consecutive failed soft recoveries */
 static uint8_t ring_stage[RING_STAGE_BYTES] __aligned(4);
 static int64_t last_write_blocked_log_ms = 0;
 static int64_t last_write_error_uptime_ms = 0;
-static uint32_t write_drop_packets = 0;
-static uint32_t write_drop_bytes = 0;
 
 /* SD boot readiness gate: cleared during init, set once the ring is mounted.
  * write_to_file() silently discards data while this is 0, so the message queue
@@ -235,8 +233,6 @@ static atomic_t pending_flush_on_ble_connect;
 static atomic_t pending_rotate_on_ble_connect;
 static atomic_t pending_time_synced;
 static uint32_t pending_timesync_utc; /* Written only from sd_notify_time_synced (single writer), read only on worker thread — no atomic needed. */
-static atomic_t deferred_timesync_rename_pending;
-static uint32_t deferred_timesync_utc;
 
 /* Set when a TMP→UTC rename is in flight (between sd_notify_time_synced and the
  * sd_worker completing sd_update_filename_after_timesync). The storage thread
@@ -299,7 +295,6 @@ static K_MUTEX_DEFINE(file_cache_mutex);
 
 /* BLE connection tracking for file rotation */
 static atomic_t ble_connected;
-static int64_t ble_connect_time_ms = 0;
 
 /* Track if active file was deleted while BLE connected */
 static atomic_t current_file_deleted;
@@ -1863,7 +1858,6 @@ void sd_notify_time_synced(uint32_t utc_time)
 void sd_notify_ble_state(bool connected)
 {
     if (connected && !atomic_get(&ble_connected)) {
-        ble_connect_time_ms = k_uptime_get();
         LOG_INF("BLE connected");
         /* Signal the SD worker to rotate the active file on the next write so
          * the app can immediately download a completed recording.  The worker
@@ -1891,14 +1885,6 @@ void sd_notify_ble_state(bool connected)
     } else if (!connected && atomic_get(&ble_connected)) {
         LOG_INF("BLE disconnected");
         atomic_set(&pending_rotate_on_ble_connect, 0);
-
-        if (atomic_cas(&deferred_timesync_rename_pending, 1, 0)) {
-            LOG_INF("[SD] Executing deferred time-sync rename after BLE disconnect");
-            sd_req_t req = {0};
-            req.type = REQ_TIME_SYNCED;
-            req.u.time_synced.utc_time = deferred_timesync_utc;
-            k_msgq_put(&sd_prio_msgq, &req, K_NO_WAIT);
-        }
 
         if (atomic_get(&current_file_deleted)) {
             int cr = create_new_audio_file(ROTATE_REASON_ACTIVE_DELETED);
@@ -2025,8 +2011,6 @@ static uint32_t write_to_file_impl(uint8_t *data, uint32_t length, k_timeout_t r
 
     if (ret != 0) {
         atomic_inc(&stat_dropped_frames);
-        write_drop_packets++;
-        write_drop_bytes += length;
         int64_t now = k_uptime_get();
         if (now - last_write_err_log_ms > 2000) {
             uint32_t depth = k_msgq_num_used_get(&sd_msgq);
@@ -2303,8 +2287,6 @@ int create_new_audio_file(uint8_t reason)
         return -1;
     }
 
-    if (atomic_get(&ble_connected))
-        ble_connect_time_ms = k_uptime_get();
     return 0;
 }
 
@@ -2369,8 +2351,14 @@ int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size)
     }
 
     if (k_sem_take(&resp.sem, wait_timeout) != 0) {
+        /* Leave stats_in_flight SET — the queued REQ still owns &resp, and the next
+         * call reclaims the static once the late k_sem_give lands (the same contract
+         * every other request wrapper in this file follows). Clearing it here let the
+         * next call k_sem_init() a semaphore the worker was about to give and post a
+         * second request against the same resp, so it could return the previous
+         * request's counts while the worker overwrote the fields underneath it. The
+         * connected wait is only 1 s, so a long flush reaches this. */
         LOG_ERR("Timeout waiting for get_file_stats");
-        atomic_set(&stats_in_flight, 0);
         if (cached_stats_valid_until_ms > 0) {
             *file_count = cached_stats_file_count;
             *total_size = cached_stats_total_size;
