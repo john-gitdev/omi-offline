@@ -10,7 +10,6 @@
 #include <zephyr/bluetooth/services/bas.h>
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/drivers/gpio.h>
-#include <zephyr/drivers/sensor.h>
 #include <zephyr/dt-bindings/gpio/nordic-nrf-gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>

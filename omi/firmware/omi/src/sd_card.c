@@ -306,6 +306,39 @@ static const struct gpio_dt_spec sd_en = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(sdcard
 K_MSGQ_DEFINE(sd_msgq, sizeof(sd_req_t), SD_REQ_QUEUE_MSGS, 4);
 K_MSGQ_DEFINE(sd_prio_msgq, sizeof(sd_req_t), SD_PRIO_QUEUE_MSGS, 4);
 
+/* Set when sd_worker_thread() gives up on a failed boot mount and returns. That
+ * exit is deliberate — main.c's boot_warming_sequence() waits it out, flags
+ * sd_fatal_error and brings the device up without storage so the fault is
+ * reachable over BLE — but nothing restarts the thread, so anything queued to
+ * sd_prio_msgq afterwards is never serviced.
+ *
+ * Twelve call sites queue there and only two check first, so the blocking
+ * wrappers sat out their full timeouts against a card that was never coming
+ * back: 60 s for clear_audio_directory(), 25 s for create_new_audio_file(),
+ * 30 s for sd_flush_current_file(). All three run on the storage thread or the
+ * system workqueue, so the app's other commands queued behind them — a card
+ * fault turned "cannot record" into "the app hangs for a minute". The ten-deep
+ * priority queue also filled after ten BLE connects, since each posts a
+ * REQ_FLUSH_FILE nothing would ever drain. */
+static atomic_t sd_worker_dead;
+
+/* Every producer into the priority queue goes through here, so the check lives
+ * in one place rather than at twelve call sites.
+ *
+ * Deliberately NOT gated on sd_boot_ready: requests legitimately queue during a
+ * normal mount and must still be serviced once it completes. Only a worker that
+ * has actually exited refuses. Callers already handle a failed put — and the two
+ * that matter (sd_notify_time_synced, sd_notify_ble_state) arm their deferred
+ * pending_* atomic BEFORE queueing, so a refusal leaves the work pending for a
+ * worker that starts later rather than dropping it. */
+static int sd_prio_put(sd_req_t *req, k_timeout_t timeout)
+{
+    if (atomic_get(&sd_worker_dead)) {
+        return -ENODEV;
+    }
+    return k_msgq_put(&sd_prio_msgq, req, timeout);
+}
+
 /* The ring needs no persistent read handle: a segment read resolves to a byte
  * range in the log and goes straight to disk_access, with none of the open /
  * seek / close cost a filesystem charged per read. */
@@ -609,7 +642,7 @@ void sd_write_pause(bool pause)
                 req.type = REQ_PAUSE_IO;
                 req.u.create_file.resp = &resp;
 
-                int qret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
+                int qret = sd_prio_put(&req, K_MSEC(500));
                 if (qret == 0) {
                     k_sem_take(&resp.sem, K_MSEC(10000));
                 }
@@ -941,6 +974,9 @@ void sd_worker_thread(void)
     if (res != 0) {
         LOG_ERR("[SD_WORK] mount failed: %d", res);
         sd_write_blocked = true;
+        /* This thread is the only consumer of both queues and nothing restarts
+         * it, so tell the producers before leaving — see sd_prio_put(). */
+        atomic_set(&sd_worker_dead, 1);
         return;
     }
 
@@ -1776,7 +1812,7 @@ int app_sd_off(void)
         req.type = REQ_UNMOUNT;
         req.u.create_file.resp = &resp;
 
-        int qret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000));
+        int qret = sd_prio_put(&req, K_MSEC(2000));
         if (qret == 0) {
             if (k_sem_take(&resp.sem, K_MSEC(45000)) != 0) {
                 LOG_ERR("Timeout waiting for sd_worker unmount; skip force SD power-off");
@@ -1849,7 +1885,7 @@ void sd_notify_time_synced(uint32_t utc_time)
     sd_req_t req = {0};
     req.type = REQ_TIME_SYNCED;
     req.u.time_synced.utc_time = utc_time;
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_NO_WAIT);
+    int ret = sd_prio_put(&req, K_NO_WAIT);
     if (ret == 0) {
         atomic_set(&pending_time_synced, 0);
     }
@@ -1877,7 +1913,7 @@ void sd_notify_ble_state(bool connected)
         sd_req_t req = {0};
         req.type = REQ_FLUSH_FILE;
         req.u.create_file.resp = NULL; /* no response needed */
-        int ret = k_msgq_put(&sd_prio_msgq, &req, K_NO_WAIT);
+        int ret = sd_prio_put(&req, K_NO_WAIT);
         if (ret) {
             atomic_set(&pending_flush_on_ble_connect, 1);
             LOG_WRN("Flush on BLE connect deferred (%d)", ret);
@@ -1935,7 +1971,7 @@ void sd_invalidate_file_cache_blocking(void)
     req.type = REQ_INVALIDATE_CACHE;
     req.u.create_file.resp = &resp;
 
-    if (k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000)) != 0) {
+    if (sd_prio_put(&req, K_MSEC(2000)) != 0) {
         LOG_WRN("Force cache invalidate not queued; list may serve a stale enumeration");
         atomic_set(&invalidate_in_flight, 0);
         return;
@@ -2083,7 +2119,7 @@ int read_audio_data(const char *filename, uint8_t *buf, int amount, int offset)
     req.u.read.offset = offset;
     req.u.read.resp = &resp;
 
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
+    int ret = sd_prio_put(&req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue read: %d", ret);
         atomic_set(&read_in_flight, 0);
@@ -2126,7 +2162,7 @@ int sd_flush_current_file(void)
     req.type = REQ_FLUSH_FILE;
     req.u.create_file.resp = &resp;
 
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
+    int ret = sd_prio_put(&req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue flush: %d", ret);
         atomic_set(&flush_in_flight, 0);
@@ -2168,7 +2204,7 @@ int delete_audio_file(const char *filename)
     strncpy(req.u.delete_file.filename, filename, MAX_FILENAME_LEN - 1);
     req.u.delete_file.resp = &resp;
 
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
+    int ret = sd_prio_put(&req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue delete: %d", ret);
         atomic_set(&delete_in_flight, 0);
@@ -2210,7 +2246,7 @@ int clear_audio_directory(void)
     req.type = REQ_CLEAR_AUDIO_DIR;
     req.u.clear_dir.resp = &resp;
 
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
+    int ret = sd_prio_put(&req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue clear_dir: %d", ret);
         atomic_set(&clear_in_flight, 0);
@@ -2239,9 +2275,14 @@ int sd_request_rotate_async(uint8_t reason)
     /* K_NO_WAIT, never a timeout: callers use this precisely because they must not
      * block, and one of them (the REQ_FLUSH_FILE handler) runs ON the worker thread,
      * where waiting for space would deadlock against the thread that drains it. */
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_NO_WAIT);
+    int ret = sd_prio_put(&req, K_NO_WAIT);
     if (ret) {
-        LOG_ERR("sd_request_rotate_async: prio queue full, rotation (reason %u) dropped: %d", reason, ret);
+        /* -ENODEV = the SD worker gave up on its boot mount (sd_prio_put); anything
+         * else = the priority queue is full. Do not name one cause: on a dead card
+         * the queue is EMPTY, and a log claiming otherwise sends the next person
+         * looking at the wrong thing. */
+        LOG_ERR("sd_request_rotate_async: rotation (reason %u) not queued: %d%s",
+                reason, ret, (ret == -ENODEV) ? " (SD worker gone)" : " (queue full)");
     }
     return ret;
 }
@@ -2270,7 +2311,7 @@ int create_new_audio_file(uint8_t reason)
     req.u.create_file.resp = &resp;
     req.u.create_file.reason = reason;
 
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000));
+    int ret = sd_prio_put(&req, K_MSEC(2000));
     if (ret) {
         LOG_ERR("Failed to queue create_new_audio_file: %d", ret);
         atomic_set(&create_in_flight, 0);
@@ -2338,7 +2379,7 @@ int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size)
     req.type = REQ_GET_FILE_STATS;
     req.u.file_stats.resp = &resp;
 
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000));
+    int ret = sd_prio_put(&req, K_MSEC(2000));
     if (ret) {
         LOG_ERR("Failed to queue get_file_stats: %d", ret);
         atomic_set(&stats_in_flight, 0);

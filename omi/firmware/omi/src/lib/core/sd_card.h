@@ -383,8 +383,9 @@ int create_new_audio_file(uint8_t reason);
  * sd_msgq into the OLD bin before rotating, whoever queued it, so a session-end
  * marker enqueued just before this call still lands in the bin it closes.
  *
- * Failure is only ever "the priority queue is full" — reported so the caller can
- * say what was lost. A dropped rotation is recoverable rather than fatal: the
+ * Failure is either "the priority queue is full" or -ENODEV, meaning the SD worker
+ * gave up on its boot mount and no longer drains that queue — reported so the caller
+ * can say what was lost. A dropped rotation is recoverable rather than fatal: the
  * BLE-connect rotate serviced from REQ_FLUSH_FILE rotates the bin at the next
  * connect (see sd_worker_thread), which is also what completes a rotation the
  * worker had to defer because its durability sync failed.
