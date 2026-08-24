@@ -2277,7 +2277,12 @@ int sd_request_rotate_async(uint8_t reason)
      * where waiting for space would deadlock against the thread that drains it. */
     int ret = sd_prio_put(&req, K_NO_WAIT);
     if (ret) {
-        LOG_ERR("sd_request_rotate_async: prio queue full, rotation (reason %u) dropped: %d", reason, ret);
+        /* -ENODEV = the SD worker gave up on its boot mount (sd_prio_put); anything
+         * else = the priority queue is full. Do not name one cause: on a dead card
+         * the queue is EMPTY, and a log claiming otherwise sends the next person
+         * looking at the wrong thing. */
+        LOG_ERR("sd_request_rotate_async: rotation (reason %u) not queued: %d%s",
+                reason, ret, (ret == -ENODEV) ? " (SD worker gone)" : " (queue full)");
     }
     return ret;
 }
