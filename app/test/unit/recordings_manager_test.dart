@@ -2100,8 +2100,8 @@ void main() {
 
       expect(await RecordingsManager.applyClockAnchors(), 1);
 
-      final draft = File(p.join(tempDir.path, 'recordings', '2026-08-01',
-          'recording_${wrappedStartMs + 7200000}_draft.wav'));
+      final draft =
+          File(p.join(tempDir.path, 'recordings', '2026-08-01', 'recording_${wrappedStartMs + 7200000}_draft.wav'));
       expect(draft.existsSync(), isTrue, reason: 'the draft stays a draft, under its own name');
     });
 
@@ -2149,8 +2149,7 @@ void main() {
       // derives it — not the folder the source recording happens to live in.
       final targetFolder = RecordingsManager.fmtDate(DateTime.fromMillisecondsSinceEpoch(trueStartMs));
       final targetDir = Directory(p.join(tempDir.path, 'recordings', targetFolder))..createSync(recursive: true);
-      final squatterAudio = File(p.join(targetDir.path, 'recording_$trueStartMs.m4a'))
-        ..writeAsBytesSync(Uint8List(64));
+      final squatterAudio = File(p.join(targetDir.path, 'recording_$trueStartMs.m4a'))..writeAsBytesSync(Uint8List(64));
       final squatterMeta = File(p.join(targetDir.path, 'recording_$trueStartMs.meta'))
         ..writeAsBytesSync(Uint8List.fromList(List<int>.filled(64, 0xAB)));
 
@@ -2159,8 +2158,8 @@ void main() {
       expect(squatterAudio.existsSync(), isTrue);
       expect(squatterMeta.readAsBytesSync().every((b) => b == 0xAB), isTrue,
           reason: 'the squatter\'s .meta must not be replaced by the moved recording\'s');
-      expect(File(p.join(tempDir.path, 'recordings', '2026-08-01', 'recording_$wrappedStartMs.wav')).existsSync(),
-          isTrue,
+      expect(
+          File(p.join(tempDir.path, 'recordings', '2026-08-01', 'recording_$wrappedStartMs.wav')).existsSync(), isTrue,
           reason: 'the recording that could not be placed safely stays put');
     });
   });
