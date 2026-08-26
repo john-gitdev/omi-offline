@@ -21,6 +21,7 @@ import 'package:omi/pages/settings/widgets/debug_button.dart';
 import 'package:omi/pages/settings/widgets/diagnostic_log_row.dart';
 import 'package:omi/pages/settings/widgets/diagnostics_widgets.dart';
 import 'package:omi/widgets/dialog.dart';
+import 'package:flutter_archive/flutter_archive.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -1438,6 +1439,20 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
             ),
             const SizedBox(height: 8),
             OutlinedButton(
+              onPressed: _exportAdjustmentBins,
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: Colors.tealAccent, width: 1),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                minimumSize: const Size(double.infinity, 0),
+              ),
+              child: const Text(
+                'Export Bins (.zip)',
+                style: TextStyle(color: Colors.tealAccent, fontWeight: FontWeight.bold),
+              ),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton(
               onPressed: _reprocessAllFromSegments,
               style: OutlinedButton.styleFrom(
                 side: const BorderSide(color: Colors.orangeAccent, width: 1),
@@ -1563,6 +1578,112 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     } catch (e) {
       Logger.error('Adjustment: copy-for-reprocessing failed: $e');
       _reportCopyResult('Copy failed: $e');
+    }
+  }
+
+  /// Zips the isolated Adjustment Mode archive and hands it to the share sheet, so a
+  /// session's raw bins can leave the phone for offline analysis or as a test fixture.
+  ///
+  /// Zipped rather than shared as N loose files: the archive routinely holds hundreds
+  /// of bins, and most share targets cap the item count long before that — and the
+  /// folder layout (`<timerStart>/<timerStart>_<sessionId>.bin`, or `session_<id>/`
+  /// for pre-time-sync bins) is itself information the receiving side needs. Flattening
+  /// it into an attachment list would throw that away.
+  ///
+  /// [ZipFile.createFromDirectory] is the native zipper, which streams to disk. The
+  /// `archive` package's pure-Dart path builds the whole thing in memory, which for a
+  /// multi-hundred-MB archive is an OOM on the platform this ships to.
+  ///
+  /// The size is measured and confirmed BEFORE any work happens: Opus is already
+  /// compressed, so the zip is essentially the sum of the bins, and a user who has had
+  /// Adjustment Mode on for a week may be about to produce something their share target
+  /// will refuse. Better they find out from a dialog than from a failed upload.
+  Future<void> _exportAdjustmentBins() async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final adjDir = Directory('${directory.path}/adjustment_mode_segments');
+      if (!await adjDir.exists()) {
+        _reportCopyResult('No adjustment bins to export.');
+        return;
+      }
+
+      int count = 0;
+      int bytes = 0;
+      await for (final e in adjDir.list(recursive: true)) {
+        if (e is! File || !e.path.endsWith('.bin')) continue;
+        count++;
+        try {
+          bytes += await e.length();
+        } catch (_) {
+          // A bin that vanished mid-walk just doesn't count toward the estimate.
+        }
+      }
+      if (count == 0) {
+        _reportCopyResult('No adjustment bins to export.');
+        return;
+      }
+
+      final mb = (bytes / (1024 * 1024)).toStringAsFixed(1);
+      if (!mounted) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (c) => getDialog(
+          c,
+          () => Navigator.of(c).pop(false),
+          () => Navigator.of(c).pop(true),
+          'Export $count bin(s)?',
+          'Packs the adjustment archive into a single .zip of roughly $mb MB and opens the '
+              'share sheet. Raw bins are your recorded audio — anywhere you send this can play it back.',
+          confirmText: 'Export',
+        ),
+      );
+      if (confirmed != true) return;
+
+      if (mounted) setState(() => _statusMessage = 'Zipping $count bin(s) ($mb MB)…');
+      Logger.debug('Adjustment: export started — $count bin(s), $bytes bytes');
+
+      // A dedicated subdirectory of the temp dir — the same place, and the same
+      // reasoning, as DebugLogManager.prepareShareFile: the share sheet reads the file
+      // asynchronously AFTER share() returns, so deleting it on the way out would race
+      // the target. The PREVIOUS export is cleared on the way in instead, leaving at
+      // most one behind for the OS to reclaim.
+      //
+      // Entry-by-entry, not a recursive delete of the directory itself, which would
+      // race the create below against a share the user has not finished — exactly the
+      // trap prepareShareFile documents.
+      final exportDir = Directory('${(await getTemporaryDirectory()).path}/bin_export');
+      await exportDir.create(recursive: true);
+      await for (final stale in exportDir.list(followLinks: false)) {
+        try {
+          await stale.delete(recursive: true);
+        } catch (_) {}
+      }
+
+      String appVersion = 'unknown';
+      try {
+        appVersion = (await PackageInfo.fromPlatform()).version;
+      } catch (_) {
+        // Version is a nicety in the filename, not a reason to fail the export.
+      }
+      final stamp = DateFormat('yyyyMMdd-HHmmss').format(DateTime.now());
+      final zipFile = File('${exportDir.path}/omi_bins_${appVersion}_$stamp.zip');
+
+      await ZipFile.createFromDirectory(sourceDir: adjDir, zipFile: zipFile, recurseSubDirs: true);
+
+      final zipBytes = await zipFile.length();
+      final zipMb = (zipBytes / (1024 * 1024)).toStringAsFixed(1);
+      Logger.info('Adjustment: exported $count bin(s) → ${zipFile.path.split('/').last} ($zipMb MB)');
+      if (mounted) setState(() => _statusMessage = 'Exported $count bin(s) · $zipMb MB');
+
+      // `subject` (share-sheet title metadata), never `text` — a `text` argument is
+      // shared as a SEPARATE item, so save/upload targets materialize a second phantom
+      // file holding the label. Same reason the debug-log share avoids it.
+      await SharePlus.instance.share(
+        ShareParams(files: [XFile(zipFile.path)], subject: zipFile.uri.pathSegments.last),
+      );
+    } catch (e) {
+      Logger.error('Adjustment: export failed: $e');
+      _reportCopyResult('Export failed: $e');
     }
   }
 
