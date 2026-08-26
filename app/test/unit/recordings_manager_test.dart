@@ -2104,6 +2104,65 @@ void main() {
           'recording_${wrappedStartMs + 7200000}_draft.wav'));
       expect(draft.existsSync(), isTrue, reason: 'the draft stays a draft, under its own name');
     });
+
+    // `.meta` byte 412 holds 0 when the processor never established an uptime. The
+    // offset cannot place such a recording — `clockVerdict` calls that `unplaceable`
+    // and refuses to act on it, but promoteSessionToDate moved it anyway, onto
+    // `0 * 1000 + rtcOffsetMs`: the session's boot instant, shared by every one of them.
+    test('a recording with no start uptime is left where the Omi filed it', () async {
+      setAnchor();
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_${wrappedStartMs + 60000}',
+        sessionId: anchorSessionId,
+        startUptimeSec: 0, // never established
+      );
+
+      await RecordingsManager.applyClockAnchors();
+
+      final recs = allRecordings();
+      expect(recs.containsKey('recording_$trueStartMs'), isTrue, reason: 'the placeable one still moves');
+      expect(recs.containsKey('recording_${wrappedStartMs + 60000}'), isTrue,
+          reason: 'the unplaceable one keeps its own name rather than landing on the boot instant');
+    });
+
+    // The audio path carries the source's extension but the meta path never does, so a
+    // `.wav` moving onto an existing `.m4a`'s slot finds no `.wav` to collide with and
+    // silently overwrites that `.m4a`'s `.meta` — leaving it describing a different
+    // recording's duration, waveform and bin list.
+    test('a move never overwrites another recording\'s .meta through a different extension', () async {
+      setAnchor();
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      // An unrelated session's recording already sitting on the target name, as .m4a.
+      // The target folder is the local date of trueStartMs, the same way the move
+      // derives it — not the folder the source recording happens to live in.
+      final targetFolder = RecordingsManager.fmtDate(DateTime.fromMillisecondsSinceEpoch(trueStartMs));
+      final targetDir = Directory(p.join(tempDir.path, 'recordings', targetFolder))..createSync(recursive: true);
+      final squatterAudio = File(p.join(targetDir.path, 'recording_$trueStartMs.m4a'))
+        ..writeAsBytesSync(Uint8List(64));
+      final squatterMeta = File(p.join(targetDir.path, 'recording_$trueStartMs.meta'))
+        ..writeAsBytesSync(Uint8List.fromList(List<int>.filled(64, 0xAB)));
+
+      await RecordingsManager.applyClockAnchors();
+
+      expect(squatterAudio.existsSync(), isTrue);
+      expect(squatterMeta.readAsBytesSync().every((b) => b == 0xAB), isTrue,
+          reason: 'the squatter\'s .meta must not be replaced by the moved recording\'s');
+      expect(File(p.join(tempDir.path, 'recordings', '2026-08-01', 'recording_$wrappedStartMs.wav')).existsSync(),
+          isTrue,
+          reason: 'the recording that could not be placed safely stays put');
+    });
   });
 
   // ---------------------------------------------------------------------------
