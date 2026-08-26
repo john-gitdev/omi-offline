@@ -1819,6 +1819,7 @@ class VadAudioProcessor {
           _batchDeferredFrames.add(_DeferredFrame(
             ref: frameRef,
             frameTime: frameTime,
+            uptimeMs: _currentFrameUptimeMs,
             markerProtected: isSpeech, // includes AAD-mode and marker-protected speech
           ));
 
@@ -1836,6 +1837,7 @@ class VadAudioProcessor {
             isSpeech: isSpeech,
             frameRef: frameRef,
             frameTime: frameTime,
+            frameUptimeMs: _currentFrameUptimeMs,
             savedFiles: savedFiles,
             segmentSpeechFrames: segmentSpeechFrames,
           );
@@ -2020,12 +2022,15 @@ class VadAudioProcessor {
     return safe;
   }
 
-  /// The current frame's device uptime in whole seconds, or null when this stream
-  /// carries no uptime at all (a bin with no metadata header). Null rather than a
-  /// stale carry-over: a recording the anchor cannot place is `unplaceable`, which
+  /// One frame's device uptime in whole seconds, or null when this stream carries no
+  /// uptime at all (a bin with no metadata header). Null rather than a stale
+  /// carry-over: a recording the anchor cannot place is `unplaceable`, which
   /// [applyClockAnchors] leaves alone — far better than one it places wrongly.
-  int? _frameUptimeSeconds() {
-    final ms = _currentFrameUptimeMs;
+  ///
+  /// Takes the value rather than reading `_currentFrameUptimeMs`, because the only
+  /// caller is [_applyVadVerdict] and on the batched path that runs during Pass-2
+  /// replay, long after the running counter has advanced past the frame in hand.
+  static int? _uptimeSeconds(int? ms) {
     if (ms == null || ms <= 0) return null;
     return ms ~/ 1000;
   }
@@ -2123,6 +2128,7 @@ class VadAudioProcessor {
     required bool isSpeech,
     required FrameRef frameRef,
     required DateTime frameTime,
+    required int? frameUptimeMs,
     required List<String> savedFiles,
     required int segmentSpeechFrames,
   }) async {
@@ -2146,12 +2152,15 @@ class VadAudioProcessor {
     // overlapping records with identical timestamps. frameTime is the correct
     // per-frame wall clock and advances monotonically across splits.
     //
-    // The uptime is anchored in the SAME breath, from the per-frame counter that
-    // advances alongside frameTime. Anchoring only the wall clock here is what left
-    // every mid-bin recording carrying a head-of-bin uptime (see [_currentStartUptime]).
+    // The uptime is anchored in the SAME breath, from [frameUptimeMs] — THIS frame's
+    // uptime, captured where frameTime was. Anchoring only the wall clock here is what
+    // left every mid-bin recording carrying a head-of-bin uptime (see
+    // [_currentStartUptime]); reading the running `_currentFrameUptimeMs` instead is
+    // the same fault one layer down, because this method runs during Pass-2 replay on
+    // the batched path (see [_DeferredFrame.uptimeMs]).
     if (_recordingStartTime == null) {
       _recordingStartTime = frameTime;
-      _currentStartUptime = _frameUptimeSeconds();
+      _currentStartUptime = _uptimeSeconds(frameUptimeMs);
     }
 
     // App-side silence split. The firmware only emits a 0xFFFFFFFD gap once
@@ -2215,9 +2224,9 @@ class VadAudioProcessor {
       _currentChunkDurationMs = 0;
       _silenceRunMs = 0;
       _recordingStartTime = cutTime;
-      // The cap cuts at the current frame, so the running per-frame counter already
-      // holds this recording's start uptime.
-      _currentStartUptime = _frameUptimeSeconds();
+      // The cap cuts at this frame, so this frame's uptime is the new recording's
+      // start uptime.
+      _currentStartUptime = _uptimeSeconds(frameUptimeMs);
       if (!_isReplayingBatch) {
         _pcmBufferLen = 0;
       }
@@ -2321,6 +2330,7 @@ class VadAudioProcessor {
           isSpeech: isSpeech,
           frameRef: df.ref,
           frameTime: df.frameTime,
+          frameUptimeMs: df.uptimeMs,
           savedFiles: savedFiles,
           segmentSpeechFrames: segmentSpeechFrames,
         );
@@ -3121,6 +3131,19 @@ class _DeferredFrame {
   final FrameRef ref;
   final DateTime frameTime;
 
+  /// This frame's device uptime, captured at ingestion beside [frameTime].
+  ///
+  /// Carried rather than re-read at replay for the same reason [frameTime] is.
+  /// `_currentFrameUptimeMs` advances once per frame in the ingestion loop, but
+  /// `_applyVadVerdict` runs in Pass 2 — after the whole batch (up to 6000 frames /
+  /// 120 s) has been ingested. A recording that OPENS during the replay would then
+  /// take the batch-END uptime as its start, up to 120 s late, and every recording
+  /// opened in that batch would take the SAME one. `plausibleDriftMs` floors at 60 s,
+  /// so the anchor reads that as the Omi's clock being provably wrong and re-files a
+  /// correct session — the exact fault [_currentStartUptime] documents, one layer down
+  /// and only on the batched path, which is the Android production path.
+  final int? uptimeMs;
+
   /// True if this frame was already determined to be speech during Pass 1
   /// (AAD mode or marker protection). VAD speech from the batch is OR'd in
   /// during Pass 2.
@@ -3129,6 +3152,7 @@ class _DeferredFrame {
   const _DeferredFrame({
     required this.ref,
     required this.frameTime,
+    required this.uptimeMs,
     required this.markerProtected,
   });
 }
