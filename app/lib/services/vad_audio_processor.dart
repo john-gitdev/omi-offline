@@ -80,6 +80,22 @@ class VadAudioProcessor {
   DateTime? _lastSegmentEndTime;
   bool _isDerivedTimestamp = false; // true when segment had no valid device RTC timestamp
   int? _currentSessionId;
+
+  /// Device uptime, in whole seconds, at the instant the CURRENT recording started.
+  /// Written to `.meta` byte 412, and the only thing a clock anchor has to place the
+  /// recording by (`DeviceClockAnchor.startMsFor`).
+  ///
+  /// It must therefore move with [_recordingStartTime], at every site that opens a
+  /// recording — not just at bin entry. It used to be assigned in exactly one place
+  /// (the `_currentRefs.isEmpty` block in _processSegment), so any recording that
+  /// opened mid-bin — the common case, since a silence split lands wherever speech
+  /// resumes — inherited the head-of-bin uptime of whichever bin the stream was last
+  /// empty at. A 10-minute bin then yields recordings claiming uptimes up to 10 min
+  /// before they began, while `plausibleDriftMs` is the session length in ppm (5 min
+  /// at a 90 h session): [applyClockAnchors] reads that as PROOF the Omi's clock was
+  /// wrong and re-files the whole session, and because promoteSessionToDate renames
+  /// to `uptime * 1000 + offset`, every recording sharing a stale uptime collapses
+  /// onto ONE filename and all but the last are lost to the rename.
   int? _currentStartUptime;
   int? _currentFrameUptimeMs;
 
@@ -1125,9 +1141,19 @@ class VadAudioProcessor {
         if (!capJustFired) {
           _recordingStartTime = segmentStartTime;
           _currentSessionId = sessionId;
-          _currentStartUptime = startUptimeMs ~/ 1000;
+          _currentStartUptime = startUptimeMs > 0 ? startUptimeMs ~/ 1000 : null;
           _currentFrameUptimeMs = startUptimeMs;
         }
+      } else if (startUptimeMs > 0) {
+        // A recording is open across this bin boundary. Re-anchor the running counter
+        // to the bin header's own uptime: it otherwise advances only per decoded
+        // FRAME, so every padded inter-file gap (up to `vadSplitSeconds - 10 s`) leaves
+        // it that much behind the device, and the error accumulates across gaps. The
+        // next recording to open takes its `_currentStartUptime` from this counter, and
+        // once the lag passes `plausibleDriftMs` the anchor reads a correct recording as
+        // provably wrong. Only the running counter moves — the open recording's own
+        // start uptime is already fixed and must not.
+        _currentFrameUptimeMs = startUptimeMs;
       }
 
       // Byte-slice recover: decode only the discarded slices. Start at the first
@@ -1238,6 +1264,7 @@ class VadAudioProcessor {
               _speechFrameCount = 0;
               _currentChunkDurationMs = 0;
               _currentFrameUptimeMs = markerUptimeMs;
+              _currentStartUptime = markerUptimeMs > 0 ? markerUptimeMs ~/ 1000 : null;
               _isDerivedTimestamp = false;
               Logger.debug('VadAudioProcessor: Marker at $markerFrameTime — starting new recording.');
             } else {
@@ -1252,6 +1279,10 @@ class VadAudioProcessor {
                 _recordingStartTime = correctedStart;
                 lastFrameWallTime = markerFrameTime;
                 _currentFrameUptimeMs = markerUptimeMs;
+                // Recalibrating moves the OPEN recording's start back by the audio
+                // already buffered, so its uptime has to move by the same span.
+                final correctedUptimeMs = markerUptimeMs - _currentChunkDurationMs;
+                _currentStartUptime = correctedUptimeMs > 0 ? correctedUptimeMs ~/ 1000 : null;
                 _isDerivedTimestamp = false;
                 Logger.debug(
                     'VadAudioProcessor: Marker at ${markerFrameTime.toLocal()} — recalibrated start to ${correctedStart.toLocal()} (offset ${_currentChunkDurationMs}ms).');
@@ -1418,6 +1449,7 @@ class VadAudioProcessor {
             _currentChunkDurationMs = 0;
             _silenceRunMs = 0;
             _currentFrameUptimeMs = markerUptimeMs;
+            _currentStartUptime = markerUptimeMs > 0 ? markerUptimeMs ~/ 1000 : null;
             _isDerivedTimestamp = false;
             // 6) Queue the high-priority marker at offset 0 of the new recording.
             if (markerMs > 946684800000) {
@@ -1619,6 +1651,9 @@ class VadAudioProcessor {
               _currentChunkDurationMs = 0;
               _silenceRunMs = 0;
               _recordingStartTime = newResumeTime;
+              // The resume packet carries the device uptime the gap ended at; that is
+              // this recording's start, not the head of whatever bin we are inside.
+              _currentStartUptime = vadUptimeMs > 0 ? vadUptimeMs ~/ 1000 : null;
               _pcmBufferLen = 0;
               // ignore: unawaited_futures, discarded_futures
               _cachedStateValue?.dispose();
@@ -1978,6 +2013,16 @@ class VadAudioProcessor {
     return safe;
   }
 
+  /// The current frame's device uptime in whole seconds, or null when this stream
+  /// carries no uptime at all (a bin with no metadata header). Null rather than a
+  /// stale carry-over: a recording the anchor cannot place is `unplaceable`, which
+  /// [applyClockAnchors] leaves alone — far better than one it places wrongly.
+  int? _frameUptimeSeconds() {
+    final ms = _currentFrameUptimeMs;
+    if (ms == null || ms <= 0) return null;
+    return ms ~/ 1000;
+  }
+
   void _resetState() {
     _forcedByMarker = false;
     // Preserve _markerProtectedUntilMs across reset — the 50 s window applies
@@ -1989,6 +2034,9 @@ class VadAudioProcessor {
     _currentChunkDurationMs = 0;
     _currentMaxVoiceProb = 0.0;
     _recordingStartTime = null;
+    // Cleared with the start time it belongs to, so the next frame re-anchors both.
+    // Left set, it is exactly the stale uptime described on [_currentStartUptime].
+    _currentStartUptime = null;
     _silenceRunMs = 0;
     // A real conversation boundary (flushRemaining / silence split) ends any AAD
     // flood, so clear the latch — the next conversation splits normally. The
@@ -2090,7 +2138,14 @@ class VadAudioProcessor {
     // point), stacking it on top of the chunk just split off and producing
     // overlapping records with identical timestamps. frameTime is the correct
     // per-frame wall clock and advances monotonically across splits.
-    _recordingStartTime ??= frameTime;
+    //
+    // The uptime is anchored in the SAME breath, from the per-frame counter that
+    // advances alongside frameTime. Anchoring only the wall clock here is what left
+    // every mid-bin recording carrying a head-of-bin uptime (see [_currentStartUptime]).
+    if (_recordingStartTime == null) {
+      _recordingStartTime = frameTime;
+      _currentStartUptime = _frameUptimeSeconds();
+    }
 
     // App-side silence split. The firmware only emits a 0xFFFFFFFD gap once
     // its own AAD has gone quiet long enough; in a continuous-audio
@@ -2153,6 +2208,9 @@ class VadAudioProcessor {
       _currentChunkDurationMs = 0;
       _silenceRunMs = 0;
       _recordingStartTime = cutTime;
+      // The cap cuts at the current frame, so the running per-frame counter already
+      // holds this recording's start uptime.
+      _currentStartUptime = _frameUptimeSeconds();
       if (!_isReplayingBatch) {
         _pcmBufferLen = 0;
       }
