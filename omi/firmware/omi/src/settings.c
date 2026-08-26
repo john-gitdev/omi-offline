@@ -173,6 +173,46 @@ BUILD_ASSERT(PM_SETTINGS_STORAGE_END_ADDRESS <= PM_MCUBOOT_PRIMARY_END_ADDRESS -
              "and settings. Move the partition; do not widen this bound.");
 #endif
 
+/* The flash layout every deployed device is running. Pinned, not derived.
+ *
+ * This is the OTA compatibility guard. A DFU zip replaces the app image inside
+ * the primary slot; it does not move the slot, and MCUboot runs
+ * OVERWRITE_ONLY_FAST here, so there is no revert. Ship an image linked for a
+ * different address and the device writes it to the slot it actually has and
+ * jumps into the wrong place. That is a wired-recovery brick, and nothing in
+ * the app or the DFU flow inspects the link address before sending.
+ *
+ * The values are the ones in releases/oo306.zip's manifest (load_address
+ * 0x10200) and in every zip before it — the layout is evidence, not a
+ * preference, which is why they are literals. Partition Manager takes them from
+ * boards/omi/pm_static.yml, found via the BOARD_DIR fallback in
+ * nrf/cmake/sysbuild/partition_manager.cmake. Deleting that file (cf49cd0e)
+ * moved the app to 0xc200. The assert above did fire on that, but only via a
+ * side effect — the dynamic layout also lifted settings_storage clear of the
+ * slot, which is a different property and, on its own, a safe one. Nothing
+ * checked the link address, which is the part that bricks.
+ *
+ * Changing these numbers orphans every device in the field. They are not a knob
+ * to turn when the layout moves — if the layout moves, that is the bug.
+ *
+ * Deliberately NOT a bare `#if defined(...)`: a guard that quietly skips itself
+ * when its inputs go missing reads exactly like one that passed. The assert
+ * above has that shape; it is live today, but nothing would say so if it
+ * stopped being. Either this checks, or the build stops and says why. */
+#if defined(PM_APP_ADDRESS) && defined(PM_MCUBOOT_PRIMARY_ADDRESS) && defined(PM_MCUBOOT_PRIMARY_END_ADDRESS)
+BUILD_ASSERT(PM_APP_ADDRESS == 0x10200,
+             "app is not linked at 0x10200, the address every shipped image uses. An OTA of "
+             "this build would write an image expecting a different base into the slot the "
+             "device already has: no revert under OVERWRITE_ONLY_FAST, wired recovery only. "
+             "The layout moved; do not update this number to match it.");
+BUILD_ASSERT(PM_MCUBOOT_PRIMARY_ADDRESS == 0x10000 && PM_MCUBOOT_PRIMARY_END_ADDRESS == 0x100000,
+             "the MCUboot primary slot is no longer 0x10000-0x100000. Deployed devices cannot "
+             "resize their slot over DFU, and the trailer arithmetic above is written against "
+             "this geometry. The layout moved; do not update these numbers to match it.");
+#else
+#error                                                                                                                 \
+    "Partition Manager addresses are missing, so the OTA layout guard cannot run. This build cannot be shown to be flashable onto an existing device: fix the PM configuration rather than removing this check."
+#endif
 
 static int settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
