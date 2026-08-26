@@ -2933,8 +2933,8 @@ class RecordingsManager {
             // stranding its tail — the premature promotion the background flush path
             // is careful never to do. [applyClockAnchors] already excludes drafts when
             // it decides; this is the half that used to move them anyway.
-            .where((e) =>
-                e is File && (e.path.endsWith('.m4a') || e.path.endsWith('.wav')) && !e.path.contains('_draft.'))
+            .where(
+                (e) => e is File && (e.path.endsWith('.m4a') || e.path.endsWith('.wav')) && !e.path.contains('_draft.'))
             .cast<File>()
             .toList();
 
