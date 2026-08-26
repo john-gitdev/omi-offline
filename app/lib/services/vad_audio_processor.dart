@@ -1144,7 +1144,7 @@ class VadAudioProcessor {
           _currentStartUptime = startUptimeMs > 0 ? startUptimeMs ~/ 1000 : null;
           _currentFrameUptimeMs = startUptimeMs;
         }
-      } else if (startUptimeMs > 0) {
+      } else if (startUptimeMs > 0 && sessionId != null && sessionId == _currentSessionId) {
         // A recording is open across this bin boundary. Re-anchor the running counter
         // to the bin header's own uptime: it otherwise advances only per decoded
         // FRAME, so every padded inter-file gap (up to `vadSplitSeconds - 10 s`) leaves
@@ -1153,6 +1153,13 @@ class VadAudioProcessor {
         // once the lag passes `plausibleDriftMs` the anchor reads a correct recording as
         // provably wrong. Only the running counter moves — the open recording's own
         // start uptime is already fixed and must not.
+        //
+        // Gated on the session MATCHING, because uptime restarts at zero every boot.
+        // A session change normally splits, which empties the refs and takes the branch
+        // above — but `splitTriggered` is suppressed inside a marker window and inside a
+        // Priority Recording, so a reboot there can land here with a counter from the
+        // previous boot. Re-anchoring to the new boot's near-zero uptime would hand the
+        // next recording a start uptime of a few seconds.
         _currentFrameUptimeMs = startUptimeMs;
       }
 
