@@ -79,6 +79,20 @@ class UnavailableBatchRunner extends VadBatchRunnerChannel {
   // available returns false (default) since init was never called.
 }
 
+/// A [VadBatchRunnerChannel] that reports itself AVAILABLE, so the processor takes
+/// the two-pass deferred path — the one Android actually runs. `runVadBatch` is never
+/// reached by the tests below: the host has no Opus decoder, so no PCM windows
+/// accumulate and `_batchWindows` stays empty. Speech comes from marker protection,
+/// which is stamped during Pass 1 and replayed in Pass 2 exactly like a VAD verdict.
+class AvailableFakeBatchRunner extends VadBatchRunnerChannel {
+  @override
+  bool get available => true;
+
+  @override
+  Future<Float32List> runVadBatch(Float32List samples, {bool resetStateFirst = false}) async =>
+      Float32List(samples.length ~/ 512);
+}
+
 void main() {
   late Directory tempDir;
   late MockPathProviderPlatform mockPathProvider;
@@ -418,6 +432,124 @@ void main() {
       // After two max-cap cuts, the remaining 20 frames form a new conversation.
       expect(processor.currentChunkDurationMs, 20 * 20);
       await processor.destroy();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // A recording's start uptime is `.meta` byte 412 — the only thing a clock anchor
+  // has to place it by (DeviceClockAnchor.startMsFor). It must be THIS frame's
+  // uptime, and the batched path is where that is easy to get wrong: verdicts are
+  // deferred and replayed in Pass 2, so the running `_currentFrameUptimeMs` has
+  // already advanced to the END of the batch by the time a recording opens.
+  //
+  // Both paths are driven over the same bin so the assertion is an A/B, not a
+  // guess at what the numbers should be.
+  // ---------------------------------------------------------------------------
+  group('start uptime is anchored per frame, not per batch', () {
+    const int kBase = 1746057600000; // 2026-05-01T00:00:00Z
+    const int kUptimeMs = 3600000; // the Omi has been up an hour
+    const int kFrames = 500; // 10 s of audio
+    const int kCapMs = 1000; // cut every 50 frames
+
+    /// header(utc, uptime, session) + a 0xFFFFFFFE tap + [kFrames] frames.
+    ///
+    /// The tap is what makes any of this audio "speech": the host has no Opus
+    /// decoder, so with a Silero session present every frame would otherwise score
+    /// silent and every recording would be discarded as noise. Its uptime matches
+    /// the header's, so the first recording anchors at the bin head either way and
+    /// only the LATER ones — the ones opened by a cap cut mid-replay — can differ.
+    File makeTappedBin(String name) {
+      final b = BytesBuilder();
+      final hdr = ByteData(36);
+      hdr.setUint32(0, 0xFFFFFFFB, Endian.little);
+      hdr.setUint32(4, 28, Endian.little);
+      hdr.setUint64(8, kBase, Endian.little);
+      hdr.setUint64(16, kUptimeMs, Endian.little);
+      hdr.setUint32(24, 0, Endian.little); // imu ticks
+      hdr.setUint32(28, 1, Endian.little); // session id
+      b.add(hdr.buffer.asUint8List());
+
+      final m = ByteData(20);
+      m.setUint32(0, 0xFFFFFFFE, Endian.little);
+      m.setUint64(4, kBase, Endian.little);
+      m.setUint32(12, kUptimeMs, Endian.little);
+      m.setUint32(16, 1, Endian.little);
+      b.add(m.buffer.asUint8List());
+
+      final fh = ByteData(4)..setUint32(0, 4, Endian.little);
+      for (int i = 0; i < kFrames; i++) {
+        b.add(fh.buffer.asUint8List());
+        b.add(List.filled(4, 0));
+      }
+      final f = File('${tempDir.path}/$name');
+      f.writeAsBytesSync(b.toBytes());
+      return f;
+    }
+
+    /// Every recording written, as `startMs offset from kBase` -> `.meta` byte 412.
+    Map<int, int> uptimesByStartOffset() {
+      final out = <int, int>{};
+      for (final f in tempDir.listSync().whereType<File>()) {
+        final n = f.path.split(Platform.pathSeparator).last;
+        if (!n.startsWith('recording_') || !n.endsWith('.meta')) continue;
+        final startMs = int.parse(n.substring('recording_'.length, n.length - '.meta'.length));
+        out[startMs - kBase] = ByteData.sublistView(f.readAsBytesSync()).getUint32(412, Endian.little);
+      }
+      return out;
+    }
+
+    Future<Map<int, int>> runOverTappedBin({required bool batched}) async {
+      final processor = VadAudioProcessor.fromSettings(
+        settings: _settings(
+          minDurationMs: 0,
+          silenceDurationToSplitMs: 0x7FFFFFFF, // no silence split — the cap is the only cut
+          maxChunkMs: kCapMs,
+        ),
+        outputDir: tempDir.path,
+        session: _fakeSession(),
+        batchRunner: batched ? AvailableFakeBatchRunner() : null,
+      );
+      await processor.processSegmentFile(
+        makeTappedBin('uptime_anchor.bin'),
+        DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true),
+        startUptimeMs: kUptimeMs,
+        sessionId: 1,
+      );
+      await processor.flushRemaining();
+      await processor.destroy();
+      return uptimesByStartOffset();
+    }
+
+    /// What the device would say: a recording that starts `offset` into the bin
+    /// began at `kUptimeMs + offset` of uptime.
+    Map<int, int> expected() => {
+          for (int offset = 0; offset < kFrames * 20; offset += kCapMs) offset: (kUptimeMs + offset) ~/ 1000,
+        };
+
+    test('single-pass anchors each cap cut at its own frame', () async {
+      expect(await runOverTappedBin(batched: false), expected());
+    });
+
+    // The regression. Before the per-frame carry, every recording opened during a
+    // replay took `_currentFrameUptimeMs` as it stood at the END of the batch —
+    // so all nine cap cuts reported 3610 s (the segment end) instead of 3601…3609.
+    // Two consequences, both of which the clock anchor acts on:
+    //   * each is up to a whole batch (6000 frames / 120 s) later than the truth,
+    //     while plausibleDriftMs floors at 60 s — so `clockVerdict` reads a correct
+    //     session as provably wrong and re-files it;
+    //   * they all share ONE uptime, which is the precondition promoteSessionToDate's
+    //     collision guard exists to survive. This manufactured it.
+    test('batched replay anchors each cap cut at its own frame, not the batch end', () async {
+      expect(await runOverTappedBin(batched: true), expected());
+    });
+
+    test('both paths agree over the same bin', () async {
+      final single = await runOverTappedBin(batched: false);
+      // Clear the first run's output so the second is measured on its own.
+      for (final f in tempDir.listSync().whereType<File>()) {
+        if (f.path.contains('recording_')) f.deleteSync();
+      }
+      expect(await runOverTappedBin(batched: true), single);
     });
   });
 }
