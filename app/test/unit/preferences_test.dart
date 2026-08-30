@@ -315,5 +315,44 @@ void main() {
       final val = prefsUtil.getDouble('test_num');
       expect(val, 5.0);
     });
+
+    // The auto-sync schedule hangs off this signal: DeviceProvider re-anchors the Dart
+    // interval timer and the exact alarm whenever it fires. The wiring is what makes a
+    // foreground sync (run by RecordingsController, which holds no DeviceProvider) move
+    // the schedule at all, so these pin the two properties it depends on.
+    group('lastSyncCompleted signal', () {
+      test('fires on every write, including a write of the same value', () {
+        var fired = 0;
+        void listener() => fired++;
+        SharedPreferencesUtil.lastSyncCompleted.addListener(listener);
+        addTearDown(() => SharedPreferencesUtil.lastSyncCompleted.removeListener(listener));
+
+        prefsUtil.lastSyncCompletedMs = 1000;
+        expect(fired, 1);
+        expect(prefsUtil.lastSyncCompletedMs, 1000);
+
+        // Same value again. A ValueNotifier would swallow this; two syncs completing in
+        // the same millisecond are still two syncs, and the second must re-anchor too.
+        prefsUtil.lastSyncCompletedMs = 1000;
+        expect(fired, 2);
+
+        prefsUtil.lastSyncCompletedMs = 2000;
+        expect(fired, 3);
+      });
+
+      test('does not fire for the skip/status prefs, which move no schedule', () {
+        var fired = 0;
+        void listener() => fired++;
+        SharedPreferencesUtil.lastSyncCompleted.addListener(listener);
+        addTearDown(() => SharedPreferencesUtil.lastSyncCompleted.removeListener(listener));
+
+        // A skip deliberately leaves lastSyncCompletedMs alone (nothing was pulled), so
+        // the next automatic sync must still land on the original schedule.
+        prefsUtil.lastSyncSkipped = true;
+        prefsUtil.lastSyncStatusMs = 5000;
+        prefsUtil.lastSyncPartial = true;
+        expect(fired, 0);
+      });
+    });
   });
 }
