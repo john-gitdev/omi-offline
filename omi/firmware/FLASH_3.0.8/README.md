@@ -1,5 +1,15 @@
 # Flashing Instructions for Omi Firmware v3.0.8
 
+> **Upstream document, and the version number is not this fork's.** The `v3.0.8` here is
+> **BasedHardware/omi**'s firmware version, and the release links below point at that
+> repository. This fork's firmware is versioned `oo-<x.y.z>` (currently `oo-3.1.0`), and
+> the collision with our own retired `oo-3.0.8` is coincidental — do not flash an upstream
+> `merged.hex` expecting this fork's behaviour.
+>
+> Kept for the **J-Link wired-recovery procedure**, which is generic to the nRF5340 and is
+> the only way back from a device that will not take an OTA. For normal builds and OTA
+> flashing of *this* firmware, see [`../BUILD_AND_OTA_FLASH.md`](../BUILD_AND_OTA_FLASH.md).
+
 This guide provides step-by-step instructions for flashing the Omi firmware using J-Link on both macOS and Windows systems.
 
 ## Prerequisites
