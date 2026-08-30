@@ -1011,7 +1011,9 @@ The old default (Maximize Battery **off**) tried to stay connected in the backgr
 ### Grace disconnect — load-bearing invariant
 `onAppPaused` does **not** disconnect immediately; it arms `_pauseDisconnectTimer` (`_backgroundDisconnectGrace`, 15 s) so a quick app-switch / notification-shade glance doesn't force a reconnect on return.
 - **The keep-alive must keep running during the grace window.** That — not the grace duration — is what stops the firmware idle-drop, so the link is still live if the user returns. `onAppPaused` therefore must **not** call `_stopForegroundKeepAlive()` (it used to, pre-0.14.9). A future "simplify" that re-adds the early stop silently reintroduces a mid-grace firmware drop. There's an inline comment on the field warning about this.
-- **The tick re-arms while a sync is in flight** (`_onPauseDisconnectTick` → `_armPauseDisconnect`). Start-a-sync-then-background case: keep-alive holds the link through the sync, the grace effectively restarts once `isSyncing` / `_backgroundSyncActive` clears, then it stops the keep-alive and disconnects. Without the re-arm the one-shot timer bailed forever and the device stayed connected (keep-alive pinging) until the next scheduled sync. Local decode/VAD processing does **not** hold the BLE link, so it isn't part of the bail condition.
+- **The tick polls while a sync is in flight, and the grace starts when the sync ends** (`_onPauseDisconnectTick`). Start-a-sync-then-background case: keep-alive holds the link through the sync; the tick re-checks every `_backgroundDisconnectPoll` (**3 s**) while `isSyncing` / `_backgroundSyncActive` is set, latches that it saw one (`_pauseGraceSawSync`), then hands back one **full** `_backgroundDisconnectGrace` (15 s) on the first idle tick and disconnects on the tick after that. Something must re-check: without it the one-shot timer bailed forever and the device stayed connected (keep-alive pinging) until the next scheduled sync. Local decode/VAD processing does **not** hold the BLE link, so it isn't part of the bail condition.
+- **Do not collapse the poll back into the grace.** They were the same 15 s constant until 0.36.4, which made one value do two jobs: the tick re-armed a *full* grace whenever it found a sync running, so the grace a user actually got after a sync was however much of the window happened to be left when the sync ended — uniform in [0, 15 s]. A sync finishing a second before the tick dropped the link a second later, losing exactly the quick-return protection the grace exists for. Two constants, two jobs.
+- **No `await` between the tick's `isSyncing` check and `disconnectDevice()`.** Dart's single thread makes that pair atomic only while it contains no suspension point — the same invariant as the GATT-cache fingerprint's `isSyncing`/`recycleConnection()` pair (CLAUDE.md). Noted at the site.
 - Cancelled on resume, on any background disconnect (`onDeviceDisconnected`), in `dispose` and `prepareDFU`.
 - **15 s value**: covers essentially all quick app-switches; extra connected time vs a shorter grace is negligible against the device's always-on mic draw. Deliberately a fixed constant, **not** user-selectable — a "grace seconds" slider is the battery-vs-convenience toggle we just removed, in disguise, and isn't a knob a user can reason about.
 
@@ -1032,6 +1034,55 @@ Foreground processing progress: `_onProcessingProgress` (a class method on `Devi
 - `app/lib/providers/device_provider.dart` — `_backgroundDisconnectGrace` + `_pauseDisconnectTimer` (field decl ~line 67), `onAppPaused` / `_armPauseDisconnect` / `_onPauseDisconnectTick`, `onAppResumed` (cancel), `_doBackgroundSync` finally (post-sync disconnect), `_handleDeviceConnected` background drop-guard, `onDeviceDisconnected` background guards, `_showIdleNotification` + `_syncOwnsNotification`.
 - Removed: `maximizeBattery` getter/setter in `app/lib/backend/preferences.dart`; the `SwitchListTile` + `_maximizeBattery` state in `app/lib/pages/settings/app_settings_page.dart`.
 - Keep-alive: `_startForegroundKeepAlive` / `_stopForegroundKeepAlive` (same file) — see the field-comment invariant above.
+
+---
+
+## App: The Flutter engine outlives the Activity (0.36.0)
+
+Shipped in 0.36.0–0.36.1. The prerequisite for background sync working at all, and the invariants below are the kind a "simplify the Android startup" pass removes without noticing.
+
+### The failure it fixes
+
+Android reclaims a backgrounded Activity under memory pressure — routinely, after a few hours — which destroyed its `FlutterEngine`. But `OmiBleForegroundService` keeps the **process** alive and only stops on a deliberate swipe-away. So the device stayed connected, the native BLE layer kept working, and Dart was simply gone. **Every path that can sync is Dart-side**, so both wake paths (WorkManager and the exact alarm) took their "Flutter engine not running — sync deferred to next app open" branch and **returned success having done nothing**.
+
+Measured on device 2026-08-28: seventeen consecutive hours where native logged 300+ records and Dart logged two, WorkManager firing on time throughout. Opening the app then drained 68 files / 125 MB / 11.3 h of audio in one go. Nothing was lost — recordings stay on the Omi until collected — but a day passed with a full device and an app that looked healthy.
+
+### The shape
+
+`MyApp` (the `Application`) creates the engine, caches it, and registers everything engine-scoped. `MainActivity` adopts it by id (`getCachedEngineId`) and never destroys it (`shouldDestroyEngineWithHost = false`). A reclaim therefore detaches the UI and leaves Dart running.
+
+- **Exactly ONE engine, deliberately.** A headless per-sync engine would race the Activity's over the BLE stack; a single always-present engine has no such state to reconcile.
+- **`cleanUpFlutterEngine` must NOT null `flutterApi` or clear `isFlutterAlive`.** The engine is not going away, and saying otherwise tells both wake paths Dart is dead while it runs fine — which is the original bug, restored. It releases only the Activity reference and the companion manager, both of which must not outlive the Activity.
+- **`VadBatchRunner` is deliberately not destroyed.** That was right while it belonged to the Activity; destroying it now would leave later background syncs — the exact runs this enables — without a batch runner. Dart's own `dispose` releases the ORT session after each run.
+- **Plugin registration still happens, but not where you'd look.** `FlutterActivity.configureFlutterEngine` returns early for a cached engine (`delegate.isFlutterEngineFromHost()`), so the Activity does **not** register plugins — `FlutterEngine(Context)` defaults `automaticallyRegisterPlugins` to true and the manifest carries no override, so the engine registers them itself before the entrypoint runs. If that default is ever changed the app loses every plugin channel at startup.
+- **A failed pre-warm must not brick the app.** `FlutterActivity` throws on a cache miss, so engine creation is wrapped, `getCachedEngineId()` returns the id only if the cache actually has it, and `configureFlutterEngine` registers the platform APIs when it finds them unregistered. Worst case degrades to an Activity-owned engine (pre-change behaviour), not a launch failure.
+
+### Four things fall out of it, all load-bearing
+
+1. **`BleHostApiImpl` was Activity-gated.** `manageDevice` did `getActivity() ?: return`; reschedule/wake-lock did `getActivity()?.applicationContext ?: return`. A resident engine alone would have woken Dart up to make BLE calls that silently no-op. It takes the application context and falls back to it. Genuinely Activity-bound paths (companion pairing, permission dialogs) still return early exactly as before.
+2. **The AAC encoder was Activity-scoped.** Once the Activity went, every `startEncoder` from the background processing isolate got `MissingPluginException` and the processor **silently fell back to WAV** — so background runs saved in the larger format. Nothing in it ever needed an Activity (MediaCodec plus a main-thread hop), so it lives in `AacEncoderChannel`, engine-scoped.
+3. **`main()` now runs once per PROCESS, not per app-open**, and that process can live for days. The launch housekeeping (temp cleanup, discard recovery sweep, version stamp) would have quietly dropped to once per process. Native signals **every** attach — a process that started headless has to do its UI-only work the first time a screen appears, and that first attach is not a *re*-attach — and Dart re-runs the housekeeping, debounced on a 10 s window so a cold launch doesn't sweep the filesystem twice. Every step is idempotent. The manifest's `configChanges` covers orientation, uiMode, fontScale and density, so the Activity is not recreated for those and the signal only fires on real launches and reopens.
+4. **`main()` requested permissions, and `permission_handler` THROWS without an Activity** (`PermissionManager` has an explicit `if (activity == null) errorCallback.onError("Unable to detect current Android Activity.")`). `main()` runs headless now — that is the point — so a WorkManager-started process would throw at `SyncNotification.requestPermissions()`, before `ServiceManager`, before `DeviceProvider`, and before the readiness signal. `hasUi` is asked **before** anything needing a screen, and permissions are skipped when there is none; they wait for the user to open the app.
+
+### Two readiness signals that must not be inferred
+
+- **`dartReady`, not "the engine was created".** `isFlutterAlive` used to be set when the engine was *constructed*, which is synchronously before a line of Dart runs — `executeDartEntrypoint` only schedules `main()`. A WorkManager-started process would be told Dart was ready and post a sync request at an engine with no Pigeon handler and no `DeviceProvider`. Dart now calls `dartReady` over the system channel once the sync path is genuinely up, so a `main()` that throws leaves the flag false and the wake paths correctly skip.
+- **`hasUi`, not "lifecycleState is null".** `DeviceProvider` decided foreground with `state == null || state == AppLifecycleState.resumed`, where null meant "we just launched, assume foreground". Safe while only a widget tree could build it — a widget tree meant a screen. In a WorkManager-started process with no Activity the null **never resolves**, so the app would sit believing a user was watching: holding the link open with keep-alives and taking the foreground branch in `_handleDeviceConnected`. Flipping the default is wrong in the other direction (a genuine cold start is also briefly null, and `DeviceProvider` is now constructed before the first build), so native — the only party that actually knows — is asked. `lifecycleState` still wins whenever it is set; the native answer only fills the gap. The parameter is optional, so tests and callers that cannot ask keep the previous behaviour.
+
+### `DeviceProvider` must be constructed eagerly
+
+Its constructor registers `BleBridge.backgroundSyncRequestedCallback`, the entry point for **every** scheduled sync. A lazy `ChangeNotifierProvider` builds it on the first widget that reads it — fine while the engine died with the Activity (no UI meant no Dart at all), fatal with a resident engine: a WorkManager-started process may never attach an Activity, and with no view nothing drives a frame, so the tree may never build. Native would report Dart alive, deliver the request, and `BleBridge` would call a null callback. It is constructed in `main()` and handed to `ChangeNotifierProvider.value`, so it exists whether or not a UI ever attaches.
+
+### Code locations
+
+- `app/android/app/src/main/kotlin/com/omi/offline/MyApp.kt` — engine creation + cache, the `hasUi` / `dartReady` system channel, attach signalling.
+- `app/android/app/src/main/kotlin/com/omi/offline/MainActivity.kt` — `getCachedEngineId`, `shouldDestroyEngineWithHost = false`, `cleanUpFlutterEngine`.
+- `app/android/app/src/main/kotlin/com/omi/offline/AacEncoderChannel.kt` — the encoder, moved off the Activity.
+- `app/android/app/src/main/kotlin/com/omi/offline/BleHostApiImpl.kt` — application-context fallback.
+- `app/lib/main.dart` — `hasUi` probe, `dartReady`, eager `DeviceProvider`, `_launchHousekeeping` + its 10 s debounce.
+- `app/lib/providers/device_provider.dart` — `_isAppInForeground` taking the native answer.
+
+**Not device-verified at merge.** It changes app startup and Activity lifecycle and nothing in the host suite exercises either — see LIVE_TESTING.md.
 
 ---
 
@@ -1074,11 +1125,19 @@ Each row is one `SyncNotification` method, rendered natively as **title** + **te
 | `uploading(text)` | `Uploading recordings` | controller-composed one-line summary + per-integration lines (multi-line; shown only while the sync/process pipeline is idle) |
 | `complete()` | `Conversations ready` | `Sync and processing complete` |
 | `disconnecting()` | `Omi Offline` | `Disconnecting…` |
-| `idle()`, auto-sync on, has synced | `Next sync at H:MM` | `Last Sync: {Complete\|Partial\|Skipped} • H:MM • N% Battery` |
+| `idle()`, auto-sync on, has synced | `Next sync at H:MM` | `Last Sync: {Complete\|Partial\|Skipped} • H:MM`, then ` • N% Battery` **only when that reading is current** — see below |
 | `idle()`, Manual Only | `Omi Offline` | `Omi is Connected` / `Connecting...` / `Omi is Disconnected` / `Ready to sync` |
 | `idle()` / `connected()`, muted | `Muted since H:MM` (or `Omi is Muted`) | `Next sync at H:MM` / `Connected` / `Auto-sync off` |
 
 The idle line now shows an **absolute next-sync time** ("Next sync at H:MM") and a last-sync outcome summary, not the old relative "Next sync in ~N min" countdown. `SyncNotification.nextSyncTime` / `isMuted` / `muteSince` are mirrored from `DeviceProvider` so any caller can render these.
+
+### Battery freshness rule on the idle line (0.36.4)
+
+`lastBatteryLevel` is a **stored** reading, and the idle line used to print it unconditionally. A **skipped** sync is one that never reached the Omi — out of range, or no answer — so on a skip that number is at least one interval old and ages through every cycle that misses while the line asserts it unchanged. A day away from the device and it still claimed a percentage from breakfast.
+
+The percentage is now rendered only when the app has **current knowledge** of it: the last sync actually reached the device (not `lastSyncSkipped`), **or** the link is up right now. The live-link escape is load-bearing — `lastSyncSkipped` stays set until the next sync *completes*, so gating on it alone would blank the battery while the user is watching a connected device. A null `isConnected` counts as **not** connected (`SyncNotification.idle` has a caller that passes nothing): assert less rather than more.
+
+Two renderers, one rule. `SyncNotification.idleBodyText()` (Dart) was extracted so the rule is unit-testable — `app/test/unit/utils/sync_notification_idle_text_test.dart`. `OmiBleForegroundService.renderIdleFromPrefs` (Kotlin) is its documented mirror and carries the same branch; that half matters more, because it renders exactly when the Flutter isolate is frozen or gone, which is the long unreachable stretch where the stored reading is most stale. Its only caller (`settleStaleConnectingToIdle`) writes `lastSyncSkipped = true` immediately before rendering, so the live-link escape can never be taken there today — carried anyway, because a rule that reads the same in both mirrors is worth more than eliding a branch.
 
 ### "Calculating…" guard
 
