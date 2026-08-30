@@ -1,280 +1,207 @@
-# Live testing — app 0.33.0 / firmware oo-2.10.0
+# Live testing — app 0.36.4 / firmware oo-3.1.0
 
-On-device test plan for the mic-gate change set. Everything in it builds and passes CI; **none
-of it has run on hardware**, which is what this document is for.
+On-device test plan for the **background-sync engine lifetime** (0.36.0–0.36.1) and the
+**sync-schedule rework** (0.36.4). Everything in it builds and 732 tests pass; the engine change
+is marked **NOT device-verified** in its own commits, because it changes app startup and Activity
+lifecycle and nothing in the host suite exercises either. That is what this document is for.
+
+Firmware is unchanged since `oo-3.1.0` — this is an app-side plan. The mic watch list at the end
+is carried over from the previous plan and is still open evidence for IDEAS.md #5.
 
 Work top to bottom — the later scenarios assume the earlier ones passed. Each one states what
 "pass" looks like as a concrete reading, because "seems fine" is not a result.
 
 ## Before you start
 
-1. **Install both halves.** Firmware `oo-2.10.0` and app `0.33.0`. Mixed versions degrade rather
-   than break: an older firmware makes the new `mic:` line read `n/a`, and an older app ignores
-   the appended `0x0062` fields.
-2. **Expect to re-pair.** Every DFU clears the Bluetooth bond on both sides — by design, not a
-   fault. Don't spend time diagnosing it.
-3. **Turn the event log on** — Debug Tools → Event log. Nothing below produces records without
-   it, and it is off by default and cleared by every reboot.
-4. **Where to read the mic.** Debug Tools → Diagnostics → the **Microphone** group. Three rows:
+1. **Install app 0.36.4.** No firmware flash needed, so no re-pair.
+2. **Turn on Save Debug Logs** — Debug Tools → Save Debug Logs. Most of the checks below read the
+   pulled log, and it is off by default.
+3. **Have `adb logcat` available.** Three scenarios are only observable natively:
 
-   | Row | Means |
+   ```bash
+   adb logcat -s OmiBle.MyApp:D OmiBle.ForegroundService:D flutter:D
+   ```
+
+   | Line | Means |
    |---|---|
-   | **Last audio frame** | The one to watch. Frames land every 100 ms, so **under ~200 ms means the mic is delivering right now**. Seconds means parked. Minutes means stopped — and it turns amber past ten |
-   | **Capture duty** | Recorded time as a share of uptime |
-   | **Recorded since boot** | Total voiced time |
+   | `onCreate: Flutter engine created and cached as …` | The `Application` pre-warmed the engine. Absent ⟹ the pre-warm failed and you are testing the **degraded** path, not this change |
+   | `dartReady: Dart is up — background wake paths may deliver` | Dart declared itself ready. **Until this appears, every wake correctly skips** |
+   | `main: UI attached to a running engine — permissions + launch housekeeping` | A screen attached to a process that was already running |
+   | `main: UI attached, but this launch already did its UI work — skipping` | The 10 s debounce fired — expected on a normal cold launch, *not* expected on the first attach after a headless start |
 
-   The group header summarises it without expanding: *delivering*, or *parked 4m 12s*.
+4. **The lever for "Android reclaimed the Activity".** Developer Options → **Don't keep
+   activities**. It destroys the Activity the moment you leave the app while leaving the process
+   and the foreground service running — which is exactly the reclaim this change is about, on
+   demand instead of after hours of memory pressure. Turn it **off** again before scenario 7.
 
-5. **The same readings in text**, for pasting into a report — Debug Tools → Copy snapshot:
+5. **Set the sync interval to 15 minutes** (App Settings → Background sync interval) so a
+   scheduled sync is observable inside a test session rather than half an hour later.
 
-   ```
-   mic: silentFor=142ms voiced=18320450ms duty=81.4%
-   events: capture=true (pref=true, confirmed 3s ago) supported=true held=4 dropped=0
-   ```
-
-   - `silentFor` is the same reading as **Last audio frame** above.
-   - `capture=` is the **device's** gate, with your app preference beside it. If they disagree, the
-     push was skipped (a sync holds the storage lock) — the log is not recording, whatever the
-     toggle says.
-
-> **Snapshots are worth more taken immediately after an action than at random.** Several of these
-> test a transition. Note which scenario you just ran when you save one.
+> **Snapshots are worth more taken immediately after an action than at random.** Note which
+> scenario you just ran when you save one.
 
 ---
 
-## 1. First boot
+## 1. Normal cold start still works *(the regression net — run this first)*
 
-**Do:** flash, re-pair, open Debug Tools, snapshot.
+**Do:** force-stop the app, clear it from Recents, launch it from the launcher.
 
 | Check | Pass |
 |---|---|
-| Device Settings → Firmware | `oo-2.10.0` |
-| `mic: silentFor` | under ~200 ms (auto mode: the mic never parks) |
-| `sd:` counters | all `0` |
-| `events: capture=` | `true` once you have enabled the toggle and reconnected |
-
-**Fail:** `capture=false (pref=true, …)` persisting across reconnects means the gate write is
-being skipped every time — everything below that depends on the event log will be silent.
+| Launcher opens the app | It comes up. A **brick here is the one catastrophic outcome** of this change — `FlutterActivity` throws on a cache miss, so a failed pre-warm has to degrade to an Activity-owned engine, not a failure to launch |
+| `onCreate: Flutter engine created and cached` | Present, once |
+| `dartReady` | Present, **after** the engine line, not with it |
+| Permission prompts | Appear as they always did (first install / after revoking) |
+| `main: UI attached…already did its UI work — skipping` | Present — main() did the housekeeping and native's attach signal landed within 10 s. Seeing the *un*-debounced line here means the launch swept the filesystem twice |
 
 ---
 
-## 2. Auto mode, a normal day *(your mode — this is the regression net)*
+## 2. A scheduled sync runs with the Activity destroyed *(the change itself)*
 
-**Do:** wear it as usual. Snapshot at the end of the day.
+**Do:** with **Don't keep activities ON** — open the app, confirm the Omi is connected, press Home.
+Wait out one sync interval without reopening.
 
 | Check | Pass |
 |---|---|
-| `sd: blocks/frames/codec/boot` | all `0` |
-| `mic: silentFor` | under ~200 ms |
-| `mic: duty` | plausible for your day (≈80 % is what this device measured before the change) |
-| `queue: peak` | ≤ ~70 of 120 |
-| `ring: ioErrors` | `0` |
-| `DIAG_MIC_STATE` records | **none at all**, except one `parked`/`resumed` pair per mute |
-
-**Why no records is the pass:** auto mode never parks the mic, so the gate never transitions.
-Any other `mic_state` record here is a finding, not noise.
+| The sync happens | The notification moves off the idle line into `Syncing recordings` on its own. **This is the whole test** — before 0.36.0 it stayed idle and the wake reported success having done nothing |
+| Recordings appear | Reopen afterwards: the new recordings are already there, not pulled down in a burst on open |
+| `flutter:` log activity during the window | Non-empty. The original failure was **native logging 300+ records and Dart two** over seventeen hours; that ratio is the signature |
+| No `Flutter engine not running — sync deferred to next app open` | Absent. If present, the engine did not survive |
 
 ---
 
-## 3. Manual standby parks the mic
+## 3. A headless cold start — WorkManager starts the process with no Activity ever
 
-**Do:** switch to Manual Mode. Wait 60 s. Snapshot.
+**Do:** force-stop the app (`adb shell am force-stop com.omi.offline`). Do **not** open it.
+Wait for the WorkManager backstop (≤ 15 min).
 
 | Check | Pass |
 |---|---|
-| `mic: silentFor` | tens of seconds **and climbing** on each new snapshot |
-| Event log | a `Mic parked — capture stopped (threshold 32769)` record |
+| The process starts and syncs | The foreground-service notification appears and works a sync, with no Activity ever attached |
+| `dartReady` appears | Yes — this is the case where readiness had to stop being "the engine was constructed" |
+| **No permission dialog, no crash** | `permission_handler` throws without an Activity. A `PlatformException` at `requestPermissions` here would kill `main()` before `ServiceManager` — the log shows the request being **skipped**, not failing |
+| `main: UI attached…` | **Absent** until you open the app |
 
-**This is the single most valuable reading in the whole plan** — it is the direct evidence that
-the battery change does anything at all.
-
-**Fail:** `silentFor` staying under a second means the gate never parked; the mic is still
-running and there is no saving.
-
----
-
-## 4. Pre-arm keeps the start of a manual recording *(needs your ears — a snapshot cannot show this)*
-
-**Do:** in Manual standby, **start talking first**, then press record mid-sentence. Say
-"testing one two three" with the press landing on "testing". Stop. Play it back.
+**Then open the app.** The attach must do the UI-only work it skipped:
 
 | Check | Pass |
 |---|---|
-| The recording | **the first word is there** |
-| Event log | `Mic resumed` at the press, `Mic parked` after the stop |
-
-**Fail:** the recording opens on "two three". That means the mic woke at dispatch rather than at
-the press edge, and roughly 700 ms is being lost off the front of every manual recording.
+| `main: UI attached to a running engine — permissions + launch housekeeping` | Present, **not** debounced away. A headless start leaves the debounce null precisely so the first real attach is not skipped |
+| Permissions | Requested now, if any are outstanding |
 
 ---
 
-## 5. Stopping a manual recording parks it again
+## 4. No phantom foreground
 
-**Do:** start a manual recording, stop it, snapshot after ~10 s and again after a minute.
+**Do:** during the headless window of scenario 3, watch the link.
 
 | Check | Pass |
 |---|---|
-| `mic: silentFor` | climbing within a second or two of the Stop |
-| Event log | `Mic parked` after the stop |
-
-This exercises the park driven by the **button FSM**. Scenario 7 exercises the other one.
+| The link is dropped when idle | The app must not sit holding the connection with keep-alives. With no Activity, `lifecycleState` is null forever, and the pre-0.36.0 reading of null was "assume foreground" — which would keep-alive indefinitely and take the foreground branch on connect |
+| Battery over a long headless stretch | No worse than a comparable stretch with the app merely backgrounded |
 
 ---
 
-## 6. A marker does nothing in Manual standby
+## 5. Background processing still writes M4A *(the silent one)*
 
-**Do:** in Manual standby (mic parked), tap your marker gesture. Watch the device.
+**Do:** App Settings → Recording format = **M4A**. Then run scenario 2 or 3 so a *background*
+run does the processing.
 
 | Check | Pass |
 |---|---|
-| LED | **no white flash** |
-| Event log | no new record |
-| App | no bookmark, no empty bookmark row |
-| `mic: silentFor` | keeps climbing — the mic never woke |
-
-**The absence of the LED flash is the signal.** A real marker flashes white even with LEDs off
-(it overrides stealth), so nothing flashing means nothing happened — which is the intended
-behaviour, not a dead button.
-
-**Fail worth catching:** the mic wakes (`silentFor` resets, a `Mic resumed` appears) but no
-bookmark is written. That would mean the marker write is suppressed while the force-wake still
-fires — the worst of both.
+| The resulting files | `.m4a`. **This fails silently** — Activity-scoped, the AAC encoder threw `MissingPluginException` from the background isolate and the processor fell back to `.wav` with no error surfaced. Check the extension on disk, not the UI |
 
 ---
 
-## 7. A marker during a manual recording still works, and does not outlive the Stop
+## 6. The schedule means "since the last sync" *(0.36.4)*
 
-**Do:** start a manual recording. Tap a marker mid-recording. Stop **within 30 s of the marker**.
-Snapshot immediately, then again a minute later.
+**Do:** interval at 15 min. Note the `Next sync at H:MM` on the notification. At ~14 minutes in,
+pull to sync **by hand**.
 
 | Check | Pass |
 |---|---|
-| The recording | bookmark present at the tap |
-| `mic: silentFor` after the Stop | climbing within a second or two |
-
-**Fail:** capture continues for up to 50 s past the Stop. That is `force_wake_until_ms` outliving
-the stop and resuming capture in standby — the specific bug the manual force-wake gate exists to
-prevent. This is the scenario most likely to catch a real defect.
+| `Next sync at H:MM` moves | It jumps to ~15 min from **now**, not the old time. Before 0.36.4 a manual sync stamped the completion but moved nothing, so the Omi was woken a minute later for a sync with nothing to do |
+| No sync a minute later | Correct |
+| After a sync that **could not reach** the Omi (walk out of range) | The schedule does **not** move — a skip is retried at the next opportunity rather than pushing the interval out |
 
 ---
 
-## 8. A marker in Auto mode records at least a minute
+## 7. Backgrounding mid-sync costs no grace *(0.36.4)*
 
-**Do:** in Auto mode, in a **quiet** room (so the VAD would not otherwise record), tap a marker.
-Stay quiet. Then repeat, but talk for two minutes after the tap.
+**Do:** turn **Don't keep activities OFF** first. Start a sync, and press Home while it is still
+running. Come back ~10 s after the sync finishes.
 
 | Check | Pass |
 |---|---|
-| Quiet case | a recording of roughly 60 s exists around the bookmark |
-| Talking case | the recording **extends** past a minute and runs as long as you keep talking |
-
-The minute is a floor, not a duration — 50 s of forced capture plus the 10 s VAD hold, with real
-audio refreshing the hold.
+| Still connected on return | Yes. The grace now *starts* when the sync ends; before 0.36.4 the wait was spent watching the sync and whatever was left became the whole grace — anywhere in [0, 15 s], often none |
+| Leave it longer than 15 s after the sync ends | It disconnects, as it always did |
 
 ---
 
-## 9. Mute round-trip timestamps *(auto mode — checked in the conversation list, not the snapshot)*
+## 8. The notification stops claiming a battery level it cannot know *(0.36.4)*
 
-**Do:** in Auto mode, get a recording going. Mute. Wait **5+ minutes**. Unmute and talk again.
+**Do:** leave the Omi at home (or powered off) and let several sync cycles miss.
 
 | Check | Pass |
 |---|---|
-| The recording created after unmuting | stamped at the time you **actually unmuted** |
-| Event log | a clean `Mic parked` / `Mic resumed` pair |
-| The muted stretch | appears as a "muted" ghost row |
-
-**Fail:** the new recording is stamped ~5 minutes early — i.e. by the mute duration. A long
-enough mute files it under the wrong hour, or the wrong day.
-
-> Mute is refused outright in Manual Mode (pre-existing, not part of this change) — don't read
-> that as a bug.
+| Idle line | `Last Sync: Skipped • H:MM` — **with no `• N% Battery`**. The percentage may only appear when the last sync reached the device or the link is up right now |
+| Reconnect | The percentage comes back |
+| After a force-stop, while still out of range | Android renders its own copy of that line; it must follow the same rule. This is the version most likely to be showing during a long stretch away |
 
 ---
 
-## 10. Boot restore
+## 9. The original symptom, end to end
 
-**Do:** leave the device in Manual standby, reboot it (Device Settings → Reboot Omi), reconnect,
-snapshot after a minute.
+**Do:** a full day. App backgrounded, Omi worn, Don't keep activities **off** (real conditions).
 
 | Check | Pass |
 |---|---|
-| `mic: silentFor` | tens of seconds and climbing — it came up parked |
-| Mode | still Manual standby |
-
-Then repeat with a **manual recording running** when you reboot: it should come back up recording
-(the threshold is persisted), and `silentFor` should stay under 200 ms.
-
----
-
-## 11. Priority Recording (auto mode)
-
-**Do:** in Auto mode, start a Priority Recording, talk, stop.
-
-| Check | Pass |
-|---|---|
-| The head of the recording | no gap or click at the very start |
-| Event log | `priority_record_start` and `priority_record_stop` |
-| `markers:` counters | `starts` and `stops` both incremented, `drops` still `0` |
-| `mic: silentFor` | under 200 ms throughout (auto never parks) |
-
-The head is the thing to listen for: the mic no longer stops and restarts at the start of a
-Priority Recording.
-
----
-
-## 12. Battery *(the point of the exercise)*
-
-**Do:** a Manual-mode day with the phone mostly away, against a comparable Automatic-mode day.
-Note the battery percentage at the same times of day.
-
-Crude, but it is the only measurement available without a PPK2, and it separates "worth it" from
-"wasn't". The mic path is the dominant idle draw, so if manual standby parking works you should
-see it here or nowhere.
-
----
-
-## 13. Advertising settles to the slow interval when idle
-
-**Do:** power-cycle the Omi in a quiet room, leave the phone away for **90 s**, then connect and
-snapshot. Repeat after leaving it idle and disconnected for a couple of minutes.
-
-| Check | Pass |
-|---|---|
-| `ble: … adv=` | `slow` |
-| A trailing `(want … — switch not applied)` | absent |
-
-`adv=` is the **live** interval, read at connect time — advertising stops while connected, so it
-reports what was in force when your phone found the device. That is exactly the question.
-
-**Fail:** `adv=fast` after 90 s of idle means the backstop never fired. `adv=fast (want slow —
-switch not applied)` is different and more interesting: the backstop *did* fire, and the
-advertising watchdog has not applied the switch.
-
-> Don't read `lastFailAdv=` for this. That is the interval during the last *failed* connection —
-> a different field, and it was misread as the live mode twice during review, which is why
-> `adv=` now exists.
+| Syncs through the day | Recordings arrive in interval-sized batches, not one 11-hour catch-up on open |
+| Opening the app in the evening | Pulls down minutes of audio, not hours. The reported failure was **68 files / 125 MB / 11.3 h** in one go after seventeen hours that all looked healthy |
 
 ---
 
 ## Watch list — the next few days
 
-Check a snapshot every couple of days. Any of these is worth stopping for:
+Check a snapshot every couple of days. Any of these is worth stopping for.
+
+**App (this change):**
 
 | Signal | Means |
 |---|---|
-| **`Mic resumed but SILENT`** | The wedge, caught live. START succeeded and the part returned digital zero, which a real room cannot produce. **This is also the evidence that says restore the PDM_EN cycle** (IDEAS.md #5) |
+| A catch-up burst on app open | The engine is dying with the Activity again — scenario 2 regressed |
+| Background recordings in `.wav` with M4A selected | The AAC encoder went back to Activity scope |
+| Repeated `main: UI attached to a running engine` with no reopen | The attach signal is firing more than it should; the housekeeping is idempotent, but it sweeps the filesystem each time |
+| `dartReady` absent while the app is plainly running | The wake paths are skipping every sync — the failure this change replaced, in its fail-safe direction |
+
+**Mic (carried over — still open evidence for IDEAS.md #5):**
+
+| Signal | Means |
+|---|---|
+| **`Mic resumed but SILENT`** | The mic wedge, caught live. START succeeded and the part returned digital zero, which a real room cannot produce. **This is the evidence that says restore the PDM_EN cycle** (IDEAS.md #5, still *Pending — awaiting field evidence*) |
 | `Mic resume FAILED` | dmic START rejected twice. Should never appear |
 | `silentFor` in minutes with **no** preceding `Mic parked` | The mic stopped on its own — not the gate |
-| New `sd:` block or frame drops | Audio lost. Was `0` for 22 h before this change |
+| New `sd:` block or frame drops | Audio lost |
 | `queue: peak` past ~70 | Rising queue pressure; check `ring: maxIo` alongside |
 | `ring: ioErrors` above `0` | The card is rejecting writes |
-| Rapid `parked`/`resumed` churn | dmic cycling more than expected — the risk this change carries |
+
+**BLE (new instrument, nothing to check — just collect):**
+
+Every disconnect now logs `ble_link_drop` with the connected RSSI and its age. Nothing here is a
+pass/fail; the point is to accumulate a multi-day log so the mid-transfer `gatt_status_8` drops
+can finally be sorted into "device stalled" (≈ −60 dBm) and "out of range" (≈ −100 dBm). See
+BLE_Research.md §7 and IDEAS.md ACTIVE #1.
 
 ---
 
 ## What this plan cannot tell you
 
-- **Whether the post-resume probe works**, short of an actually wedged mic. It cannot be forced.
-- **Real current draw.** Everything about the battery here is inference from percentages. Four
-  states on a PPK2 (auto-silent disconnected / muted / recording / syncing) would turn the whole
-  list of levers into a ranking.
+- **Whether a real memory-pressure reclaim behaves like "Don't keep activities".** The developer
+  option destroys the Activity deterministically on background; a genuine reclaim happens under
+  memory pressure at an arbitrary point, possibly mid-sync. Scenario 2 is the closest available
+  approximation, not the thing itself.
+- **Whether the pre-warm failure path degrades correctly.** `FlutterEngine(Context)` failing in
+  `Application.onCreate` cannot be forced from outside the app. The guard exists so a failure
+  falls back to an Activity-owned engine rather than bricking the launcher; scenario 1 only
+  confirms the *happy* path.
+- **Real current draw.** Everything about battery here is inference from percentages.
