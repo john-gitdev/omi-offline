@@ -2365,4 +2365,158 @@ void main() {
       await proc.destroy();
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // The running per-frame uptime counter across a bin boundary.
+  //
+  // `_currentFrameUptimeMs` advances only per DECODED FRAME, but an inter-file gap is
+  // padded into the recording as silence without any frames — so at every stitched
+  // boundary the counter falls behind the device by the size of the gap, and the error
+  // accumulates across boundaries. The next recording to open takes its start uptime
+  // from that counter, so once the lag passes `plausibleDriftMs` (60 s floor) the clock
+  // anchor reads a CORRECT recording as provably wrong and re-files the session.
+  //
+  // The geometry below is measured from a real 117-bin session (device session
+  // 1193025564, 2026-08-28). Consecutive bins there drift by 20 ms to 500 s between
+  // what the counter accrued and what the device's own uptime says:
+  //
+  //     boundary      d_uptime    d_audio    counter behind by
+  //     ...939249      141222     141340        -118 ms
+  //     ...940511      601661     600540        1121 ms
+  //     ...944604      601160     579940       21220 ms   <- stitches, accumulates
+  //     ...941199      688399     186720      501679 ms   <- too big; splits instead
+  //
+  // Only gaps under `vadSplitSeconds - 10 s` stitch, so a single boundary can hide at
+  // most that much — but nothing bounds the SUM across a long recording.
+  // ---------------------------------------------------------------------------
+  group('frame-uptime re-anchor at a bin boundary', () {
+    const int kBase = 1746057600000; // 2026-05-01T00:00:00Z
+    const int kUp1 = 3600000; // bin 1 opens an hour into the boot
+    const int kFrames1 = 100; // 2 s of audio
+    const int kGapMs = 30000; // 30 s of wall clock with no frames — padded, stitched
+    const int kFrames2 = 600; // 12 s of audio
+    const int kCapMs = 40000; // > 2 s + 30 s, so the boundary STITCHES rather than cuts
+
+    // Bin 2's audio begins here in device uptime. The running counter, left alone,
+    // would be at kUp1 + kFrames1*20 — short by the entire gap, because the padding is
+    // added to _currentChunkDurationMs and _currentRefs but never to the counter.
+    const int kUp2 = kUp1 + kFrames1 * 20 + kGapMs;
+
+    /// A bin carrying a real `0xFFFFFFFB` metadata header, optionally with a button-tap
+    /// marker after [markerAfter] frames.
+    File makeBin(String name,
+        {required int utcMs, required int uptimeMs, required int sessionId, required int frames, int? markerAfter}) {
+      final b = BytesBuilder();
+      final hdr = ByteData(36);
+      hdr.setUint32(0, 0xFFFFFFFB, Endian.little);
+      hdr.setUint32(4, 28, Endian.little);
+      hdr.setUint64(8, utcMs, Endian.little);
+      hdr.setUint64(16, uptimeMs, Endian.little);
+      hdr.setUint32(24, 0, Endian.little); // imu ticks
+      hdr.setUint32(28, sessionId, Endian.little);
+      b.add(hdr.buffer.asUint8List());
+      final fh = ByteData(4)..setUint32(0, 4, Endian.little);
+      for (int i = 0; i < frames; i++) {
+        if (markerAfter != null && i == markerAfter) {
+          final m = ByteData(20);
+          m.setUint32(0, 0xFFFFFFFE, Endian.little);
+          m.setUint64(4, utcMs + i * 20, Endian.little);
+          m.setUint32(12, uptimeMs + i * 20, Endian.little);
+          m.setUint32(16, sessionId, Endian.little);
+          b.add(m.buffer.asUint8List());
+        }
+        b.add(fh.buffer.asUint8List());
+        b.add(List.filled(4, 0));
+      }
+      final f = File('${tempDir.path}/$name');
+      f.writeAsBytesSync(b.toBytes());
+      return f;
+    }
+
+    ProcessingSettings boundarySettings() => const ProcessingSettings(
+          vadEnabled: false, // AAD: every frame is speech, so the cap is the only cut
+          speechThreshold: 0.5,
+          silenceDurationToSplitMs: 120000, // gaps under 110 s stitch rather than split
+          minDurationMs: 0,
+          minSpeechMs: 0,
+          maxChunkMs: kCapMs,
+          deviceId: '',
+          audioSaveFormat: 'wav',
+          omiEnabled: false,
+          priorityRecordCapMinutes: 0,
+        );
+
+    /// `.meta` byte 412 for every recording written, keyed by start-ms offset from kBase.
+    Map<int, int> uptimesByStartOffset() {
+      final out = <int, int>{};
+      for (final f in tempDir.listSync().whereType<File>()) {
+        final n = f.path.split(Platform.pathSeparator).last;
+        if (!n.startsWith('recording_') || !n.endsWith('.meta')) continue;
+        final startMs = int.parse(n.substring('recording_'.length, n.length - '.meta'.length));
+        out[startMs - kBase] = ByteData.sublistView(f.readAsBytesSync()).getUint32(412, Endian.little);
+      }
+      return out;
+    }
+
+    Future<Map<int, int>> runTwoBins({required int session2, required int uptime2, int? markerAfter}) async {
+      final proc = VadAudioProcessor.fromSettings(settings: boundarySettings(), outputDir: tempDir.path);
+      await proc.processSegmentFile(
+        makeBin('b1.bin', utcMs: kBase, uptimeMs: kUp1, sessionId: 1, frames: kFrames1, markerAfter: markerAfter),
+        DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true),
+        startUptimeMs: kUp1,
+        sessionId: 1,
+      );
+      await proc.processSegmentFile(
+        makeBin('b2.bin',
+            utcMs: kBase + kFrames1 * 20 + kGapMs, uptimeMs: uptime2, sessionId: session2, frames: kFrames2),
+        DateTime.fromMillisecondsSinceEpoch(kBase + kFrames1 * 20 + kGapMs, isUtc: true),
+        startUptimeMs: uptime2,
+        sessionId: session2,
+      );
+      await proc.flushRemaining();
+      await proc.destroy();
+      return uptimesByStartOffset();
+    }
+
+    // The recording stays OPEN across the boundary: the gap is under the split
+    // threshold and `chunk + gap` stays under the cap, so neither the split at :1090 nor
+    // the inter-file cut at :1108 fires and the refs are still populated at bin entry —
+    // which is what puts execution on the re-anchor branch at all. (Getting this wrong
+    // is easy: a smaller cap takes the inter-file cut, empties the refs, and the
+    // `_currentRefs.isEmpty` arm then sets the right answer for the wrong reason.)
+    //
+    // The cap then cuts 8 s into bin 2, and the recording that opens there must carry
+    // bin 2's own uptime line. Without the re-anchor the counter is short by the whole
+    // 30 s gap — a recording claiming to have begun before the bin it is made of.
+    test('a recording opened after a stitched boundary is anchored to the new bin', () async {
+      final uptimes = await runTwoBins(session2: 1, uptime2: kUp2);
+      const cutOffset = kCapMs; // the cap cuts when the chunk reaches kCapMs
+      expect(uptimes.containsKey(cutOffset), isTrue, reason: 'expected a cap cut inside bin 2, got ${uptimes.keys}');
+      // Device truth: that instant is kFrames1*20 + kGapMs into bin 1's line, i.e.
+      // 8 s past bin 2's header.
+      const expected = (kUp2 + (kCapMs - kFrames1 * 20 - kGapMs)) ~/ 1000;
+      expect(uptimes[cutOffset], expected,
+          reason:
+              'without the re-anchor this reads ${(kUp1 + kCapMs - kGapMs) ~/ 1000}s — short by the ${kGapMs ~/ 1000}s gap');
+    });
+
+    // The re-anchor is gated on the session id MATCHING, because uptime restarts at
+    // zero every boot. A session change normally splits (emptying the refs and taking
+    // the other arm), but `splitTriggered` is suppressed inside a marker window and
+    // inside a Priority Recording — so a reboot there lands on the re-anchor with a
+    // counter from the previous boot. Here a tap in bin 1 holds the 50 s window open
+    // across the boundary, which is the reachable shape of that case.
+    //
+    // Adopting bin 2's near-zero uptime would hand the next recording a start uptime of
+    // a few seconds, which the clock anchor then reads as the whole session being an
+    // hour wrong.
+    test('a bin from a DIFFERENT session never re-anchors the counter', () async {
+      const int freshBootUptime = 5000; // the new boot is 5 s old
+      final uptimes = await runTwoBins(session2: 2, uptime2: freshBootUptime, markerAfter: 50);
+      for (final e in uptimes.entries) {
+        expect(e.value * 1000, greaterThanOrEqualTo(kUp1),
+            reason: 'recording at +${e.key}ms claims uptime ${e.value}s — it adopted the new boot\'s counter');
+      }
+    });
+  });
 }

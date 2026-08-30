@@ -2221,4 +2221,71 @@ void main() {
       );
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Segment order IS audio order — the processor reads the sorted list as one
+  // continuous stream. The names below are real, from a 118-bin export off a device
+  // (2026-08-28); the pre-time-sync ones are synthesised because that export has none,
+  // which is exactly why the bug survived: every bin a time-synced device writes has a
+  // 10-digit timerStart, and for those a string sort and a numeric sort agree.
+  // ---------------------------------------------------------------------------
+  group('compareSegmentPaths', () {
+    String bin(String name) {
+      final ts = name.split('_').first;
+      final folder = (int.tryParse(ts) ?? 0) < 946684800 ? 'session_${name.split('_')[1].split('.').first}' : ts;
+      return '/docs/raw_segments/$folder/$name';
+    }
+
+    List<String> sorted(List<String> names) {
+      final paths = names.map(bin).toList()..sort(RecordingsManager.compareSegmentPaths);
+      return paths.map((p) => p.split('/').last).toList();
+    }
+
+    test('real time-synced bins keep their chronological order', () {
+      const names = [
+        '1787938578_4261367757.bin',
+        '1787938601_1193025564.bin',
+        '1787939108_1193025564.bin',
+        '1787939249_1193025564.bin',
+        '1788040373_1193025564.bin',
+      ];
+      expect(sorted(names.reversed.toList()), names);
+    });
+
+    // The regression. A pre-time-sync bin keys on uptime seconds, so its name is short
+    // — and "999" string-sorts AFTER "1787709128" on the first character, putting the
+    // oldest audio of a boot at the newest end of the stream.
+    test('a pre-time-sync bin sorts before the epoch-stamped ones, not after', () {
+      final out = sorted([
+        '1787938601_1193025564.bin',
+        '999_1193025564.bin',
+        '1787939108_1193025564.bin',
+        '61_1193025564.bin',
+      ]);
+      expect(out, [
+        '61_1193025564.bin',
+        '999_1193025564.bin',
+        '1787938601_1193025564.bin',
+        '1787939108_1193025564.bin',
+      ]);
+      // Spelled out, because this is the whole point: the old lexicographic comparator
+      // put the two uptime-keyed bins last.
+      expect(out.first, '61_1193025564.bin', reason: 'a string sort puts "61" after "1787938601"');
+    });
+
+    test('two boots at the same uptime second order stably by session id', () {
+      final out = sorted(['999_2222222222.bin', '999_1111111111.bin']);
+      expect(out, ['999_1111111111.bin', '999_2222222222.bin']);
+    });
+
+    // Windows paths reach this in tests; the comparator normalises separators the same
+    // way relBinPath does, so the timestamp is parsed rather than the whole path.
+    test('a backslash path parses its timestamp, not the whole path', () {
+      final paths = [
+        r'C:\docs\raw_segments\1787939108\1787939108_1193025564.bin',
+        r'C:\docs\raw_segments\999\999_1193025564.bin',
+      ]..sort(RecordingsManager.compareSegmentPaths);
+      expect(paths.first.endsWith(r'999_1193025564.bin'), isTrue);
+    });
+  });
 }
