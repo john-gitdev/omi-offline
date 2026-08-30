@@ -684,12 +684,7 @@ class RecordingsManager {
         // count: a pre-time-sync bin keys on uptime seconds (`999_<sid>.bin`), and "999"
         // sorts after "1787709128" on the first character, landing the session's oldest
         // audio at the newest end of the stream.
-        allSegments.sort((a, b) {
-          final byTs = _segmentTimestamp(a.path).compareTo(_segmentTimestamp(b.path));
-          if (byTs != 0) return byTs;
-          // Same timerStart (two sessions' pre-time-sync bins): stable, arbitrary.
-          return a.path.split('/').last.compareTo(b.path.split('/').last);
-        });
+        allSegments.sort((a, b) => compareSegmentPaths(a.path, b.path));
 
         // Pre-compute segment timestamps and session IDs on the main isolate.
         const kMinValidEpoch = 946684800;
@@ -3317,6 +3312,27 @@ class RecordingsManager {
     // single-valued — any non-negative result is a genuine skip.
     if (resumeIdx <= 0 || resumeIdx >= currentPaths.length) return -1;
     return resumeIdx;
+  }
+
+  /// Orders two raw-segment paths chronologically — and NUMERICALLY so, because the
+  /// processor reads the sorted list as one continuous stream, which makes its order
+  /// the audio's order.
+  ///
+  /// Comparing basenames as strings only agrees with time while every `timerStart` has
+  /// the same digit count. It does for epoch seconds (10 digits until 2286), which is
+  /// why this survived so long — but a pre-time-sync bin keys on UPTIME seconds
+  /// (`session_<sid>/999_<sid>.bin`, see `Wal.relativeBinPath`), and `"999"`
+  /// string-sorts *after* `"1787709128"` on the first character. That lands a boot's
+  /// oldest audio at the newest end of the stream, where the processor reads it as time
+  /// jumping backwards.
+  ///
+  /// Ties break on the basename so the order is total and stable: two boots can each
+  /// produce a bin at the same uptime second, and they differ only by session id.
+  @visibleForTesting
+  static int compareSegmentPaths(String a, String b) {
+    final byTs = _segmentTimestamp(a).compareTo(_segmentTimestamp(b));
+    if (byTs != 0) return byTs;
+    return _segmentName(a).compareTo(_segmentName(b));
   }
 
   /// The firmware `timerStart` encoded in a raw-segment path, or 0 if unparseable.
