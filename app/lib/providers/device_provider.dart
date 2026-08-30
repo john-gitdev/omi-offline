@@ -105,6 +105,19 @@ class DeviceProvider extends ChangeNotifier
   // at the top of onAppPaused.
   Timer? _pauseDisconnectTimer;
   static const Duration _backgroundDisconnectGrace = Duration(seconds: 15);
+  // How often the tick re-checks whether an in-flight sync has finished. NOT a second
+  // grace window: the grace and this cadence used to be the same 15 s, which made one
+  // value do two jobs. The tick re-armed for a full grace whenever it found a sync
+  // running, so the grace a user actually got after a sync was however much of the
+  // window happened to be left when the sync ended — anywhere in [0, 15 s]. A sync
+  // finishing a second before the tick dropped the link a second later, losing exactly
+  // the quick-return protection the grace exists for. Poll at this cadence while the
+  // link is busy, then hand back one FULL grace once it goes idle.
+  static const Duration _backgroundDisconnectPoll = Duration(seconds: 3);
+  // Whether the previous tick found a sync holding the link. Turns the next idle tick
+  // into "start the real grace now" instead of "disconnect now". Cleared whenever the
+  // window is (re)opened or cancelled, so it always describes the current window.
+  bool _pauseGraceSawSync = false;
   // Background-connect settle watchdog. A scheduled-sync connect attempt paints
   // a "Connecting…" notification and normally settles it back to the idle "Last
   // Sync" line in its finally / _connectThenSyncOrFail when the device is
@@ -328,7 +341,21 @@ class DeviceProvider extends ChangeNotifier
         _pendingAppOpenSync = true;
       }
     }
+    SharedPreferencesUtil.lastSyncCompleted.addListener(_onSyncCompleted);
     _startBackgroundSyncTimer();
+  }
+
+  /// Re-anchor the auto-sync schedule off the back of a completed sync, whoever ran it.
+  ///
+  /// The foreground pipeline (`RecordingsController`) is the case this exists for: it
+  /// stamps `lastSyncCompletedMs` from a page that holds no DeviceProvider, so before
+  /// this the timer and the alarm kept their original phase and a manual sync was
+  /// followed by an automatic one moments later. The background path reaches here too
+  /// — harmlessly, since it is re-anchoring to a completion instant a few seconds after
+  /// the tick that started it.
+  void _onSyncCompleted() {
+    if (_disposed) return;
+    _anchorAutoSyncSchedule();
   }
 
   void _onBackgroundSyncRequested() {
@@ -1207,11 +1234,16 @@ class DeviceProvider extends ChangeNotifier
   void restartBackgroundSyncTimer() => _startBackgroundSyncTimer();
 
   void _startBackgroundSyncTimer() {
-    _backgroundSyncTimer?.cancel();
     final interval = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
     // Keep WorkManager in sync with the Dart timer interval so both fire on
     // the same schedule. WorkManager is the fallback when the process is alive
     // but the foreground service was killed by an OEM battery optimizer.
+    //
+    // Only here, not in _anchorAutoSyncSchedule: this is a registration keyed to the
+    // INTERVAL, and re-registering it on every completed sync would be a binder call
+    // per sync for no effect (ExistingPeriodicWorkPolicy.UPDATE keeps the already
+    // scheduled run). The worker does not need re-anchoring anyway — it gates itself
+    // on lastSyncCompletedMs, so it reads the new schedule the moment it is written.
     if (Platform.isAndroid) {
       unawaited(BleHostApi().rescheduleBackgroundSync(interval));
     }
@@ -1221,21 +1253,50 @@ class DeviceProvider extends ChangeNotifier
     // service lifetime — no idle notification, no redundant "Connected" line).
     final deviceBound = SharedPreferencesUtil().btDevice.id.isNotEmpty;
     unawaited(SyncNotification.setPersistent(interval > 0 && deviceBound));
-    if (interval <= 0) {
-      nextSyncTime = null;
-      if (Platform.isAndroid) unawaited(BleHostApi().setNextSyncTime(0));
-      notifyListeners();
-      return; // Manual only
-    }
-    nextSyncTime = DateTime.now().add(Duration(minutes: interval));
-    if (Platform.isAndroid) unawaited(BleHostApi().setNextSyncTime(nextSyncTime!.millisecondsSinceEpoch));
+    _anchorAutoSyncSchedule();
+  }
+
+  /// Tell the UI and the exact alarm when the next automatic sync is due — the two
+  /// consumers that have to be *told* a due time rather than deriving one. `null`
+  /// (or Manual Only) disarms the alarm.
+  ///
+  /// The third consumer, the WorkManager backstop, is absent on purpose: it derives the
+  /// same answer from `lastSyncCompletedMs` when it fires, so it needs no push. This is
+  /// the only place the two pushed consumers are written, so they cannot drift apart.
+  void _publishNextSyncTime(DateTime? at) {
+    nextSyncTime = at;
+    if (Platform.isAndroid) unawaited(BleHostApi().setNextSyncTime(at?.millisecondsSinceEpoch ?? 0));
     notifyListeners();
+  }
+
+  /// Point every automatic trigger at "one full interval from now", and rebuild the
+  /// Dart timer so its phase says the same thing.
+  ///
+  /// Called when the schedule is (re)configured and, via
+  /// [SharedPreferencesUtil.lastSyncCompleted], whenever any sync completes — so the
+  /// interval consistently means "since the last sync" rather than "since whenever the
+  /// timer happened to be built". The three triggers cannot share one clock (the alarm
+  /// is a one-shot the OS owns; WorkManager has a 15-minute floor and fires inexactly),
+  /// so they agree on the due TIME instead: this method re-anchors the two that are
+  /// scheduled ahead of time, and the WorkManager backstop derives the same answer from
+  /// lastSyncCompletedMs when it fires.
+  void _anchorAutoSyncSchedule() {
+    _backgroundSyncTimer?.cancel();
+    final interval = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
+    if (interval <= 0) {
+      _publishNextSyncTime(null); // Manual only
+      return;
+    }
+    _publishNextSyncTime(DateTime.now().add(Duration(minutes: interval)));
 
     _backgroundSyncTimer = Timer.periodic(Duration(minutes: interval), (_) async {
       if (_disposed) return;
-      nextSyncTime = DateTime.now().add(Duration(minutes: interval));
-      if (Platform.isAndroid) unawaited(BleHostApi().setNextSyncTime(nextSyncTime!.millisecondsSinceEpoch));
-      notifyListeners();
+      // Move the displayed time and the alarm forward at the START of the cycle, so a
+      // long sync doesn't leave a due time sitting in the past. On success the
+      // completion signal re-anchors everything again from the instant the sync
+      // actually finished; on a skip this stands, which is what keeps a failed cycle
+      // retrying on the normal cadence instead of a full interval after it gave up.
+      _publishNextSyncTime(DateTime.now().add(Duration(minutes: interval)));
 
       if (!isConnected) {
         if (!isConnecting) {
@@ -1458,9 +1519,7 @@ class DeviceProvider extends ChangeNotifier
     _cancelConnectSettleWatchdog();
     final interval = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
     if (interval > 0) {
-      nextSyncTime = DateTime.now().add(Duration(minutes: interval));
-      if (Platform.isAndroid) unawaited(BleHostApi().setNextSyncTime(nextSyncTime!.millisecondsSinceEpoch));
-      notifyListeners();
+      _publishNextSyncTime(DateTime.now().add(Duration(minutes: interval)));
     }
     SharedPreferencesUtil().lastSyncSkipped = true;
     // A skip didn't move any data, so leave lastSyncCompletedMs alone; only stamp the
@@ -1503,28 +1562,44 @@ class DeviceProvider extends ChangeNotifier
     // quick app-switch / notification-shade glance shouldn't force a reconnect
     // when the user comes right back. Leave the keep-alive running so the
     // firmware doesn't idle-drop the link before the window elapses;
-    // onAppResumed cancels this. If a sync is still in flight when it fires it
-    // re-arms, so for the start-a-sync-then-background case the grace
-    // effectively begins once the sync finishes.
+    // onAppResumed cancels this. If a sync is still in flight when it fires it polls
+    // until the sync is done and then starts a fresh full window, so for the
+    // start-a-sync-then-background case the grace really does begin once the sync
+    // finishes.
+    _pauseGraceSawSync = false;
     _armPauseDisconnect();
   }
 
   /// Arm (or re-arm) the post-background disconnect. A method (not an inline
   /// closure) so the tick can re-arm itself while a sync is still running.
-  void _armPauseDisconnect() {
+  void _armPauseDisconnect([Duration? delay]) {
     _pauseDisconnectTimer?.cancel();
-    _pauseDisconnectTimer = Timer(_backgroundDisconnectGrace, _onPauseDisconnectTick);
+    _pauseDisconnectTimer = Timer(delay ?? _backgroundDisconnectGrace, _onPauseDisconnectTick);
   }
 
   void _onPauseDisconnectTick() {
     if (_disposed || _isAppInForeground || !isConnected) return;
     if (isFirmwareUpdateInProgress || _isOnFirmwareUpdatePage) return;
-    // A sync is actively using the BLE link — keep the connection (and the
-    // keep-alive) alive until it finishes, then re-check. This is the
-    // start-a-sync-then-background case: keep-alive runs through the sync and
-    // the grace effectively starts once it's over. Local decode/VAD processing
-    // doesn't hold the link, so it doesn't block the disconnect.
+    // A sync is actively using the BLE link — keep the connection (and the keep-alive)
+    // alive until it finishes, then re-check on the short poll cadence. This is the
+    // start-a-sync-then-background case. Local decode/VAD processing doesn't hold the
+    // link, so it doesn't block the disconnect.
+    //
+    // There is deliberately no `await` between this check and the disconnectDevice()
+    // below, and none may be added: Dart's single thread is the only thing making the
+    // pair atomic, and a suspension point here would reopen the window for a sync to
+    // start after the check and have its link pulled out from under it. (Same invariant
+    // as the GATT-cache fingerprint's isSyncing/recycleConnection pair.)
     if (ServiceManager.instance().wal.getSyncs().isSyncing || _backgroundSyncActive) {
+      _pauseGraceSawSync = true;
+      _armPauseDisconnect(_backgroundDisconnectPoll);
+      return;
+    }
+    // The sync this window was waiting on has just finished. Give the full grace from
+    // HERE, so backgrounding during a sync earns the same quick-return window as
+    // backgrounding while idle — rather than whatever fraction of it was left over.
+    if (_pauseGraceSawSync) {
+      _pauseGraceSawSync = false;
       _armPauseDisconnect();
       return;
     }
@@ -1558,6 +1633,7 @@ class DeviceProvider extends ChangeNotifier
     RecordingsManager.processingProgress.removeListener(_onProcessingProgress);
     // Came back within the grace window — keep the (still-live) connection.
     _pauseDisconnectTimer?.cancel();
+    _pauseGraceSawSync = false;
     if (isConnected) _startForegroundKeepAlive();
     // Release the overnight wake lock now that the user has the app open.
     final walSync = ServiceManager.instance().wal.getSyncs();
@@ -1681,6 +1757,9 @@ class DeviceProvider extends ChangeNotifier
     _foregroundKeepAliveTimer?.cancel();
     _disconnectDebouncer.cancel();
     _connectDebouncer.cancel();
+    // Static notifier, so this outlives the provider — a missed removal would keep a
+    // disposed provider reachable and firing for the life of the process.
+    SharedPreferencesUtil.lastSyncCompleted.removeListener(_onSyncCompleted);
     ServiceManager.instance().device.unsubscribe(this);
     ServiceManager.instance().wal.unsubscribe(this);
     super.dispose();
