@@ -1549,6 +1549,21 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         // Give a small window for connection state to update in the provider/service
         await Future.delayed(const Duration(milliseconds: 100));
         if (!await connection.isConnected()) {
+          // Waiting here for native to bring the link back looks obvious and does not
+          // work — implemented and reverted 2026-08-30. Two reasons, either fatal:
+          //
+          //  * `Stream closed without EOT` — what a mid-transfer supervision timeout
+          //    actually produces, in every abort in the device logs — matches
+          //    `definiteTransportError` a few lines below, which recycles the link and
+          //    breaks. The wait therefore ends in the same `break`, just 90 s later.
+          //  * the fast path reads and deletes index 0, relying on each finished file
+          //    being deleted so the next becomes index 0. A failed file is NOT deleted,
+          //    so advancing to the next WAL re-reads the failed one into the next WAL's
+          //    bin path under the next WAL's timestamp — see the poison-drop comment.
+          //
+          // What the measurements do support is retrying the SAME file: the partial
+          // offset is persisted, index 0 is still that file, and the link returns in a
+          // median of 8.2 s against a ~33-minute wait for the next scheduled sync.
           Logger.debug('SDCardWalSync: Connection lost after failure, aborting syncAll');
           break;
         }
