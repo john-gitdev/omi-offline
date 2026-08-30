@@ -236,3 +236,8 @@ builds-snapshot.md
 
 # Built APKs
 /releases/
+
+# Exported Omi bin archives and shared debug logs — real recorded audio and
+# device logs pulled off a phone for analysis. Never commit these.
+omi_bins_*/
+logs/
