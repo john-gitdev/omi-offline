@@ -1,279 +1,99 @@
 package com.omi.offline
 
 import android.content.Intent
-import android.media.MediaCodec
-import android.media.MediaCodecInfo
-import android.media.MediaFormat
-import android.media.MediaMuxer
 import androidx.annotation.NonNull
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
-import io.flutter.plugin.common.MethodChannel
-import java.io.File
-import java.util.UUID
-import java.util.concurrent.Executors
+import io.flutter.embedding.engine.FlutterEngineCache
 
+/**
+ * The UI host. It no longer OWNS the Flutter engine — [MyApp] creates and caches it, and
+ * this adopts it by id.
+ *
+ * That is the whole point: an OS memory-reclaim destroy used to take the engine with it,
+ * leaving the process and the BLE link alive with no Dart to run a sync. See [MyApp] for
+ * the measurement. Everything registered on the engine now lives in [MyApp]; what remains
+ * here is only what genuinely needs an Activity.
+ */
 class MainActivity : FlutterActivity() {
-    private val AAC_CHANNEL = "com.omi.offline/aacEncoder"
 
-    private val encoderSessions = mutableMapOf<String, AacEncoderSession>()
-    private val encoderExecutor = Executors.newSingleThreadExecutor()
+    /**
+     * Adopt the process-wide engine rather than building one per Activity.
+     *
+     * FlutterActivity then attaches and detaches it around this Activity's lifecycle
+     * instead of creating and destroying it, which is what lets Dart outlive a reclaim.
+     */
+    override fun getCachedEngineId(): String? =
+        // Only if the pre-warm actually succeeded. FlutterActivity THROWS on a cache miss,
+        // so returning the id unconditionally would turn a failed pre-warm into an app
+        // that cannot launch at all. Returning null instead makes FlutterActivity build
+        // its own engine, which configureFlutterEngine then registers the platform APIs
+        // on — degrading to exactly the pre-change behaviour rather than to a brick.
+        if (FlutterEngineCache.getInstance().contains(MyApp.ENGINE_ID)) MyApp.ENGINE_ID else null
 
-    private var bleHostApiImpl: BleHostApiImpl? = null
-    private var vadBatchRunner: VadBatchRunner? = null
-
-    companion object {
-        var isFlutterAlive = false
-    }
+    /**
+     * Never tear the engine down with this Activity — not even on a deliberate finish.
+     *
+     * A swipe-away stops the foreground service (see [onDestroy]) and the process is then
+     * free to die on its own, taking the engine with it. Destroying it here instead would
+     * also cover the RECLAIM case, which is exactly the one that must not destroy it.
+     */
+    override fun shouldDestroyEngineWithHost(): Boolean = false
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        OmiBleManager.isFlutterAlive = true
 
-        // Register Native BLE Pigeon APIs
-        OmiBleManager.initialize(application)
-        val flutterApi = BleFlutterApi(flutterEngine.dartExecutor.binaryMessenger)
-        bleHostApiImpl = BleHostApiImpl({ this }, flutterApi).apply {
-            initCompanionManager(this@MainActivity)
-        }
-        BleHostApi.setUp(flutterEngine.dartExecutor.binaryMessenger, bleHostApiImpl)
-
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, AAC_CHANNEL).setMethodCallHandler { call, result ->
-            when (call.method) {
-                "startEncoder" -> {
-                    val sampleRate = call.argument<Int>("sampleRate") ?: 16000
-                    val outputPath = call.argument<String>("outputPath") ?: run {
-                        result.error("INVALID_ARGS", "outputPath is required", null); return@setMethodCallHandler
-                    }
-                    val bitrate = call.argument<Int>("bitrate") ?: 32000
-                    encoderExecutor.execute {
-                        try {
-                            val sessionId = startAacEncoder(sampleRate, outputPath, bitrate)
-                            runOnUiThread { result.success(sessionId) }
-                        } catch (e: Exception) {
-                            runOnUiThread { result.error("ENCODER_START_ERROR", e.message, null) }
-                        }
-                    }
-                }
-                "encodeBuffer" -> {
-                    val sessionId = call.argument<String>("sessionId") ?: run {
-                        result.error("INVALID_ARGS", "sessionId is required", null); return@setMethodCallHandler
-                    }
-                    val pcmBytes = call.argument<ByteArray>("pcmBytes") ?: run {
-                        result.error("INVALID_ARGS", "pcmBytes is required", null); return@setMethodCallHandler
-                    }
-                    encoderExecutor.execute {
-                        try {
-                            encodeAacChunk(sessionId, pcmBytes)
-                            runOnUiThread { result.success(null) }
-                        } catch (e: Exception) {
-                            runOnUiThread { result.error("ENCODE_CHUNK_ERROR", e.message, null) }
-                        }
-                    }
-                }
-                "finishEncoder" -> {
-                    val sessionId = call.argument<String>("sessionId") ?: run {
-                        result.error("INVALID_ARGS", "sessionId is required", null); return@setMethodCallHandler
-                    }
-                    encoderExecutor.execute {
-                        try {
-                            finishAacEncoder(sessionId)
-                            runOnUiThread { result.success(null) }
-                        } catch (e: Exception) {
-                            runOnUiThread { result.error("FINISH_ENCODER_ERROR", e.message, null) }
-                        }
-                    }
-                }
-                else -> result.notImplemented()
-            }
+        // Fallback path: the pre-warm failed, so this is an Activity-owned engine with
+        // none of the platform APIs on it. Register them here. (On the normal path MyApp
+        // already did, and bleHostApi is non-null.)
+        if (OmiBleManager.bleHostApi == null) {
+            MyApp.registerEngineScopedApis(application, flutterEngine)
         }
 
-        // Lets the root Flutter page minimize the app on Back instead of finishing
-        // MainActivity — finishing tears down the BLE foreground service (see onDestroy).
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.omi.offline/system").setMethodCallHandler { call, result ->
-            when (call.method) {
-                "moveTaskToBack" -> result.success(moveTaskToBack(true))
-                else -> result.notImplemented()
-            }
-        }
+        // Publish the Activity for the engine-scoped APIs that can use one when it exists
+        // (companion-device pairing, permission dialogs, moveTaskToBack).
+        MyApp.currentActivity = this
+        OmiBleManager.bleHostApi?.initCompanionManager(this)
 
-        // Register VAD batch runner channel (Android-only; iOS stays on per-window fallback).
-        vadBatchRunner = VadBatchRunner(flutterEngine.dartExecutor.binaryMessenger)
+        // Signal EVERY attach, not only re-attaches. `main()` runs once per process now,
+        // so the work that belongs to a screen appearing has to be driven from here — and
+        // that includes the very first attach of a process that started headless, which
+        // is not a "re"-attach and skipped its permission requests for want of an
+        // Activity. Dart debounces, so a cold launch does not do the work twice.
+        MyApp.systemChannel?.invokeMethod("uiAttached", null)
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        bleHostApiImpl?.onActivityResult(requestCode, resultCode, data)
+        OmiBleManager.bleHostApi?.onActivityResult(requestCode, resultCode, data)
     }
 
     override fun onDestroy() {
-        // When user closes the app (swipe away), stop the foreground service.
-        // The service handles disconnecting all managed devices in onDestroy.
+        // When the user closes the app (swipe away), stop the foreground service. The
+        // service handles disconnecting all managed devices in its own onDestroy.
+        //
+        // Gated on isFinishing, and that distinction now carries the whole feature: a
+        // reclaim (isFinishing == false) must leave the service — and therefore the
+        // process, and therefore the engine — running, which is what lets a background
+        // sync happen at all.
         if (isFinishing) {
-            vadBatchRunner?.destroy()
-            vadBatchRunner = null
-            OmiBleManager.isFlutterAlive = false
             OmiBleForegroundService.stopService(this)
         }
         super.onDestroy()
     }
 
+    /**
+     * Fires on every engine DETACH, including an OS memory-reclaim destroy.
+     *
+     * It used to null `flutterApi` and clear `isFlutterAlive` here, because the engine
+     * really was going away with the Activity. It no longer is, so doing that would tell
+     * both wake paths Dart is dead while it is running perfectly well — reintroducing the
+     * exact bug this change removes. All that is released is the Activity reference,
+     * which must not outlive the Activity.
+     */
     override fun cleanUpFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
-        // Fires on EVERY engine teardown — including an OS memory-reclaim destroy
-        // (isFinishing == false), which onDestroy above does not handle. Without
-        // this, flutterApi keeps pointing at the dead dartExecutor messenger and
-        // isFlutterAlive stays true, so the next background alarm/worker posts into
-        // the void instead of recognising the engine is gone (and letting the
-        // native notification settle take over). configureFlutterEngine re-arms
-        // both on the next launch. See SyncAlarmReceiver / BackgroundSyncWorker.
-        OmiBleManager.isFlutterAlive = false
-        OmiBleManager.instance.flutterApi = null
-        bleHostApiImpl = null
+        MyApp.currentActivity = null
+        OmiBleManager.bleHostApi?.releaseCompanionManager()
         super.cleanUpFlutterEngine(flutterEngine)
     }
-
-    private fun startAacEncoder(sampleRate: Int, outputPath: String, bitrate: Int): String {
-        val tempPath = if (outputPath.endsWith(".m4a"))
-            outputPath.dropLast(4) + ".tmp.m4a"
-        else
-            "$outputPath.tmp"
-
-        // Remove stale temp file
-        val tempFile = File(tempPath)
-        if (tempFile.exists()) tempFile.delete()
-
-        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, 1).apply {
-            setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-            setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
-        }
-
-        val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
-        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        codec.start()
-
-        val muxer = MediaMuxer(tempPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-
-        val sessionId = UUID.randomUUID().toString()
-        encoderSessions[sessionId] = AacEncoderSession(
-            codec = codec,
-            muxer = muxer,
-            sampleRate = sampleRate,
-            tempPath = tempPath,
-            finalPath = outputPath
-        )
-        return sessionId
-    }
-
-    private fun encodeAacChunk(sessionId: String, pcmData: ByteArray) {
-        val session = encoderSessions[sessionId]
-            ?: throw IllegalStateException("No encoder session for id $sessionId")
-
-        // Queue input
-        val inputIndex = session.codec.dequeueInputBuffer(10000L)
-        if (inputIndex >= 0) {
-            val buffer = session.codec.getInputBuffer(inputIndex)!!
-            buffer.clear()
-            buffer.put(pcmData)
-            val pts = (session.totalSamplesQueued * 1_000_000L) / session.sampleRate
-            session.codec.queueInputBuffer(inputIndex, 0, pcmData.size, pts, 0)
-            session.totalSamplesQueued += pcmData.size / 2  // 16-bit samples
-        }
-
-        // Drain available output
-        drainOutput(session, drainToEnd = false)
-    }
-
-    private fun finishAacEncoder(sessionId: String) {
-        val session = encoderSessions.remove(sessionId)
-            ?: throw IllegalStateException("No encoder session for id $sessionId")
-
-        try {
-            // Signal end of stream
-            val pts = (session.totalSamplesQueued * 1_000_000L) / session.sampleRate
-            val inputIndex = session.codec.dequeueInputBuffer(10000L)
-            if (inputIndex >= 0) {
-                session.codec.queueInputBuffer(inputIndex, 0, 0, pts, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-            }
-
-            // Drain until EOS
-            drainOutput(session, drainToEnd = true)
-
-            session.codec.stop()
-            session.codec.release()
-
-            if (!session.reachedEos || !session.muxerStarted || session.samplesWritten == 0L) {
-                try { session.muxer.release() } catch (_: Exception) {}
-                File(session.tempPath).delete()
-                throw IllegalStateException("AAC encoder failed to produce a valid stream (reachedEos=${session.reachedEos}, muxerStarted=${session.muxerStarted}, samples=${session.samplesWritten})")
-            }
-
-            session.muxer.stop()
-            session.muxer.release()
-
-            // Rename temp → final
-            val tempFile = File(session.tempPath)
-            val finalFile = File(session.finalPath)
-            if (finalFile.exists()) finalFile.delete()
-            tempFile.renameTo(finalFile)
-        } catch (e: Exception) {
-            try { session.codec.stop() } catch (_: Exception) {}
-            try { session.codec.release() } catch (_: Exception) {}
-            try { if (session.muxerStarted && session.samplesWritten > 0) session.muxer.stop() } catch (_: Exception) {}
-            try { session.muxer.release() } catch (_: Exception) {}
-            try { File(session.tempPath).delete() } catch (_: Exception) {}
-            throw e
-        }
-    }
-
-    private fun drainOutput(session: AacEncoderSession, drainToEnd: Boolean) {
-        val bufferInfo = MediaCodec.BufferInfo()
-        var retries = 0
-        while (true) {
-            val timeoutUs = if (drainToEnd) 10000L else 0L
-            val outputIndex = session.codec.dequeueOutputBuffer(bufferInfo, timeoutUs)
-            when {
-                outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> {
-                    if (!drainToEnd) break
-                    if (++retries > 200) break  // ~2s max wait
-                }
-                outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                    if (!session.muxerStarted) {
-                        session.trackIndex = session.muxer.addTrack(session.codec.outputFormat)
-                        session.muxer.start()
-                        session.muxerStarted = true
-                    }
-                    retries = 0
-                }
-                outputIndex >= 0 -> {
-                    retries = 0
-                    val isConfig = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
-                    val isEos = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
-                    if (!isConfig && session.muxerStarted && bufferInfo.size > 0) {
-                        val outputBuffer = session.codec.getOutputBuffer(outputIndex)!!
-                        session.muxer.writeSampleData(session.trackIndex, outputBuffer, bufferInfo)
-                        session.samplesWritten++
-                    }
-                    session.codec.releaseOutputBuffer(outputIndex, false)
-                    if (isEos) {
-                        session.reachedEos = true
-                        break
-                    }
-                }
-            }
-        }
-    }
 }
-
-private data class AacEncoderSession(
-    val codec: MediaCodec,
-    val muxer: MediaMuxer,
-    val sampleRate: Int,
-    val tempPath: String,
-    val finalPath: String,
-    var trackIndex: Int = -1,
-    var muxerStarted: Boolean = false,
-    var reachedEos: Boolean = false,
-    var samplesWritten: Long = 0,
-    var totalSamplesQueued: Long = 0L
-)

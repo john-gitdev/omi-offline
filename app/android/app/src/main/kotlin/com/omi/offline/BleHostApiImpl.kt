@@ -9,7 +9,11 @@ import android.util.Log
 /**
  * Implements the Pigeon BleHostApi interface, delegating all calls to OmiBleManager or FgService.
  */
-class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutterApi: BleFlutterApi?) : BleHostApi {
+class BleHostApiImpl(
+    private val getActivity: () -> Activity?,
+    private val flutterApi: BleFlutterApi?,
+    private val appContext: Context,
+) : BleHostApi {
 
     companion object {
         private const val TAG = "OmiBle.HostApi"
@@ -51,6 +55,17 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
         companionManager = OmiCompanionManager(activity, getActivity)
     }
 
+    /**
+     * Drops the companion manager when the Activity goes away.
+     *
+     * It holds an Activity, and this object now outlives Activities — it belongs to the
+     * engine, which belongs to the process. Without this the first destroyed Activity
+     * would be pinned here for the life of the process.
+     */
+    fun releaseCompanionManager() {
+        companionManager = null
+    }
+
     override fun startScan(timeoutSeconds: Long, serviceUuids: List<String>) {
         bleManager.startScan(timeoutSeconds.toInt(), serviceUuids)
     }
@@ -60,9 +75,18 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
     }
 
     override fun manageDevice(uuid: String, requiresBond: Boolean) {
-        val activity = getActivity() ?: return
+        // The application context, not the Activity, because a background sync runs with
+        // no Activity attached and this is the call that starts its link. It used to
+        // `?: return` here, so once the OS reclaimed the Activity every managed-connect
+        // request from Dart was dropped on the floor without a word.
+        //
+        // startService already handles the OS refusing a background start (Android 12+
+        // restricts it unless the app is exempt); the service is normally ALREADY running
+        // in exactly this situation, since it is what kept the process alive, so this is
+        // a no-op promote rather than a cold start.
+        val ctx = getActivity() ?: appContext
         val actualRequiresBond = requiresBond && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU
-        OmiBleForegroundService.startService(activity, uuid, requiresBond = actualRequiresBond, caller = "BleHostApi.manageDevice")
+        OmiBleForegroundService.startService(ctx, uuid, requiresBond = actualRequiresBond, caller = "BleHostApi.manageDevice")
     }
 
     override fun unmanageDevice(uuid: String) {
@@ -71,11 +95,10 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
             inst.unmanageDevice(uuid)
         } else {
             // Fallback if service not running — still must stop OS-level presence
-            // observation so the LE link doesn't get held warm by the OS.
-            val activity = getActivity()
-            if (activity != null) {
-                OmiCompanionManager.stopObservingForAddress(activity.applicationContext, uuid)
-            }
+            // observation so the LE link doesn't get held warm by the OS. Uses the
+            // application context: this runs during a background sync's teardown, where
+            // there is no Activity and the old `if (activity != null)` guard skipped it.
+            OmiCompanionManager.stopObservingForAddress(appContext, uuid)
             bleManager.closeGatt(uuid)
         }
     }
@@ -108,8 +131,7 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
     }
 
     override fun rescheduleBackgroundSync(intervalMinutes: Long) {
-        val ctx = getActivity()?.applicationContext ?: return
-        BackgroundSyncWorker.schedule(ctx, intervalMinutes.toInt())
+        BackgroundSyncWorker.schedule(appContext, intervalMinutes.toInt())
     }
 
     override fun requestBond(uuid: String, callback: (Result<Boolean>) -> Unit) {
@@ -227,7 +249,9 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
     override fun acquireProcessingWakeLock() {
         wakeLockRefCount++
         if (processingWakeLock?.isHeld == true) return
-        val ctx = getActivity()?.applicationContext ?: return
+        // Application context: the wake lock's whole purpose is to hold the CPU through
+        // a background processing run, which by definition may have no Activity.
+        val ctx = appContext
         val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
         processingWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "omi:VadProcessing").also {
             // NOT reference-counted: renewal below re-acquires the same lock, and a

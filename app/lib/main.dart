@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/pages/recordings/recordings_page.dart';
@@ -43,30 +44,142 @@ void main() async {
   // for anyone who has not. Safe to run unconditionally because _saveSettings is
   // the only other writer of these keys.
   SharedPreferencesUtil().applyRecordingModeDefaults(SharedPreferencesUtil().manualMode);
-  // Version stamp, first thing after prefs are up so it heads the launch's log
-  // lines. Firmware is the last-read value (nothing is connected yet); the
-  // connect that follows confirms it with a device_version line of its own.
+  // Ask native whether a screen is attached BEFORE anything that needs one.
   //
-  // Read from the flat lastLoggedFirmwareRevision string and NOT from
-  // `btDevice`, whose getter jsonDecodes a stored blob: this runs before
-  // runApp(), so anything that throws here is an app that will not start at all.
-  // The cost is that the very first launch on this build says "unknown" until
-  // the first connect populates it.
+  // Dart cannot tell on its own: its lifecycleState is null until the first lifecycle
+  // event, and in a process with no Activity that null never resolves, so "no answer yet"
+  // and "no screen at all" are indistinguishable from here. Only native knows.
+  const systemChannel = MethodChannel('com.omi.offline/system');
+  bool? uiAttached;
+  try {
+    uiAttached = await systemChannel.invokeMethod<bool>('hasUi');
+  } catch (e) {
+    // Null keeps the historical assume-foreground behaviour below.
+    Logger.error('main: could not ask native whether a UI is attached ($e)');
+  }
+
+  // Permissions need an Activity to put a dialog on, and permission_handler THROWS
+  // without one — `activity == null` is an explicit errorCallback in its PermissionManager,
+  // which surfaces here as a PlatformException. main() runs headless now (the engine
+  // outlives MainActivity, so WorkManager can start this process with no Activity ever),
+  // and an uncaught throw here would kill main() before ServiceManager, before
+  // DeviceProvider, and before the readiness signal — leaving the background sync this
+  // whole change exists for with nothing to run. Asked for on the next attach instead.
+  if (uiAttached != false) await _requestPermissionsSafely();
+
+  await ServiceManager.init();
+  await ServiceManager.instance().start();
+
+  // The Flutter engine now outlives MainActivity (created and cached by MyApp on the
+  // Android side, so an OS memory-reclaim of the Activity no longer takes Dart with it —
+  // which is what lets a scheduled background sync find something to run). Three
+  // consequences are handled below.
+
+  // 1. DeviceProvider is constructed HERE, not by the widget tree, and that is
+  //    load-bearing. Its constructor registers BleBridge.backgroundSyncRequestedCallback
+  //    — the entry point for every scheduled sync. It used to be built by a LAZY
+  //    ChangeNotifierProvider, i.e. by the first widget that read it, which was fine
+  //    while the engine died with the Activity: no UI meant no Dart at all. Now a
+  //    process can be started by WorkManager with no Activity ever attached, and with no
+  //    view there is nothing to drive a frame, so the tree may never build. That would
+  //    leave native reporting Dart alive, delivering the request, and BleBridge calling
+  //    a null callback — a sync that reports success having done nothing, which is worse
+  //    than the failure it replaced because it is silent.
+  //
+  final deviceProvider = DeviceProvider(uiAttached: uiAttached);
+
+  // 2. main() runs once per PROCESS now, not once per app-open, and that process can live
+  //    for days. Native signals EVERY attach — not only re-attaches — because a process
+  //    that started headless has to do its UI-only work (the permission requests skipped
+  //    above) the first time a screen ever appears, and that first attach is not a
+  //    "re"-attach.
+  systemChannel.setMethodCallHandler((call) async {
+    if (call.method == 'uiAttached') await _onUiAttached();
+    return null;
+  });
+
+  // 3. Readiness is DART's to declare, not the engine's to assume. Native used to set
+  //    isFlutterAlive the moment it created the engine, which is synchronously before a
+  //    single line of Dart has run — fine while the engine only ever existed alongside an
+  //    Activity, but a WorkManager-started process would otherwise be told Dart is ready
+  //    and post a sync request at an engine with no Pigeon handler and no DeviceProvider.
+  //    Everything the sync path needs is up by this point.
+  try {
+    await systemChannel.invokeMethod('dartReady');
+  } catch (e) {
+    Logger.error('main: could not signal readiness to native ($e)');
+  }
+
+  await _launchHousekeeping();
+  _lastUiWorkAt = uiAttached != false ? DateTime.now() : null;
+
+  runApp(MyApp(deviceProvider: deviceProvider));
+}
+
+/// When the UI-attach work last ran, so a cold launch does not do it twice.
+///
+/// main() already does it when it starts with a screen, and native's attach signal lands
+/// moments later; without this the launch would sweep the filesystem twice for nothing.
+/// Null after a headless start, so the first real attach is not debounced away.
+DateTime? _lastUiWorkAt;
+
+/// Work that belongs to a screen appearing: the permission requests main() has to skip
+/// when headless, and the launch housekeeping.
+Future<void> _onUiAttached() async {
+  final now = DateTime.now();
+  final last = _lastUiWorkAt;
+  if (last != null && now.difference(last) < const Duration(seconds: 10)) {
+    Logger.debug('main: UI attached, but this launch already did its UI work — skipping');
+    return;
+  }
+  _lastUiWorkAt = now;
+  Logger.debug('main: UI attached to a running engine — permissions + launch housekeeping');
+  await _requestPermissionsSafely();
+  await _launchHousekeeping();
+}
+
+/// [SyncNotification.requestPermissions] can throw when no Activity is attached, and a
+/// permission prompt is never worth failing a launch over.
+Future<void> _requestPermissionsSafely() async {
+  try {
+    await SyncNotification.requestPermissions();
+  } catch (e) {
+    Logger.error('main: permission request failed ($e)');
+  }
+}
+
+/// Work that belongs to opening the app rather than to starting the process.
+///
+/// Every step is idempotent and safe to repeat: they sweep temp files and expired
+/// discards, and stamp the log with the running versions. Failures are logged and
+/// swallowed — this must never be the reason the app does not come up.
+Future<void> _launchHousekeeping() async {
+  // Version stamp, heading this open's log lines. Firmware is the last-read value
+  // (nothing is connected yet); the connect that follows confirms it with a
+  // device_version line of its own.
+  //
+  // Read from the flat lastLoggedFirmwareRevision string and NOT from `btDevice`, whose
+  // getter jsonDecodes a stored blob — on the first call this still runs before runApp(),
+  // so anything that throws is an app that will not start at all. The cost is that the
+  // very first launch on a build says "unknown" until the first connect populates it.
   unawaited(DebugLogManager.logAppStart(
     lastKnownFirmware: SharedPreferencesUtil().lastLoggedFirmwareRevision,
   ));
-  await SyncNotification.requestPermissions();
-  await ServiceManager.init();
-  await ServiceManager.instance().start();
-  await RecordingsManager.cleanUpIncompleteExtraction();
-  await RecordingsManager.cleanupOrphanedTempFiles();
-  await RecordingsManager.runRecoverySweep();
-
-  runApp(const MyApp());
+  try {
+    await RecordingsManager.cleanUpIncompleteExtraction();
+    await RecordingsManager.cleanupOrphanedTempFiles();
+    await RecordingsManager.runRecoverySweep();
+  } catch (e) {
+    Logger.error('main: launch housekeeping failed: $e');
+  }
 }
 
 class MyApp extends StatefulWidget {
-  const MyApp({super.key});
+  /// Built in [main] before runApp — see the note there. Passed in rather than created
+  /// by the provider so that it exists whether or not a UI ever attaches.
+  final DeviceProvider deviceProvider;
+
+  const MyApp({super.key, required this.deviceProvider});
 
   @override
   State<MyApp> createState() => _MyAppState();
@@ -107,7 +220,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return MultiProvider(
-      providers: [ChangeNotifierProvider(create: (_) => DeviceProvider())],
+      providers: [ChangeNotifierProvider.value(value: widget.deviceProvider)],
       child: MaterialApp(
         title: 'Offline Recorder',
         theme: ThemeData.dark(),

@@ -267,12 +267,28 @@ class DeviceProvider extends ChangeNotifier
 
   void Function(BtDevice device)? onDeviceConnected;
 
-  DeviceProvider() {
+  /// [uiAttached] is native's answer to "is there an Activity right now" — see the
+  /// foreground note in the constructor. Optional so tests and any future caller that
+  /// cannot ask keep the pre-existing behaviour.
+  DeviceProvider({bool? uiAttached}) {
     WidgetsBinding.instance.addObserver(this);
     // Correctly initialize foreground state for cases where app starts in background.
+    //
+    // `lifecycleState` is authoritative WHEN IT IS SET. It is null until the first
+    // lifecycle event arrives, and null used to mean "we just launched, assume
+    // foreground" — safe, because this object could only ever be built by the widget
+    // tree, which meant a screen existed.
+    //
+    // That is no longer true. The Flutter engine now outlives MainActivity, so this can
+    // be constructed in a process WorkManager started with no Activity at all, where
+    // lifecycleState stays null indefinitely and "assume foreground" is simply wrong —
+    // it would keep the app pinging the Omi to hold a link open as though a user were
+    // watching. Native is the one that actually knows, so ask it rather than infer from
+    // an absence.
     final state = WidgetsBinding.instance.lifecycleState;
-    _isAppInForeground = state == null || state == AppLifecycleState.resumed;
-    Logger.debug('[BLE] DeviceProvider init: lifecycleState=$state _isAppInForeground=$_isAppInForeground');
+    _isAppInForeground = state != null ? state == AppLifecycleState.resumed : (uiAttached ?? true);
+    Logger.debug('[BLE] DeviceProvider init: lifecycleState=$state uiAttached=$uiAttached '
+        '_isAppInForeground=$_isAppInForeground');
 
     // Seed from last known value so battery indicator isn't grey on launch.
     final saved = SharedPreferencesUtil().lastBatteryLevel;

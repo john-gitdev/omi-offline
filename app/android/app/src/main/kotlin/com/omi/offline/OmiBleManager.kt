@@ -45,6 +45,16 @@ class OmiBleManager private constructor(private val application: Application) {
         @Volatile
         var isFlutterAlive: Boolean = false
 
+        /**
+         * The live BleHostApi implementation, owned by the engine (see MyApp).
+         *
+         * Held here rather than on MainActivity because it now outlives Activities: the
+         * Activity attaches to it (companion manager, activity results) instead of
+         * constructing it.
+         */
+        @Volatile
+        var bleHostApi: BleHostApiImpl? = null
+
         fun initialize(application: Application) {
             if (_instance == null) {
                 synchronized(this) {
