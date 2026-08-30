@@ -294,6 +294,37 @@ object WedgeDiagnostics {
      * The caller re-probes a long outage every few failures, so this may run more than once
      * per outage; [probeInFlight] keeps two probes from overlapping.
      */
+    /**
+     * Link strength at the moment a connection dropped.
+     *
+     * Nothing recorded RSSI on a live link before this. The app has been calling
+     * `readRemoteRssi()` every 3 s since the RSSI keep-alive was added, but there was no
+     * `onReadRemoteRssi` override, so every one of those reads was discarded — the value
+     * was measured and thrown away. The only RSSI in the logs came from
+     * `ble_wedge_scan_probe`, which runs while SCANNING, so a transfer that died
+     * mid-file left no record of how strong the link was.
+     *
+     * That is the question a mid-transfer drop actually raises. A supervision timeout
+     * (`gatt_status_8`) at -60 dBm means something on the device stopped answering; the
+     * same timeout at -100 dBm means the Omi was simply too far away. Those want opposite
+     * investigations, and without this they are indistinguishable after the fact.
+     *
+     * [rssiAgeMs] matters as much as the value: the keep-alive reads every 3 s, so a
+     * reading much older than that means the link had already stopped carrying traffic.
+     */
+    fun captureLinkDrop(context: Context, address: String, status: Int, rssi: Int?, rssiAgeMs: Long?) {
+        logEvent(
+            context,
+            "ble_link_drop",
+            mapOf(
+                "device" to address,
+                "gatt_status" to status,
+                "last_rssi" to rssi,
+                "rssi_age_ms" to rssiAgeMs,
+            ),
+        )
+    }
+
     fun captureWedge(
         context: Context,
         bleManager: OmiBleManager,

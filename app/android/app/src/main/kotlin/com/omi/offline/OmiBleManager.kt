@@ -111,6 +111,20 @@ class OmiBleManager private constructor(private val application: Application) {
     // time (one paired device in prefs, one NativeBleTransport), so there is never a
     // second device whose start could cancel this one's callback.
     private var rssiKeepAliveRunnable: Runnable? = null
+
+    /**
+     * Last RSSI reported for the live link, and when. Null until the first read lands.
+     *
+     * The keep-alive below has always called `readRemoteRssi()` every 3 s; without an
+     * `onReadRemoteRssi` override the result went nowhere, so the app measured link
+     * strength continuously and kept none of it. Recorded now so a drop can say how
+     * strong the link was — see WedgeDiagnostics.captureLinkDrop.
+     */
+    @Volatile
+    private var lastRssi: Int? = null
+
+    @Volatile
+    private var lastRssiAtMs: Long = 0L
     private val rssiKeepAliveInterval = 3000L
 
     private var storageKeepAliveRunnable: Runnable? = null
@@ -892,10 +906,28 @@ class OmiBleManager private constructor(private val application: Application) {
                 }
                 connectionListener?.onGattConnected(address, gatt)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                // Recorded BEFORE cleanup, which clears the link state this describes.
+                val rssiAge = if (lastRssi != null) android.os.SystemClock.elapsedRealtime() - lastRssiAtMs else null
+                try {
+                    WedgeDiagnostics.captureLinkDrop(application, address, status, lastRssi, rssiAge)
+                } catch (e: Exception) {
+                    Log.w(TAG, "captureLinkDrop failed: ${e.message}")
+                }
+                lastRssi = null
                 cleanupPeripheral(address)
                 connectionListener?.onGattDisconnected(address, gatt.hashCode(), status)
             }
         }
+        override fun onReadRemoteRssi(gatt: BluetoothGatt, rssi: Int, status: Int) {
+            // The keep-alive fires this every 3 s. Only the value is wanted — the read is
+            // NOT enqueued through the command queue, so there is no completeCommand()
+            // here; adding one would pop a command this never pushed.
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                lastRssi = rssi
+                lastRssiAtMs = android.os.SystemClock.elapsedRealtime()
+            }
+        }
+
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
             completeCommand()
             connectionListener?.onMtuChanged(gatt.device.address.uppercase(), mtu, status)
