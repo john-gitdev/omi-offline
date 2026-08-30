@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/device_clock_anchor.dart';
 import 'package:omi/services/recordings_manager.dart';
+import 'package:omi/services/recordings_isolate_worker.dart' show checkpointVersion;
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -2132,6 +2133,48 @@ void main() {
           reason: 'the unplaceable one keeps its own name rather than landing on the boot instant');
     });
 
+    // Your device's actual state (session 4261367757, 2026-08-28 onward): some of a
+    // session moved, one could not, and the pass then runs again on every later cycle.
+    // The refusal must stay a refusal — re-running must not eventually shove the
+    // colliding recording onto the name it was denied, and must not move the ones that
+    // already landed a second time.
+    test('a partially-moved session is stable when the pass runs again', () async {
+      setAnchor();
+      // Two recordings sharing an uptime — what the pre-fix processor produced. Only
+      // one of them can own the derived name.
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_${wrappedStartMs + 3600000}',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      // A third that can be placed on its own name, so the pass has real work each time.
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_${wrappedStartMs + 7200000}',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec + 3600,
+      );
+
+      await RecordingsManager.applyClockAnchors();
+      final afterFirst = allRecordings().keys.toSet();
+      expect(afterFirst.length, 3, reason: 'three recordings in, three out');
+
+      // Run it twice more — the ledger keeps the original offset, so the offset the
+      // second pass computes is the same one, and every placeable recording is already
+      // sitting on its target.
+      await RecordingsManager.applyClockAnchors();
+      await RecordingsManager.applyClockAnchors();
+      expect(allRecordings().keys.toSet(), afterFirst,
+          reason: 'the pass is idempotent even when part of the session could not move');
+    });
+
     // The audio path carries the source's extension but the meta path never does, so a
     // `.wav` moving onto an existing `.m4a`'s slot finds no `.wav` to collide with and
     // silently overwrites that `.m4a`'s `.meta` — leaving it describing a different
@@ -2219,6 +2262,73 @@ void main() {
             savedPaths: ['/docs/raw_segments/session_777/999_777.bin'], lastIndex: 0, currentPaths: [bin(1787680000)]),
         -1,
       );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Reading a checkpoint off disk. The version gate is the only thing that frees a
+  // device already carrying a v1 checkpoint: shiftedResumeIndex stops NEW false claims
+  // being written, but a poisoned v1 file lists the bins it wrongly skipped in `paths`
+  // exactly as an honest one does, so the new rule honours it too.
+  // ---------------------------------------------------------------------------
+  group('checkpointResumePlan', () {
+    String bin(int ts) => '/docs/raw_segments/$ts/${ts}_777.bin';
+    final paths = [bin(1787680000), bin(1787680600), bin(1787681200), bin(1787681800)];
+
+    Map<String, dynamic> checkpoint({required Object? version, int lastIndex = 1}) => {
+          if (version != null) 'version': version,
+          'lastIndex': lastIndex,
+          'paths': paths,
+          'state': {'csu': 3600},
+          'pendingDeletes': [bin(1787680000)],
+        };
+
+    test('a current-version checkpoint resumes and restores VAD state', () {
+      final plan =
+          RecordingsManager.checkpointResumePlan(data: checkpoint(version: checkpointVersion), currentPaths: paths);
+      expect(plan.resumeIndex, 2);
+      expect(plan.state, isNotNull, reason: 'an exact prefix match is the only case that may restore state');
+      expect(plan.pendingDeletes, isNotEmpty);
+      expect(plan.discard, isFalse);
+    });
+
+    test('a v1 checkpoint is discarded unread, not honoured', () {
+      final plan = RecordingsManager.checkpointResumePlan(data: checkpoint(version: 1), currentPaths: paths);
+      expect(plan.resumeIndex, 0, reason: 'every bin is decoded again — the whole point of the bump');
+      expect(plan.state, isNull);
+      expect(plan.pendingDeletes, isEmpty);
+      expect(plan.discard, isTrue);
+    });
+
+    test('a checkpoint with no version field at all is discarded', () {
+      final plan = RecordingsManager.checkpointResumePlan(data: checkpoint(version: null), currentPaths: paths);
+      expect(plan.resumeIndex, 0);
+      expect(plan.discard, isTrue);
+    });
+
+    // The gate runs BEFORE `paths`/`lastIndex` are read, so a future format that renames
+    // or drops them is discarded rather than throwing on the way to the same answer.
+    test('a future version missing the current fields is discarded, not thrown at', () {
+      expect(
+        () => RecordingsManager.checkpointResumePlan(
+            data: {'version': checkpointVersion + 1, 'somethingElse': 3}, currentPaths: paths),
+        returnsNormally,
+      );
+      final plan = RecordingsManager.checkpointResumePlan(
+          data: {'version': checkpointVersion + 1, 'somethingElse': 3}, currentPaths: paths);
+      expect(plan.discard, isTrue);
+    });
+
+    // Version is current but the list moved under it — the first bin was consumed and
+    // deleted between runs, so index alignment is gone and only the path-derived resume
+    // point is usable.
+    test('a shifted list resumes without restoring state', () {
+      final current = [bin(1787680600), bin(1787681200), bin(1787681800), bin(1787682400)];
+      final plan = RecordingsManager.checkpointResumePlan(
+          data: checkpoint(version: checkpointVersion, lastIndex: 2), currentPaths: current);
+      expect(plan.resumeIndex, 2, reason: 'the two bins the checkpoint covered are skipped, the rest decoded');
+      expect(plan.state, isNull, reason: 'a shifted prefix cannot restore state safely');
+      expect(plan.discard, isFalse);
     });
   });
 
