@@ -2954,7 +2954,8 @@ class RecordingsManager {
     // missing uptimes. Claim each target and leave a colliding recording exactly where
     // it is: a recording under the Omi's own timestamp is worth incomparably more than
     // one re-filed onto a name that costs another recording.
-    final claimedTargets = <String>{};
+    // target name -> the recording that claimed it, so a refusal can say which one.
+    final claimedTargets = <String, String>{};
     for (final conv in sessionConversations) {
       // No usable uptime means the offset cannot place this recording — the same thing
       // `clockVerdict` calls `unplaceable` and refuses to act on. It used to fall back
@@ -2986,15 +2987,31 @@ class RecordingsManager {
       // so a `.wav` moving onto an existing `.m4a`'s slot finds no `recording_X.wav`
       // to collide with and silently overwrites `recording_X.meta` — leaving that
       // `.m4a` describing a different recording's duration, waveform and bin list.
-      final collides = !claimedTargets.add('$newConvStartMs') ||
-          (newAudioPath != conv.file.path && await File(newAudioPath).exists()) ||
-          (newMetaPath != '$basePath.meta' && await File(newMetaPath).exists());
-      if (collides) {
+      //
+      // The blocker is named, because the two causes need opposite responses and the
+      // message is the only way to tell them apart in the field. An in-pass claim means
+      // two recordings in this session genuinely carry the SAME `startUptime` — the
+      // upstream fault, not a filing accident. A file already on disk means the target
+      // slot is occupied by something this pass is not moving. Observed on device
+      // 2026-08-28/30: three recordings in session 4261367757 refused on every pass,
+      // which is what a duplicated uptime looks like once the guard exists — and what
+      // `File.rename` silently destroyed before it did.
+      final claimedBy = claimedTargets['$newConvStartMs'];
+      final audioInTheWay = claimedBy == null && newAudioPath != conv.file.path && await File(newAudioPath).exists();
+      final metaInTheWay =
+          claimedBy == null && !audioInTheWay && newMetaPath != '$basePath.meta' && await File(newMetaPath).exists();
+      if (claimedBy != null || audioInTheWay || metaInTheWay) {
+        final blocker = claimedBy != null
+            ? 'this pass is already moving $claimedBy onto that name — the two share a startUptime'
+            : audioInTheWay
+                ? 'recording_$newConvStartMs.$extension is already on disk'
+                : 'recording_$newConvStartMs.meta is already on disk (a different extension holds the slot)';
         Logger.error('RecordingsManager: refusing to re-file ${conv.file.path.split('/').last} onto '
-            'recording_$newConvStartMs — another recording already claims it (startUptime=$convUptime). '
+            'recording_$newConvStartMs (startUptime=$convUptime) — $blocker. '
             'Left under its original timestamp.');
         continue;
       }
+      claimedTargets['$newConvStartMs'] = conv.file.path.split('/').last;
 
       final metaFile = File('$basePath.meta');
 
