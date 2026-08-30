@@ -131,6 +131,12 @@ class MyApp : Application() {
             setMethodCallHandler { call, result ->
                 when (call.method) {
                     "moveTaskToBack" -> result.success(currentActivity?.moveTaskToBack(true) ?: false)
+                    // Whether a UI is attached RIGHT NOW. Dart asks at startup because
+                    // its own lifecycleState is null until the first lifecycle event, and
+                    // in a process with no Activity that null never resolves — so "no
+                    // answer yet" and "no screen at all" are indistinguishable from
+                    // Dart's side. This is the difference.
+                    "hasUi" -> result.success(currentActivity != null)
                     "dartReady" -> {
                         OmiBleManager.isFlutterAlive = true
                         Log.d(TAG, "dartReady: Dart is up — background wake paths may deliver")

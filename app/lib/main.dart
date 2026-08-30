@@ -44,40 +44,41 @@ void main() async {
   // for anyone who has not. Safe to run unconditionally because _saveSettings is
   // the only other writer of these keys.
   SharedPreferencesUtil().applyRecordingModeDefaults(SharedPreferencesUtil().manualMode);
-  // Version stamp, first thing after prefs are up so it heads the launch's log
-  // lines. Firmware is the last-read value (nothing is connected yet); the
-  // connect that follows confirms it with a device_version line of its own.
-  //
-  // Read from the flat lastLoggedFirmwareRevision string and NOT from
-  // `btDevice`, whose getter jsonDecodes a stored blob: this runs before
-  // runApp(), so anything that throws here is an app that will not start at all.
-  // The cost is that the very first launch on this build says "unknown" until
-  // the first connect populates it.
   await SyncNotification.requestPermissions();
   await ServiceManager.init();
   await ServiceManager.instance().start();
 
-  // Constructed HERE, not by the widget tree, and this is load-bearing.
-  //
-  // Its constructor is what registers BleBridge.backgroundSyncRequestedCallback — the
-  // entry point for every scheduled sync. It used to be built by a lazy
-  // ChangeNotifierProvider, i.e. on the first widget that read it, which was fine while
-  // the engine died with the Activity: no UI meant no Dart at all. The engine now
-  // outlives the Activity (see MyApp on the Android side), so a process can be started by
-  // WorkManager with no Activity ever attached — and with no view there is nothing to
-  // drive a frame, so the tree may never build. That would leave native reporting Dart
-  // alive, delivering the request, and BleBridge calling a null callback: a sync that
-  // reports success having done nothing, which is worse than the failure it replaced
-  // because it is silent.
-  final deviceProvider = DeviceProvider();
-
   // The Flutter engine now outlives MainActivity (created and cached by MyApp on the
   // Android side, so an OS memory-reclaim of the Activity no longer takes Dart with it —
-  // which is what lets a scheduled background sync find something to run). Two
-  // consequences are handled here.
+  // which is what lets a scheduled background sync find something to run). Three
+  // consequences are handled below.
   const systemChannel = MethodChannel('com.omi.offline/system');
 
-  // 1. main() runs once per PROCESS now, not once per app-open, and that process can live
+  // 1. DeviceProvider is constructed HERE, not by the widget tree, and that is
+  //    load-bearing. Its constructor registers BleBridge.backgroundSyncRequestedCallback
+  //    — the entry point for every scheduled sync. It used to be built by a LAZY
+  //    ChangeNotifierProvider, i.e. by the first widget that read it, which was fine
+  //    while the engine died with the Activity: no UI meant no Dart at all. Now a
+  //    process can be started by WorkManager with no Activity ever attached, and with no
+  //    view there is nothing to drive a frame, so the tree may never build. That would
+  //    leave native reporting Dart alive, delivering the request, and BleBridge calling
+  //    a null callback — a sync that reports success having done nothing, which is worse
+  //    than the failure it replaced because it is silent.
+  //
+  //    It is asked whether a screen is attached, because Dart cannot tell on its own:
+  //    its lifecycleState is null until the first lifecycle event, and in a process with
+  //    no Activity that null never resolves, so "no answer yet" and "no screen at all"
+  //    are indistinguishable from here. Only native knows.
+  bool? uiAttached;
+  try {
+    uiAttached = await systemChannel.invokeMethod<bool>('hasUi');
+  } catch (e) {
+    // Leave it null — DeviceProvider then keeps the historical assume-foreground default.
+    Logger.error('main: could not ask native whether a UI is attached ($e)');
+  }
+  final deviceProvider = DeviceProvider(uiAttached: uiAttached);
+
+  // 2. main() runs once per PROCESS now, not once per app-open, and that process can live
   //    for days. Native signals a re-attach so the launch housekeeping still happens each
   //    time the user actually opens the app.
   systemChannel.setMethodCallHandler((call) async {
@@ -88,7 +89,7 @@ void main() async {
     return null;
   });
 
-  // 2. Readiness is DART's to declare, not the engine's to assume. Native used to set
+  // 3. Readiness is DART's to declare, not the engine's to assume. Native used to set
   //    isFlutterAlive the moment it created the engine, which is synchronously before a
   //    single line of Dart has run — fine while the engine only ever existed alongside an
   //    Activity, but a WorkManager-started process would otherwise be told Dart is ready
@@ -111,6 +112,14 @@ void main() async {
 /// discards, and stamp the log with the running versions. Failures are logged and
 /// swallowed — this must never be the reason the app does not come up.
 Future<void> _launchHousekeeping() async {
+  // Version stamp, heading this open's log lines. Firmware is the last-read value
+  // (nothing is connected yet); the connect that follows confirms it with a
+  // device_version line of its own.
+  //
+  // Read from the flat lastLoggedFirmwareRevision string and NOT from `btDevice`, whose
+  // getter jsonDecodes a stored blob — on the first call this still runs before runApp(),
+  // so anything that throws is an app that will not start at all. The cost is that the
+  // very first launch on a build says "unknown" until the first connect populates it.
   unawaited(DebugLogManager.logAppStart(
     lastKnownFirmware: SharedPreferencesUtil().lastLoggedFirmwareRevision,
   ));
