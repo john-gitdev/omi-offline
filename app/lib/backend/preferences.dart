@@ -777,9 +777,32 @@ class SharedPreferencesUtil {
 
   // Timestamp of the last sync that actually moved data (success/partial). Used by the
   // auto-sync interval gate to decide when the next cycle is due — NOT stamped on a skip.
+  //
+  // This is the single source of truth for *when the next automatic sync is due*, for all
+  // three triggers: the Dart interval timer, the exact alarm (both via
+  // DeviceProvider._anchorAutoSyncSchedule) and the WorkManager backstop (which reads the
+  // pref directly). Writing it therefore re-anchors the schedule, via [lastSyncCompleted].
   int get lastSyncCompletedMs => getInt('lastSyncCompletedMs', defaultValue: 0);
 
-  set lastSyncCompletedMs(int v) => saveInt('lastSyncCompletedMs', v);
+  set lastSyncCompletedMs(int v) {
+    saveInt('lastSyncCompletedMs', v);
+    lastSyncCompleted.notify();
+  }
+
+  /// Fires on every [lastSyncCompletedMs] write.
+  ///
+  /// The signal lives on the setter rather than at the call sites because the sync that
+  /// completes is not always the one the scheduler started: [DeviceProvider] runs the
+  /// background cycle, but `RecordingsController` runs the foreground pipeline and holds
+  /// no reference to it. Hanging the re-anchor off the write means neither has to know
+  /// about the other, and a future path that completes a sync is wired up for free —
+  /// which is exactly what went wrong before, when only the background path moved the
+  /// schedule and a manual sync at :29 was followed by an automatic one at :30.
+  ///
+  /// Static, so a listener does not depend on construction order. Isolate-local like any
+  /// static: the background VAD isolate never writes this pref, and if it ever did, the
+  /// notify would simply find no listeners there.
+  static final SyncScheduleSignal lastSyncCompleted = SyncScheduleSignal();
 
   // Timestamp of the last sync *outcome* of any kind (success, partial, or skip). This is
   // what the notification displays next to its status, so a skip shows its own time rather
@@ -878,4 +901,11 @@ class SharedPreferencesUtil {
   Future<bool> remove(String key) async => await _preferences?.remove(key) ?? false;
 
   Future<bool> clear() async => await _preferences?.clear() ?? false;
+}
+
+/// A bare "it happened" [Listenable]. Deliberately not a `ValueNotifier<int>`: that
+/// suppresses the notification when the new value equals the old, and two syncs
+/// completing in the same millisecond are still two syncs.
+class SyncScheduleSignal extends ChangeNotifier {
+  void notify() => notifyListeners();
 }
