@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/pages/recordings/recordings_page.dart';
@@ -52,17 +53,44 @@ void main() async {
   // runApp(), so anything that throws here is an app that will not start at all.
   // The cost is that the very first launch on this build says "unknown" until
   // the first connect populates it.
-  unawaited(DebugLogManager.logAppStart(
-    lastKnownFirmware: SharedPreferencesUtil().lastLoggedFirmwareRevision,
-  ));
   await SyncNotification.requestPermissions();
   await ServiceManager.init();
   await ServiceManager.instance().start();
-  await RecordingsManager.cleanUpIncompleteExtraction();
-  await RecordingsManager.cleanupOrphanedTempFiles();
-  await RecordingsManager.runRecoverySweep();
+  await _launchHousekeeping();
+
+  // The Flutter engine now outlives MainActivity (it is created and cached by MyApp on
+  // the Android side, so an OS memory-reclaim of the Activity no longer takes Dart with
+  // it — which is what lets a scheduled background sync find something to run). The
+  // consequence here is that main() runs once per PROCESS, not once per app-open, and
+  // that process can now live for days. Native signals a re-attach so the housekeeping
+  // below still happens each time the user actually opens the app.
+  const MethodChannel('com.omi.offline/system').setMethodCallHandler((call) async {
+    if (call.method == 'uiReattached') {
+      Logger.debug('main: UI re-attached to a running engine — re-running launch housekeeping');
+      await _launchHousekeeping();
+    }
+    return null;
+  });
 
   runApp(const MyApp());
+}
+
+/// Work that belongs to opening the app rather than to starting the process.
+///
+/// Every step is idempotent and safe to repeat: they sweep temp files and expired
+/// discards, and stamp the log with the running versions. Failures are logged and
+/// swallowed — this must never be the reason the app does not come up.
+Future<void> _launchHousekeeping() async {
+  unawaited(DebugLogManager.logAppStart(
+    lastKnownFirmware: SharedPreferencesUtil().lastLoggedFirmwareRevision,
+  ));
+  try {
+    await RecordingsManager.cleanUpIncompleteExtraction();
+    await RecordingsManager.cleanupOrphanedTempFiles();
+    await RecordingsManager.runRecoverySweep();
+  } catch (e) {
+    Logger.error('main: launch housekeeping failed: $e');
+  }
 }
 
 class MyApp extends StatefulWidget {
