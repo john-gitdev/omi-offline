@@ -351,7 +351,9 @@ CONFIG_BOOTLOADER_MCUBOOT=y               # Use MCUboot
 
 ---
 
-**Last Updated**: May 2026  
+**Last Updated**: August 2026  
 **SDK Version**: nRF Connect SDK 2.9.0  
 **Target Hardware**: OMI nRF5340 Device  
-**Firmware Version**: oo-1.7.6
+**Firmware Version**: `oo-3.1.0` — the current value is `CONFIG_BT_DIS_FW_REV_STR` in
+[`omi/omi.conf`](omi/omi.conf), which is the string the app reads over DIS. Check there
+rather than trusting this line.
