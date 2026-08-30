@@ -19,7 +19,7 @@ Work top to bottom — the later scenarios assume the earlier ones passed. Each 
 3. **Have `adb logcat` available.** Three scenarios are only observable natively:
 
    ```bash
-   adb logcat -s OmiBle.MyApp:D OmiBle.ForegroundService:D flutter:D
+   adb logcat -s OmiBle.MyApp:D OmiBle.FgService:D flutter:D
    ```
 
    | Line | Means |
@@ -72,7 +72,8 @@ Wait out one sync interval without reopening.
 
 ## 3. A headless cold start — WorkManager starts the process with no Activity ever
 
-**Do:** force-stop the app (`adb shell am force-stop com.omi.offline`). Do **not** open it.
+**Do:** force-stop the app (`adb shell am force-stop com.omi.offline` — append `.dev` for a
+`build.sh` dev-flavor build). Do **not** open it.
 Wait for the WorkManager backstop (≤ 15 min).
 
 | Check | Pass |
