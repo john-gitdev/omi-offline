@@ -4,6 +4,7 @@ import android.content.Intent
 import androidx.annotation.NonNull
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.embedding.engine.FlutterEngineCache
 
 /**
  * The UI host. It no longer OWNS the Flutter engine — [MyApp] creates and caches it, and
@@ -22,7 +23,13 @@ class MainActivity : FlutterActivity() {
      * FlutterActivity then attaches and detaches it around this Activity's lifecycle
      * instead of creating and destroying it, which is what lets Dart outlive a reclaim.
      */
-    override fun getCachedEngineId(): String = MyApp.ENGINE_ID
+    override fun getCachedEngineId(): String? =
+        // Only if the pre-warm actually succeeded. FlutterActivity THROWS on a cache miss,
+        // so returning the id unconditionally would turn a failed pre-warm into an app
+        // that cannot launch at all. Returning null instead makes FlutterActivity build
+        // its own engine, which configureFlutterEngine then registers the platform APIs
+        // on — degrading to exactly the pre-change behaviour rather than to a brick.
+        if (FlutterEngineCache.getInstance().contains(MyApp.ENGINE_ID)) MyApp.ENGINE_ID else null
 
     /**
      * Never tear the engine down with this Activity — not even on a deliberate finish.
@@ -35,18 +42,25 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        // Fallback path: the pre-warm failed, so this is an Activity-owned engine with
+        // none of the platform APIs on it. Register them here. (On the normal path MyApp
+        // already did, and bleHostApi is non-null.)
+        if (OmiBleManager.bleHostApi == null) {
+            MyApp.registerEngineScopedApis(application, flutterEngine)
+        }
+
         // Publish the Activity for the engine-scoped APIs that can use one when it exists
         // (companion-device pairing, permission dialogs, moveTaskToBack).
         MyApp.currentActivity = this
         OmiBleManager.bleHostApi?.initCompanionManager(this)
 
-        // A re-attach means the user reopened the app against an engine that kept
-        // running, so `main()` will not run again. Tell Dart, so the launch housekeeping
-        // still happens per open rather than once per process — see MyApp.hasAttachedOnce.
-        if (MyApp.hasAttachedOnce) {
-            MyApp.systemChannel?.invokeMethod("uiReattached", null)
-        }
-        MyApp.hasAttachedOnce = true
+        // Signal EVERY attach, not only re-attaches. `main()` runs once per process now,
+        // so the work that belongs to a screen appearing has to be driven from here — and
+        // that includes the very first attach of a process that started headless, which
+        // is not a "re"-attach and skipped its permission requests for want of an
+        // Activity. Dart debounces, so a cold launch does not do the work twice.
+        MyApp.systemChannel?.invokeMethod("uiAttached", null)
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {

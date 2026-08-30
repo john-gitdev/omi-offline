@@ -53,22 +53,69 @@ class MyApp : Application() {
         @Volatile
         var currentActivity: Activity? = null
 
-        /**
-         * True once a UI has attached to the engine at least one time.
-         *
-         * A SECOND attach means the user reopened the app against an engine that never
-         * stopped running — `main()` will not run again, so the launch housekeeping it
-         * does (temp-file cleanup, the discard recovery sweep, the version stamp that
-         * heads a launch's log lines) would silently drop from per-open to once per
-         * process, and the process can now live for days. MainActivity signals Dart on
-         * a re-attach so that work still happens when a user opens the app.
-         */
-        @Volatile
-        var hasAttachedOnce: Boolean = false
-
         /** Kotlin -> Dart signalling channel; also carries `moveTaskToBack` the other way. */
         @Volatile
         var systemChannel: MethodChannel? = null
+
+        /**
+         * Wires the platform APIs that belong to the engine rather than to any Activity.
+         *
+         * [BleHostApiImpl] is constructed with the application context and an Activity
+         * *supplier*, not an Activity: the calls a background sync makes (manage/unmanage
+         * a device, reschedule, take a wake lock) resolve against the application context
+         * and work with no UI, while the genuinely Activity-bound ones (companion-device
+         * pairing, permission dialogs) return early exactly as before when there is
+         * nothing to show a dialog on.
+         *
+         * Callable from MainActivity too, for the fallback where the pre-warm failed and
+         * the Activity had to build its own engine — otherwise that engine would come up
+         * with no BLE, no encoder and no VAD runner at all.
+         */
+        fun registerEngineScopedApis(app: Application, engine: FlutterEngine) {
+            OmiBleManager.initialize(app)
+            val messenger = engine.dartExecutor.binaryMessenger
+            val flutterApi = BleFlutterApi(messenger)
+            val hostApi = BleHostApiImpl({ currentActivity }, flutterApi, app.applicationContext)
+            BleHostApi.setUp(messenger, hostApi)
+            OmiBleManager.bleHostApi = hostApi
+
+            AacEncoderChannel(messenger)
+
+            // Android-only; iOS stays on the per-window fallback.
+            //
+            // Deliberately never destroyed. It used to be torn down in
+            // MainActivity.onDestroy on a swipe-away, which was right while it belonged to
+            // the Activity; it belongs to the engine now, and destroying it would leave
+            // every later BACKGROUND sync without a batch runner — the exact runs this
+            // change exists to enable. The expensive part, the ORT session, is released by
+            // Dart's own `dispose` after each processing run; what stays resident is an
+            // idle worker thread.
+            VadBatchRunner(messenger)
+
+            // Lets the root Flutter page minimize the app on Back instead of finishing
+            // MainActivity — finishing tears down the BLE foreground service. With no
+            // Activity attached there is nothing to minimize, so this reports false rather
+            // than failing: Dart treats that as "could not minimize" and does nothing.
+            systemChannel = MethodChannel(messenger, "com.omi.offline/system").apply {
+                setMethodCallHandler { call, result ->
+                    when (call.method) {
+                        "moveTaskToBack" -> result.success(currentActivity?.moveTaskToBack(true) ?: false)
+                        // Whether a UI is attached RIGHT NOW. Dart asks at startup because
+                        // its own lifecycleState is null until the first lifecycle event,
+                        // and in a process with no Activity that null never resolves — so
+                        // "no answer yet" and "no screen at all" are indistinguishable from
+                        // Dart's side. This is the difference.
+                        "hasUi" -> result.success(currentActivity != null)
+                        "dartReady" -> {
+                            OmiBleManager.isFlutterAlive = true
+                            Log.d(TAG, "dartReady: Dart is up — background wake paths may deliver")
+                            result.success(null)
+                        }
+                        else -> result.notImplemented()
+                    }
+                }
+            }
+        }
     }
 
     override fun onCreate() {
@@ -77,74 +124,33 @@ class MyApp : Application() {
         // the interval stays current (UPDATE policy is idempotent if unchanged).
         BackgroundSyncWorker.scheduleFromPrefs(this)
 
-        val engine = FlutterEngine(this)
-        engine.dartExecutor.executeDartEntrypoint(DartExecutor.DartEntrypoint.createDefault())
-        FlutterEngineCache.getInstance().put(ENGINE_ID, engine)
-        registerEngineScopedApis(engine)
-
-        // isFlutterAlive is deliberately NOT set here. Creating the engine and running
-        // its entrypoint are not the same thing: executeDartEntrypoint only schedules
-        // main(), so at this instant no Pigeon handler is registered and no
-        // DeviceProvider exists. Dart calls `dartReady` when the sync path is actually
-        // up (see main.dart) — which also means a Dart main() that throws leaves the flag
-        // false, and the wake paths correctly skip instead of posting into a broken
-        // engine. It used to be set from MainActivity, where it tracked the ACTIVITY and
-        // so went false on a reclaim even though nothing was wrong with Dart.
-        Log.d(TAG, "onCreate: Flutter engine created and cached as $ENGINE_ID")
-    }
-
-    /**
-     * Wires the platform APIs that belong to the engine rather than to any Activity.
-     *
-     * [BleHostApiImpl] is constructed with the application context and an Activity
-     * *supplier*, not an Activity: the calls a background sync makes (manage/unmanage a
-     * device, reschedule, take a wake lock) resolve against the application context and
-     * work with no UI, while the genuinely Activity-bound ones (companion-device pairing,
-     * permission dialogs) return early exactly as before when there is nothing to show a
-     * dialog on.
-     */
-    private fun registerEngineScopedApis(engine: FlutterEngine) {
-        OmiBleManager.initialize(this)
-        val messenger = engine.dartExecutor.binaryMessenger
-        val flutterApi = BleFlutterApi(messenger)
-        val hostApi = BleHostApiImpl({ currentActivity }, flutterApi, applicationContext)
-        BleHostApi.setUp(messenger, hostApi)
-        OmiBleManager.bleHostApi = hostApi
-
-        AacEncoderChannel(messenger)
-
-        // Android-only; iOS stays on the per-window fallback.
-        //
-        // Deliberately never destroyed. It used to be torn down in MainActivity.onDestroy
-        // on a swipe-away, which was right while it belonged to the Activity; it belongs
-        // to the engine now, and destroying it would leave every later BACKGROUND sync
-        // without a batch runner — the exact runs this change exists to enable. The
-        // expensive part, the ORT session, is released by Dart's own `dispose` after each
-        // processing run; what stays resident is an idle worker thread.
-        VadBatchRunner(messenger)
-
-        // Lets the root Flutter page minimize the app on Back instead of finishing
-        // MainActivity — finishing tears down the BLE foreground service. With no
-        // Activity attached there is nothing to minimize, so this reports false rather
-        // than failing: Dart treats that as "could not minimize" and does nothing.
-        systemChannel = MethodChannel(messenger, "com.omi.offline/system").apply {
-            setMethodCallHandler { call, result ->
-                when (call.method) {
-                    "moveTaskToBack" -> result.success(currentActivity?.moveTaskToBack(true) ?: false)
-                    // Whether a UI is attached RIGHT NOW. Dart asks at startup because
-                    // its own lifecycleState is null until the first lifecycle event, and
-                    // in a process with no Activity that null never resolves — so "no
-                    // answer yet" and "no screen at all" are indistinguishable from
-                    // Dart's side. This is the difference.
-                    "hasUi" -> result.success(currentActivity != null)
-                    "dartReady" -> {
-                        OmiBleManager.isFlutterAlive = true
-                        Log.d(TAG, "dartReady: Dart is up — background wake paths may deliver")
-                        result.success(null)
-                    }
-                    else -> result.notImplemented()
-                }
-            }
+        // Wrapped so a failure here DEGRADES instead of bricking the app. An exception out
+        // of Application.onCreate takes the whole process down at launch, and MainActivity
+        // would then fail its cache lookup anyway. On failure the cache is left empty,
+        // MainActivity builds its own engine and registers the APIs on it, and the app
+        // behaves as it did before this change: background sync stops working again, but
+        // the app runs.
+        try {
+            val engine = FlutterEngine(this)
+            engine.dartExecutor.executeDartEntrypoint(DartExecutor.DartEntrypoint.createDefault())
+            FlutterEngineCache.getInstance().put(ENGINE_ID, engine)
+            registerEngineScopedApis(this, engine)
+            Log.d(TAG, "onCreate: Flutter engine created and cached as $ENGINE_ID")
+        } catch (e: Exception) {
+            Log.e(
+                TAG,
+                "onCreate: could not pre-warm the Flutter engine — falling back to an " +
+                    "Activity-owned engine, background sync will not run: $e"
+            )
         }
+
+        // isFlutterAlive is deliberately NOT set here. Creating the engine and running its
+        // entrypoint are not the same thing: executeDartEntrypoint only schedules main(),
+        // so at this instant no Pigeon handler is registered and no DeviceProvider exists.
+        // Dart calls `dartReady` when the sync path is actually up (see main.dart) — which
+        // also means a Dart main() that throws leaves the flag false, and the wake paths
+        // correctly skip instead of posting into a half-built engine. It used to be set
+        // from MainActivity, where it tracked the ACTIVITY and so went false on a reclaim
+        // even though nothing was wrong with Dart.
     }
 }
