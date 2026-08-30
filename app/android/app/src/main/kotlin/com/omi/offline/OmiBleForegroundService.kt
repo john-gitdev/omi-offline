@@ -1873,14 +1873,31 @@ class OmiBleForegroundService : Service() {
         val lastMs = prefs.getLong("flutter.lastSyncStatusMs", 0L)
         val text: String
         if (lastMs > 0) {
+            val skipped = prefs.getBoolean("flutter.lastSyncSkipped", false)
             val status = when {
-                prefs.getBoolean("flutter.lastSyncSkipped", false) -> "Skipped"
+                skipped -> "Skipped"
                 prefs.getBoolean("flutter.lastSyncPartial", false) -> "Partial"
                 else -> "Complete"
             }
             val time = fmt.format(Date(lastMs))
             val battery = prefs.getLong("flutter.lastBatteryLevel", -1L).toInt()
-            text = if (battery >= 0) "Last Sync: $status • $time • $battery% Battery" else "Last Sync: $status • $time"
+            // Same freshness rule as Dart's SyncNotification.idleBodyText, and this half
+            // matters more: it renders precisely when the Flutter isolate is frozen or
+            // gone, which is the long unreachable stretch where the stored reading is
+            // most stale. A skipped sync never reached the Omi, so the percentage is at
+            // least one interval old and ages further with every cycle that misses.
+            //
+            // The live-link escape is carried over even though today's only caller
+            // (settleStaleConnectingToIdle) always sets the skip flag immediately above,
+            // so it can never be taken here — the two renderers are documented mirrors,
+            // and a rule that reads the same in both is worth more than eliding a branch.
+            // managedDevices is a ConcurrentHashMap, so this is safe off the main thread.
+            val batteryIsCurrent = !skipped || managedDevices.keys.any { bleManager.isPeripheralConnected(it) }
+            text = if (battery >= 0 && batteryIsCurrent) {
+                "Last Sync: $status • $time • $battery% Battery"
+            } else {
+                "Last Sync: $status • $time"
+            }
         } else {
             text = DEFAULT_NOTIF_TEXT
         }
