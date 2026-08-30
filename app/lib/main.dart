@@ -56,15 +56,31 @@ void main() async {
   await SyncNotification.requestPermissions();
   await ServiceManager.init();
   await ServiceManager.instance().start();
-  await _launchHousekeeping();
 
-  // The Flutter engine now outlives MainActivity (it is created and cached by MyApp on
-  // the Android side, so an OS memory-reclaim of the Activity no longer takes Dart with
-  // it — which is what lets a scheduled background sync find something to run). The
-  // consequence here is that main() runs once per PROCESS, not once per app-open, and
-  // that process can now live for days. Native signals a re-attach so the housekeeping
-  // below still happens each time the user actually opens the app.
-  const MethodChannel('com.omi.offline/system').setMethodCallHandler((call) async {
+  // Constructed HERE, not by the widget tree, and this is load-bearing.
+  //
+  // Its constructor is what registers BleBridge.backgroundSyncRequestedCallback — the
+  // entry point for every scheduled sync. It used to be built by a lazy
+  // ChangeNotifierProvider, i.e. on the first widget that read it, which was fine while
+  // the engine died with the Activity: no UI meant no Dart at all. The engine now
+  // outlives the Activity (see MyApp on the Android side), so a process can be started by
+  // WorkManager with no Activity ever attached — and with no view there is nothing to
+  // drive a frame, so the tree may never build. That would leave native reporting Dart
+  // alive, delivering the request, and BleBridge calling a null callback: a sync that
+  // reports success having done nothing, which is worse than the failure it replaced
+  // because it is silent.
+  final deviceProvider = DeviceProvider();
+
+  // The Flutter engine now outlives MainActivity (created and cached by MyApp on the
+  // Android side, so an OS memory-reclaim of the Activity no longer takes Dart with it —
+  // which is what lets a scheduled background sync find something to run). Two
+  // consequences are handled here.
+  const systemChannel = MethodChannel('com.omi.offline/system');
+
+  // 1. main() runs once per PROCESS now, not once per app-open, and that process can live
+  //    for days. Native signals a re-attach so the launch housekeeping still happens each
+  //    time the user actually opens the app.
+  systemChannel.setMethodCallHandler((call) async {
     if (call.method == 'uiReattached') {
       Logger.debug('main: UI re-attached to a running engine — re-running launch housekeeping');
       await _launchHousekeeping();
@@ -72,7 +88,21 @@ void main() async {
     return null;
   });
 
-  runApp(const MyApp());
+  // 2. Readiness is DART's to declare, not the engine's to assume. Native used to set
+  //    isFlutterAlive the moment it created the engine, which is synchronously before a
+  //    single line of Dart has run — fine while the engine only ever existed alongside an
+  //    Activity, but a WorkManager-started process would otherwise be told Dart is ready
+  //    and post a sync request at an engine with no Pigeon handler and no DeviceProvider.
+  //    Everything the sync path needs is up by this point.
+  try {
+    await systemChannel.invokeMethod('dartReady');
+  } catch (e) {
+    Logger.error('main: could not signal readiness to native ($e)');
+  }
+
+  await _launchHousekeeping();
+
+  runApp(MyApp(deviceProvider: deviceProvider));
 }
 
 /// Work that belongs to opening the app rather than to starting the process.
@@ -94,7 +124,11 @@ Future<void> _launchHousekeeping() async {
 }
 
 class MyApp extends StatefulWidget {
-  const MyApp({super.key});
+  /// Built in [main] before runApp — see the note there. Passed in rather than created
+  /// by the provider so that it exists whether or not a UI ever attaches.
+  final DeviceProvider deviceProvider;
+
+  const MyApp({super.key, required this.deviceProvider});
 
   @override
   State<MyApp> createState() => _MyAppState();
@@ -135,7 +169,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return MultiProvider(
-      providers: [ChangeNotifierProvider(create: (_) => DeviceProvider())],
+      providers: [ChangeNotifierProvider.value(value: widget.deviceProvider)],
       child: MaterialApp(
         title: 'Offline Recorder',
         theme: ThemeData.dark(),

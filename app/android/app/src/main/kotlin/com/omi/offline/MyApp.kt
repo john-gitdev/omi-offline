@@ -82,10 +82,14 @@ class MyApp : Application() {
         FlutterEngineCache.getInstance().put(ENGINE_ID, engine)
         registerEngineScopedApis(engine)
 
-        // The engine is what this flag has always been trying to describe. It used to be
-        // set from MainActivity, where it tracked the ACTIVITY and so went false on a
-        // reclaim even though nothing was wrong with Dart.
-        OmiBleManager.isFlutterAlive = true
+        // isFlutterAlive is deliberately NOT set here. Creating the engine and running
+        // its entrypoint are not the same thing: executeDartEntrypoint only schedules
+        // main(), so at this instant no Pigeon handler is registered and no
+        // DeviceProvider exists. Dart calls `dartReady` when the sync path is actually
+        // up (see main.dart) — which also means a Dart main() that throws leaves the flag
+        // false, and the wake paths correctly skip instead of posting into a broken
+        // engine. It used to be set from MainActivity, where it tracked the ACTIVITY and
+        // so went false on a reclaim even though nothing was wrong with Dart.
         Log.d(TAG, "onCreate: Flutter engine created and cached as $ENGINE_ID")
     }
 
@@ -127,6 +131,11 @@ class MyApp : Application() {
             setMethodCallHandler { call, result ->
                 when (call.method) {
                     "moveTaskToBack" -> result.success(currentActivity?.moveTaskToBack(true) ?: false)
+                    "dartReady" -> {
+                        OmiBleManager.isFlutterAlive = true
+                        Log.d(TAG, "dartReady: Dart is up — background wake paths may deliver")
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }
