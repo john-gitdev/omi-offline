@@ -33,6 +33,9 @@ attempts (`OmiBleForegroundService.kt:66`). It emits, into the same `omi_debug_*
   right after detection: is the peripheral still on the air?
 - `ble_wedge_recovered` — logged when a connect finally discovers services, carrying the
   **same environment fields** as `ble_wedge` so the two can be diffed to explain the recovery.
+- `ble_link_drop` — emitted on **every** disconnect, not only wedges (added 0.36.3). Carries the
+  GATT status, the last RSSI read on the link, and **that reading's age**. See §2 below: this is
+  the first signal in the corpus that measures a link while it is *connected*.
 
 At `AUTONOMOUS_RETRY_STOP_AFTER = 6` failures (`:76`) native **stops** its own fast retry
 loop (rapid `connectGatt`/`closeGatt` churn is itself the most common cause of daemon
@@ -147,6 +150,20 @@ whether it actually *cured* anything — if failures continue afterwards, the bu
 probes, `147` timeouts, `omi_in_gatt_list=false`, `bonded`, no toggle, and a multi-hour duration, and
 was simply the Omi in another room overnight. Four discriminators, in order of strength:
 
+0. **`ble_link_drop.rssi` — the only *connected* RSSI in the corpus (0.36.3+).** Everything else
+   in this document measures the link while **scanning**, which is the wrong question for a
+   transfer that died mid-file. A supervision timeout (`gatt_status_8`) at −60 dBm means
+   something on the device stopped answering; the same timeout at −100 dBm means the Omi was out
+   of range. Those want opposite investigations and were **indistinguishable after the fact** —
+   the four-day log carried 87 such timeouts and no way to sort them. `rssi_age_ms` matters as
+   much as the value: the keep-alive reads every 3 s, so a reading much older than that says the
+   link had already stopped carrying traffic before it formally dropped. A **null** RSSI on a
+   failed connect correctly means "never established", as distinct from established-then-dropped.
+   Note the read was always being issued — `readRemoteRssi()` every 3 s since the RSSI keep-alive
+   landed — but there was no `onReadRemoteRssi` override, so every value was measured and
+   discarded, and `BlePeripheral` for a connected device carried a hardcoded `rssi = -50`
+   placeholder. **Logs predating 0.36.3 have no connected RSSI at all**; do not read that absence
+   as a reading.
 1. **`rssi_min`/`rssi_max` on any ADVERTISING probe.** Non-null and near the floor (≲ −95 dBm) ⟹
    range. Genuine wedges give SILENT probes with `rssi_*` all `null` — the device is not on the air
    at *any* signal level, so there is nothing to be weak.
@@ -1277,6 +1294,14 @@ so it cannot relieve establishment contention. Considered and rejected during th
   = establishment RF failure = toggle only helps by resetting the initiator.
 - **Contention** — does a wedge ever coincide with `contending_le_links` > 1, and does the
   toggle-required set correlate with the Garmin being connected?
+- **Are the mid-transfer `gatt_status_8` drops range or stall?** *Now measurable, not yet
+  measured.* `ble_link_drop` (0.36.3) carries the connected RSSI and its age at every disconnect,
+  which is exactly the discriminator this corpus lacked — the 87 supervision timeouts in the
+  four-day log are unclassified for want of it. The scan probes hinted at range (164 of 193 heard
+  no advertisements at all; the 29 that did saw −97 to −103 dBm) but that is the signal while
+  **disconnected**, not while a file was transferring. Collect a fresh multi-day log and sort the
+  timeouts by RSSI: a bimodal split settles it, and IDEAS.md ACTIVE #1's premise ("genuine
+  multi-second RF/firmware stalls — not a tuning problem") is the claim under test.
 
 ---
 
