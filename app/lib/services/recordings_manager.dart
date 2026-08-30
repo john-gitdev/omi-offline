@@ -678,11 +678,13 @@ class RecordingsManager {
       final allSegments = activeBatches.expand((b) => b.rawSegments).toList();
 
       if (allSegments.isNotEmpty) {
-        allSegments.sort((a, b) {
-          final nameA = a.path.split('/').last;
-          final nameB = b.path.split('/').last;
-          return nameA.compareTo(nameB);
-        });
+        // Chronological, and NUMERICALLY so — the processor reads this list as one
+        // continuous stream, so its order IS the audio's order. Comparing the basenames
+        // as strings only agrees with time while every timerStart has the same digit
+        // count: a pre-time-sync bin keys on uptime seconds (`999_<sid>.bin`), and "999"
+        // sorts after "1787709128" on the first character, landing the session's oldest
+        // audio at the newest end of the stream.
+        allSegments.sort((a, b) => compareSegmentPaths(a.path, b.path));
 
         // Pre-compute segment timestamps and session IDs on the main isolate.
         const kMinValidEpoch = 946684800;
@@ -760,60 +762,14 @@ class RecordingsManager {
           if (await checkpointFile.exists()) {
             final content = await checkpointFile.readAsString();
             final data = jsonDecode(content) as Map<String, dynamic>;
-            final savedPaths = (data['paths'] as List).cast<String>();
-            final lastIndex = data['lastIndex'] as int;
             final currentPaths = allSegments.map((f) => f.path).toList();
-
-            // Fast path: segment list identical up to lastIndex — full state restore.
-            bool exactMatch = lastIndex >= 0 && lastIndex + 1 < currentPaths.length;
-            if (exactMatch) {
-              for (int k = 0; k <= lastIndex && k < savedPaths.length && k < currentPaths.length; k++) {
-                if (currentPaths[k] != savedPaths[k]) {
-                  exactMatch = false;
-                  break;
-                }
-              }
-            }
-
-            if (exactMatch) {
-              checkpointState = data['state'] as Map<String, dynamic>?;
-              checkpointResumeIndex = lastIndex + 1;
-              checkpointPendingDeletes = (data['pendingDeletes'] as List?)?.cast<String>() ?? [];
-              Logger.debug(
-                  'RecordingsManager: Resuming from checkpoint — skipping $checkpointResumeIndex/${currentPaths.length} segments.');
-            } else {
-              // Segment list shifted: new downloads were added or processed segments
-              // were deleted from disk between runs. Find the first segment whose
-              // timestamp is strictly later than the last completed segment so we
-              // skip already-processed bins without requiring index alignment.
-              // VAD state cannot be safely restored (preceding paths changed) but
-              // the draft files on disk bridge the conversation gap.
-              final lastCompletedPath = lastIndex >= 0 && lastIndex < savedPaths.length ? savedPaths[lastIndex] : null;
-              final lastCompletedTs = lastCompletedPath != null
-                  ? (int.tryParse(lastCompletedPath.split('/').last.split('_').first) ?? 0)
-                  : 0;
-
-              if (lastCompletedTs > 946684800) {
-                // Epoch-seconds threshold avoids matching uptime-tick filenames.
-                final resumeIdx = currentPaths.indexWhere((p) {
-                  final ts = int.tryParse(p.split('/').last.split('_').first) ?? 0;
-                  return ts > lastCompletedTs;
-                });
-                if (resumeIdx >= 0) {
-                  checkpointResumeIndex = resumeIdx;
-                  checkpointState = null; // fresh VAD state — drafts on disk bridge the gap
-                  checkpointPendingDeletes = (data['pendingDeletes'] as List?)?.cast<String>() ?? [];
-                  Logger.debug(
-                      'RecordingsManager: Checkpoint shifted — resuming at $resumeIdx/${currentPaths.length} (ts>$lastCompletedTs), fresh state.');
-                } else {
-                  Logger.debug('RecordingsManager: Checkpoint segment list changed — starting fresh.');
-                  await checkpointFile.delete();
-                }
-              } else {
-                Logger.debug('RecordingsManager: Checkpoint segment list changed — starting fresh.');
-                await checkpointFile.delete();
-              }
-            }
+            final plan = checkpointResumePlan(data: data, currentPaths: currentPaths);
+            Logger.debug('RecordingsManager: checkpoint — ${plan.reason} '
+                '(resume at ${plan.resumeIndex}/${currentPaths.length})');
+            checkpointResumeIndex = plan.resumeIndex;
+            checkpointState = plan.state;
+            checkpointPendingDeletes = plan.pendingDeletes;
+            if (plan.discard) await checkpointFile.delete();
           }
         } catch (e) {
           Logger.error('RecordingsManager: Checkpoint load failed ($e) — starting fresh.');
@@ -2920,7 +2876,13 @@ class RecordingsManager {
       for (final folder in dateFolders) {
         final audioFiles = await folder
             .list()
-            .where((e) => e is File && (e.path.endsWith('.m4a') || e.path.endsWith('.wav')))
+            // A `_draft.` is still being appended to and is not a finalized recording.
+            // Renaming it strips the suffix, promoting a partial into the UI and
+            // stranding its tail — the premature promotion the background flush path
+            // is careful never to do. [applyClockAnchors] already excludes drafts when
+            // it decides; this is the half that used to move them anyway.
+            .where(
+                (e) => e is File && (e.path.endsWith('.m4a') || e.path.endsWith('.wav')) && !e.path.contains('_draft.'))
             .cast<File>()
             .toList();
 
@@ -2937,8 +2899,29 @@ class RecordingsManager {
     }
 
     // 2. Perform renames and moves for processed recordings
+    //
+    // Every target here is derived from `convUptime`, which the `.meta` stores in whole
+    // SECONDS — so two recordings that share an uptime derive the same filename, and
+    // `File.rename` replaces its destination without a word. That is unrecoverable
+    // audio loss, and it is reachable whenever a session holds recordings with equal or
+    // missing uptimes. Claim each target and leave a colliding recording exactly where
+    // it is: a recording under the Omi's own timestamp is worth incomparably more than
+    // one re-filed onto a name that costs another recording.
+    // target name -> the recording that claimed it, so a refusal can say which one.
+    final claimedTargets = <String, String>{};
     for (final conv in sessionConversations) {
-      final convUptime = conv.startUptime ?? (conv.startTime.millisecondsSinceEpoch ~/ 1000);
+      // No usable uptime means the offset cannot place this recording — the same thing
+      // `clockVerdict` calls `unplaceable` and refuses to act on. It used to fall back
+      // to reading the recording's epoch SECONDS as if they were an uptime, which lands
+      // it in the year 2083; a 0 (what `.meta` byte 412 holds when the processor never
+      // established one) lands every such recording on the session's boot instant, all
+      // under one name. Leave it where the Omi filed it.
+      final convUptime = conv.startUptime ?? 0;
+      if (convUptime <= 0) {
+        Logger.debug('RecordingsManager: ${conv.file.path.split('/').last} has no start uptime — '
+            'left under its original timestamp.');
+        continue;
+      }
       final newConvStartMs = (convUptime * 1000) + rtcOffsetMs;
       final newDateStr = _dateStringFromMillis(newConvStartMs);
       final targetDir = Directory('${directory.path}/recordings/$newDateStr');
@@ -2947,8 +2930,42 @@ class RecordingsManager {
       final extension = conv.file.path.split('.').last;
       final newAudioPath = '${targetDir.path}/recording_$newConvStartMs.$extension';
       final newMetaPath = '${targetDir.path}/recording_$newConvStartMs.meta';
-
       final basePath = conv.file.path.substring(0, conv.file.path.lastIndexOf('.'));
+
+      // Already renaming onto this name, or a recording is sitting there. Either way
+      // the rename would destroy audio — leave this one alone.
+      //
+      // The `.meta` is checked as well as the audio, and that is not belt-and-braces:
+      // the audio path carries the source's extension while the meta path never does,
+      // so a `.wav` moving onto an existing `.m4a`'s slot finds no `recording_X.wav`
+      // to collide with and silently overwrites `recording_X.meta` — leaving that
+      // `.m4a` describing a different recording's duration, waveform and bin list.
+      //
+      // The blocker is named, because the two causes need opposite responses and the
+      // message is the only way to tell them apart in the field. An in-pass claim means
+      // two recordings in this session genuinely carry the SAME `startUptime` — the
+      // upstream fault, not a filing accident. A file already on disk means the target
+      // slot is occupied by something this pass is not moving. Observed on device
+      // 2026-08-28/30: three recordings in session 4261367757 refused on every pass,
+      // which is what a duplicated uptime looks like once the guard exists — and what
+      // `File.rename` silently destroyed before it did.
+      final claimedBy = claimedTargets['$newConvStartMs'];
+      final audioInTheWay = claimedBy == null && newAudioPath != conv.file.path && await File(newAudioPath).exists();
+      final metaInTheWay =
+          claimedBy == null && !audioInTheWay && newMetaPath != '$basePath.meta' && await File(newMetaPath).exists();
+      if (claimedBy != null || audioInTheWay || metaInTheWay) {
+        final blocker = claimedBy != null
+            ? 'this pass is already moving $claimedBy onto that name — the two share a startUptime'
+            : audioInTheWay
+                ? 'recording_$newConvStartMs.$extension is already on disk'
+                : 'recording_$newConvStartMs.meta is already on disk (a different extension holds the slot)';
+        Logger.error('RecordingsManager: refusing to re-file ${conv.file.path.split('/').last} onto '
+            'recording_$newConvStartMs (startUptime=$convUptime) — $blocker. '
+            'Left under its original timestamp.');
+        continue;
+      }
+      claimedTargets['$newConvStartMs'] = conv.file.path.split('/').last;
+
       final metaFile = File('$basePath.meta');
 
       // Update .meta content with new UTC time if we were to be super thorough,
@@ -3208,6 +3225,151 @@ class RecordingsManager {
   // coveredBinPaths (read-only filter before the VAD run).
   // ---------------------------------------------------------------------------
 
+  /// What a run should do with the checkpoint it found on disk.
+  ///
+  /// [CheckpointPlan.resumeIndex] 0 means "decode everything"; [CheckpointPlan.state] is
+  /// the serialized VAD state to restore, and is null unless the segment prefix matched
+  /// exactly (a shifted list cannot restore state safely — the drafts on disk bridge the
+  /// gap instead). [CheckpointPlan.discard] means the file should be deleted, because it
+  /// can never help again.
+  @visibleForTesting
+  static CheckpointPlan checkpointResumePlan({
+    required Map<String, dynamic> data,
+    required List<String> currentPaths,
+  }) {
+    // A checkpoint written by an older format is not trusted — see [checkpointVersion]
+    // for why v1 in particular cannot be, and why [shiftedResumeIndex] alone does not
+    // free a device already holding one. Checked BEFORE `paths`/`lastIndex` are read, so
+    // a future format is free to rename or drop them without this throwing on the way to
+    // the same answer.
+    if (data['version'] != checkpointVersion) {
+      return CheckpointPlan.fresh('format v${data['version']} != v$checkpointVersion — discarding');
+    }
+    final savedPaths = (data['paths'] as List).cast<String>();
+    final lastIndex = data['lastIndex'] as int;
+    final pendingDeletes = (data['pendingDeletes'] as List?)?.cast<String>() ?? const <String>[];
+
+    // Fast path: segment list identical up to lastIndex — full state restore.
+    bool exactMatch = lastIndex >= 0 && lastIndex + 1 < currentPaths.length;
+    if (exactMatch) {
+      for (int k = 0; k <= lastIndex && k < savedPaths.length && k < currentPaths.length; k++) {
+        if (currentPaths[k] != savedPaths[k]) {
+          exactMatch = false;
+          break;
+        }
+      }
+    }
+    if (exactMatch) {
+      return CheckpointPlan(
+        resumeIndex: lastIndex + 1,
+        state: data['state'] as Map<String, dynamic>?,
+        pendingDeletes: pendingDeletes,
+        reason: 'prefix matches exactly — restoring VAD state',
+      );
+    }
+
+    // Segment list shifted: new downloads were added or processed segments were deleted
+    // from disk between runs. Re-derive the resume point from the paths themselves,
+    // since index alignment is gone.
+    final resumeIdx = shiftedResumeIndex(savedPaths: savedPaths, lastIndex: lastIndex, currentPaths: currentPaths);
+    if (resumeIdx > 0) {
+      return CheckpointPlan(
+        resumeIndex: resumeIdx,
+        state: null, // fresh VAD state — drafts on disk bridge the gap
+        pendingDeletes: pendingDeletes,
+        reason: 'list shifted — resuming with fresh state',
+      );
+    }
+    return const CheckpointPlan.fresh('segment list changed — starting fresh');
+  }
+
+  /// Where to resume when a checkpoint's segment list no longer lines up with what is
+  /// on disk. Returns the index into [currentPaths] to start from, or `-1` for "this
+  /// checkpoint tells us nothing usable — start fresh".
+  ///
+  /// Pure: no I/O, so the whole decision is unit-testable without a device or a run.
+  ///
+  /// **A bin is skippable only if it is BOTH older than the checkpoint AND was in the
+  /// list that checkpoint covered.** The timestamp alone is not enough, and that was
+  /// the bug. A bin can reach the phone *after* a checkpoint was written and still
+  /// carry an older timestamp — a transfer that failed and was retried on a later
+  /// sync, a listing that came back short and delivered the rest next time. Such a bin
+  /// passes a bare `ts <= lastCompletedTs` test while no run has ever decoded it, and
+  /// skipping it does two kinds of damage:
+  ///
+  ///  * its audio is stranded, and the next prune deletes the bin;
+  ///  * the stream is processed out of order — the tail is decoded and finalized
+  ///    first, its bins are pruned, and when a later run finally reaches the older
+  ///    bins the recording they belong to can no longer stitch onto the one that
+  ///    follows it. The join shows up as a bogus multi-hour inter-file gap.
+  ///
+  /// Both halves were observed on 2026-08-26: a run resumed at 24/48 on the old rule,
+  /// and the very next run re-decoded 19 of the 24 bins that checkpoint had declared
+  /// complete — recovered only because the first run finished cleanly and deleted the
+  /// checkpoint. The one bin it did not recover is the one the checkpoint had named.
+  ///
+  /// So walk the prefix and stop at the first bin the checkpoint cannot account for.
+  /// Reprocessing from there is the safe direction and is nearly free: bins already
+  /// covered by a recording were filtered out of the batch by [coveredBinPaths]
+  /// before this ever runs.
+  static int shiftedResumeIndex({
+    required List<String> savedPaths,
+    required int lastIndex,
+    required List<String> currentPaths,
+  }) {
+    if (lastIndex < 0 || lastIndex >= savedPaths.length) return -1;
+    final lastCompletedTs = _segmentTimestamp(savedPaths[lastIndex]);
+    // Epoch-seconds threshold avoids matching uptime-tick filenames, whose values
+    // restart at 0 every boot and so order nothing.
+    if (lastCompletedTs <= 946684800) return -1;
+
+    // Keyed on the BASENAME (`<timerStart>_<sessionId>.bin`), which identifies a bin
+    // uniquely — the folder is named for the same timerStart, and a session id is a
+    // fresh random per boot. The absolute path is not usable here: it embeds the app
+    // documents directory, which a checkpoint outlives, and a mismatch there would
+    // silently degrade every resume into a full reprocess.
+    final coveredByCheckpoint = savedPaths.take(lastIndex + 1).map(_segmentName).toSet();
+    int resumeIdx = 0;
+    while (resumeIdx < currentPaths.length) {
+      final p = currentPaths[resumeIdx];
+      if (_segmentTimestamp(p) > lastCompletedTs || !coveredByCheckpoint.contains(_segmentName(p))) break;
+      resumeIdx++;
+    }
+    // Both ends collapse to "start fresh": 0 means nothing was skippable, and past the
+    // end means nothing is left to run. Normalised to -1 so the contract is
+    // single-valued — any non-negative result is a genuine skip.
+    if (resumeIdx <= 0 || resumeIdx >= currentPaths.length) return -1;
+    return resumeIdx;
+  }
+
+  /// Orders two raw-segment paths chronologically — and NUMERICALLY so, because the
+  /// processor reads the sorted list as one continuous stream, which makes its order
+  /// the audio's order.
+  ///
+  /// Comparing basenames as strings only agrees with time while every `timerStart` has
+  /// the same digit count. It does for epoch seconds (10 digits until 2286), which is
+  /// why this survived so long — but a pre-time-sync bin keys on UPTIME seconds
+  /// (`session_<sid>/999_<sid>.bin`, see `Wal.relativeBinPath`), and `"999"`
+  /// string-sorts *after* `"1787709128"` on the first character. That lands a boot's
+  /// oldest audio at the newest end of the stream, where the processor reads it as time
+  /// jumping backwards.
+  ///
+  /// Ties break on the basename so the order is total and stable: two boots can each
+  /// produce a bin at the same uptime second, and they differ only by session id.
+  @visibleForTesting
+  static int compareSegmentPaths(String a, String b) {
+    final byTs = _segmentTimestamp(a).compareTo(_segmentTimestamp(b));
+    if (byTs != 0) return byTs;
+    return _segmentName(a).compareTo(_segmentName(b));
+  }
+
+  /// The firmware `timerStart` encoded in a raw-segment path, or 0 if unparseable.
+  static int _segmentTimestamp(String path) => int.tryParse(_segmentName(path).split('_').first) ?? 0;
+
+  /// A raw segment's identity across runs: `<timerStart>_<sessionId>.bin`. Backslashes
+  /// are normalised first for the same reason `relBinPath` does it.
+  static String _segmentName(String path) => path.replaceAll('\\', '/').split('/').last;
+
   /// Builds merged `[startMs, endMs]` coverage intervals from every recording
   /// (finalized + drafts) on disk. See [pruneConsumedBins] for the coverage rule.
   static Future<List<List<int>>> _buildMergedCoverageIntervals() async {
@@ -3439,4 +3601,38 @@ class RecordingsManager {
     }
     return deleted;
   }
+}
+
+/// The outcome of reading a `vad_checkpoint.json` — see
+/// [RecordingsManager.checkpointResumePlan].
+class CheckpointPlan {
+  /// Index into the current segment list to start decoding from. 0 = decode everything.
+  final int resumeIndex;
+
+  /// Serialized VAD state to restore, or null to start with a fresh processor.
+  final Map<String, dynamic>? state;
+
+  /// Bins the interrupted run had queued for deletion.
+  final List<String> pendingDeletes;
+
+  /// Whether the checkpoint file should be deleted — it can never help again.
+  final bool discard;
+
+  /// Human-readable explanation, logged by the caller.
+  final String reason;
+
+  const CheckpointPlan({
+    required this.resumeIndex,
+    required this.state,
+    required this.pendingDeletes,
+    required this.reason,
+    this.discard = false,
+  });
+
+  /// Decode everything and throw the file away.
+  const CheckpointPlan.fresh(this.reason)
+      : resumeIndex = 0,
+        state = null,
+        pendingDeletes = const <String>[],
+        discard = true;
 }

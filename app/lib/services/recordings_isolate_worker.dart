@@ -12,6 +12,22 @@ import 'package:omi/services/vad_batch_runner_channel.dart';
 import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/utils/logger.dart';
 
+/// Format version of `vad_checkpoint.json`. A checkpoint that does not carry the
+/// current value is discarded unread, and the run starts from segment 0.
+///
+/// Version 2 exists because version 1's resume rule ("skip everything older than
+/// `lastIndex`'s timestamp") could skip bins no run had decoded — and the checkpoint
+/// each such run wrote then listed those bins under its own `lastIndex`, laundering
+/// the false claim into the next run's covered prefix. `shiftedResumeIndex` stops new
+/// ones being created, but it cannot tell a poisoned v1 checkpoint from an honest one:
+/// the bins are present in `paths` either way. Discarding v1 outright costs one
+/// reprocess of bins that are, by construction, not covered by any recording — and is
+/// the only thing that frees a device already carrying one.
+///
+/// Lives here rather than in RecordingsManager because the import runs
+/// manager → worker; the reverse would be a cycle.
+const int checkpointVersion = 2;
+
 /// Parameters sent to the background processing isolate. All fields must be
 /// sendable across isolate boundaries (primitives, Uint8List, SendPort, etc.).
 class IsolateParams {
@@ -310,6 +326,7 @@ Future<void> processingIsolateEntry(IsolateParams params) async {
         try {
           final cpState = await processor.serializeState();
           await File(params.checkpointPath!).writeAsString(jsonEncode({
+            'version': checkpointVersion,
             'lastIndex': i,
             'paths': params.segmentPaths,
             'state': cpState,

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
+import 'package:opus_dart/opus_dart.dart';
 import 'package:omi/services/vad_audio_processor.dart';
 import 'package:omi/services/vad_batch_runner_channel.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
@@ -77,6 +78,75 @@ OrtSession _fakeSession() => OrtSession.fromMap({
 class UnavailableBatchRunner extends VadBatchRunnerChannel {
   UnavailableBatchRunner() : super();
   // available returns false (default) since init was never called.
+}
+
+/// A [VadBatchRunnerChannel] that reports itself AVAILABLE, so the processor takes
+/// the two-pass deferred path — the one Android actually runs.
+///
+/// Scores each 512-sample window by its own peak amplitude: a window carrying any
+/// non-zero sample is speech (1.0), silence otherwise (0.0). That keeps the verdict a
+/// property of the audio the processor actually assembled, so the real
+/// window→`_batchWindowFrameIndices`→frame mapping is under test rather than stubbed
+/// past. [windowsSeen] records the total for tests that assert windows accumulated at
+/// all — with no decoder they never do, which is the trap this class exists to avoid.
+class AvailableFakeBatchRunner extends VadBatchRunnerChannel {
+  int windowsSeen = 0;
+  int batches = 0;
+
+  @override
+  bool get available => true;
+
+  @override
+  Future<Float32List> runVadBatch(Float32List samples, {bool resetStateFirst = false}) async {
+    const win = 512;
+    final count = samples.length ~/ win;
+    windowsSeen += count;
+    batches++;
+    final probs = Float32List(count);
+    for (int w = 0; w < count; w++) {
+      double peak = 0.0;
+      for (int s = w * win; s < (w + 1) * win; s++) {
+        final a = samples[s].abs();
+        if (a > peak) peak = a;
+      }
+      probs[w] = peak > 0.0 ? 1.0 : 0.0;
+    }
+    return probs;
+  }
+}
+
+/// A stand-in for the real Opus decoder, which cannot run on the host: `opus_dart`
+/// is FFI over libopus, and [VadAudioProcessor] only constructs one on iOS/Android
+/// anyway (`Platform.isIOS || Platform.isAndroid`). Without it every frame decodes to
+/// null, so no PCM is buffered, no VAD window is ever completed, and the batched path
+/// runs with an empty `_batchWindows` — i.e. the half of it that maps window verdicts
+/// back onto frames is never reached.
+///
+/// [SimpleOpusDecoder] has only a private generative constructor so it cannot be
+/// subclassed, but it carries no `final`/`base`/`sealed` modifier, so its interface
+/// can be implemented. The processor touches exactly two members of it.
+///
+/// Each frame decodes to [samplesPerFrame] samples, all at one amplitude chosen by
+/// the frame's first payload byte: `0x01` → full scale (speech), anything else → zero
+/// (silence). That makes the bin itself the script, readable in the builder below.
+class FakeOpusDecoder extends Fake implements SimpleOpusDecoder {
+  /// 16 kHz × 20 ms — what the firmware's opusFS320 frames really carry.
+  static const int samplesPerFrame = 320;
+
+  @override
+  bool destroyed = false;
+
+  int framesDecoded = 0;
+
+  @override
+  Int16List decode({Uint8List? input, bool fec = false, int? loss}) {
+    framesDecoded++;
+    final loud = input != null && input.isNotEmpty && input[0] == 0x01;
+    return Int16List(samplesPerFrame)..fillRange(0, samplesPerFrame, loud ? 16384 : 0);
+  }
+
+  @override
+  void destroy() => destroyed = true;
 }
 
 void main() {
@@ -418,6 +488,266 @@ void main() {
       // After two max-cap cuts, the remaining 20 frames form a new conversation.
       expect(processor.currentChunkDurationMs, 20 * 20);
       await processor.destroy();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // A recording's start uptime is `.meta` byte 412 — the only thing a clock anchor
+  // has to place it by (DeviceClockAnchor.startMsFor). It must be THIS frame's
+  // uptime, and the batched path is where that is easy to get wrong: verdicts are
+  // deferred and replayed in Pass 2, so the running `_currentFrameUptimeMs` has
+  // already advanced to the END of the batch by the time a recording opens.
+  //
+  // Both paths are driven over the same bin so the assertion is an A/B, not a
+  // guess at what the numbers should be.
+  // ---------------------------------------------------------------------------
+  group('start uptime is anchored per frame, not per batch', () {
+    const int kBase = 1746057600000; // 2026-05-01T00:00:00Z
+    const int kUptimeMs = 3600000; // the Omi has been up an hour
+    const int kFrames = 500; // 10 s of audio
+    const int kCapMs = 1000; // cut every 50 frames
+
+    /// header(utc, uptime, session) + a 0xFFFFFFFE tap + [kFrames] frames.
+    ///
+    /// The tap is what makes any of this audio "speech": the host has no Opus
+    /// decoder, so with a Silero session present every frame would otherwise score
+    /// silent and every recording would be discarded as noise. Its uptime matches
+    /// the header's, so the first recording anchors at the bin head either way and
+    /// only the LATER ones — the ones opened by a cap cut mid-replay — can differ.
+    File makeTappedBin(String name) {
+      final b = BytesBuilder();
+      final hdr = ByteData(36);
+      hdr.setUint32(0, 0xFFFFFFFB, Endian.little);
+      hdr.setUint32(4, 28, Endian.little);
+      hdr.setUint64(8, kBase, Endian.little);
+      hdr.setUint64(16, kUptimeMs, Endian.little);
+      hdr.setUint32(24, 0, Endian.little); // imu ticks
+      hdr.setUint32(28, 1, Endian.little); // session id
+      b.add(hdr.buffer.asUint8List());
+
+      final m = ByteData(20);
+      m.setUint32(0, 0xFFFFFFFE, Endian.little);
+      m.setUint64(4, kBase, Endian.little);
+      m.setUint32(12, kUptimeMs, Endian.little);
+      m.setUint32(16, 1, Endian.little);
+      b.add(m.buffer.asUint8List());
+
+      final fh = ByteData(4)..setUint32(0, 4, Endian.little);
+      for (int i = 0; i < kFrames; i++) {
+        b.add(fh.buffer.asUint8List());
+        b.add(List.filled(4, 0));
+      }
+      final f = File('${tempDir.path}/$name');
+      f.writeAsBytesSync(b.toBytes());
+      return f;
+    }
+
+    /// Every recording written, as `startMs offset from kBase` -> `.meta` byte 412.
+    Map<int, int> uptimesByStartOffset() {
+      final out = <int, int>{};
+      for (final f in tempDir.listSync().whereType<File>()) {
+        final n = f.path.split(Platform.pathSeparator).last;
+        if (!n.startsWith('recording_') || !n.endsWith('.meta')) continue;
+        final startMs = int.parse(n.substring('recording_'.length, n.length - '.meta'.length));
+        out[startMs - kBase] = ByteData.sublistView(f.readAsBytesSync()).getUint32(412, Endian.little);
+      }
+      return out;
+    }
+
+    Future<Map<int, int>> runOverTappedBin({required bool batched}) async {
+      final processor = VadAudioProcessor.fromSettings(
+        settings: _settings(
+          minDurationMs: 0,
+          silenceDurationToSplitMs: 0x7FFFFFFF, // no silence split — the cap is the only cut
+          maxChunkMs: kCapMs,
+        ),
+        outputDir: tempDir.path,
+        session: _fakeSession(),
+        batchRunner: batched ? AvailableFakeBatchRunner() : null,
+      );
+      await processor.processSegmentFile(
+        makeTappedBin('uptime_anchor.bin'),
+        DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true),
+        startUptimeMs: kUptimeMs,
+        sessionId: 1,
+      );
+      await processor.flushRemaining();
+      await processor.destroy();
+      return uptimesByStartOffset();
+    }
+
+    /// What the device would say: a recording that starts `offset` into the bin
+    /// began at `kUptimeMs + offset` of uptime.
+    Map<int, int> expected() => {
+          for (int offset = 0; offset < kFrames * 20; offset += kCapMs) offset: (kUptimeMs + offset) ~/ 1000,
+        };
+
+    test('single-pass anchors each cap cut at its own frame', () async {
+      expect(await runOverTappedBin(batched: false), expected());
+    });
+
+    // The regression. Before the per-frame carry, every recording opened during a
+    // replay took `_currentFrameUptimeMs` as it stood at the END of the batch —
+    // so all nine cap cuts reported 3610 s (the segment end) instead of 3601…3609.
+    // Two consequences, both of which the clock anchor acts on:
+    //   * each is up to a whole batch (6000 frames / 120 s) later than the truth,
+    //     while plausibleDriftMs floors at 60 s — so `clockVerdict` reads a correct
+    //     session as provably wrong and re-files it;
+    //   * they all share ONE uptime, which is the precondition promoteSessionToDate's
+    //     collision guard exists to survive. This manufactured it.
+    test('batched replay anchors each cap cut at its own frame, not the batch end', () async {
+      expect(await runOverTappedBin(batched: true), expected());
+    });
+
+    test('both paths agree over the same bin', () async {
+      final single = await runOverTappedBin(batched: false);
+      // Clear the first run's output so the second is measured on its own.
+      for (final f in tempDir.listSync().whereType<File>()) {
+        if (f.path.contains('recording_')) f.deleteSync();
+      }
+      expect(await runOverTappedBin(batched: true), single);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // The batched path WITH a decoder, so PCM is buffered and real 512-sample windows
+  // complete. Everything above runs with `_batchWindows` empty — speech comes from
+  // marker protection — which leaves the half of Pass 2 that maps a window's verdict
+  // back onto the frame that completed it (`_batchWindowFrameIndices`) untouched, and
+  // means `runVadBatch` is never called at all.
+  // ---------------------------------------------------------------------------
+  group('batched path with a decoder', () {
+    const int kBase = 1746057600000; // 2026-05-01T00:00:00Z
+    const int kUptimeMs = 3600000; // the Omi has been up an hour
+
+    /// `0xFFFFFFFB` header + one frame per entry of [script]; `true` is a loud frame,
+    /// `false` a silent one. The payload byte is what [FakeOpusDecoder] reads.
+    File makeScriptedBin(String name, List<bool> script) {
+      final b = BytesBuilder();
+      final hdr = ByteData(36);
+      hdr.setUint32(0, 0xFFFFFFFB, Endian.little);
+      hdr.setUint32(4, 28, Endian.little);
+      hdr.setUint64(8, kBase, Endian.little);
+      hdr.setUint64(16, kUptimeMs, Endian.little);
+      hdr.setUint32(24, 0, Endian.little); // imu ticks
+      hdr.setUint32(28, 1, Endian.little); // session id
+      b.add(hdr.buffer.asUint8List());
+
+      final fh = ByteData(4)..setUint32(0, 4, Endian.little);
+      for (final loud in script) {
+        b.add(fh.buffer.asUint8List());
+        b.add([loud ? 0x01 : 0x00, 0, 0, 0]);
+      }
+      final f = File('${tempDir.path}/$name');
+      f.writeAsBytesSync(b.toBytes());
+      return f;
+    }
+
+    /// Every recording written, as `startMs offset from kBase` -> `.meta` byte 412.
+    Map<int, int> uptimesByStartOffset() {
+      final out = <int, int>{};
+      for (final f in tempDir.listSync().whereType<File>()) {
+        final n = f.path.split(Platform.pathSeparator).last;
+        if (!n.startsWith('recording_') || !n.endsWith('.meta')) continue;
+        final startMs = int.parse(n.substring('recording_'.length, n.length - '.meta'.length));
+        out[startMs - kBase] = ByteData.sublistView(f.readAsBytesSync()).getUint32(412, Endian.little);
+      }
+      return out;
+    }
+
+    test('windows really accumulate and their verdicts land on the right frames', () async {
+      // 100 loud frames, then 100 silent, then 100 loud. With a 1 s split threshold
+      // the silence closes the first recording; the third block opens a second one.
+      final script = [
+        ...List.filled(100, true),
+        ...List.filled(100, false),
+        ...List.filled(100, true),
+      ];
+      final runner = AvailableFakeBatchRunner();
+      final decoder = FakeOpusDecoder();
+      final processor = VadAudioProcessor.fromSettings(
+        settings: _settings(minDurationMs: 0, silenceDurationToSplitMs: 1000),
+        outputDir: tempDir.path,
+        session: _fakeSession(),
+        batchRunner: runner,
+        decoder: decoder,
+      );
+
+      await processor.processSegmentFile(
+        makeScriptedBin('scripted.bin', script),
+        DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true),
+        startUptimeMs: kUptimeMs,
+        sessionId: 1,
+      );
+      await processor.flushRemaining();
+      await processor.destroy();
+
+      expect(decoder.framesDecoded, greaterThanOrEqualTo(script.length),
+          reason: 'every frame must reach the decoder — a null decoder is the trap here');
+      // 300 frames × 320 samples / 512 = 187 complete windows.
+      expect(runner.windowsSeen, (script.length * FakeOpusDecoder.samplesPerFrame) ~/ 512,
+          reason: 'PCM must actually reach the batch runner, not an empty _batchWindows');
+      // The verdicts have to have been mapped back onto frames, or the silence in the
+      // middle never accumulates and nothing splits.
+      final uptimes = uptimesByStartOffset();
+      expect(uptimes.length, greaterThan(1),
+          reason: 'the scripted silence must split the stream, which only happens if '
+              'window verdicts reached the frames that completed them');
+
+      // Each recording's uptime must track its own start, which is the whole point:
+      // a silence split anchors on the frame it resumes at, so the offset between the
+      // two is the SAME for every recording. Without the per-frame carry they instead
+      // share one batch-end uptime while their offsets differ, and this collapses.
+      //
+      // The one-frame slack is the counter advancing before the verdict runs: a split
+      // anchors via `_recordingStartTime = frameTime`, by which point the uptime has
+      // already moved on by this frame. A cap cut has no such gap (it derives its
+      // start from the accumulated duration), so it lands on the exact value.
+      for (final e in uptimes.entries) {
+        expect(e.value, anyOf((kUptimeMs + e.key) ~/ 1000, (kUptimeMs + e.key + 20) ~/ 1000),
+            reason: 'recording at +${e.key}ms claims uptime ${e.value}s');
+      }
+      expect(decoder.destroyed, isTrue);
+    });
+
+    // The case the segment-end tests above cannot reach: a batch that flushes in the
+    // MIDDLE of a segment, at the hardcoded 6000-frame limit. Recordings opened during
+    // that replay are the ones a stale `_currentFrameUptimeMs` mis-anchors by the full
+    // 120 s the limit represents — the worst case in production, and four orders of
+    // magnitude past the 60 s `plausibleDriftMs` floor.
+    test('a mid-segment batch flush anchors each cut at its own frame', () async {
+      const int frames = 7200; // one flush at 6000, remainder at segment end
+      const int capMs = 20000; // cut every 1000 frames
+      final runner = AvailableFakeBatchRunner();
+      final processor = VadAudioProcessor.fromSettings(
+        settings: _settings(
+          minDurationMs: 0,
+          silenceDurationToSplitMs: 0x7FFFFFFF, // the cap is the only cut
+          maxChunkMs: capMs,
+        ),
+        outputDir: tempDir.path,
+        session: _fakeSession(),
+        batchRunner: runner,
+        decoder: FakeOpusDecoder(),
+      );
+
+      await processor.processSegmentFile(
+        makeScriptedBin('midflush.bin', List.filled(frames, true)),
+        DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true),
+        startUptimeMs: kUptimeMs,
+        sessionId: 1,
+      );
+      await processor.flushRemaining();
+      await processor.destroy();
+
+      expect(runner.batches, greaterThan(1), reason: 'the 6000-frame limit must have flushed mid-segment');
+
+      // A cap cuts AT a frame, so the new recording's wall clock and uptime both
+      // advance by exactly the cap. Recording 1 anchors at the bin head.
+      final expected = {
+        for (int offset = 0; offset < frames * 20; offset += capMs) offset: (kUptimeMs + offset) ~/ 1000,
+      };
+      expect(uptimesByStartOffset(), expected);
     });
   });
 }

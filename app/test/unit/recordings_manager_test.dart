@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/device_clock_anchor.dart';
 import 'package:omi/services/recordings_manager.dart';
+import 'package:omi/services/recordings_isolate_worker.dart' show checkpointVersion;
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -2048,6 +2049,353 @@ void main() {
 
       expect(await RecordingsManager.applyClockAnchors(), 0, reason: 'the rejection outranks a fresh anchor');
       expect(allRecordings().containsKey('recording_$wrappedStartMs'), isTrue);
+    });
+
+    // promoteSessionToDate derives every target from `startUptime`, which the .meta
+    // stores in whole SECONDS — so recordings sharing an uptime derive the SAME
+    // filename, and File.rename replaces its destination silently. Observed
+    // 2026-08-26: four recordings (5.9 min, 36.6 min, 77.9 min and a 112-min draft)
+    // all carried the same stale uptime and collapsed onto one name.
+    test('a session whose recordings share an uptime never renames one onto another', () async {
+      setAnchor();
+      // Two real recordings, an hour apart, that both carry the same startUptime.
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_${wrappedStartMs + 3600000}',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+
+      await RecordingsManager.applyClockAnchors();
+
+      final recs = allRecordings();
+      expect(recs.length, 2, reason: 'neither recording may be renamed out of existence');
+      expect(recs.containsKey('recording_$trueStartMs'), isTrue, reason: 'one of them takes the corrected name');
+      expect(recs.containsKey('recording_${wrappedStartMs + 3600000}'), isTrue,
+          reason: 'the loser keeps the timestamp the Omi gave it rather than being overwritten');
+    });
+
+    // applyClockAnchors excludes drafts when it DECIDES; promoteSessionToDate used to
+    // move them anyway, and the rename strips `_draft` — promoting a partial into the
+    // UI and stranding its tail, the premature promotion the flush path never does.
+    test('an in-progress draft is left alone by the move', () async {
+      setAnchor();
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_${wrappedStartMs + 7200000}_draft',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec + 7200,
+      );
+
+      expect(await RecordingsManager.applyClockAnchors(), 1);
+
+      final draft =
+          File(p.join(tempDir.path, 'recordings', '2026-08-01', 'recording_${wrappedStartMs + 7200000}_draft.wav'));
+      expect(draft.existsSync(), isTrue, reason: 'the draft stays a draft, under its own name');
+    });
+
+    // `.meta` byte 412 holds 0 when the processor never established an uptime. The
+    // offset cannot place such a recording — `clockVerdict` calls that `unplaceable`
+    // and refuses to act on it, but promoteSessionToDate moved it anyway, onto
+    // `0 * 1000 + rtcOffsetMs`: the session's boot instant, shared by every one of them.
+    test('a recording with no start uptime is left where the Omi filed it', () async {
+      setAnchor();
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_${wrappedStartMs + 60000}',
+        sessionId: anchorSessionId,
+        startUptimeSec: 0, // never established
+      );
+
+      await RecordingsManager.applyClockAnchors();
+
+      final recs = allRecordings();
+      expect(recs.containsKey('recording_$trueStartMs'), isTrue, reason: 'the placeable one still moves');
+      expect(recs.containsKey('recording_${wrappedStartMs + 60000}'), isTrue,
+          reason: 'the unplaceable one keeps its own name rather than landing on the boot instant');
+    });
+
+    // Your device's actual state (session 4261367757, 2026-08-28 onward): some of a
+    // session moved, one could not, and the pass then runs again on every later cycle.
+    // The refusal must stay a refusal — re-running must not eventually shove the
+    // colliding recording onto the name it was denied, and must not move the ones that
+    // already landed a second time.
+    test('a partially-moved session is stable when the pass runs again', () async {
+      setAnchor();
+      // Two recordings sharing an uptime — what the pre-fix processor produced. Only
+      // one of them can own the derived name.
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_${wrappedStartMs + 3600000}',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      // A third that can be placed on its own name, so the pass has real work each time.
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_${wrappedStartMs + 7200000}',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec + 3600,
+      );
+
+      await RecordingsManager.applyClockAnchors();
+      final afterFirst = allRecordings().keys.toSet();
+      expect(afterFirst.length, 3, reason: 'three recordings in, three out');
+
+      // Run it twice more — the ledger keeps the original offset, so the offset the
+      // second pass computes is the same one, and every placeable recording is already
+      // sitting on its target.
+      await RecordingsManager.applyClockAnchors();
+      await RecordingsManager.applyClockAnchors();
+      expect(allRecordings().keys.toSet(), afterFirst,
+          reason: 'the pass is idempotent even when part of the session could not move');
+    });
+
+    // The audio path carries the source's extension but the meta path never does, so a
+    // `.wav` moving onto an existing `.m4a`'s slot finds no `.wav` to collide with and
+    // silently overwrites that `.m4a`'s `.meta` — leaving it describing a different
+    // recording's duration, waveform and bin list.
+    test('a move never overwrites another recording\'s .meta through a different extension', () async {
+      setAnchor();
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      // An unrelated session's recording already sitting on the target name, as .m4a.
+      // The target folder is the local date of trueStartMs, the same way the move
+      // derives it — not the folder the source recording happens to live in.
+      final targetFolder = RecordingsManager.fmtDate(DateTime.fromMillisecondsSinceEpoch(trueStartMs));
+      final targetDir = Directory(p.join(tempDir.path, 'recordings', targetFolder))..createSync(recursive: true);
+      final squatterAudio = File(p.join(targetDir.path, 'recording_$trueStartMs.m4a'))..writeAsBytesSync(Uint8List(64));
+      final squatterMeta = File(p.join(targetDir.path, 'recording_$trueStartMs.meta'))
+        ..writeAsBytesSync(Uint8List.fromList(List<int>.filled(64, 0xAB)));
+
+      await RecordingsManager.applyClockAnchors();
+
+      expect(squatterAudio.existsSync(), isTrue);
+      expect(squatterMeta.readAsBytesSync().every((b) => b == 0xAB), isTrue,
+          reason: 'the squatter\'s .meta must not be replaced by the moved recording\'s');
+      expect(
+          File(p.join(tempDir.path, 'recordings', '2026-08-01', 'recording_$wrappedStartMs.wav')).existsSync(), isTrue,
+          reason: 'the recording that could not be placed safely stays put');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Checkpoint resume, when the segment list has shifted under it.
+  //
+  // The processor reads its segment list as ONE continuous stream, so the resume
+  // index decides both what gets decoded and in what order. Skipping a bin no run
+  // has touched strands its audio and splits the stream in two.
+  group('shiftedResumeIndex', () {
+    String bin(int ts) => '/docs/raw_segments/$ts/${ts}_777.bin';
+
+    test('skips the prefix the checkpoint actually covered', () {
+      final saved = [bin(1787680000), bin(1787680600), bin(1787681200)];
+      final current = [...saved, bin(1787681800)];
+      expect(
+        RecordingsManager.shiftedResumeIndex(savedPaths: saved, lastIndex: 1, currentPaths: current),
+        2,
+        reason: 'bins 0 and 1 were completed; resume at the first one that was not',
+      );
+    });
+
+    test('still skips when earlier bins were pruned off the front', () {
+      final saved = [bin(1787680000), bin(1787680600), bin(1787681200)];
+      // The first two were consumed and deleted between runs.
+      final current = [bin(1787681200), bin(1787681800)];
+      expect(
+        RecordingsManager.shiftedResumeIndex(savedPaths: saved, lastIndex: 1, currentPaths: current),
+        -1,
+        reason: 'nothing at or below the checkpoint is left, and 1787681200 is newer — start fresh',
+      );
+    });
+
+    // The regression. A bin that arrives AFTER the checkpoint but carries an older
+    // timestamp (a retried transfer, a short listing delivered later) passed the old
+    // `ts > lastCompletedTs` test and was skipped, though nothing had decoded it.
+    test('never skips an older bin the checkpoint had not seen', () {
+      final saved = [bin(1787680000), bin(1787681200)];
+      // 1787680600 arrived late and sorts between them.
+      final current = [bin(1787680000), bin(1787680600), bin(1787681200), bin(1787681800)];
+      expect(
+        RecordingsManager.shiftedResumeIndex(savedPaths: saved, lastIndex: 1, currentPaths: current),
+        1,
+        reason: 'resume AT the late arrival, so the stream stays contiguous and in order',
+      );
+    });
+
+    test('a checkpoint that covered nothing usable starts fresh', () {
+      expect(
+        RecordingsManager.shiftedResumeIndex(savedPaths: [bin(1787680000)], lastIndex: -1, currentPaths: [bin(1)]),
+        -1,
+      );
+      // Pre-time-sync names key on uptime seconds and order nothing across boots.
+      expect(
+        RecordingsManager.shiftedResumeIndex(
+            savedPaths: ['/docs/raw_segments/session_777/999_777.bin'], lastIndex: 0, currentPaths: [bin(1787680000)]),
+        -1,
+      );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Reading a checkpoint off disk. The version gate is the only thing that frees a
+  // device already carrying a v1 checkpoint: shiftedResumeIndex stops NEW false claims
+  // being written, but a poisoned v1 file lists the bins it wrongly skipped in `paths`
+  // exactly as an honest one does, so the new rule honours it too.
+  // ---------------------------------------------------------------------------
+  group('checkpointResumePlan', () {
+    String bin(int ts) => '/docs/raw_segments/$ts/${ts}_777.bin';
+    final paths = [bin(1787680000), bin(1787680600), bin(1787681200), bin(1787681800)];
+
+    Map<String, dynamic> checkpoint({required Object? version, int lastIndex = 1}) => {
+          if (version != null) 'version': version,
+          'lastIndex': lastIndex,
+          'paths': paths,
+          'state': {'csu': 3600},
+          'pendingDeletes': [bin(1787680000)],
+        };
+
+    test('a current-version checkpoint resumes and restores VAD state', () {
+      final plan =
+          RecordingsManager.checkpointResumePlan(data: checkpoint(version: checkpointVersion), currentPaths: paths);
+      expect(plan.resumeIndex, 2);
+      expect(plan.state, isNotNull, reason: 'an exact prefix match is the only case that may restore state');
+      expect(plan.pendingDeletes, isNotEmpty);
+      expect(plan.discard, isFalse);
+    });
+
+    test('a v1 checkpoint is discarded unread, not honoured', () {
+      final plan = RecordingsManager.checkpointResumePlan(data: checkpoint(version: 1), currentPaths: paths);
+      expect(plan.resumeIndex, 0, reason: 'every bin is decoded again — the whole point of the bump');
+      expect(plan.state, isNull);
+      expect(plan.pendingDeletes, isEmpty);
+      expect(plan.discard, isTrue);
+    });
+
+    test('a checkpoint with no version field at all is discarded', () {
+      final plan = RecordingsManager.checkpointResumePlan(data: checkpoint(version: null), currentPaths: paths);
+      expect(plan.resumeIndex, 0);
+      expect(plan.discard, isTrue);
+    });
+
+    // The gate runs BEFORE `paths`/`lastIndex` are read, so a future format that renames
+    // or drops them is discarded rather than throwing on the way to the same answer.
+    test('a future version missing the current fields is discarded, not thrown at', () {
+      expect(
+        () => RecordingsManager.checkpointResumePlan(
+            data: {'version': checkpointVersion + 1, 'somethingElse': 3}, currentPaths: paths),
+        returnsNormally,
+      );
+      final plan = RecordingsManager.checkpointResumePlan(
+          data: {'version': checkpointVersion + 1, 'somethingElse': 3}, currentPaths: paths);
+      expect(plan.discard, isTrue);
+    });
+
+    // Version is current but the list moved under it — the first bin was consumed and
+    // deleted between runs, so index alignment is gone and only the path-derived resume
+    // point is usable.
+    test('a shifted list resumes without restoring state', () {
+      final current = [bin(1787680600), bin(1787681200), bin(1787681800), bin(1787682400)];
+      final plan = RecordingsManager.checkpointResumePlan(
+          data: checkpoint(version: checkpointVersion, lastIndex: 2), currentPaths: current);
+      expect(plan.resumeIndex, 2, reason: 'the two bins the checkpoint covered are skipped, the rest decoded');
+      expect(plan.state, isNull, reason: 'a shifted prefix cannot restore state safely');
+      expect(plan.discard, isFalse);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Segment order IS audio order — the processor reads the sorted list as one
+  // continuous stream. The names below are real, from a 118-bin export off a device
+  // (2026-08-28); the pre-time-sync ones are synthesised because that export has none,
+  // which is exactly why the bug survived: every bin a time-synced device writes has a
+  // 10-digit timerStart, and for those a string sort and a numeric sort agree.
+  // ---------------------------------------------------------------------------
+  group('compareSegmentPaths', () {
+    String bin(String name) {
+      final ts = name.split('_').first;
+      final folder = (int.tryParse(ts) ?? 0) < 946684800 ? 'session_${name.split('_')[1].split('.').first}' : ts;
+      return '/docs/raw_segments/$folder/$name';
+    }
+
+    List<String> sorted(List<String> names) {
+      final paths = names.map(bin).toList()..sort(RecordingsManager.compareSegmentPaths);
+      return paths.map((p) => p.split('/').last).toList();
+    }
+
+    test('real time-synced bins keep their chronological order', () {
+      const names = [
+        '1787938578_4261367757.bin',
+        '1787938601_1193025564.bin',
+        '1787939108_1193025564.bin',
+        '1787939249_1193025564.bin',
+        '1788040373_1193025564.bin',
+      ];
+      expect(sorted(names.reversed.toList()), names);
+    });
+
+    // The regression. A pre-time-sync bin keys on uptime seconds, so its name is short
+    // — and "999" string-sorts AFTER "1787709128" on the first character, putting the
+    // oldest audio of a boot at the newest end of the stream.
+    test('a pre-time-sync bin sorts before the epoch-stamped ones, not after', () {
+      final out = sorted([
+        '1787938601_1193025564.bin',
+        '999_1193025564.bin',
+        '1787939108_1193025564.bin',
+        '61_1193025564.bin',
+      ]);
+      expect(out, [
+        '61_1193025564.bin',
+        '999_1193025564.bin',
+        '1787938601_1193025564.bin',
+        '1787939108_1193025564.bin',
+      ]);
+      // Spelled out, because this is the whole point: the old lexicographic comparator
+      // put the two uptime-keyed bins last.
+      expect(out.first, '61_1193025564.bin', reason: 'a string sort puts "61" after "1787938601"');
+    });
+
+    test('two boots at the same uptime second order stably by session id', () {
+      final out = sorted(['999_2222222222.bin', '999_1111111111.bin']);
+      expect(out, ['999_1111111111.bin', '999_2222222222.bin']);
+    });
+
+    // Windows paths reach this in tests; the comparator normalises separators the same
+    // way relBinPath does, so the timestamp is parsed rather than the whole path.
+    test('a backslash path parses its timestamp, not the whole path', () {
+      final paths = [
+        r'C:\docs\raw_segments\1787939108\1787939108_1193025564.bin',
+        r'C:\docs\raw_segments\999\999_1193025564.bin',
+      ]..sort(RecordingsManager.compareSegmentPaths);
+      expect(paths.first.endsWith(r'999_1193025564.bin'), isTrue);
     });
   });
 }
