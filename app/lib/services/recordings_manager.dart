@@ -762,61 +762,14 @@ class RecordingsManager {
           if (await checkpointFile.exists()) {
             final content = await checkpointFile.readAsString();
             final data = jsonDecode(content) as Map<String, dynamic>;
-            // A checkpoint written by an older format is not trusted — see
-            // [checkpointVersion] for why v1 in particular cannot be, and why
-            // [shiftedResumeIndex] alone does not free a device already holding one.
-            // Both arms below are forced to their "start fresh" branch, which already
-            // deletes the file; nothing here needs its own disposal path.
-            final versionOk = data['version'] == checkpointVersion;
-            if (!versionOk) {
-              Logger.debug('RecordingsManager: checkpoint format v${data['version']} '
-                  '≠ v$checkpointVersion — discarding, starting fresh.');
-            }
-            final savedPaths = (data['paths'] as List).cast<String>();
-            final lastIndex = data['lastIndex'] as int;
             final currentPaths = allSegments.map((f) => f.path).toList();
-
-            // Fast path: segment list identical up to lastIndex — full state restore.
-            bool exactMatch = versionOk && lastIndex >= 0 && lastIndex + 1 < currentPaths.length;
-            if (exactMatch) {
-              for (int k = 0; k <= lastIndex && k < savedPaths.length && k < currentPaths.length; k++) {
-                if (currentPaths[k] != savedPaths[k]) {
-                  exactMatch = false;
-                  break;
-                }
-              }
-            }
-
-            if (exactMatch) {
-              checkpointState = data['state'] as Map<String, dynamic>?;
-              checkpointResumeIndex = lastIndex + 1;
-              checkpointPendingDeletes = (data['pendingDeletes'] as List?)?.cast<String>() ?? [];
-              Logger.debug(
-                  'RecordingsManager: Resuming from checkpoint — skipping $checkpointResumeIndex/${currentPaths.length} segments.');
-            } else {
-              // Segment list shifted: new downloads were added or processed segments
-              // were deleted from disk between runs. Re-derive the resume point from
-              // the paths themselves, since index alignment is gone. VAD state cannot
-              // be safely restored (preceding paths changed) but the draft files on
-              // disk bridge the conversation gap.
-              final resumeIdx = versionOk
-                  ? shiftedResumeIndex(
-                      savedPaths: savedPaths,
-                      lastIndex: lastIndex,
-                      currentPaths: currentPaths,
-                    )
-                  : -1;
-              if (resumeIdx > 0) {
-                checkpointResumeIndex = resumeIdx;
-                checkpointState = null; // fresh VAD state — drafts on disk bridge the gap
-                checkpointPendingDeletes = (data['pendingDeletes'] as List?)?.cast<String>() ?? [];
-                Logger.debug('RecordingsManager: Checkpoint shifted — '
-                    'resuming at $resumeIdx/${currentPaths.length}, fresh state.');
-              } else {
-                Logger.debug('RecordingsManager: Checkpoint segment list changed — starting fresh.');
-                await checkpointFile.delete();
-              }
-            }
+            final plan = checkpointResumePlan(data: data, currentPaths: currentPaths);
+            Logger.debug('RecordingsManager: checkpoint — ${plan.reason} '
+                '(resume at ${plan.resumeIndex}/${currentPaths.length})');
+            checkpointResumeIndex = plan.resumeIndex;
+            checkpointState = plan.state;
+            checkpointPendingDeletes = plan.pendingDeletes;
+            if (plan.discard) await checkpointFile.delete();
           }
         } catch (e) {
           Logger.error('RecordingsManager: Checkpoint load failed ($e) — starting fresh.');
@@ -3272,6 +3225,64 @@ class RecordingsManager {
   // coveredBinPaths (read-only filter before the VAD run).
   // ---------------------------------------------------------------------------
 
+  /// What a run should do with the checkpoint it found on disk.
+  ///
+  /// [CheckpointPlan.resumeIndex] 0 means "decode everything"; [CheckpointPlan.state] is
+  /// the serialized VAD state to restore, and is null unless the segment prefix matched
+  /// exactly (a shifted list cannot restore state safely — the drafts on disk bridge the
+  /// gap instead). [CheckpointPlan.discard] means the file should be deleted, because it
+  /// can never help again.
+  @visibleForTesting
+  static CheckpointPlan checkpointResumePlan({
+    required Map<String, dynamic> data,
+    required List<String> currentPaths,
+  }) {
+    // A checkpoint written by an older format is not trusted — see [checkpointVersion]
+    // for why v1 in particular cannot be, and why [shiftedResumeIndex] alone does not
+    // free a device already holding one. Checked BEFORE `paths`/`lastIndex` are read, so
+    // a future format is free to rename or drop them without this throwing on the way to
+    // the same answer.
+    if (data['version'] != checkpointVersion) {
+      return CheckpointPlan.fresh('format v${data['version']} != v$checkpointVersion — discarding');
+    }
+    final savedPaths = (data['paths'] as List).cast<String>();
+    final lastIndex = data['lastIndex'] as int;
+    final pendingDeletes = (data['pendingDeletes'] as List?)?.cast<String>() ?? const <String>[];
+
+    // Fast path: segment list identical up to lastIndex — full state restore.
+    bool exactMatch = lastIndex >= 0 && lastIndex + 1 < currentPaths.length;
+    if (exactMatch) {
+      for (int k = 0; k <= lastIndex && k < savedPaths.length && k < currentPaths.length; k++) {
+        if (currentPaths[k] != savedPaths[k]) {
+          exactMatch = false;
+          break;
+        }
+      }
+    }
+    if (exactMatch) {
+      return CheckpointPlan(
+        resumeIndex: lastIndex + 1,
+        state: data['state'] as Map<String, dynamic>?,
+        pendingDeletes: pendingDeletes,
+        reason: 'prefix matches exactly — restoring VAD state',
+      );
+    }
+
+    // Segment list shifted: new downloads were added or processed segments were deleted
+    // from disk between runs. Re-derive the resume point from the paths themselves,
+    // since index alignment is gone.
+    final resumeIdx = shiftedResumeIndex(savedPaths: savedPaths, lastIndex: lastIndex, currentPaths: currentPaths);
+    if (resumeIdx > 0) {
+      return CheckpointPlan(
+        resumeIndex: resumeIdx,
+        state: null, // fresh VAD state — drafts on disk bridge the gap
+        pendingDeletes: pendingDeletes,
+        reason: 'list shifted — resuming with fresh state',
+      );
+    }
+    return const CheckpointPlan.fresh('segment list changed — starting fresh');
+  }
+
   /// Where to resume when a checkpoint's segment list no longer lines up with what is
   /// on disk. Returns the index into [currentPaths] to start from, or `-1` for "this
   /// checkpoint tells us nothing usable — start fresh".
@@ -3590,4 +3601,38 @@ class RecordingsManager {
     }
     return deleted;
   }
+}
+
+/// The outcome of reading a `vad_checkpoint.json` — see
+/// [RecordingsManager.checkpointResumePlan].
+class CheckpointPlan {
+  /// Index into the current segment list to start decoding from. 0 = decode everything.
+  final int resumeIndex;
+
+  /// Serialized VAD state to restore, or null to start with a fresh processor.
+  final Map<String, dynamic>? state;
+
+  /// Bins the interrupted run had queued for deletion.
+  final List<String> pendingDeletes;
+
+  /// Whether the checkpoint file should be deleted — it can never help again.
+  final bool discard;
+
+  /// Human-readable explanation, logged by the caller.
+  final String reason;
+
+  const CheckpointPlan({
+    required this.resumeIndex,
+    required this.state,
+    required this.pendingDeletes,
+    required this.reason,
+    this.discard = false,
+  });
+
+  /// Decode everything and throw the file away.
+  const CheckpointPlan.fresh(this.reason)
+      : resumeIndex = 0,
+        state = null,
+        pendingDeletes = const <String>[],
+        discard = true;
 }
