@@ -47,10 +47,21 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
         val intervalMinutes = prefs.getLong("flutter.backgroundSyncIntervalMinutes", 30L).toInt()
         if (intervalMinutes <= 0) return Result.success()
 
-        // Check if a sync is actually due before waking anything up.
+        // Check if a sync is actually due before waking anything up. Same rule as Dart's
+        // _shouldSyncNow(), reading the same two prefs, because this worker is a peer of
+        // the Dart timer and the exact alarm rather than a schedule of its own — its
+        // period is only a floor (15 min minimum, fired inexactly), so "is it due" has to
+        // come from lastSyncCompletedMs either way.
+        //
+        // lastSyncSkipped is part of that rule: a skip moved no data and deliberately
+        // leaves lastSyncCompletedMs alone, so without this the worker reads the previous
+        // *successful* sync's timestamp and reports "not due" for a full interval after a
+        // sync that fetched nothing. Dart retries a skip at the next opportunity; so does
+        // this now.
         val lastSyncMs = prefs.getLong("flutter.lastSyncCompletedMs", 0L)
+        val lastSyncSkipped = prefs.getBoolean("flutter.lastSyncSkipped", false)
         val nowMs = System.currentTimeMillis()
-        if (lastSyncMs > 0 && nowMs - lastSyncMs < intervalMinutes * 60_000L) {
+        if (!lastSyncSkipped && lastSyncMs > 0 && nowMs - lastSyncMs < intervalMinutes * 60_000L) {
             Log.d(TAG, "doWork: sync not due yet")
             return Result.success()
         }
