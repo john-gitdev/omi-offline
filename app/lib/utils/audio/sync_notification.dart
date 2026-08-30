@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/gen/pigeon_communicator.g.dart';
@@ -111,27 +112,62 @@ class SyncNotification {
       return;
     }
     final prefs = SharedPreferencesUtil();
-    // Show the time of the last sync *outcome* (incl. a skip), not the last completion —
-    // otherwise a "Skipped" line would borrow a stale completion timestamp.
-    final lastMs = prefs.lastSyncStatusMs;
     final next = nextSyncTime;
     final title = next != null ? 'Next sync at ${DateFormat('h:mm a').format(next)}' : 'Omi Offline';
-    final String text;
-    if (lastMs > 0) {
-      final time = DateFormat('h:mm a').format(DateTime.fromMillisecondsSinceEpoch(lastMs));
-      final status = prefs.lastSyncSkipped ? 'Skipped' : (prefs.lastSyncPartial ? 'Partial' : 'Complete');
-      final battery = prefs.lastBatteryLevel;
-      text = battery >= 0 ? 'Last Sync: $status • $time • $battery% Battery' : 'Last Sync: $status • $time';
-    } else if (isConnected == true) {
-      text = 'Omi is Connected';
-    } else if (isConnecting == true) {
-      text = 'Connecting...';
-    } else if (isConnected == false) {
-      text = 'Omi is Disconnected';
-    } else {
-      text = 'Ready to sync';
+    await _push(
+      title,
+      idleBodyText(
+        // The time of the last sync *outcome* (incl. a skip), not the last completion —
+        // otherwise a "Skipped" line would borrow a stale completion timestamp.
+        lastStatusMs: prefs.lastSyncStatusMs,
+        skipped: prefs.lastSyncSkipped,
+        partial: prefs.lastSyncPartial,
+        batteryLevel: prefs.lastBatteryLevel,
+        isConnected: isConnected,
+        isConnecting: isConnecting,
+      ),
+    );
+  }
+
+  /// The resting line's body text.
+  ///
+  /// Pure and visible for testing because of the battery clause: the number it prints
+  /// is a *stored* reading, and the rule for when that reading may still be asserted is
+  /// easy to get wrong in the direction of confidently displaying a days-old value on a
+  /// notification the user sees all day.
+  @visibleForTesting
+  static String idleBodyText({
+    required int lastStatusMs,
+    required bool skipped,
+    required bool partial,
+    required int batteryLevel,
+    bool? isConnected,
+    bool? isConnecting,
+  }) {
+    if (lastStatusMs > 0) {
+      final time = DateFormat('h:mm a').format(DateTime.fromMillisecondsSinceEpoch(lastStatusMs));
+      final status = skipped ? 'Skipped' : (partial ? 'Partial' : 'Complete');
+      // A battery reading is only as fresh as the last time the phone actually reached
+      // the Omi. A skipped sync never did — out of range, or the device never answered —
+      // so the stored percentage is at least one sync interval old, and goes on ageing
+      // through every cycle that misses while this line keeps asserting it unchanged.
+      // Printing it beside "Skipped" claims the app learned something this cycle that it
+      // demonstrably did not.
+      //
+      // Still printed while the link is UP, even when the last outcome was a skip: the
+      // reading is live then, and the flag stays set until the next sync *completes*, so
+      // gating on it alone would blank the battery while the user watches a connected
+      // device. A null `isConnected` means the caller could not say — treat that as not
+      // connected, which errs toward showing less rather than asserting more.
+      final batteryIsCurrent = isConnected == true || !skipped;
+      return batteryLevel >= 0 && batteryIsCurrent
+          ? 'Last Sync: $status • $time • $batteryLevel% Battery'
+          : 'Last Sync: $status • $time';
     }
-    await _push(title, text);
+    if (isConnected == true) return 'Omi is Connected';
+    if (isConnecting == true) return 'Connecting...';
+    if (isConnected == false) return 'Omi is Disconnected';
+    return 'Ready to sync';
   }
 
   /// Release Dart ownership of the notification (native resumes connection-state
