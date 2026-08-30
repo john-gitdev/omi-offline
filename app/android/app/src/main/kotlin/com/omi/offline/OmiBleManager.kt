@@ -119,6 +119,20 @@ class OmiBleManager private constructor(private val application: Application) {
      * `onReadRemoteRssi` override the result went nowhere, so the app measured link
      * strength continuously and kept none of it. Recorded now so a drop can say how
      * strong the link was — see WedgeDiagnostics.captureLinkDrop.
+     *
+     * **Adds no radio traffic.** The read was already being issued; only the answer is
+     * new. That matters because a GATT operation racing the storage stream is a known way
+     * to cost a sync (see the diagnostics-read note in CLAUDE.md), and this changes
+     * nothing about what goes out over the air.
+     *
+     * **Not keyed by device, deliberately** — one Omi at a time, per CLAUDE.md. With two
+     * connected peripherals a reading from one could be attributed to the other's drop.
+     * That is accepted rather than overlooked.
+     *
+     * The value and its timestamp are separate volatiles, so a reader can pair a fresh
+     * RSSI with the previous timestamp and overstate the age. Bounded by the 3 s
+     * keep-alive interval, and the age is a coarse "was this link still alive" signal
+     * rather than a measurement, so it does not earn a lock.
      */
     @Volatile
     private var lastRssi: Int? = null
