@@ -1517,10 +1517,13 @@ class DeviceProvider extends ChangeNotifier
   /// never sticks on "Connecting…".
   void _failSyncCycleToIdle() {
     _cancelConnectSettleWatchdog();
-    final interval = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
-    if (interval > 0) {
-      _publishNextSyncTime(DateTime.now().add(Duration(minutes: interval)));
-    }
+    // Anchor rather than just publish: a cycle that gave up is still a cycle, so the
+    // Dart timer's phase has to move with the alarm. Publishing alone left them
+    // disagreeing by however long the connect attempt took (~90 s), since only the
+    // alarm was pushed — the timer went on firing from its original phase. Harmless in
+    // itself (the early fire is a sync that is genuinely due) but it is exactly the
+    // drift between triggers this rework exists to remove.
+    _anchorAutoSyncSchedule();
     SharedPreferencesUtil().lastSyncSkipped = true;
     // A skip didn't move any data, so leave lastSyncCompletedMs alone; only stamp the
     // status timestamp so the notification shows "Skipped • <now>".
