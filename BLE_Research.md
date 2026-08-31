@@ -1117,6 +1117,34 @@ and call the async log methods un-awaited, so a single isolate has many `_append
 at once, and Dart's `FileMode.append` seeks to EOF at *open* rather than using `O_APPEND`. Every tear
 diagnosed was same-isolate. A mutex on `_append` closes it.
 
+**That conclusion was half right, and the missing half hid for another year (found 2026-08-31).**
+The mutex fixed the *tears*, which is all the diagnostic could see — the measurement was "count
+lines that fail to parse", and the native writer does not produce one. Its records were overwritten
+**whole**: Dart's seek-at-open write lands on top of native's real `O_APPEND` write, so the native
+line vanishes and every surviving line still parses. A clean log was read as a fixed log.
+
+Measured on the `0.36.4_oo3.1.0_..._20260831` capture (4.4 h): **one** natively-written record
+survived against **eight** real GATT disconnects. Everything else in the file that looks native is
+Dart using the same schema (`device_connection_state` from `services/devices.dart`,
+`device_version` from `debug_log_manager.dart`). The loss is one-directional — native never
+clobbered a Dart line — which is why the file always looked healthy from the Dart side.
+
+Why the original "negligible" estimate was wrong is the transferable part: it multiplied a
+microsecond open→write window by "native emits only a couple of records per outage" and treated the
+two as independent. They are not. Native emits *on disconnect*, which is the same instant Dart
+bursts a dozen lines about that disconnect — so conditioned on a native record existing, a Dart
+write was almost certainly in flight. **When judging a race, ask whether the writers are
+correlated, not just how often each runs.**
+
+**Fixed in app 0.36.5**: native no longer writes the file. `WedgeDiagnostics.logEvent` encodes the
+line on the caller's thread (so the timestamp is still the observation instant), queues it, and
+drains to Dart over `BleFlutterApi.onNativeLogRecords`; `DebugLogManager.appendNativeRecords` writes
+it under the same `_writeLock` as every other Dart writer. The queue is bounded at 256 and overflow
+emits a `native_log_records_dropped` record carrying the count — silence was the property that let
+this run undiagnosed, so the fix must not be able to lose anything quietly. Cross-writer integrity is
+pinned by `app/test/unit/utils/debug_log_manager_test.dart`, which fails if the records are routed
+around the lock.
+
 ---
 
 ## 5. What we understand about how they clear
