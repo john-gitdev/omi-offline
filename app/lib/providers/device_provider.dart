@@ -332,14 +332,20 @@ class DeviceProvider extends ChangeNotifier
       }
     };
     if (SharedPreferencesUtil().btDevice.id.isNotEmpty) {
-      Future.microtask(() => periodicConnect('app open', boundDeviceOnly: true, userInitiated: true));
       // Sync on app open whenever one is due. The device is disconnected in the
       // background, so the periodic timer/heartbeat may not have fired; opening
-      // the app is the reliable trigger. _isAppInForeground is true here, so the
-      // connection survives _handleDeviceConnected's drop-guard long enough to
-      // sync.
-      if (_shouldSyncNow()) {
-        _pendingAppOpenSync = true;
+      // the app is the reliable trigger.
+      final syncDue = _shouldSyncNow();
+      if (syncDue) _pendingAppOpenSync = true;
+      // This used to connect unconditionally, on the reasoning — written when only a
+      // screen could build this object — that `_isAppInForeground` is true here, so the
+      // link survives _handleDeviceConnected's drop-guard long enough to sync. Since
+      // 0.36.0 a WorkManager or alarm wake constructs it with no UI at all, where that
+      // is false: the connect was made and the guard hung up on it seconds later, for
+      // nothing. Connect when someone is watching, or when the sync that follows needs
+      // the link; otherwise leave the radio alone and let the schedule bring it up.
+      if (_isAppInForeground || syncDue) {
+        Future.microtask(() => periodicConnect('app open', boundDeviceOnly: true, userInitiated: true));
       }
     }
     SharedPreferencesUtil.lastSyncCompleted.addListener(_onSyncCompleted);
@@ -360,10 +366,19 @@ class DeviceProvider extends ChangeNotifier
   }
 
   void _onBackgroundSyncRequested() {
+    // `hasDevice`, not just `isConnected`: the WAL layer is handed the device at the very
+    // END of _onDeviceConnected, so "the link is up" and "a sync can run" are different
+    // questions and a connect whose setup never finished answers them differently.
+    // Calling _doBackgroundSync there reaches syncAll's `_device == null` guard, which
+    // returns null — a skip that no amount of retrying can turn into a sync, because
+    // nothing on that path ever registers the device. Taking the connect branch instead
+    // runs setup, which is the only thing that can.
+    final walRegistered = ServiceManager.instance().wal.getSyncs().hasDevice;
     Logger.debug(
-      '[BLE] _onBackgroundSyncRequested: OS scheduler fired (fg=$_isAppInForeground connected=$isConnected)',
+      '[BLE] _onBackgroundSyncRequested: OS scheduler fired '
+      '(fg=$_isAppInForeground connected=$isConnected walRegistered=$walRegistered)',
     );
-    if (isConnected) {
+    if (isConnected && walRegistered) {
       _doBackgroundSync();
     } else {
       _pendingBackgroundSync = true;
@@ -1336,8 +1351,25 @@ class DeviceProvider extends ChangeNotifier
           // If connectedThisTick, _finishDeviceSetup will clear the flag and
           // kick off _doBackgroundSync.
         }
-      } else {
+      } else if (ServiceManager.instance().wal.getSyncs().hasDevice) {
         _doBackgroundSync();
+      } else {
+        // Link up, but the WAL layer has no device — either setup is still in flight
+        // (it hands over the device last and starts the sync itself) or it never
+        // finished. Calling _doBackgroundSync here reaches syncAll's `_device == null`
+        // guard and skips, and no retry on this path can fix that because none of it
+        // registers the device.
+        //
+        // So sanction the sync and take the connect path. If setup is running, the flag
+        // is what it consumes on the way out. If the link is genuinely up,
+        // scanAndConnectToDevice returns immediately and the flag simply waits for the
+        // next connect — deliberately not forcing a teardown to provoke one, because
+        // this branch is also the ordinary few seconds of setup and tearing down a
+        // healthy link to fix a state that is about to fix itself is the worse trade.
+        Logger.debug('[BLE] auto-sync tick: link is up but the WAL layer has no device '
+            '(settingUp=${_currentlySettingUpId != null}) — deferring to the connect path');
+        _pendingBackgroundSync = true;
+        unawaited(_connectThenSyncOrFail());
       }
     });
   }
@@ -2709,7 +2741,24 @@ class DeviceProvider extends ChangeNotifier
       case DeviceConnectionState.disconnected:
         updateConnectingStatus(false);
         _connectDebouncer.cancel();
-        if (deviceId == connectedDevice?.id || deviceId == pairedDevice?.id) {
+        // The bonded id has to be in this set. `connectedDevice` and `pairedDevice` are
+        // both assigned in setConnectedDevice, which only _onDeviceConnected calls — so
+        // between a successful connect and the end of setup they are still null, and a
+        // disconnect landing in that window matched nothing and was dropped on the floor.
+        // `scanAndConnectToDevice` has already set isConnected = true by then, and nothing
+        // else ever clears it, so the provider latched "connected" against a dead link
+        // permanently: every sync path branches on isConnected, so none of them would
+        // reconnect, and syncAll found no registered device and skipped. Observed
+        // 2026-08-31 — a headless start connected, _handleDeviceConnected's drop-guard
+        // dropped the link before setup, and the app sat believing it was connected for
+        // seven hours until it was reopened.
+        //
+        // Safe as the widest of the three because there is exactly one Omi (CLAUDE.md,
+        // "One Omi at a time"), and it is the same id `_scanConnectDevice` connects to.
+        final knownId = SharedPreferencesUtil().btDevice.id;
+        if (deviceId == connectedDevice?.id ||
+            deviceId == pairedDevice?.id ||
+            (knownId.isNotEmpty && deviceId == knownId)) {
           _disconnectDebouncer.run(() => onDeviceDisconnected(isManual: isManual));
         }
         break;
