@@ -169,8 +169,8 @@ object WedgeDiagnostics {
      * the original fault run undetected for as long as it did. [droppedRecords] rides out on
      * the next successful drain.
      */
-    private const val MAX_PENDING_RECORDS = 256
     private val pendingRecords = ArrayDeque<String>()
+    private const val MAX_PENDING_RECORDS = 256
     private var droppedRecords = 0
 
     /**
@@ -212,6 +212,15 @@ object WedgeDiagnostics {
     }
 
     /**
+     * Public entry point for the drain, called when Dart declares itself ready.
+     *
+     * [drainToDart] is otherwise only reached by a new record arriving, so records captured
+     * before Dart came up — the boot-time ones, which have no successor to push them out —
+     * would wait for an unrelated BLE event.
+     */
+    fun flushPendingRecords() = drainToDart()
+
+    /**
      * Hands every queued record to Dart, oldest first.
      *
      * Gated on `isFlutterAlive` rather than a null check alone: after an OS-reclaim Activity
@@ -221,20 +230,18 @@ object WedgeDiagnostics {
      *
      * Pigeon's generated sender must run on the main looper. Records are already timestamped
      * by then, so the hop costs nothing but ordering, which the timestamps carry anyway.
-     */
-    /**
-     * Public entry point for the drain, called when Dart declares itself ready.
      *
-     * [drainToDart] is otherwise only reached by a new record arriving, so records captured
-     * before Dart came up — the boot-time ones, which have no successor to push them out —
-     * would wait for an unrelated BLE event.
+     * The reply confirms **delivery, not durability**: the Dart handler is a `void` Pigeon
+     * method, so it answers as soon as it has the batch, and the append it starts swallows
+     * its own IO errors the way every other Dart log write does. So a failed *send* is
+     * retried here, and a failed *write* is not. That is deliberate — it makes these records
+     * exactly as reliable as the Dart lines they sit beside, and no more. Do not read this
+     * path as loss-proof; read it as no longer losing records to a race.
      */
-    fun flushPendingRecords() = drainToDart()
-
     private fun drainToDart() {
         val api = if (OmiBleManager.isFlutterAlive) OmiBleManager.instance.flutterApi else null
         if (api == null) return
-        Handler(Looper.getMainLooper()).post {
+        handler.post {
             val batch: List<String>
             val dropped: Int
             synchronized(pendingRecords) {
