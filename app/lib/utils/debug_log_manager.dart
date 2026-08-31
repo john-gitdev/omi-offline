@@ -21,22 +21,34 @@ class DebugLogManager {
   // and the day it was actually handed over rather than whenever the toggle
   // happened to be flipped.
   //
-  // Keep the `omi_debug_` prefix and `.log` suffix: the native wedge-diagnostics
-  // writer (`WedgeDiagnostics.currentLogFile`) locates this file by that pattern
-  // and appends to it from outside Dart.
+  // Keep the `omi_debug_` prefix and `.log` suffix: `listLogFiles` finds the file
+  // by that pattern, and a build predating the placeholder name is adopted by it.
   //
-  // THREE WRITERS SHARE THIS FILE and only one of them can be locked from here:
-  // this isolate (serialised by `_writeLock`), any background isolate (its own
-  // copy of that lock — statics are per-isolate), and native `WedgeDiagnostics`.
-  // `_writeLock` therefore closes the dominant race and not the other two. What
-  // is left is small and bounded: each remaining writer is individually
-  // serialised, so a collision needs one writer's open→write window (microseconds)
-  // to straddle another's write, and native emits only a couple of records per
-  // outage. Every tear diagnosed in the 2026-08-17 log was same-isolate.
-  // If a future log still shows torn lines, the escalation is a file per writer
-  // merged by timestamp at read/share time — do not reach for it before then,
-  // since it touches `_ensureFile`, `listLogFiles`, `getRecentLogs` and
-  // `prepareShareFile` all at once.
+  // TWO WRITERS SHARE THIS FILE: this isolate (serialised by `_writeLock`) and any
+  // background isolate (its own copy of that lock — statics are per-isolate).
+  // **Native is no longer one of them** — it hands its records over through
+  // [appendNativeRecords], which takes `_writeLock` like everything else here.
+  //
+  // It was, until 2026-08-31, and the reasoning that allowed it is worth keeping
+  // because it was wrong in an instructive way. The estimate was that a collision
+  // needs one writer's open→write window (microseconds) to straddle another's
+  // write, and that native emitted only a couple of records per outage — two small
+  // numbers multiplied into a negligible one. But the two rates are not
+  // independent: native emitted on disconnect, which is precisely when this isolate
+  // is bursting a dozen lines about that same disconnect. Conditioned on a native
+  // record existing, a Dart write was almost certainly in flight. A 4.4 h capture
+  // kept one native record out of eight, and the loss was one-directional (Dart's
+  // seek-at-open write lands on top of native's real `O_APPEND` one, never the
+  // reverse) — so the survivors looked healthy and nothing indicated the rest had
+  // ever existed. When judging a race, ask whether the two writers are correlated,
+  // not just how often each one runs.
+  //
+  // The remaining cross-isolate race is genuinely uncorrelated (the background
+  // isolate decodes audio; it does not log about BLE disconnects) and every tear
+  // diagnosed in the 2026-08-17 log was same-isolate. If a future log still shows
+  // torn lines, the escalation is a file per writer merged by timestamp at
+  // read/share time — do not reach for it before then, since it touches
+  // `_ensureFile`, `listLogFiles`, `getRecentLogs` and `prepareShareFile` at once.
   static const String _tempFileName = 'omi_debug_current.log';
 
   // Where `prepareShareFile` materializes the named copy. A subdirectory of the
@@ -367,6 +379,46 @@ class DebugLogManager {
       ...fields,
     };
     await _append(jsonEncode(payload));
+  }
+
+  /// Appends records native produced, already encoded as complete JSON lines in
+  /// this class's schema.
+  ///
+  /// **This is why native no longer writes the file itself.** [_append]'s
+  /// `FileMode.append` is not `O_APPEND` — the write offset is resolved when the
+  /// file is opened, not when the bytes go out — while Kotlin's
+  /// `FileOutputStream(append = true)` is. A native record landing between this
+  /// isolate's open and its write was therefore overwritten by it. The damage was
+  /// one-directional (native never clobbered Dart) and concentrated exactly where
+  /// it hurt: native emits on disconnect, which is the same instant Dart emits its
+  /// own burst about that disconnect. A 4.4 h capture on 2026-08-31 kept one
+  /// native record out of eight. Routing them through [_writeLock] with every
+  /// other writer in the process is the fix — do not reintroduce a second writer
+  /// to this file in any language.
+  ///
+  /// Lines are written verbatim: each carries the timestamp of the moment native
+  /// observed the event, so a batch delivered late is still dated correctly even
+  /// though it lands after lines that were logged while it was in flight. Order in
+  /// the file therefore trails the timestamps slightly; read by timestamp.
+  ///
+  /// One lock acquisition for the whole batch, so a drain cannot be interleaved.
+  static Future<void> appendNativeRecords(List<String> lines) async {
+    if (lines.isEmpty) return;
+    if (!isEnabled) return;
+    await _writeLock.acquire();
+    try {
+      final f = await _ensureFile();
+      await _rotateIfNeeded(f);
+      final batch = StringBuffer();
+      for (final l in lines) {
+        batch.writeln(l);
+      }
+      await f.writeAsString(batch.toString(), mode: FileMode.append, flush: false);
+    } catch (_) {
+      // Swallow to avoid impacting app flow, exactly as _append does.
+    } finally {
+      _writeLock.release();
+    }
   }
 
   /// Stamps the app's own version on every launch, so any behaviour change in
