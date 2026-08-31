@@ -24,8 +24,6 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.File
-import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -53,14 +51,32 @@ import java.util.concurrent.atomic.AtomicBoolean
  *    definition. Dart logs it on the next successful connect (`_finishDeviceSetup`),
  *    which is why the two halves of the picture land in the same file.
  *
- * Written from native rather than through Dart because an outage typically happens
- * while the app is backgrounded, where the Flutter isolate may be frozen by Doze and
- * unable to service a platform channel. The foreground service is still running.
+ * Records are encoded here and **handed to Dart to write** (`BleFlutterApi.onNativeLogRecords`
+ * → `DebugLogManager.appendNativeRecords`), in the same one-JSON-object-per-line shape
+ * `DebugLogManager.logEvent` produces. Dart owns the file; nothing here touches it.
  *
- * Lines are appended to the newest `omi_debug_*.log` in the Flutter documents dir, in
- * the same one-JSON-object-per-line shape `DebugLogManager.logEvent` writes. If no
- * such file exists, developer file logging is off (`setEnabled(false)` deletes them)
- * and nothing is written — this never creates the log file.
+ * This class used to append to the file directly, on the reasoning that an outage happens
+ * while the app is backgrounded, where the Flutter isolate might be frozen and unable to
+ * service a platform channel, whereas the foreground service is still running. That
+ * reasoning no longer holds, and following it was costing more than it saved:
+ *  - The strong form of it — Dart *gone*, not merely slow — was the Activity-owned engine
+ *    being reclaimed. The engine is owned by the `Application` since 0.36.0, so Dart now
+ *    outlives the Activity (see NOTES.md, "The Flutter engine outlives the Activity").
+ *  - Doze does not freeze this process anyway: it runs a `connectedDevice` foreground
+ *    service, so it is never a cached app.
+ *  - And the direct write was silently destroying these records. Dart's `FileMode.append`
+ *    resolves its offset when the file is opened, not when the bytes go out, while
+ *    `FileOutputStream(append = true)` is a real `O_APPEND` — so Dart wrote on top of
+ *    whatever landed here in between, one-directionally, leaving no torn line to notice.
+ *    A 4.4 h capture on 2026-08-31 kept one record out of eight.
+ *
+ * The honest trade: a record now waits for Dart instead of being written immediately. If
+ * Dart is unreachable the records queue (bounded, [MAX_PENDING_RECORDS]) and overflow is
+ * reported as a `native_log_records_dropped` record rather than vanishing. Bounded and
+ * counted beats immediate and destroyed.
+ *
+ * Whether anything is kept is Dart's decision — `DebugLogManager` drops records when
+ * developer file logging is off. This no longer infers that from the file's existence.
  *
  * The advertising probe, however, always runs. It is not only diagnostic: its verdict
  * decides whether the caller shows the user the "toggle Bluetooth" alert, which is bad
@@ -131,72 +147,130 @@ object WedgeDiagnostics {
     }
 
     /**
-     * Where `DebugLogManager` writes: whatever `path_provider`'s
-     * `getApplicationDocumentsDirectory()` resolves to on Android. Today that is
-     * `PathUtils.getDataDirectory()`, i.e. `getDir("flutter")` → `.../app_flutter`. That
-     * mapping is engine-internal and undocumented, so `filesDir` is searched as a fallback
-     * rather than assumed away. Nothing here ever creates a directory or a log file, so an
-     * extra candidate is free: whichever one actually holds the log wins.
+     * Records waiting to reach Dart, which is the debug log's only writer.
+     *
+     * **Native must never append to that file.** It did until 2026-08-31, and the writes
+     * were being destroyed: `DebugLogManager._append` uses Dart's `FileMode.append`, which
+     * is *not* `O_APPEND` — it resolves the write offset when the file is opened, not when
+     * the bytes go out — while `FileOutputStream(append = true)` here is. So a record
+     * appended between Dart's open and Dart's write was overwritten by it. One-directional
+     * (nothing here ever clobbered a Dart line), and concentrated exactly where it did the
+     * most damage: these records are emitted on disconnect, the same instant Dart emits its
+     * own burst about that disconnect. A 4.4 h capture kept **one** of eight expected
+     * `ble_link_drop` records, and the survivor was a deliberate disconnect rather than one
+     * of the supervision timeouts the record exists to classify — a biased sample is worse
+     * than none, because it looks like data.
+     *
+     * Dart already serializes every writer inside its own isolate with a mutex; handing
+     * these to it puts them under the same lock instead of racing it across a language
+     * boundary.
+     *
+     * Bounded, and **overflow is counted, never silent** — silence is the property that let
+     * the original fault run undetected for as long as it did. [droppedRecords] rides out on
+     * the next successful drain.
      */
-    private fun candidateLogDirs(context: Context): List<File> = listOf(
-        context.getDir("flutter", Context.MODE_PRIVATE),
-        context.filesDir,
-    )
+    private const val MAX_PENDING_RECORDS = 256
+    private val pendingRecords = ArrayDeque<String>()
+    private var droppedRecords = 0
 
     /**
-     * The active `omi_debug_*.log`, or null when developer file logging is off — disabling it
-     * deletes every log file, so absence is the "off" signal. Never creates one: a log
-     * appearing on its own would silently re-enable a feature the user turned off.
+     * Encodes one event line in `DebugLogManager.logEvent`'s schema and queues it for Dart.
      *
-     * Dart writes a single fixed-name file (`omi_debug_current.log`); the descriptive dated
-     * name belongs to a throwaway copy the share action makes under the cache dir, so the
-     * live file this appends to always keeps its placeholder name. `maxByOrNull` is kept so
-     * a stray from the retired `omi_debug_YYYYMMDD.log` scheme cannot win — the placeholder's
-     * 'c' outranks a digit.
-     */
-    private fun currentLogFile(context: Context): File? = try {
-        candidateLogDirs(context)
-            .flatMap { dir ->
-                dir.listFiles { f -> f.isFile && f.name.startsWith("omi_debug_") && f.name.endsWith(".log") }
-                    ?.toList() ?: emptyList()
-            }
-            .maxByOrNull { it.name }
-    } catch (e: Exception) {
-        Log.w(TAG, "Cannot resolve debug log file: ${e.message}")
-        null
-    }
-
-    /**
-     * Appends one event line, matching `DebugLogManager.logEvent`'s schema so the in-app
-     * log viewer and the "Save Diagnostic Logs to File" export both pick it up unchanged.
+     * Encoding happens on the caller's thread so the timestamp inside the line is the
+     * instant the event happened, not the instant Dart drained it. A batch delivered late is
+     * therefore still dated correctly, though it lands in the file after lines logged while
+     * it was in flight — read the log by timestamp, not by position.
      *
-     * Runs off the caller's thread. A concurrent Dart append is safe (O_APPEND, and the
-     * reader tolerates a torn line); a concurrent Dart *rotation* could drop this line,
-     * which is an acceptable trade for not sharing a lock across the language boundary.
+     * `context` is unused now that nothing here touches the disk. It stays on the signature
+     * because every caller has one and threading it back through if this ever needs an
+     * application context again is churn for no gain.
      */
+    @Suppress("UNUSED_PARAMETER")
     private fun logEvent(context: Context, type: String, fields: Map<String, Any?>) {
-        // Timestamp and encode on the caller's thread so the line records when the event
-        // happened, not when the writer got scheduled. Everything touching the disk —
-        // resolving the file included — happens off it.
         val line = try {
             val payload = JSONObject()
             payload.put("timestamp", timestamp())
             payload.put("level", "EVENT")
             payload.put("type", type)
             for ((k, v) in fields) payload.put(k, v ?: JSONObject.NULL)
-            payload.toString() + "\n"
+            payload.toString()
         } catch (e: Exception) {
             Log.w(TAG, "Failed to encode $type: ${e.message}")
             return
         }
-        Thread {
-            try {
-                val file = currentLogFile(context) ?: return@Thread
-                FileOutputStream(file, true).use { it.write(line.toByteArray(Charsets.UTF_8)) }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to append $type: ${e.message}")
+        synchronized(pendingRecords) {
+            // Drop the OLDEST on overflow. A backlog this deep means Dart has been gone a
+            // long time, and in that situation the newest records describe what is wrong
+            // now; the oldest describe a state several failures ago.
+            while (pendingRecords.size >= MAX_PENDING_RECORDS) {
+                pendingRecords.removeFirst()
+                droppedRecords++
             }
-        }.start()
+            pendingRecords.addLast(line)
+        }
+        drainToDart()
+    }
+
+    /**
+     * Hands every queued record to Dart, oldest first.
+     *
+     * Gated on `isFlutterAlive` rather than a null check alone: after an OS-reclaim Activity
+     * destroy `flutterApi` can dangle at a dead messenger, where a send silently no-ops —
+     * which would put us straight back to losing records without knowing. Anything not sent
+     * stays queued for the next call.
+     *
+     * Pigeon's generated sender must run on the main looper. Records are already timestamped
+     * by then, so the hop costs nothing but ordering, which the timestamps carry anyway.
+     */
+    /**
+     * Public entry point for the drain, called when Dart declares itself ready.
+     *
+     * [drainToDart] is otherwise only reached by a new record arriving, so records captured
+     * before Dart came up — the boot-time ones, which have no successor to push them out —
+     * would wait for an unrelated BLE event.
+     */
+    fun flushPendingRecords() = drainToDart()
+
+    private fun drainToDart() {
+        val api = if (OmiBleManager.isFlutterAlive) OmiBleManager.instance.flutterApi else null
+        if (api == null) return
+        Handler(Looper.getMainLooper()).post {
+            val batch: List<String>
+            val dropped: Int
+            synchronized(pendingRecords) {
+                if (pendingRecords.isEmpty() && droppedRecords == 0) return@post
+                batch = pendingRecords.toList()
+                dropped = droppedRecords
+                pendingRecords.clear()
+                droppedRecords = 0
+            }
+            val lines = if (dropped > 0) {
+                // Report the loss in the log itself, in the same schema, so it is visible to
+                // whoever reads the capture rather than only to logcat.
+                val notice = JSONObject()
+                    .put("timestamp", timestamp())
+                    .put("level", "EVENT")
+                    .put("type", "native_log_records_dropped")
+                    .put("count", dropped)
+                    .toString()
+                listOf(notice) + batch
+            } else {
+                batch
+            }
+            api.onNativeLogRecords(lines) { result ->
+                if (result.isFailure) {
+                    // Put them back rather than lose them; the next event drains again.
+                    synchronized(pendingRecords) {
+                        for (l in batch.asReversed()) {
+                            if (pendingRecords.size < MAX_PENDING_RECORDS) pendingRecords.addFirst(l)
+                            else droppedRecords++
+                        }
+                        droppedRecords += dropped
+                    }
+                    Log.w(TAG, "Failed to hand ${batch.size} records to Dart: ${result.exceptionOrNull()?.message}")
+                }
+            }
+        }
     }
 
     /**
