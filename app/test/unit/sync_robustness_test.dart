@@ -11,6 +11,7 @@ import 'package:omi/services/devices/diag_log_record.dart';
 import 'package:omi/services/devices/device_crash_log.dart';
 import 'package:omi/services/devices/device_drop_stats.dart';
 import 'package:omi/services/devices/storage_file.dart';
+import 'package:omi/services/devices/errors.dart';
 import 'package:omi/services/devices/transports/device_transport.dart';
 import 'package:flutter/services.dart';
 import 'package:omi/services/recordings_manager.dart';
@@ -1286,6 +1287,29 @@ void main() {
     // as an empty card is what let a device holding three closed 10-minute bins
     // show as "nothing to sync" while lastSyncCompletedMs suppressed the next
     // automatic attempt for a full interval.
+    // The fourth case, and the one the 2026-08-31 log caught. No connection is NOT
+    // a null return — syncAll throws DeviceConnectionException before a byte moves.
+    // _doBackgroundSync's catch keys the outcome off that type: a throw records a
+    // skip (retryable, no completion stamp) rather than the phantom completion that
+    // used to push all three sync triggers out a full interval and, by clearing
+    // lastSyncSkipped, stop _handleDeviceConnected adopting the link native handed
+    // back three seconds later.
+    test('no connection throws rather than returning null — the caller reads the type', () async {
+      final noConn = SDCardWalSyncImpl(
+        MockWalSyncListener(),
+        connectionProvider: (_) async => null,
+        inactivityTimeout: const Duration(seconds: 1),
+      );
+      await noConn.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+
+      await expectLater(
+        noConn.syncAll(),
+        throwsA(isA<DeviceConnectionException>()),
+        reason: 'the background catch labels this one Skipped, not Partial, because nothing was pulled',
+      );
+      noConn.cancelSync();
+    });
+
     test('an unanswered listing returns null — it is not an empty card', () async {
       await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
       mockConn.files = [
