@@ -238,6 +238,63 @@ void main() {
       expect(seen.length, count, reason: 'no record may be lost to an overwrite');
     });
 
+    // The same fault across the language boundary, which the mutex above could not
+    // reach. Native used to append to this file itself with a real O_APPEND write;
+    // Dart's seek-at-open write then landed on top of it. The loss was
+    // one-directional — Dart lines survived, native records did not — and a 4.4 h
+    // capture on 2026-08-31 kept one of eight expected `ble_link_drop` records.
+    // Native records now arrive as pre-encoded lines and go through the same lock.
+    // Routing them around it must fail this test.
+    test('native records interleaved with Dart appends all survive', () async {
+      const dartCount = 120;
+      const nativeBatches = 20;
+      final pending = <Future<void>>[];
+      for (var i = 0; i < dartCount; i++) {
+        pending.add(DebugLogManager.logInfo('dart $i ${'x' * (i % 40)}'));
+        if (i % 6 == 0) {
+          // Batched, the way a drain delivers them, and uneven so an overwrite
+          // leaves the tell-tale surviving tail rather than a clean swap.
+          final n = i ~/ 6;
+          pending.add(DebugLogManager.appendNativeRecords([
+            jsonEncode({'timestamp': 'T', 'level': 'EVENT', 'type': 'native', 'n': n}),
+            jsonEncode({'timestamp': 'T', 'level': 'EVENT', 'type': 'native', 'n': n, 'pad': 'y' * (n % 30)}),
+          ]));
+        }
+      }
+      await Future.wait(pending);
+
+      final file = await DebugLogManager.getLogFile();
+      final lines = (await file!.readAsString()).trim().split('\n');
+
+      final nativeSeen = <int>[];
+      var dartSeen = 0;
+      for (final l in lines) {
+        final decoded = jsonDecode(l) as Map<String, dynamic>;
+        if (decoded['type'] == 'native') {
+          nativeSeen.add(decoded['n'] as int);
+        } else {
+          dartSeen++;
+        }
+      }
+      expect(dartSeen, dartCount, reason: 'no Dart line may be lost');
+      expect(nativeSeen.length, nativeBatches * 2,
+          reason: 'every native record must survive — this is the loss the single-writer change removes');
+      // Both members of each batch must be present, i.e. a batch is written whole.
+      for (var n = 0; n < nativeBatches; n++) {
+        expect(nativeSeen.where((v) => v == n).length, 2, reason: 'batch $n must land intact');
+      }
+    });
+
+    test('appendNativeRecords writes nothing while logging is disabled', () async {
+      await DebugLogManager.setEnabled(false);
+      await DebugLogManager.appendNativeRecords([
+        jsonEncode({'timestamp': 'T', 'level': 'EVENT', 'type': 'native'}),
+      ]);
+      final file = await DebugLogManager.getLogFile();
+      expect((await file!.readAsString()).trim(), isEmpty,
+          reason: 'native records must not resurrect a log the user turned off');
+    });
+
     test('appends interleaved with a concurrent clear() stay well-formed', () async {
       // clear() deliberately does not take the write lock (see _append). It must
       // still never leave a half-written line behind.
