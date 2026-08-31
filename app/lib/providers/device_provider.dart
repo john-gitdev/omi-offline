@@ -1342,13 +1342,76 @@ class DeviceProvider extends ChangeNotifier
     });
   }
 
-  Future<void> _doBackgroundSync() async {
-    if (isFirmwareUpdateInProgress) return;
+  /// Start a background sync that a pending intent sanctioned, and put the intent
+  /// back if the cycle declines to run.
+  ///
+  /// The intent is consumed up front — the sync is about to start, and a second
+  /// connect arriving mid-setup must not queue a duplicate. But [_doBackgroundSync]
+  /// can return without doing anything, and the guard that bites here is
+  /// `_backgroundSyncActive`: a cycle that failed and is still in its processing
+  /// phase (the VAD isolate, which easily outlasts a ~8 s reconnect + setup) still
+  /// holds it, so a sync adopted on the reconnect returns immediately having done
+  /// nothing. Spending the intent on a call that never ran left the audio waiting
+  /// for the next scheduled attempt.
+  ///
+  /// The flags are re-read rather than assigned back blindly: anything that set a
+  /// fresh intent while this was in flight outranks the stale one being restored,
+  /// and both flags mean "a sync is sanctioned", so OR is the correct merge.
+  void _startSanctionedBackgroundSync() {
+    final hadBackgroundSync = _pendingBackgroundSync;
+    final hadSyncResume = _pendingSyncResume;
+    _pendingBackgroundSync = false;
+    _pendingSyncResume = false;
+    unawaited(_doBackgroundSync().then((ran) {
+      if (ran || _disposed) return;
+      _pendingBackgroundSync = _pendingBackgroundSync || hadBackgroundSync;
+      _pendingSyncResume = _pendingSyncResume || hadSyncResume;
+      Logger.debug('[BLE] background sync declined to run — intent kept');
+    }));
+  }
+
+  /// Run an intent that was restored while another cycle held the re-entrancy guard.
+  ///
+  /// Called from [_doBackgroundSync]'s finally, and only for a cycle that actually
+  /// ran. Without it a restored intent has exactly one consumer — `_onDeviceConnected`
+  /// — so it would sit untouched until the next connect: the link is deliberately
+  /// held open while an intent is pending, so nothing would drop it and nothing would
+  /// reconnect. It resolved eventually, by the firmware idle-dropping the link after
+  /// ~60 s and native reconnecting into it, which is a slow and indirect way to
+  /// achieve what the running cycle can hand over directly.
+  ///
+  /// Cannot recurse: the intent is cleared before the nested cycle starts and only a
+  /// fresh connect sets it again, so that cycle's own hand-off finds nothing. A
+  /// nested cycle that itself declines restores the intent but returns false, and a
+  /// cycle that did not run does not hand off.
+  void _runDeferredSyncIntent() {
+    if (_disposed || _isAppInForeground || !isConnected) return;
+    if (_backgroundSyncActive) return;
+    if (!_pendingBackgroundSync && !_pendingSyncResume) return;
+    Logger.debug('[BLE] running the sync intent deferred while the previous cycle finished');
+    _startSanctionedBackgroundSync();
+  }
+
+  /// Runs one background sync+process cycle.
+  ///
+  /// Returns whether the cycle actually **ran**. False means it declined at one of
+  /// the guards below and did nothing at all — which is not the same as running and
+  /// failing. A run that reached [IWalSync.syncAll] returns true whatever the
+  /// outcome, because a failure is still a cycle and has already recorded itself.
+  ///
+  /// The distinction exists for [_onDeviceConnected], which consumes
+  /// `_pendingBackgroundSync` before calling this and has to know whether that
+  /// intent was spent or thrown away. See the restore there.
+  Future<bool> _doBackgroundSync() async {
+    if (isFirmwareUpdateInProgress) return false;
     // Re-entrancy guard: set before any await so a second caller (e.g. the Dart
     // timer firing alongside the foreground heartbeat) bails out before touching
     // the shared wakelock. Cleared in the outer finally.
-    if (_backgroundSyncActive) return;
+    if (_backgroundSyncActive) return false;
     _backgroundSyncActive = true;
+    // Set only once every guard is passed, so the finally can tell a cycle that ran
+    // from one that declined — see [_runDeferredSyncIntent].
+    var ran = false;
     try {
       lastSyncError = null;
       final walSync = ServiceManager.instance().wal.getSyncs();
@@ -1357,10 +1420,10 @@ class DeviceProvider extends ChangeNotifier
         if (cf != null) {
           await cf;
         } else {
-          return;
+          return false;
         }
       }
-      if (RecordingsManager.isProcessingAny) return;
+      if (RecordingsManager.isProcessingAny) return false;
 
       try {
         WakelockPlus.enable();
@@ -1472,13 +1535,26 @@ class DeviceProvider extends ChangeNotifier
 
         // Disconnect after the full sync+process cycle so that new firmware files
         // created during processing are also captured before we drop the
-        // connection. Always disconnect — even if segments remain there is no
-        // point holding the link, because the keep-alive has stopped and the
-        // firmware idle-drops it within ~60s (transport.c IDLE_DISCONNECT_TIMEOUT_MS)
-        // with nothing to reconnect it in the
-        // background. Any leftover segments are picked up by the next scheduled
-        // sync (or on app open/resume when one is due).
-        if (!_isAppInForeground && !isFirmwareUpdateInProgress && !_isOnFirmwareUpdatePage && isConnected) {
+        // connection. Even if segments remain there is no point holding the link,
+        // because the keep-alive has stopped and the firmware idle-drops it within
+        // ~60s (transport.c IDLE_DISCONNECT_TIMEOUT_MS) with nothing to reconnect it
+        // in the background. Any leftover segments are picked up by the next
+        // scheduled sync (or on app open/resume when one is due).
+        //
+        // The one exception is a sync that is already sanctioned and waiting to
+        // start. This cycle's processing phase can outlast a reconnect — a failed
+        // cycle drops the link, native brings it back seconds later, and
+        // _handleDeviceConnected adopts it while this one is still decoding — so
+        // "the cycle is over" is not the same as "nothing wants the link". Dropping
+        // it here killed the link the adopted sync was about to use, and its
+        // _doBackgroundSync then threw DeviceConnectionException for want of the
+        // connection this line had just closed.
+        final syncPending = _pendingBackgroundSync || _pendingSyncResume;
+        if (!_isAppInForeground &&
+            !isFirmwareUpdateInProgress &&
+            !_isOnFirmwareUpdatePage &&
+            !syncPending &&
+            isConnected) {
           Logger.debug('Background sync done: disconnecting device.');
           unawaited(SyncNotification.disconnecting());
           ServiceManager.instance().device.disconnectDevice(isManual: true);
@@ -1488,8 +1564,15 @@ class DeviceProvider extends ChangeNotifier
         // background — revert it to the idle "Next sync / Last Sync" line.
         unawaited(_showIdleNotification());
       }
+      // Past every guard: this cycle ran. Whether it succeeded is a separate
+      // question, already recorded in the prefs and lastSyncError above.
+      ran = true;
+      return true;
     } finally {
       _backgroundSyncActive = false;
+      // Ordering matters: the guard is cleared first, so the handed-off cycle is not
+      // turned away by the one handing it over.
+      if (ran) _runDeferredSyncIntent();
     }
   }
 
@@ -2246,10 +2329,8 @@ class DeviceProvider extends ChangeNotifier
     // the same path: fire _doBackgroundSync to pick up what the interrupted sync
     // left on the device.
     if (_pendingBackgroundSync || _pendingSyncResume) {
-      _pendingBackgroundSync = false;
-      _pendingSyncResume = false;
       unawaited(SyncNotification.connected());
-      unawaited(_doBackgroundSync());
+      _startSanctionedBackgroundSync();
     }
 
     // Decide now (getDeviceInfo refreshed the firmware revision in the pre-sync
