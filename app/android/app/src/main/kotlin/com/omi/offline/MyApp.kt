@@ -109,6 +109,12 @@ class MyApp : Application() {
                         "dartReady" -> {
                             OmiBleManager.isFlutterAlive = true
                             Log.d(TAG, "dartReady: Dart is up — background wake paths may deliver")
+                            // Diagnostic records queue while Dart is down and are otherwise
+                            // only drained by the NEXT record to arrive, so anything captured
+                            // during startup — or during an outage that then went quiet —
+                            // would sit in the queue until some unrelated BLE event happened.
+                            // Boot-time records are exactly the ones with no successor.
+                            WedgeDiagnostics.flushPendingRecords()
                             result.success(null)
                         }
                         else -> result.notImplemented()
