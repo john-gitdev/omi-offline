@@ -103,6 +103,12 @@ The eagerness is bounded anyway, in two places that were always doing the real w
 
 And the throw path was never the whole story: `syncAll` returning `null` (a failed `CMD_LIST_FILES`, the more common failure) has always set `lastSyncSkipped = true` **without** stamping, so "adopt on every reconnect until one succeeds" has been shipping for that path throughout. The change makes the throw path agree with it rather than inventing new behaviour.
 
+**Known residual — an adopted link can still be swallowed, and it is bounded, not fixed.** Found by review 2026-08-31, left alone deliberately. The adopt path sets `_pendingBackgroundSync`, and `_onDeviceConnected` consumes it (`if (_pendingBackgroundSync || _pendingSyncResume)`) **before** calling `_doBackgroundSync()`, which can then return immediately at its `_backgroundSyncActive` re-entrancy guard — because the cycle that just failed is still in its processing phase (`processAllCompletedSessions()` runs the VAD isolate and can outlast the ~8 s reconnect+setup). The intent is burned on a call that did nothing. There is a second face of the same overlap: the first cycle's `finally` disconnects when it finds `isConnected`, which is now the link the second cycle adopted.
+
+Both are self-limiting rather than dangerous: `lastSyncSkipped` stays true, so the next connect adopts again, WorkManager ignores its due-gate and retries within 15 min, and native's `AUTONOMOUS_RETRY_STOP_AFTER` caps the churn. Worst case is a ~15 min delay instead of an immediate retry — against the hour and no recovery at all that this section's fix removed. It is strictly better than before and not airtight.
+
+Do not "fix" it by leaving `_pendingBackgroundSync` set when the guard would bail: a permanently-set flag makes every future background connect sanctioned, which is the drop-guard's whole purpose defeated. If it is ever worth closing properly, the shape is `_doBackgroundSync` reporting whether it actually ran and the caller restoring the intent only on "did not run" — a real signature change, and it wants a test that can drive two overlapping cycles.
+
 ---
 
 ## iOS: BLE transfer stops "randomly" mid-sync → native storage keep-alive
