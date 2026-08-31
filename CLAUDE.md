@@ -233,6 +233,48 @@ Invariants worth preserving:
 - **A revert needs the ledger, not just the anchor** (`ClockCorrectionLedger`, pref `clockCorrectionLedger`). Discarding the session's anchor is necessary and *not sufficient*: the anchor is re-captured from any later diagnostics read, which is every reconnect while the Omi stays on the same boot, so the next pass would find the session disagreeing with a fresh anchor and re-file it — silently reversing the user. `applyClockAnchors` therefore skips any session the ledger marks reverted, permanently. The ledger also stores the offset the session's recordings carried **before** the first correction, captured before the move because the move is what destroys it — the offset lives only in the filenames `promoteSessionToDate` rewrites. Without it an undo has nothing to restore; reading the uptime as an epoch instead (an earlier version of this) lands the session in 1970 rather than on the date the Omi had filed. A second correction must **not** overwrite that stored offset — the first is the one that moved the recordings off the device's own timestamps.
 - The revert arrow is gated **only** on `.meta` flag `0x20`, so the affordance can only ever undo the app's own work, never a timestamp the Omi assigned and the phone agreed with.
 
+## Verify every change adversarially, end to end
+
+**Do this for every change, without being asked, before reporting it done.** Not a re-narration of
+what you wrote — an attempt to break it. Each rule below is here because skipping it cost a round.
+
+1. **Trace the whole path, not the diff.** Follow the change from its trigger to its effect through
+   the real call sites. Two bugs in one session were found this way and by nothing else: a
+   `_failSyncCycleToIdle` that moved the alarm but not the Dart timer, and a battery line fixed in
+   Dart while the Kotlin renderer — the one that runs when Dart is frozen, i.e. the actual failure
+   case — kept the old text. `grep` for the string you changed; assume there is a second copy.
+
+2. **A claim in a comment or commit message is a claim.** Verify it or don't write it. "This can't
+   be reached", "that path already handles it", "the compiler enforces this" — check. The
+   `return_without_value` guarantee in `_doBackgroundSync` was verified by mutating the source and
+   running the analyzer, which took a minute; asserting it would have been a coin flip.
+
+3. **Ask what the fix now makes reachable.** A fix that stops suppressing something means that
+   something now happens. Clearing `lastSyncSkipped` correctly turned an adoption path back on that
+   had been dead — which then exposed a re-entrancy guard swallowing it. The second bug only
+   existed once the first was fixed.
+
+4. **Find the docs and comments the fix just falsified.** Code and prose drift silently. Fixing the
+   native log writer invalidated a "THREE WRITERS SHARE THIS FILE" comment, a `WedgeDiagnostics`
+   rationale, and a NOTES section that *blessed the bug as intentional*. A stale invariant is worse
+   than none: the next reader restores the bug on purpose.
+
+5. **A test that cannot fail is not a test.** Mutate the source so the test should fail, run it,
+   confirm it does, revert. Especially when a metric already declared the area fixed — the 0.34.9
+   log-loss fix was validated by counting unparseable lines, which structurally cannot see a record
+   overwritten whole, so a real fault read as clean for a year. **Ask what failure your check cannot
+   express.**
+
+6. **State residuals; don't quietly leave or silently "improve" them.** If something is bounded but
+   not airtight, say so, in the report and in NOTES, with the shape a real fix would take and the
+   tempting wrong one spelled out. If a fix needs scope you weren't given, say that instead of
+   half-doing it.
+
+7. **Report what you verified, what you cleared, and what you couldn't test.** "Checked and cleared"
+   is useful to the reader — it says the obvious objection was considered. "Not unit-tested because
+   no test here constructs a real `DeviceProvider`" is an honest and actionable statement; silence
+   implies coverage that does not exist.
+
 ## Dead code
 
 Three rules, because "this looks unused" cost a review round once and will again.
