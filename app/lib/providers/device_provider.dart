@@ -13,6 +13,7 @@ import 'package:omi/services/devices/device_drop_stats.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_crash_log.dart';
 import 'package:omi/services/devices/diag_log_record.dart';
+import 'package:omi/services/devices/errors.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/pages/recordings/recordings_controller.dart';
 import 'package:omi/services/recordings_manager.dart';
@@ -1403,12 +1404,36 @@ class DeviceProvider extends ChangeNotifier
           SharedPreferencesUtil().lastSyncStatusMs = DateTime.now().millisecondsSinceEpoch;
           await SyncNotification.finishingSync();
         } catch (e) {
-          SharedPreferencesUtil().lastSyncPartial = true;
-          SharedPreferencesUtil().lastSyncSkipped = false;
-          // Stamp the time too so the notification reads "Partial • <now>" rather
-          // than pinning a fresh "Partial" status to a stale prior-sync timestamp.
-          SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
+          // A run that threw completed nothing, so it must NOT stamp
+          // lastSyncCompletedMs — that is the same phantom stamp the `ran == false`
+          // branch above refuses to write, and here it costs more than a wasted
+          // cycle. All three triggers anchor on that pref, so stamping it pushed the
+          // next attempt out a full interval AND (via `lastSyncSkipped = false`)
+          // cleared the one flag that lets _handleDeviceConnected adopt a link it
+          // gets back. Observed 2026-08-31: setup died at gatt_status_8, native had
+          // the link back three seconds later, and the adoption path declined it
+          // because this catch had just recorded a completion — six files waited
+          // another hour. lastSyncStatusMs still carries the display clock, so the
+          // notification reads "<outcome> • <now>" either way.
+          //
+          // Which outcome depends on whether we ever reached the device.
+          // DeviceConnectionException is thrown at syncAll's entry (and the two
+          // other no-connection guards) before a byte moves, so nothing was pulled
+          // and the honest label is Skipped — which is also the retry gate
+          // _shouldSyncNow() reads, so the next connect picks the sync straight back
+          // up. Anything else (Cancelled, Phone Storage Full, gap-retry exhaustion)
+          // did reach the device and may have landed files, so it is a Partial; not
+          // stamping the completion is enough there, because the schedule it leaves
+          // in place is the original one rather than an extended one.
+          final neverReached = e is DeviceConnectionException;
+          SharedPreferencesUtil().lastSyncPartial = !neverReached;
+          SharedPreferencesUtil().lastSyncSkipped = neverReached;
           SharedPreferencesUtil().lastSyncStatusMs = DateTime.now().millisecondsSinceEpoch;
+          // The cycle is over either way, so move the schedule's phase with it —
+          // the pref write that used to do this incidentally is gone, and the alarm
+          // is a one-shot that stops firing unless something re-arms it. Same call
+          // and same reason as _failSyncCycleToIdle.
+          _anchorAutoSyncSchedule();
           lastSyncError = e.toString();
           lastSyncErrorTime = DateTime.now();
           notifyListeners();
