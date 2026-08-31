@@ -1097,10 +1097,17 @@ with no UI, where it is false — so the app connects and then hangs up on itsel
 - **A headless start no longer connects just to be hung up on.** The constructor connects when
   `_isAppInForeground` **or** a sync is due. `uiAttached == null` still means "assume foreground",
   so a probe failure keeps the old behaviour.
-- **Neither sync trigger may start a sync the WAL layer cannot serve.** `_onBackgroundSyncRequested`
-  and the auto-sync tick both branched on `isConnected` alone, but the device is handed to the WAL
-  layer at the *very end* of `_onDeviceConnected` — so "the link is up" and "a sync can run" are
-  different questions. Both now check `hasDevice` and take the connect path otherwise.
+- **No sync may start that the WAL layer cannot serve.** The device is handed over at the *very
+  end* of `_onDeviceConnected`, so "the link is up" and "a sync can run" are different questions,
+  and `_onBackgroundSyncRequested` and the auto-sync tick both branched on `isConnected` alone.
+  `_doBackgroundSync` now **declines on `!hasDevice` itself** — guarded there rather than only at
+  the callers because there are six of them and the whole bug was one path that did not check.
+  Running anyway is not merely futile: `syncAll` returns null, the cycle records a user-visible
+  "Skipped", and its `finally` **disconnects the device** — so a state only setup can repair got a
+  teardown once an hour instead. It declines rather than recording a skip because this is an
+  internal not-ready state, not "we tried and could not reach the Omi". On top of that, the two
+  *scheduled* triggers check `hasDevice` at the branch and take the connect path, which runs setup —
+  the only thing that actually fixes it. One guard prevents harm everywhere; two call sites recover.
 
 **The third layer deliberately does not force a teardown to provoke a reconnect.** That branch is
 also the ordinary few seconds of setup, and tearing down a healthy link to fix a state that is

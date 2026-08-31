@@ -1456,6 +1456,22 @@ class DeviceProvider extends ChangeNotifier
         }
       }
       if (RecordingsManager.isProcessingAny) return false;
+      // The WAL layer is handed the device at the very END of _onDeviceConnected, so a
+      // link can be up while a sync still cannot run. Guarded HERE rather than only at
+      // the callers because there are six of them and the whole bug was one path that
+      // did not check. Running anyway is not merely futile: syncAll returns null, the
+      // cycle records a user-visible "Skipped", and its finally DISCONNECTS the device —
+      // so a state that only setup can repair got a teardown once an hour instead
+      // (observed 2026-08-31).
+      //
+      // Declining rather than recording a skip is deliberate: this is an internal
+      // not-ready state, not "we tried and could not reach the Omi", and the scheduled
+      // triggers already route to the connect path — which runs setup, the only thing
+      // that fixes it — when they see the same condition.
+      if (!walSync.hasDevice) {
+        Logger.warning('DeviceProvider: background sync declined — the WAL layer has no device yet');
+        return false;
+      }
 
       try {
         WakelockPlus.enable();
