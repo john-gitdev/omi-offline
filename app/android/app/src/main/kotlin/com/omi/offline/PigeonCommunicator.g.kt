@@ -881,4 +881,38 @@ class BleFlutterApi(private val binaryMessenger: BinaryMessenger, private val me
       } 
     }
   }
+  /**
+   * Diagnostic records native produced, as complete JSON lines in
+   * `DebugLogManager`'s schema, for Dart to append to the debug log.
+   *
+   * Native used to append to that file itself. It cannot: Dart's
+   * `FileMode.append` is **not** `O_APPEND` — it resolves the write offset when
+   * the file is opened, not when the bytes are written — while Kotlin's
+   * `FileOutputStream(append = true)` is. So a native record landing between
+   * Dart's open and Dart's write was overwritten by it, one-directionally, and
+   * native emits precisely during the Dart logging bursts that describe the same
+   * disconnect. A 4.4 h capture on 2026-08-31 kept **one** native record out of
+   * eight expected, and the survivor was a deliberate disconnect rather than one
+   * of the timeouts the records exist to classify.
+   *
+   * Lines arrive pre-encoded so the timestamp inside each one is still the
+   * instant native observed the event, not the instant Dart got the batch.
+   */
+  fun onNativeLogRecords(linesArg: List<String>, callback: (Result<Unit>) -> Unit)
+{
+    val separatedMessageChannelSuffix = if (messageChannelSuffix.isNotEmpty()) ".$messageChannelSuffix" else ""
+    val channelName = "dev.flutter.pigeon.omi_pigeon.BleFlutterApi.onNativeLogRecords$separatedMessageChannelSuffix"
+    val channel = BasicMessageChannel<Any?>(binaryMessenger, channelName, codec)
+    channel.send(listOf(linesArg)) {
+      if (it is List<*>) {
+        if (it.size > 1) {
+          callback(Result.failure(FlutterError(it[0] as String, it[1] as String, it[2] as String?)))
+        } else {
+          callback(Result.success(Unit))
+        }
+      } else {
+        callback(Result.failure(PigeonCommunicatorPigeonUtils.createConnectionError(channelName)))
+      } 
+    }
+  }
 }

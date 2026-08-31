@@ -194,4 +194,21 @@ abstract class BleFlutterApi {
   /// background sync should be triggered. Equivalent to a timer-fired sync tick
   /// but sourced from the OS scheduler instead of the Dart timer.
   void onBackgroundSyncRequested();
+
+  /// Diagnostic records native produced, as complete JSON lines in
+  /// `DebugLogManager`'s schema, for Dart to append to the debug log.
+  ///
+  /// Native used to append to that file itself. It cannot: Dart's
+  /// `FileMode.append` is **not** `O_APPEND` — it resolves the write offset when
+  /// the file is opened, not when the bytes are written — while Kotlin's
+  /// `FileOutputStream(append = true)` is. So a native record landing between
+  /// Dart's open and Dart's write was overwritten by it, one-directionally, and
+  /// native emits precisely during the Dart logging bursts that describe the same
+  /// disconnect. A 4.4 h capture on 2026-08-31 kept **one** native record out of
+  /// eight expected, and the survivor was a deliberate disconnect rather than one
+  /// of the timeouts the records exist to classify.
+  ///
+  /// Lines arrive pre-encoded so the timestamp inside each one is still the
+  /// instant native observed the event, not the instant Dart got the batch.
+  void onNativeLogRecords(List<String> lines);
 }
