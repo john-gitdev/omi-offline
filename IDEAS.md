@@ -50,6 +50,18 @@ are genuine multi-second RF/firmware stalls — not a tuning problem — so the 
 below mitigate the *fallout* (don't lose the partial transfer, don't strand the UI)
 rather than preventing the stall.
 
+> **That last sentence is a hypothesis, and it is now testable — do the measurement
+> before acting on it.** "Stopped sending" and "too degraded to receive" are the two
+> halves of the disjunction above and they want opposite fixes, but nothing recorded the
+> link strength *while connected*, so the 87 `gatt_status_8` drops in the four-day log
+> are unclassified. `ble_link_drop` (0.36.3, `WedgeDiagnostics.kt`) now carries the last
+> connected RSSI and its age at every disconnect: a timeout at −60 dBm is the device
+> stalling, the same timeout at −100 dBm is range. The scan probes hinted at range (164
+> of 193 heard nothing; the 29 that did saw −97 to −103 dBm) but that is the signal while
+> **disconnected**. Collect one fresh multi-day log and sort the timeouts by RSSI — if
+> they are mostly range, the tuning experiment below is aimed at the wrong thing and the
+> useful lever is elsewhere. See BLE_Research.md §2 (discriminator 0) and §7.
+
 > **Background-specific partials had TWO further causes, both CPU-wakelock, both fixed
 > 2026-08-03 — don't re-derive them.** Neither is RF, and both present as a mid-sync
 > `gatt_status_8`, so they are easy to misattribute to the tuning item below.
