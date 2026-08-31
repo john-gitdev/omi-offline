@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:omi/gen/pigeon_communicator.g.dart';
+import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/utils/logger.dart';
 
 /// Callback signature for characteristic value updates.
@@ -87,5 +89,22 @@ class BleBridge implements BleFlutterApi {
   void onBackgroundSyncRequested() {
     Logger.debug('BleBridge: Background sync requested by OS scheduler');
     backgroundSyncRequestedCallback?.call();
+  }
+
+  /// Diagnostic records native produced, handed over for Dart to write because
+  /// Dart is the only writer of the debug log — see
+  /// [DebugLogManager.appendNativeRecords].
+  ///
+  /// Deliberately NOT routed through a settable callback like the others: those
+  /// exist so a listener can be swapped or scoped, and every one of them drops
+  /// silently until something registers it. Dropping records silently is the
+  /// exact fault this whole path was built to remove, and there is only ever one
+  /// destination for them, so it calls straight through.
+  ///
+  /// Nothing here may log — a `Logger` call would append to the same file this is
+  /// about to append to, under a lock the append then takes.
+  @override
+  void onNativeLogRecords(List<String> lines) {
+    unawaited(DebugLogManager.appendNativeRecords(lines));
   }
 }
