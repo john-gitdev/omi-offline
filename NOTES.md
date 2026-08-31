@@ -1057,6 +1057,68 @@ Foreground processing progress: `_onProcessingProgress` (a class method on `Devi
 
 ---
 
+## App: `isConnected` latching true against a dead link (fixed 2026-08-31)
+
+The worst class of bug this app can have — it does not crash, it does not log an error, and
+every subsequent sync reports itself as a tidy little skip. Seven hours of a device holding
+recordings while the app said, hourly, that it had checked.
+
+### The chain
+
+1. **08:42:44** — the process starts **headless** (`lifecycleState=detached uiAttached=false`,
+   so `_isAppInForeground=false`). `DeviceProvider`'s constructor connects unconditionally via
+   `periodicConnect('app open', …)`.
+2. **08:42:45** — the connect succeeds. `scanAndConnectToDevice` sets `isConnected = true`. It does
+   **not** set `connectedDevice`; only `setConnectedDevice`, called from `_onDeviceConnected`, does.
+3. **08:42:47** — `_handleDeviceConnected`'s drop-guard fires: backgrounded, no pending sync, and
+   `_shouldSyncNow()` false (the last sync finished eight minutes earlier). It disconnects
+   **before** `_onDeviceConnected` runs.
+4. The disconnect arrives at `onDeviceConnectionStateChanged`, whose disconnected branch was gated
+   on `deviceId == connectedDevice?.id || deviceId == pairedDevice?.id`. Both were still null, so
+   it matched nothing and **`onDeviceDisconnected` never ran**.
+5. `isConnected` stayed `true`. Nothing else clears it. Every sync path branches on it, so none of
+   them reconnected — and `syncAll` found `_device == null` and returned "did not run". Hourly,
+   for seven hours, until the app was reopened.
+
+### Why it appeared now
+
+Step 1 is the 0.36.0 headless-start change meeting a comment that predates it. The constructor's
+`_pendingAppOpenSync` block said, in as many words, *"`_isAppInForeground` is true here, so the
+connection survives `_handleDeviceConnected`'s drop-guard long enough to sync."* That was true
+while only a widget tree could build a `DeviceProvider`. A WorkManager or alarm wake now builds one
+with no UI, where it is false — so the app connects and then hangs up on itself.
+
+### The three layers, and why each is there
+
+- **The disconnect must be observable before setup finishes.** The gate now also accepts the bonded
+  id from `SharedPreferencesUtil().btDevice`, which exists from process start and is the same id
+  `_scanConnectDevice` dials. Safe as the widest of the three because there is exactly one Omi
+  (see **One Omi at a time**). This alone fixes the observed failure.
+- **A headless start no longer connects just to be hung up on.** The constructor connects when
+  `_isAppInForeground` **or** a sync is due. `uiAttached == null` still means "assume foreground",
+  so a probe failure keeps the old behaviour.
+- **Neither sync trigger may start a sync the WAL layer cannot serve.** `_onBackgroundSyncRequested`
+  and the auto-sync tick both branched on `isConnected` alone, but the device is handed to the WAL
+  layer at the *very end* of `_onDeviceConnected` — so "the link is up" and "a sync can run" are
+  different questions. Both now check `hasDevice` and take the connect path otherwise.
+
+**The third layer deliberately does not force a teardown to provoke a reconnect.** That branch is
+also the ordinary few seconds of setup, and tearing down a healthy link to fix a state that is
+about to fix itself is the worse trade. It sanctions the sync and lets the connect path run; if
+the link really is up, `scanAndConnectToDevice` returns immediately and the intent waits for the
+next connect.
+
+Widening the disconnect gate cannot cause a reconnect storm: `onDeviceDisconnected` returns early
+in the background without reconnecting at all (`if (!_isAppInForeground) … return`), and in the
+foreground reconnecting to the bonded device is what it is for.
+
+**Not unit-tested** — no test in the repo constructs a real `DeviceProvider`. The signature to look
+for in a log is the one above: `_handleDeviceConnected: dropping` with no later
+`proceeding to setup`, followed by `skipping syncAll — no device registered yet` on a tick that
+reported `connected=true`.
+
+---
+
 ## App: The Flutter engine outlives the Activity (0.36.0)
 
 Shipped in 0.36.0–0.36.1. The prerequisite for background sync working at all, and the invariants below are the kind a "simplify the Android startup" pass removes without noticing.
