@@ -351,6 +351,12 @@ class DeviceProvider extends ChangeNotifier
     }
     SharedPreferencesUtil.lastSyncCompleted.addListener(_onSyncCompleted);
     _startBackgroundSyncTimer();
+    // Last, deliberately. It can push the notification, and _startBackgroundSyncTimer is
+    // what publishes nextSyncTime — sweeping earlier would render "Omi Offline" instead
+    // of "Next sync at H:MM". It also means the `_shouldSyncNow()` above ran without the
+    // skip this may set, so an orphan brings the next sync forward by a tick rather than
+    // forcing a connect during launch; the flag persists, so nothing is lost.
+    _sweepOrphanedSyncCycle();
   }
 
   /// Re-anchor the auto-sync schedule off the back of a completed sync, whoever ran it.
@@ -1442,6 +1448,10 @@ class DeviceProvider extends ChangeNotifier
     // the shared wakelock. Cleared in the outer finally.
     if (_backgroundSyncActive) return false;
     _backgroundSyncActive = true;
+    // Past every guard, so this is a cycle. The connect path may already have marked it
+    // (a connect that then succeeded lands here); overwriting is correct — the marker
+    // names the most recent cycle, and that is the one an orphan sweep should report.
+    _markSyncCycleStarted();
     // Set only once every guard is passed, so the finally can tell a cycle that ran
     // from one that declined — see [_runDeferredSyncIntent].
     var ran = false;
@@ -1618,6 +1628,10 @@ class DeviceProvider extends ChangeNotifier
       return true;
     } finally {
       _backgroundSyncActive = false;
+      // The cycle is over, whatever the outcome — a `finally`, so a throw counts too.
+      // Only process death can now leave the marker behind, which is exactly what the
+      // startup sweep reads it for.
+      _clearSyncCycleMarker();
       // Ordering matters: the guard is cleared first, so the handed-off cycle is not
       // turned away by the one handing it over.
       if (ran) _runDeferredSyncIntent();
@@ -1629,6 +1643,7 @@ class DeviceProvider extends ChangeNotifier
   /// the window.
   void _armConnectSettleWatchdog() {
     _connectSettleWatchdog?.cancel();
+    _markSyncCycleStarted();
     _acquireConnectWakeLock();
     _connectSettleWatchdog = Timer(_connectSettleTimeout, () {
       _connectSettleWatchdog = null;
@@ -1641,6 +1656,58 @@ class DeviceProvider extends ChangeNotifier
       Logger.debug('DeviceProvider: connect watchdog fired — failing the cycle to idle');
       _failSyncCycleToIdle();
     });
+  }
+
+  /// Stamp "a background sync cycle is outstanding". Paired with
+  /// [_clearSyncCycleMarker] on every terminal path; see
+  /// [SharedPreferencesUtil.syncCycleStartedMs] for why liveness rather than a timeout
+  /// is what makes an orphan detectable.
+  void _markSyncCycleStarted() {
+    SharedPreferencesUtil().syncCycleStartedMs = DateTime.now().millisecondsSinceEpoch;
+  }
+
+  void _clearSyncCycleMarker() {
+    SharedPreferencesUtil().syncCycleStartedMs = 0;
+  }
+
+  /// The instant an orphaned cycle should be recorded at, or null when there is nothing
+  /// to record. Extracted and pure because both halves are easy to get wrong in the
+  /// direction of overwriting a real outcome with a fabricated one.
+  ///
+  /// Stamped at [startedMs], never at "now": the cycle failed when its process died,
+  /// possibly hours earlier, and the notification's job is to say when. And it yields to
+  /// any outcome already recorded at or after that instant — a foreground sync, or the
+  /// alarm's own Dart-not-up skip — so the writers cannot fight over one cycle.
+  @visibleForTesting
+  static int? orphanedCycleStatusMs({required int startedMs, required int lastStatusMs}) {
+    if (startedMs <= 0) return null;
+    if (lastStatusMs >= startedMs) return null;
+    return startedMs;
+  }
+
+  /// A cycle marked outstanding by a process that is gone can never finish, so record it
+  /// as the skip it was. Runs once per process, from the constructor.
+  ///
+  /// Stamped at the marker's own time, not now: the cycle failed when the process died,
+  /// which may have been hours ago, and "Last Sync: Skipped • 3:45 AM" is the true
+  /// statement. Yields to any outcome already recorded at or after that instant — a
+  /// foreground sync, or the alarm's own Dart-not-up skip — so the two writers cannot
+  /// fight over the same cycle.
+  void _sweepOrphanedSyncCycle() {
+    final prefs = SharedPreferencesUtil();
+    final started = prefs.syncCycleStartedMs;
+    // Cleared whatever the verdict: a marker this process did not set can never become
+    // valid, so leaving it would make the NEXT start re-report the same dead cycle.
+    if (started > 0) prefs.syncCycleStartedMs = 0;
+    final statusMs = orphanedCycleStatusMs(startedMs: started, lastStatusMs: prefs.lastSyncStatusMs);
+    if (statusMs == null) return;
+    Logger.debug('DeviceProvider: sync cycle started at $started never finished — recording it as a skip');
+    prefs.lastSyncSkipped = true;
+    prefs.lastSyncStatusMs = statusMs;
+    // The resting line may already be on screen showing the outcome this replaces —
+    // native's onCreate renders it from these same prefs, and on a headless start that
+    // happens before main() gets here.
+    unawaited(_showIdleNotification());
   }
 
   void _cancelConnectSettleWatchdog() {
@@ -1673,6 +1740,7 @@ class DeviceProvider extends ChangeNotifier
   /// this cycle rather than the last one that succeeded.
   void _failSyncCycleToIdle() {
     _cancelConnectSettleWatchdog();
+    _clearSyncCycleMarker();
     // Anchor rather than just publish: a cycle that gave up is still a cycle, so the
     // Dart timer's phase has to move with the alarm. Publishing alone left them
     // disagreeing by however long the connect attempt took (~90 s), since only the
