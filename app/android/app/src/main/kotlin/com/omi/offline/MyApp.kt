@@ -17,8 +17,10 @@ import io.flutter.plugin.common.MethodChannel
  * swipe-away (`isFinishing`). So the device stays connected and the native BLE layer
  * keeps working while Dart is simply gone. Every path that can sync is Dart-side, and
  * both wake paths — [BackgroundSyncWorker] and [SyncAlarmReceiver] — then took their
- * "Flutter engine not running — sync deferred to next app open" branch and returned
- * success without doing anything.
+ * no-Dart branch and returned success without doing anything. (That branch still exists,
+ * because a cold start legitimately reaches it before main() has run; it now hands the
+ * cycle to DeviceProvider's constructor instead of to the next app open, and no longer
+ * logs "sync deferred to next app open".)
  *
  * Measured on device (2026-08-28): seventeen consecutive hours in which the native side
  * logged 300+ records and Dart logged two. WorkManager fired on time throughout; every
