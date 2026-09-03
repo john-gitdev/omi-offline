@@ -1828,16 +1828,36 @@ class OmiBleForegroundService : Service() {
     fun idleNotificationContent(): Pair<String, String> {
         val prefs = getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
         val fmt = SimpleDateFormat("h:mm a", Locale.getDefault())
-        // Read back from prefs, not from a field. SyncAlarmReceiver.schedule() persists it
-        // and is the ONLY funnel that arms or cancels the sync alarm (the receiver's own
-        // re-arm goes through it too), so the rendered time and the armed alarm cannot
-        // drift — and a headless start, which has no Dart push behind it, still renders a
-        // real title instead of a bare "Omi Offline". A time already in the past is shown
-        // as-is, exactly as Dart's idle() shows its own nextSyncTime: an overdue alarm is a
-        // true statement about the schedule, and a different rule here would break the mirror.
-        val nextMs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getLong(PREFS_NEXT_SYNC_MS, 0L)
+        // Read back from prefs, not from a field, so a headless start — which has no Dart
+        // push behind it — still renders a real title instead of a bare "Omi Offline". A
+        // time already in the past is shown as-is, exactly as Dart's idle() shows its own
+        // nextSyncTime: an overdue alarm is a true statement about the schedule.
+        //
+        // Gated on the LIVE interval rather than trusted on its own. The persisted time is
+        // written by SyncAlarmReceiver.schedule(), which every arm and cancel goes through
+        // — but Dart reaches it via `OmiBleForegroundService.instance?.setNextSyncTime`,
+        // which is null-safe: with the service down, switching to Manual Only never lands,
+        // and the stale future time would then render "Next sync at 4:15 PM" on a schedule
+        // that no longer exists. `flutter.backgroundSyncIntervalMinutes` is written by Dart
+        // directly and is always current, so it is the honest gate. (The same null-safety
+        // also leaves the ALARM armed in that case — pre-existing, and not something this
+        // renderer can fix.)
+        val autoSyncOn = autoSyncIntervalMinutes() > 0
+        val nextMs = if (autoSyncOn) getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getLong(PREFS_NEXT_SYNC_MS, 0L) else 0L
         val title = if (nextMs > 0) "Next sync at ${fmt.format(Date(nextMs))}" else DEFAULT_NOTIF_TITLE
-        val lastMs = prefs.getLong("flutter.lastSyncStatusMs", 0L)
+        // Mirrors Dart's `lastSyncStatusMs` getter, which falls back to lastSyncCompletedMs
+        // (preferences.dart) so a device that last synced before 2026-06-13 — when the
+        // status clock was split from the completion clock — does not lose its "Last Sync"
+        // line on upgrade. Without the fallback this renderer showed "Ready to sync" for
+        // that device while Dart showed the real line: the two mirrors must not disagree.
+        // `contains`, not a `> 0` test: Dart's getter falls back only when the KEY is
+        // absent, so a stored 0 must stay 0 in both renderers. Nothing writes 0 today,
+        // which is exactly why the sloppier version would have passed unnoticed.
+        val lastMs = if (prefs.contains("flutter.lastSyncStatusMs")) {
+            prefs.getLong("flutter.lastSyncStatusMs", 0L)
+        } else {
+            prefs.getLong("flutter.lastSyncCompletedMs", 0L)
+        }
         val text: String
         if (lastMs > 0) {
             val skipped = prefs.getBoolean("flutter.lastSyncSkipped", false)
