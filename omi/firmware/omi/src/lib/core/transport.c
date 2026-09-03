@@ -168,11 +168,17 @@ static struct bt_uuid_128 settings_button_config_characteristic_uuid =
 static struct bt_uuid_128 settings_haptic_config_characteristic_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10016, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 /* NOTE: do NOT append further characteristics to this service. It is registered
- * FIRST (see transport_start), so every attribute added here shifts the handles
- * of every service registered after it — storage, diagnostics, mute — and a peer
- * holding a cached GATT DB would then address the wrong attributes until it
- * re-pairs. New settings go in a service registered last, as the LED service
- * (0x19B10080) below does. Adding 0015/0016 here already cost one re-pair. */
+ * THIRD (see transport_start) — only register_button_service() and
+ * register_haptic_service() run ahead of it — so every attribute added here
+ * shifts the handles of every service registered after it: features, time sync,
+ * battery, storage, diagnostics, mute, led. A peer holding a cached GATT DB
+ * would then address the wrong attributes until it re-pairs. New settings go in
+ * a service registered last, as the LED service (0x19B10080) below does. Adding
+ * 0015/0016 here already cost one re-pair.
+ *
+ * This note said "registered FIRST" for a long time. That was wrong about the
+ * order and right about the rule; button/haptic are unaffected by an addition
+ * here, everything listed above is. */
 
 static struct bt_gatt_attr settings_service_attr[] = {
     BT_GATT_PRIMARY_SERVICE(&settings_service_uuid),
@@ -1076,10 +1082,12 @@ static struct bt_gatt_service mute_service = BT_GATT_SERVICE(mute_service_attr);
 //   to on reboot, and a read that tracked the gesture would make the app's
 //   write-then-verify disagree with what it just stored.
 // Deliberately its OWN service rather than more Settings characteristics:
-// Settings is registered first, so growing it renumbers every service after it
-// and forces bonded peers to re-pair. Registered last (after mute), this leaves
-// every existing handle untouched — which is also why characteristic B could be
-// added here for free, while adding it to Settings could not.
+// Settings is registered early (third, behind only button and haptic), so growing
+// it renumbers every service after it — features, time sync, battery, storage,
+// diagnostics, mute, led — and forces bonded peers to re-pair. Registered last
+// (after mute), this leaves every existing handle untouched — which is also why
+// characteristic B could be added here for free, while adding it to Settings
+// could not.
 static struct bt_uuid_128 led_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10080, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 led_connected_characteristic_uuid =
