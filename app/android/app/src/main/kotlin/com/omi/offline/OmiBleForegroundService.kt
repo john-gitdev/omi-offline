@@ -145,9 +145,14 @@ class OmiBleForegroundService : Service() {
         private const val ALERT_CHANNEL_ID = "omi_ble_alerts"
         private const val ALERT_NOTIFICATION_ID = 2002
         private const val COMPANION_RATE_LIMIT_MS = 15_000L
-        private const val PREFS_NAME = "ble_config"
+        const val PREFS_NAME = "ble_config"
         private const val PREFS_KEY = "managed_device"
         private const val PREFS_USER_DISCONNECTED = "user_disconnected"
+        // The sync alarm's armed due-time, mirrored to disk by SyncAlarmReceiver.schedule()
+        // so idleNotificationContent can render "Next sync at H:MM" on a headless start —
+        // before Dart has pushed anything, and after a process death that took the old
+        // in-memory copy with it. Not keyed by device: one Omi, one schedule (CLAUDE.md).
+        const val PREFS_NEXT_SYNC_MS = "next_sync_ms"
 
         // An open outage, so it survives the process dying mid-outage. Wedge 9 lost its
         // `ble_wedge_recovered` exactly this way: the user updated the app 4 minutes before
@@ -167,17 +172,16 @@ class OmiBleForegroundService : Service() {
         private const val PREFS_WEDGE_OPEN = "wedge_open"
         private const val PREFS_WEDGE_STARTED_WALL = "wedge_started_wall_ms"
         private const val DEFAULT_NOTIF_TITLE = "Omi Offline"
-        private const val DEFAULT_NOTIF_TEXT = "Connecting..."
-        // Settle a stranded "Connecting…" notification this long after it's shown.
-        // Deliberately slightly longer than Dart's 150 s connect-settle watchdog so a
-        // genuinely slow connect isn't cut short and native never preempts Dart's own
-        // handling — do NOT reduce this below 150 s. A disconnect pulls it in sooner
-        // without that risk (see DISCONNECT_SETTLE_GRACE_MS / handleDisconnection).
-        private const val CONNECT_SETTLE_MS = 160_000L
-        // When a disconnect strands a Dart-driven "Connecting…", pull the settle alarm in
-        // to this grace from the drop (never later than the connect-start deadline), so a
-        // frozen-Dart recovery doesn't wait out the full window — or a Doze-throttled alarm.
-        private const val DISCONNECT_SETTLE_GRACE_MS = 60_000L
+        // The resting body when no sync outcome has been recorded yet. Mirrors the final
+        // fallback in Dart's SyncNotification.idleBodyText — the two renderers must agree
+        // (see renderIdleFromPrefs).
+        //
+        // Deliberately NOT a connection state. This notification reports WORK (syncing /
+        // processing / uploading) and OUTCOMES (next sync / last sync), never link state.
+        // It used to read "Connecting..." and that was the whole bug: a headless service
+        // start painted it, no settle alarm was ever armed for a native paint, and only the
+        // next periodic sync alarm cleared it — up to a full sync interval later.
+        private const val DEFAULT_NOTIF_TEXT = "Ready to sync"
         private const val ACTION_NOTIFICATION_DISMISSED = "com.omi.offline.NOTIFICATION_DISMISSED"
         @Volatile
         var instance: OmiBleForegroundService? = null
@@ -349,12 +353,11 @@ class OmiBleForegroundService : Service() {
     private val bleManager get() = OmiBleManager.instance
     private var currentNotificationTitle = DEFAULT_NOTIF_TITLE
     private var currentNotificationText = DEFAULT_NOTIF_TEXT
-    // Mirrors Dart's nextSyncTime (pushed via setNextSyncTime) so the native
-    // settle can render the "Next sync at H:MM" title without a live isolate.
-    private var nextSyncTimeMs: Long = 0L
-    // True while auto-sync is scheduled. Suppresses transient "Connecting…"/"Connected"
-    // text updates so the "Next sync at…" label stays stable through the brief
-    // connect→sync→disconnect cycle.
+    // True while auto-sync is scheduled. Read (as `wasActive`) by setNextSyncTime to spot
+    // the inactive→active transition that re-arms the recovery probe — it is NOT a
+    // notification concern, whatever its name suggests. An older comment here claimed it
+    // suppressed transient "Connecting…"/"Connected" text; it never did, and there is no
+    // such text left to suppress.
     private var syncTimerActive = false
 
     // How many outage-recovery alarms have been armed in the current confirmed outage.
@@ -372,18 +375,6 @@ class OmiBleForegroundService : Service() {
     // device is bound (Dart drives it via setPersistentNotification).
     @Volatile
     private var persistent = false
-
-    // While true, the Dart sync state machine owns the notification text (idle /
-    // connecting / syncing / processing / …). The service's own connection-state
-    // text updates are suppressed so the two don't fight.
-    @Volatile
-    private var dartDrivesNotification = false
-    // Absolute due-time of the connect-settle alarm (0 = none). Tracked so a disconnect
-    // can pull the alarm in without ever pushing it later (see handleDisconnection).
-    // @Volatile: written by setSyncStatus (Dart platform-channel thread), read+written by
-    // handleDisconnection (GATT binder thread) — same cross-thread pattern as dartDrivesNotification.
-    @Volatile
-    private var connectSettleDeadlineMs: Long = 0L
 
     private val notificationDismissedReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -595,7 +586,6 @@ class OmiBleForegroundService : Service() {
             Log.w(TAG, "fireDeviceReady: $addr disconnected during pipeline, skipping")
             return
         }
-        if (!dartDrivesNotification) updateNativeNotification("Connected")
         bleManager.mainHandler.post {
             bleManager.flutterApi?.onDeviceReady(addr, services) {}
         }
@@ -1044,9 +1034,6 @@ class OmiBleForegroundService : Service() {
             val timeoutMs = if (autoConnect) AUTO_CONNECT_TIMEOUT_MS else DIRECT_CONNECT_TIMEOUT_MS
 
             Log.i(TAG, "connectToDevice($source): $addr (autoConnect=$autoConnect, timeout=${timeoutMs}ms)")
-            // Flip back to "Connecting..." when retrying after a disconnect.
-            // Skip for the initial manageDevice call since onCreate already set "Connecting...".
-            if (source != "manageDevice" && !dartDrivesNotification) updateNativeNotification(DEFAULT_NOTIF_TEXT)
             val gatt = try {
                 bleManager.connectGatt(addr, autoConnect = autoConnect)
             } catch (e: SecurityException) {
@@ -1154,31 +1141,9 @@ class OmiBleForegroundService : Service() {
             }
         }
 
-        // Reflect the drop on the notification immediately instead of leaving the
-        // stale "Connected" text until the delayed retry's connectToDevice flips
-        // it (see connectToDevice's source != "manageDevice" branch). This path
-        // only runs for genuine drops we're about to retry — intentional
-        // disconnects early-return above (managed entry removed by unmanageDevice).
-        if (!dartDrivesNotification) {
-            updateNativeNotification(DEFAULT_NOTIF_TEXT)
-        } else if (currentNotificationText.startsWith("Connecting") && connectSettleDeadlineMs > 0L) {
-            // Dart owns the notification and last pushed "Connecting…", but the link just
-            // dropped. If Dart is frozen by Doze it can't run its ~150 s connect-settle
-            // watchdog, so the line would otherwise stay stuck until the connect-start
-            // settle alarm (which can itself be Doze-throttled out to ~9 min). The
-            // disconnect is direct, native evidence the attempt dropped, so pull the settle
-            // alarm in toward now — but never later than the original deadline, so a
-            // flapping link still settles on schedule rather than sliding forever. The
-            // receiver re-checks the live text and no-ops unless it's still "Connecting…",
-            // so a reconnect that resolves (Dart thaws → "Syncing…") within the grace is
-            // never mislabelled.
-            val pulledIn = minOf(connectSettleDeadlineMs, System.currentTimeMillis() + DISCONNECT_SETTLE_GRACE_MS)
-            if (pulledIn < connectSettleDeadlineMs) {
-                connectSettleDeadlineMs = pulledIn
-                SyncAlarmReceiver.scheduleSettle(this, pulledIn)
-            }
-        }
-
+        // Deliberately does NOT touch the notification. A drop is link state, and the
+        // resting line reports outcomes, not link state — repainting here is what used to
+        // strand "Connecting..." on a headless service with no settle alarm behind it.
         bleManager.mainHandler.post {
             bleManager.flutterApi?.onPeripheralDisconnected(addr, error) {}
         }
@@ -1679,7 +1644,25 @@ class OmiBleForegroundService : Service() {
 
         // Call startForeground in onCreate to satisfy the OS requirement as early as possible.
         // Android 14+ requires providing the service type.
-        val notif = buildNotification(DEFAULT_NOTIF_TITLE, DEFAULT_NOTIF_TEXT)
+        //
+        // Rendered from prefs rather than from a fixed baseline: this is the first thing a
+        // headless start puts on screen, and it is the one nothing else may repaint for a
+        // full sync interval (Dart's own startup path publishes the next-sync time but never
+        // pushes a status — see DeviceProvider._publishNextSyncTime). A fixed string here is
+        // therefore a fixed string for the whole interval, which is exactly how
+        // "Connecting..." used to get stuck. currentNotification{Title,Text} are seeded too
+        // so the swipe-away repost (notificationDismissedReceiver) reposts this, not a stale
+        // compile-time default.
+        //
+        // Must stay BELOW the OmiBleManager.initialize above: the battery clause inside can
+        // reach `bleManager`, which throws when uninitialized. It cannot actually get there
+        // on this call — managedDevices is empty on a fresh instance, so the `any {}` short-
+        // circuits — but a throw here would skip startForeground entirely and trade a wrong
+        // string for a service that cannot start.
+        val (idleTitle, idleText) = idleNotificationContent()
+        currentNotificationTitle = idleTitle
+        currentNotificationText = idleText
+        val notif = buildNotification(idleTitle, idleText)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         } else {
@@ -1780,7 +1763,10 @@ class OmiBleForegroundService : Service() {
     fun setNextSyncTime(timestampMs: Long) {
         val wasActive = syncTimerActive
         syncTimerActive = timestampMs > 0
-        nextSyncTimeMs = timestampMs
+        // schedule() persists the armed time as a side effect, and is the ONLY funnel that
+        // arms or cancels the sync alarm (the receiver's own re-arm goes through it too).
+        // So the persisted value and the armed alarm cannot drift, and idleNotificationContent
+        // reads it back rather than a field that a headless start would find at 0.
         SyncAlarmReceiver.schedule(this, timestampMs)
         // timestampMs <= 0 is Dart turning the sync schedule off — i.e. Manual Only
         // (device_provider setNextSyncTime(0)). The recovery alarm exists only to bridge a
@@ -1817,59 +1803,40 @@ class OmiBleForegroundService : Service() {
         }
     }
 
-    /// Dart sync state machine takes over the notification text. Suppresses the
-    /// service's own connection-state updates while a status is set.
+    /// Render the (title, text) Dart pushed. Dart is the only writer of this line: every
+    /// state it can push is work (syncing / processing / uploading) or an outcome (next
+    /// sync / last sync), so there is nothing here that can be stranded by Dart freezing —
+    /// whatever is showing stays true until the next real event.
+    ///
+    /// There is deliberately no ownership flag any more. The service used to set
+    /// `dartDrivesNotification` here to suppress its own GATT-transition text; it no longer
+    /// writes any, so there is nothing to suppress. Nor is there a settle alarm: it existed
+    /// solely to un-stick a "Connecting…" transient, and that transient is gone.
     fun setSyncStatus(title: String, text: String) {
-        dartDrivesNotification = true
         updateNativeNotification(text, title)
-        // A "Connecting…" transient can be stranded if Dart freezes (Doze) or its
-        // engine is torn down before the attempt resolves. Arm a Doze-exempt exact
-        // alarm to settle it back to the idle line on its own. Re-arming collapses
-        // onto the single PendingIntent; any later push that resolves the connect
-        // (Syncing/idle/…) leaves the alarm to fire once and no-op (the receiver
-        // re-checks the live text). See SyncAlarmReceiver.scheduleSettle.
-        if (text.startsWith("Connecting")) {
-            connectSettleDeadlineMs = System.currentTimeMillis() + CONNECT_SETTLE_MS
-            SyncAlarmReceiver.scheduleSettle(this, connectSettleDeadlineMs)
-        } else {
-            // Connect resolved / moved on (Syncing, idle, …) — drop the pending settle.
-            connectSettleDeadlineMs = 0L
-            SyncAlarmReceiver.cancelSettle(this)
-        }
     }
 
-    /// Settle a stranded "Connecting…" notification back to the idle line. Invoked
-    /// from SyncAlarmReceiver, which runs in the alarm's Doze-exempt wakelock window
-    /// with no dependence on a live Flutter isolate — so it recovers the stuck
-    /// notification even when the engine is frozen or gone. No-op unless a connect
-    /// transient is actually showing, so a legit in-flight connect is left alone.
-    fun settleStaleConnectingToIdle() {
-        if (!currentNotificationText.startsWith("Connecting")) return
-        Log.i(TAG, "settleStaleConnectingToIdle: reverting stranded '$currentNotificationText' to idle")
-        // The connect never resolved — the app's UI engine was frozen or torn down
-        // before its give-up/watchdog could run. By definition that cycle synced
-        // nothing, so record it as a Skip *now*, into the same prefs Dart reads, so
-        // it reads back "Skipped" here and stays consistent when the app next opens.
-        // Recording it only at this confirmed-strand point (rather than eagerly at
-        // connect start) means a cycle that connected fine but deferred — e.g.
-        // processing already running — is never mislabelled. Safe to write from
-        // native: in this state no live isolate is racing us.
-        getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE).edit()
-            .putBoolean("flutter.lastSyncSkipped", true)
-            .putLong("flutter.lastSyncStatusMs", System.currentTimeMillis())
-            .apply()
-        renderIdleFromPrefs()
-    }
-
-    /// Render the resting "Next sync / Last Sync" line from the same
+    /// The resting "Next sync / Last Sync" line, built from the same
     /// FlutterSharedPreferences keys Dart's SyncNotification.idle reads. Keep the
-    /// title/body format in sync with that method (note: this recovery path does
-    /// not reproduce the muted-state line that idle() renders first). The strand is
-    /// recorded as a Skip just above, so it reads back as "Last Sync: Skipped • <time>".
-    private fun renderIdleFromPrefs() {
+    /// title/body format in sync with that method — the two are documented mirrors
+    /// (NOTES.md, "Battery freshness rule on the idle line"). This half does not
+    /// reproduce the muted-state line idle() renders first: mute is read over BLE and
+    /// never persisted, so native has nothing to render it from.
+    ///
+    /// Returns the pair rather than pushing it so onCreate can hand it to the required
+    /// first startForeground() call, where a plain notify() would not satisfy the OS.
+    fun idleNotificationContent(): Pair<String, String> {
         val prefs = getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
         val fmt = SimpleDateFormat("h:mm a", Locale.getDefault())
-        val title = if (nextSyncTimeMs > 0) "Next sync at ${fmt.format(Date(nextSyncTimeMs))}" else DEFAULT_NOTIF_TITLE
+        // Read back from prefs, not from a field. SyncAlarmReceiver.schedule() persists it
+        // and is the ONLY funnel that arms or cancels the sync alarm (the receiver's own
+        // re-arm goes through it too), so the rendered time and the armed alarm cannot
+        // drift — and a headless start, which has no Dart push behind it, still renders a
+        // real title instead of a bare "Omi Offline". A time already in the past is shown
+        // as-is, exactly as Dart's idle() shows its own nextSyncTime: an overdue alarm is a
+        // true statement about the schedule, and a different rule here would break the mirror.
+        val nextMs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getLong(PREFS_NEXT_SYNC_MS, 0L)
+        val title = if (nextMs > 0) "Next sync at ${fmt.format(Date(nextMs))}" else DEFAULT_NOTIF_TITLE
         val lastMs = prefs.getLong("flutter.lastSyncStatusMs", 0L)
         val text: String
         if (lastMs > 0) {
@@ -1887,10 +1854,11 @@ class OmiBleForegroundService : Service() {
             // most stale. A skipped sync never reached the Omi, so the percentage is at
             // least one interval old and ages further with every cycle that misses.
             //
-            // The live-link escape is carried over even though today's only caller
-            // (settleStaleConnectingToIdle) always sets the skip flag immediately above,
-            // so it can never be taken here — the two renderers are documented mirrors,
-            // and a rule that reads the same in both is worth more than eliding a branch.
+            // The live-link escape is genuinely reachable here now. It used to be dead —
+            // the only caller set the skip flag immediately before rendering — but this is
+            // the general resting renderer now, running on clearSyncStatus and on every
+            // headless start, including ones where the link is up while lastSyncSkipped is
+            // still set from an earlier miss.
             // managedDevices is a ConcurrentHashMap, so this is safe off the main thread.
             val batteryIsCurrent = !skipped || managedDevices.keys.any { bleManager.isPeripheralConnected(it) }
             text = if (battery >= 0 && batteryIsCurrent) {
@@ -1901,18 +1869,27 @@ class OmiBleForegroundService : Service() {
         } else {
             text = DEFAULT_NOTIF_TEXT
         }
+        return Pair(title, text)
+    }
+
+    /// Push the resting line. Called from SyncAlarmReceiver — which runs inside the
+    /// alarm's Doze-exempt wakelock window and needs no live Flutter isolate — and from
+    /// clearSyncStatus.
+    fun renderIdleFromPrefs() {
+        val (title, text) = idleNotificationContent()
         updateNativeNotification(text, title)
     }
 
-    /// Release Dart ownership; native resumes connection-state text on the next
-    /// event. Reflect the current state immediately so the line isn't stale.
+    /// Dart is handing the line back, which it does in Manual Only — where there is no
+    /// schedule to narrate. Render the resting line rather than a connection state: with
+    /// neither a sync alarm nor a recovery alarm in Manual Only, nothing will ever repaint
+    /// whatever is left here, so it has to be something that stays true indefinitely. It
+    /// used to leave "Connecting..." on screen permanently.
     fun clearSyncStatus() {
-        dartDrivesNotification = false
-        val connected = managedDevices.keys.any { bleManager.isPeripheralConnected(it) }
-        updateNativeNotification(if (connected) "Connected" else DEFAULT_NOTIF_TEXT)
+        renderIdleFromPrefs()
     }
 
-    private fun updateNativeNotification(text: String, title: String = DEFAULT_NOTIF_TITLE) {
+    private fun updateNativeNotification(text: String, title: String) {
         currentNotificationTitle = title
         currentNotificationText = text
         try {
@@ -1939,9 +1916,8 @@ class OmiBleForegroundService : Service() {
 
     /// One-shot, dismissible alert telling the user how to break the wedge. Deliberately
     /// NOT routed through updateNativeNotification: that renders the ongoing foreground
-    /// status line, whose text Dart may own (dartDrivesNotification) and whose settle
-    /// machinery (SyncAlarmReceiver) rewrites it — a separate notification can't be
-    /// clobbered by either. Posted at most once per outage (wedgeAlertPosted guard), and only
+    /// status line, which Dart pushes to and SyncAlarmReceiver re-renders — a separate
+    /// notification can't be clobbered by either. Posted at most once per outage (wedgeAlertPosted guard), and only
     /// when the advertising probe confirms the Omi is actually present — see handleRetryLogic.
     private fun postWedgeNotification(address: String) {
         Log.w(TAG, "Wedge suspected for $address — posting toggle-Bluetooth alert")
