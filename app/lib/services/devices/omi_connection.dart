@@ -59,8 +59,9 @@ class OmiDeviceConnection extends DeviceConnection {
   // 19b10015 = button config, 19b10016 = haptic config (declared near the button section above).
 
   // LED service. Its own service rather than a Settings characteristic: Settings
-  // is registered first on the device, so growing it renumbers every service
-  // after it and forces bonded phones to re-pair.
+  // is registered early on the device (third, behind only button and haptic), so
+  // growing it renumbers every service after it — features, time sync, battery,
+  // storage, diagnostics, mute, led — and forces bonded phones to re-pair.
   static const String ledServiceUuid = '19b10080-e8f2-537e-4f6c-d104768a1214';
   // Connected (solid blue) LED indicator, 1 byte: 0 = off, 1 = on.
   static const String ledConnectedCharacteristicUuid = '19b10081-e8f2-537e-4f6c-d104768a1214';
