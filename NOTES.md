@@ -1186,9 +1186,8 @@ Its constructor registers `BleBridge.backgroundSyncRequestedCallback`, the entry
 `SyncNotification` is a small state machine. The states form the sync cycle:
 
 ```
-idle → connecting → connected → preparingSync → syncing → finishingSync →
-preparingProcessing → processing → finishingProcessing → complete →
-disconnecting → idle
+idle → preparingSync → syncing → finishingSync →
+preparingProcessing → processing → finishingProcessing → complete → idle
 ```
 
 Discrete transitions are pushed immediately (live). Only the high-frequency in-state progress text (segment counter, processing %) is throttled by its callers. `setPersistent(bool)` keeps the FGS alive with no device connected so the idle line survives BLE disconnect + app background (true while auto-sync is on and a device is bound; false in Manual Only / unbound). `clear()` releases Dart ownership so native resumes its own connection-state text.
@@ -1352,7 +1351,7 @@ When the user backgrounds the app during a foreground-triggered processing run, 
 
 ### Code locations
 
-- `app/lib/utils/audio/sync_notification.dart` — **`SyncNotification`**, the single Dart-side owner: state methods (`connecting`…`idle`), the muted/idle title+text rendering, `setPersistent` / `clear`, and `_push` → `BleHostApi().setSyncStatus(title, text)`.
+- `app/lib/utils/audio/sync_notification.dart` — **`SyncNotification`**, the single Dart-side owner: state methods (`preparingSync`…`complete`, `idle`), the muted/idle title+text rendering, `setPersistent` / `clear`, and `_push` → `BleHostApi().setSyncStatus(title, text)`.
 - `app/lib/providers/device_provider.dart` — `_onProcessingProgress` (class method), `_syncOwnsNotification`, `_showIdleNotification` (→ `SyncNotification.idle`), `SyncNotification.setPersistent`, `_doBackgroundSync` (lifecycle + listener register/unregister), `onAppPaused` / `onAppResumed` (listener handoff).
 - `app/lib/pages/recordings/recordings_controller.dart` — `_updateForegroundProgress`, `syncingNotificationText`, `processingNotificationText`, `lastActiveStage`.
 - `app/lib/pages/recordings/sync_process_card.dart` — `SyncProcessState.stopping` case (dynamic subtext via `data.lastActiveStage`).

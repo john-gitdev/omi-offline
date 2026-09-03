@@ -2150,6 +2150,13 @@ class DeviceProvider extends ChangeNotifier
       updateConnectingStatus(false);
       // Connected — the connect attempt is no longer in flight, so the settle
       // watchdog must not later fire and stamp a spurious "Skipped".
+      //
+      // Deliberately does NOT clear the cycle marker, which the watchdog's arming also
+      // set. Ownership of the cycle passes to _doBackgroundSync (whose `finally` clears
+      // it); if setup below throws before it gets there, the marker is left standing and
+      // the next process start reports the cycle as skipped — which is TRUE, since no
+      // sync ran. The sweep cannot over-report here: it yields to any outcome recorded at
+      // or after the marker, and every sync path stamps lastSyncStatusMs.
       _cancelConnectSettleWatchdog();
       notifyListeners();
       _startForegroundKeepAlive();
