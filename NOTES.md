@@ -1325,29 +1325,18 @@ which can script speech and silence deliberately.
 
 The 118-bin capture it came from settled three things. The app's format model walks every one
 of them to exactly its length, with no unparsed tail and no implausible frame. SD-stored Opus
-frames are **VBR, 61–160 B** (mean payload 87.0 B) — the fixed 40/80 B figures that used to sit
-in `BleAudioCodec` modelled MTU-sized packets for a live BLE audio stream this fork does not
-have, and are gone with the rest of that surface (`getFrameSize`, `getFramesPerSecond`,
-`getFramesLengthInBytes`, `isOpusSupported`, `Wal.getFrameSize`, all unreachable). And
-`getStorageBytesPerMinute()` was **21% low**: measured across 1,538,037 frames the real rate is
-~309,000 B/min, not the 243,000 the old model gave, because that model assumed a 1-byte length
-prefix (it is 4 bytes), an 80 B mean payload (87.0), and no block padding at all (10.3% of
-every bin).
+frames are **VBR, 61–160 B** (mean payload 87.0 B). And the codec's storage estimate was
+**21% low**: measured across 1,538,037 frames the real rate is ~309,000 B/min, not the 243,000
+the model gave, because that model assumed a 1-byte length prefix (it is 4 bytes), an 80 B mean
+payload (87.0), and no block padding at all (10.3% of every bin).
 
-Its one consumer is `sdcard_wal_sync.dart`, which turns the byte count into `seconds` and then
-into **`Wal.estimatedSegments`** — a field that is written, serialised and **never read**. The
-sync UI's "N of M segments" comes from `estimatedTotalSegments`, which counts WAL *entries*
-(`_wals.where(...).length`), not durations. So the correction is latent rather than
-user-visible today. Fixed anyway: a wrong constant that is only wrong off-screen is the kind
-that gets believed the moment someone surfaces it.
-
-Two vestiges sit at the end of that chain, both from upstream, where a WAL was a fixed-length
-chunk of *streamed* BLE audio with a real duration. `Wal.estimatedSegments` is written with a
-real value nothing consumes; `Wal.seconds` is not even written — production code never passes
-it, so it round-trips as `null`, and the only non-null values anywhere are in `wal_test.dart`
-asserting the round-trip of the field itself. Removing either is safe in both directions:
-`fromJson` ignores absent keys (`json['seconds']` → null into an `int?`; `estimatedSegments`
-has a `?? 0`), so an older build reads a newer WAL file and vice versa without migration.
+That measurement is what settled the codec surface's fate rather than fixing it. Chasing the
+constant's consumers showed the whole chain was dead — `getAudioCodec()` → `Wal.codec` →
+`wals.json` → nothing, and `getStorageBytesPerMinute()` → `Wal.estimatedSegments` → `wals.json`
+→ nothing, with `Wal.seconds` never even written. All of it is gone; see CLAUDE.md under the
+BLE protocol section for the trace and the `wals.json` compatibility note. The numbers above
+are kept here because they are the measurement, and the next person to wonder what an Omi
+recording costs per minute should find it rather than re-derive it.
 
 ### "Calculating…" guard
 
