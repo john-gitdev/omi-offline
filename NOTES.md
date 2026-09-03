@@ -1043,7 +1043,11 @@ The app-side disconnect is *cooperative* — it only fires while the app's proce
 ### Notification
 One foreground-service notification (id 2001), owned by the native `OmiBleForegroundService` (required `connectedDevice`-type FGS) and driven entirely by the Dart `SyncNotification` helper via `BleHostApi().setSyncStatus(title, text)` — see **"App: Notification Pipeline"** for the full state machine and strings. (The old second `flutter_foreground_task` service / `ForegroundUtil` is gone.) Dart idle writes go through `_showIdleNotification` → `SyncNotification.idle(...)`, guarded by `_syncOwnsNotification` (sync/processing/`_backgroundSyncActive`) so an active sync keeps its own live progress. The idle line shows an absolute "Next sync at H:MM" + last-sync summary (not the old relative countdown).
 
-**Do not make the native side write its own connection state.** An earlier build had the native service post "Connected to Omi Device" / "Connecting…" / "Disconnected" / "Reconnecting…" on every GATT transition; because it shares id 2001 those clobbered the Dart-owned progress (the exact bug the Dart-side cleanup fixed — the native twin was missed). Native should only render the `setSyncStatus` content Dart pushes (plus its fixed `startForeground` baseline), never autonomous GATT-transition text.
+**Do not make the native side write its own connection state.** An earlier build had the native service post "Connected to Omi Device" / "Connecting…" / "Disconnected" / "Reconnecting…" on every GATT transition; because it shares id 2001 those clobbered the Dart-owned progress (the exact bug the Dart-side cleanup fixed — the native twin was missed). Native renders the `setSyncStatus` content Dart pushes, plus the resting line from `idleNotificationContent()`, and nothing else.
+
+**This was a rule the code did not keep, and the gap was the "stuck on Connecting..." bug.** Four native writers survived the cleanup — `onCreate`'s `startForeground` baseline, `connectToDevice`'s retry repaint, `handleDisconnection`, and `clearSyncStatus` — all writing the literal `"Connecting..."`. Nothing settled them: the connect-settle alarm was armed **only** from `setSyncStatus`, i.e. only for a Dart-pushed transient, so a native paint had no recovery behind it at all and was cleared only by the next periodic sync alarm's `settleStaleConnectingToIdle()`. A headless service start therefore showed `Connecting...` for up to a full sync interval, re-stamped (so the notification's own `when` timestamp kept looking fresh) by every native retry and every backed-off recovery probe. In Manual Only there is no sync alarm and no recovery alarm, so `clearSyncStatus`'s copy was **permanent**. All four are gone; the baseline is now the resting line, and `DEFAULT_NOTIF_TEXT` is `"Ready to sync"`.
+
+**And the transient it was rescuing barely existed.** On the background path `SyncNotification.connecting()` was overwritten within microseconds: `scanAndConnectToDevice()` calls `updateConnectingStatus(true)` on its first line, which pushes `idle()`, whose text does not start with `"Connecting"` — so `setSyncStatus` promptly **cancelled the settle alarm it had just armed**, and `handleDisconnection`'s pull-in (gated on `connectSettleDeadlineMs > 0`) was disarmed with it. The safety net was inert on the one path it was written for. The transient is now gone from both sides (`connecting()`, `connected()`, `disconnecting()` deleted), which removes the class rather than re-plumbing the net.
 
 Foreground processing progress: `_onProcessingProgress` (a class method on `DeviceProvider`) is gated on `!_isAppInForeground`. When the app is open, `RecordingsController` owns the notification in time-remaining format. `_onProcessingProgress` is registered on `RecordingsManager.processingProgress` in `onAppPaused` (covering both background syncs and foreground-triggered processing that the user backgrounds) and unregistered in `onAppResumed`. `_doBackgroundSync` also registers/unregisters it for the duration of `processAllCompletedSessions`. Remove-before-add in `onAppPaused` prevents double-registration.
 
@@ -1182,9 +1186,8 @@ Its constructor registers `BleBridge.backgroundSyncRequestedCallback`, the entry
 `SyncNotification` is a small state machine. The states form the sync cycle:
 
 ```
-idle → connecting → connected → preparingSync → syncing → finishingSync →
-preparingProcessing → processing → finishingProcessing → complete →
-disconnecting → idle
+idle → preparingSync → syncing → finishingSync →
+preparingProcessing → processing → finishingProcessing → complete → idle
 ```
 
 Discrete transitions are pushed immediately (live). Only the high-frequency in-state progress text (segment counter, processing %) is throttled by its callers. `setPersistent(bool)` keeps the FGS alive with no device connected so the idle line survives BLE disconnect + app background (true while auto-sync is on and a device is bound; false in Manual Only / unbound). `clear()` releases Dart ownership so native resumes its own connection-state text.
@@ -1203,8 +1206,6 @@ Each row is one `SyncNotification` method, rendered natively as **title** + **te
 
 | State (method) | Title | Text |
 |---|---|---|
-| `connecting()` | `Omi Offline` | `Connecting to Omi…` |
-| `connected()` | `Omi Offline` | `Connected` |
 | `preparingSync()` | `Syncing recordings` | `Preparing…` |
 | `syncing(text)` | `Syncing recordings` | `N of M segments (X%)` (or `Preparing...` when total = 0) — `RecordingsController.syncingNotificationText` |
 | `finishingSync()` | `Syncing recordings` | `Finishing…` |
@@ -1213,10 +1214,11 @@ Each row is one `SyncNotification` method, rendered natively as **title** + **te
 | `finishingProcessing()` | `Processing recordings` | `Finishing…` |
 | `uploading(text)` | `Uploading recordings` | controller-composed one-line summary + per-integration lines (multi-line; shown only while the sync/process pipeline is idle) |
 | `complete()` | `Conversations ready` | `Sync and processing complete` |
-| `disconnecting()` | `Omi Offline` | `Disconnecting…` |
 | `idle()`, auto-sync on, has synced | `Next sync at H:MM` | `Last Sync: {Complete\|Partial\|Skipped} • H:MM`, then ` • N% Battery` **only when that reading is current** — see below |
-| `idle()`, Manual Only | `Omi Offline` | `Omi is Connected` / `Connecting...` / `Omi is Disconnected` / `Ready to sync` |
-| `idle()` / `connected()`, muted | `Muted since H:MM` (or `Omi is Muted`) | `Next sync at H:MM` / `Connected` / `Auto-sync off` |
+| `idle()`, no outcome recorded yet | `Next sync at H:MM` / `Omi Offline` | `Ready to sync` |
+| `idle()`, muted | `Muted since H:MM` (or `Omi is Muted`) | `Next sync at H:MM` / `Auto-sync off` |
+
+**Every state is work or an outcome; none is link state.** `connecting()` / `connected()` / `disconnecting()` are gone, and `idleBodyText`'s no-outcome fallback is the single string `Ready to sync` rather than the old `Omi is Connected` / `Connecting...` / `Omi is Disconnected` ladder. Two reasons, and the second is the binding one: a transient can be left standing by an isolate the OS froze, and native's mirror (`idleNotificationContent`) has **no view of the link at all** on a headless start, so any link-derived text makes the two renderers disagree in exactly the state where only the native one runs. `idle()` still takes `isConnected`, but purely to gate the battery clause below — it is never rendered as text. The link is visible in the app itself (the app-bar spinner in `recordings_page.dart`), an unreachable Omi surfaces as `Last Sync: Skipped`, and a persistent outage gets the separate "Omi can't reconnect" alert on its own channel.
 
 The idle line now shows an **absolute next-sync time** ("Next sync at H:MM") and a last-sync outcome summary, not the old relative "Next sync in ~N min" countdown. `SyncNotification.nextSyncTime` / `isMuted` / `muteSince` are mirrored from `DeviceProvider` so any caller can render these.
 
@@ -1226,7 +1228,114 @@ The idle line now shows an **absolute next-sync time** ("Next sync at H:MM") and
 
 The percentage is now rendered only when the app has **current knowledge** of it: the last sync actually reached the device (not `lastSyncSkipped`), **or** the link is up right now. The live-link escape is load-bearing — `lastSyncSkipped` stays set until the next sync *completes*, so gating on it alone would blank the battery while the user is watching a connected device. A null `isConnected` counts as **not** connected (`SyncNotification.idle` has a caller that passes nothing): assert less rather than more.
 
-Two renderers, one rule. `SyncNotification.idleBodyText()` (Dart) was extracted so the rule is unit-testable — `app/test/unit/utils/sync_notification_idle_text_test.dart`. `OmiBleForegroundService.renderIdleFromPrefs` (Kotlin) is its documented mirror and carries the same branch; that half matters more, because it renders exactly when the Flutter isolate is frozen or gone, which is the long unreachable stretch where the stored reading is most stale. Its only caller (`settleStaleConnectingToIdle`) writes `lastSyncSkipped = true` immediately before rendering, so the live-link escape can never be taken there today — carried anyway, because a rule that reads the same in both mirrors is worth more than eliding a branch.
+Two renderers, one rule. `SyncNotification.idleBodyText()` (Dart) was extracted so the rule is unit-testable — `app/test/unit/utils/sync_notification_idle_text_test.dart`. `OmiBleForegroundService.idleNotificationContent` (Kotlin) is its documented mirror and carries the same branch; that half matters more, because it renders exactly when the Flutter isolate is frozen or gone, which is the long unreachable stretch where the stored reading is most stale. **The live-link escape used to be dead there** — its only caller wrote `lastSyncSkipped = true` immediately before rendering — and was carried anyway on the principle that a rule reading the same in both mirrors beats eliding a branch. It is genuinely reachable now: the Kotlin half is now the general resting renderer (`onCreate`'s `startForeground`, `clearSyncStatus`, and the sync alarm's refresh), so it runs with the link up while `lastSyncSkipped` is still set from an earlier miss.
+
+The Kotlin half reads the next-sync time from `ble_config/next_sync_ms`, written by `SyncAlarmReceiver.schedule()` — the single funnel that arms or cancels the sync alarm, so the rendered time and the armed alarm cannot disagree. It replaced an in-memory field that a headless start always found at `0`, which rendered a bare `Omi Offline` title. A due-time already in the past renders as-is, matching what Dart's `idle()` does with its own `nextSyncTime`.
+
+### Recording a cycle that could not run
+
+The resting line is only as honest as the outcomes behind it: with no connect transient to
+notice, a cycle that silently does nothing would leave the line asserting the *previous*
+outcome indefinitely. `SyncAlarmReceiver` therefore records the skip itself, and does so
+from a direct signal rather than an inference.
+
+At each firing it resolves `flutterApi` **once** and reuses it for both the skip decision
+and the delivery, so the two cannot disagree. `flutterApi == null` ⟺ `isFlutterAlive ==
+false` ⟺ Dart never signalled `dartReady` in this process (`bleManager.flutterApi` is
+assigned in `BleHostApiImpl`'s init, long before `main()` runs, and nothing ever nulls it —
+see CLAUDE.md on `cleanUpFlutterEngine`). Every sync path is Dart-side, so that branch means
+this alarm will pull nothing: it writes `flutter.lastSyncSkipped` / `flutter.lastSyncStatusMs`
+and leaves `lastSyncCompletedMs` alone.
+
+Three properties worth preserving:
+
+- **The write happens before `startServicePersistent`.** On a cold start that call runs
+  `onCreate`, whose `startForeground` renders from exactly these keys — so the first frame
+  shows this cycle's outcome rather than the last one's. `apply()` updates the in-memory map
+  synchronously, so the same-process read sees it.
+- **The refresh (`renderIdleFromPrefs`) is inside the same `flutterApi == null` branch.**
+  Unconditional, it would clobber live "Syncing…"/"Processing…" progress when a sync runs
+  longer than one interval. Guarded, it cannot: no Dart means no sync in flight.
+- **It replaced a text sniff.** The old `settleStaleConnectingToIdle()` inferred the same
+  thing from the notification reading `"Connecting…"` — which required native to have
+  written that text, the very thing that stranded the line, and could only conclude anything
+  on the *next* alarm, a full interval later.
+
+That alarm check covers a cycle that **never started**. A cycle that started and was then
+**killed** is covered by its sibling, the cycle marker.
+
+### The cycle marker
+
+`SharedPreferencesUtil.syncCycleStartedMs` is stamped when a cycle is accepted and cleared on
+every terminal path — `_armConnectSettleWatchdog` and `_doBackgroundSync`'s entry stamp it,
+`_doBackgroundSync`'s `finally` and `_failSyncCycleToIdle` clear it. The pair to it is
+**process liveness, not a second timestamp**: a non-zero value found by a *fresh* process
+belongs to a cycle whose owner no longer exists and can therefore never finish.
+`DeviceProvider._sweepOrphanedSyncCycle()` runs once from the constructor and records it.
+
+Why not the obvious check — "did `lastSyncStatusMs` advance since the last alarm?" That cannot
+tell a dead cycle from a sync legitimately running longer than one interval, so it would write
+"Skipped" over a sync still in progress, and (via `renderIdleFromPrefs`) clobber its live
+progress line. The liveness framing needs no staleness window and no heartbeat, so there is
+nothing to tune.
+
+Two rules, both in the pure `DeviceProvider.orphanedCycleStatusMs` so they are unit-testable
+(`test/unit/providers/orphaned_sync_cycle_test.dart`):
+
+- **Stamped at the marker's own time, never at "now".** The cycle failed when its process
+  died, possibly hours earlier; "Last Sync: Skipped • 3:45 AM" is the true statement.
+- **Yields to any outcome already recorded at or after that instant** — a foreground sync, or
+  the alarm's own Dart-not-up skip — so the writers cannot fight over one cycle. The `>=` is
+  the boundary a `>` would invert, and it fails toward fabricating a skip over a real result,
+  so it is pinned explicitly.
+
+The sweep runs **last** in the constructor: it can push the notification, and
+`_startBackgroundSyncTimer` is what publishes `nextSyncTime`, without which the title renders
+a bare "Omi Offline". The cost is that the `_shouldSyncNow()` earlier in the constructor ran
+without the skip this may set, so an orphan brings the next sync forward by a tick rather than
+forcing a connect during launch. The flag persists, so nothing is lost.
+
+Still not covered, deliberately: Dart alive but **frozen** after receiving the request, in a
+process that is never killed. `flutterApi` is non-null (a freeze is not a death, and no flag
+distinguishes them) and the marker's owner still exists, so the line keeps the previous outcome
+until Dart thaws and `_failSyncCycleToIdle` runs. Detecting *that* needs a heartbeat plus a
+staleness threshold, which is the tuned knob the rest of this design avoids.
+
+### Real-bin fixtures (`app/test/fixtures/bins/`)
+
+Every other bin in the suite is **synthesised by the test**, writing headers and frame headers
+by hand using the same model of the format the parser uses. A shared misunderstanding of what
+the firmware actually emits is therefore invisible to all of them, by construction. Two tiny
+fixtures off a real device (app 0.35.6, captured 2026-08-29) break that circle — 476 B with
+four frames and a `0xFFFFFFFD` VAD-resume, and 36 B of metadata header alone (an empty-bin
+rotation). `test/unit/services/real_bin_format_test.dart` drives the **production**
+`VadAudioProcessor` over them with a counting stand-in decoder.
+
+It earns its place: mutating the frame-advance rule from `4 + ((len + 3) & ~3)` to
+`4 + len` — dropping the 4-byte alignment — takes the frame count from 4 to 1 and fails the
+test, while every synthetic fixture, written by that same rule, stays green.
+
+**What it cannot express, and must not be read as covering.** Nothing about audio. `opus_dart`
+is FFI over libopus and `VadAudioProcessor` builds a decoder only on iOS/Android, so on the
+host every real Opus payload decodes to whatever the stand-in returns — no real PCM, no
+meaningful VAD verdicts, no recordings. It is evidence about *framing*, and about nothing
+downstream of the decoder. VAD, splitting and stitching stay with the synthetic fixtures,
+which can script speech and silence deliberately.
+
+The 118-bin capture it came from settled three things. The app's format model walks every one
+of them to exactly its length, with no unparsed tail and no implausible frame. SD-stored Opus
+frames are **VBR, 61–160 B** (mean payload 87.0 B). And the codec's storage estimate was
+**21% low**: measured across 1,538,037 frames the real rate is ~309,000 B/min, not the 243,000
+the model gave, because that model assumed a 1-byte length prefix (it is 4 bytes), an 80 B mean
+payload (87.0), and no block padding at all (10.3% of every bin).
+
+That measurement is what settled the codec surface's fate rather than fixing it. Chasing the
+constant's consumers showed the whole chain was dead — `getAudioCodec()` → `Wal.codec` →
+`wals.json` → nothing, and `getStorageBytesPerMinute()` → `Wal.estimatedSegments` → `wals.json`
+→ nothing, with `Wal.seconds` never even written. All of it is gone; see CLAUDE.md under the
+BLE protocol section for the trace and the `wals.json` compatibility note. The numbers above
+are kept here because they are the measurement, and the next person to wonder what an Omi
+recording costs per minute should find it rather than re-derive it.
 
 ### "Calculating…" guard
 
@@ -1242,7 +1351,7 @@ When the user backgrounds the app during a foreground-triggered processing run, 
 
 ### Code locations
 
-- `app/lib/utils/audio/sync_notification.dart` — **`SyncNotification`**, the single Dart-side owner: state methods (`connecting`…`idle`), the muted/idle title+text rendering, `setPersistent` / `clear`, and `_push` → `BleHostApi().setSyncStatus(title, text)`.
+- `app/lib/utils/audio/sync_notification.dart` — **`SyncNotification`**, the single Dart-side owner: state methods (`preparingSync`…`complete`, `idle`), the muted/idle title+text rendering, `setPersistent` / `clear`, and `_push` → `BleHostApi().setSyncStatus(title, text)`.
 - `app/lib/providers/device_provider.dart` — `_onProcessingProgress` (class method), `_syncOwnsNotification`, `_showIdleNotification` (→ `SyncNotification.idle`), `SyncNotification.setPersistent`, `_doBackgroundSync` (lifecycle + listener register/unregister), `onAppPaused` / `onAppResumed` (listener handoff).
 - `app/lib/pages/recordings/recordings_controller.dart` — `_updateForegroundProgress`, `syncingNotificationText`, `processingNotificationText`, `lastActiveStage`.
 - `app/lib/pages/recordings/sync_process_card.dart` — `SyncProcessState.stopping` case (dynamic subtext via `data.lastActiveStage`).

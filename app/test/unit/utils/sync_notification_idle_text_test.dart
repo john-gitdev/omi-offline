@@ -17,7 +17,6 @@ void main() {
     bool partial = false,
     int batteryLevel = 87,
     bool? isConnected,
-    bool? isConnecting,
   }) =>
       SyncNotification.idleBodyText(
         lastStatusMs: lastStatusMs,
@@ -25,7 +24,6 @@ void main() {
         partial: partial,
         batteryLevel: batteryLevel,
         isConnected: isConnected,
-        isConnecting: isConnecting,
       );
 
   group('idle body text — battery freshness', () {
@@ -67,15 +65,22 @@ void main() {
   });
 
   group('idle body text — no sync outcome yet', () {
-    test('falls back to the connection state', () {
-      expect(body(lastStatusMs: 0, isConnected: true), 'Omi is Connected');
-      expect(body(lastStatusMs: 0, isConnecting: true), 'Connecting...');
-      expect(body(lastStatusMs: 0, isConnected: false), 'Omi is Disconnected');
+    // One stable string, whatever the link is doing. The resting line reports work and
+    // outcomes, never connection state: a "Connecting..." here was reachable on a fresh
+    // install and could be left standing by a frozen isolate, and native's mirror
+    // (OmiBleForegroundService.idleNotificationContent) has no view of the link on a
+    // headless start, so any link-derived text would make the two renderers disagree.
+    test('reads "Ready to sync" regardless of the link state', () {
       expect(body(lastStatusMs: 0), 'Ready to sync');
+      expect(body(lastStatusMs: 0, isConnected: true), 'Ready to sync');
+      expect(body(lastStatusMs: 0, isConnected: false), 'Ready to sync');
     });
 
-    test('connecting outranks a known-disconnected state', () {
-      expect(body(lastStatusMs: 0, isConnected: false, isConnecting: true), 'Connecting...');
+    // isConnected survives as a parameter only to gate the battery clause, and that
+    // clause is downstream of an outcome existing — so with none, it must not leak a
+    // percentage into the line either.
+    test('a live link does not conjure a battery reading with no outcome to attach it to', () {
+      expect(body(lastStatusMs: 0, isConnected: true, batteryLevel: 87), 'Ready to sync');
     });
   });
 }

@@ -12,9 +12,17 @@ import 'package:permission_handler/permission_handler.dart';
 /// state here and native renders it on the single notification.
 ///
 /// The states form the sync cycle:
-///   idle → connecting → connected → preparingSync → syncing → finishingSync →
-///   preparingProcessing → processing → finishingProcessing → complete →
-///   disconnecting → idle
+///   idle → preparingSync → syncing → finishingSync →
+///   preparingProcessing → processing → finishingProcessing → complete → idle
+///
+/// Every state is WORK (syncing / processing / uploading) or an OUTCOME (next sync /
+/// last sync). None of them is link state. The cycle used to open with `connecting` and
+/// close with `disconnecting`, and that was a defect rather than information: a transient
+/// can be stranded by the isolate freezing, and a notification that says "Connecting…"
+/// while nothing is connecting is worse than one that says nothing about the link at all.
+/// The app bar's own spinner covers the foreground case, and a link that genuinely will
+/// not come back surfaces as "Last Sync: Skipped" plus the separate "Omi can't reconnect"
+/// alert.
 ///
 /// Discrete transitions are pushed immediately (live). Only the high-frequency
 /// in-state progress text (segment counter, processing %) is throttled by its
@@ -64,20 +72,6 @@ class SyncNotification {
 
   // ── State machine ──
 
-  /// Generic push — used for the idle state, whose text the caller computes from
-  /// next-sync time / last-sync / battery / connection state.
-  static Future<void> push(String title, String text) => _push(title, text);
-
-  static Future<void> connecting() => _push('Omi Offline', 'Connecting to Omi…');
-  static Future<void> connected() {
-    final muted = _mutedTitle();
-    if (muted != null) {
-      final next = nextSyncTime;
-      return _push(muted, next != null ? 'Next sync at ${DateFormat('h:mm a').format(next)}' : 'Connected');
-    }
-    return _push('Omi Offline', 'Connected');
-  }
-
   static Future<void> preparingSync() => _push('Syncing recordings', 'Preparing…');
 
   /// [text] is `RecordingsController.syncingNotificationText(synced, total)`.
@@ -96,13 +90,14 @@ class SyncNotification {
   static Future<void> uploading(String text) => _push('Uploading recordings', text);
 
   static Future<void> complete() => _push('Conversations ready', 'Sync and processing complete');
-  static Future<void> disconnecting() => _push('Omi Offline', 'Disconnecting…');
 
   /// Settle to the idle line: title is the next-sync time (or "Omi Offline" in
-  /// Manual Only), subtext is the last-sync summary. When nothing has synced yet,
-  /// falls back to connection state if the caller knows it ([isConnected] /
-  /// [isConnecting]), else a neutral "Ready to sync".
-  static Future<void> idle({bool? isConnected, bool? isConnecting}) async {
+  /// Manual Only), subtext is the last-sync summary, or "Ready to sync" before the
+  /// first outcome exists.
+  ///
+  /// [isConnected] is NOT rendered — it gates the battery clause below, which is the
+  /// only reason it is still a parameter.
+  static Future<void> idle({bool? isConnected}) async {
     // Muted takes over the resting line: "Muted since 3:42 PM" / "Next sync at 4:15 PM".
     final muted = _mutedTitle();
     if (muted != null) {
@@ -124,7 +119,6 @@ class SyncNotification {
         partial: prefs.lastSyncPartial,
         batteryLevel: prefs.lastBatteryLevel,
         isConnected: isConnected,
-        isConnecting: isConnecting,
       ),
     );
   }
@@ -142,7 +136,6 @@ class SyncNotification {
     required bool partial,
     required int batteryLevel,
     bool? isConnected,
-    bool? isConnecting,
   }) {
     if (lastStatusMs > 0) {
       final time = DateFormat('h:mm a').format(DateTime.fromMillisecondsSinceEpoch(lastStatusMs));
@@ -164,9 +157,11 @@ class SyncNotification {
           ? 'Last Sync: $status • $time • $batteryLevel% Battery'
           : 'Last Sync: $status • $time';
     }
-    if (isConnected == true) return 'Omi is Connected';
-    if (isConnecting == true) return 'Connecting...';
-    if (isConnected == false) return 'Omi is Disconnected';
+    // No outcome recorded yet (a fresh install). Deliberately one stable string rather
+    // than the connection state this used to render: the same line is written by native's
+    // idleNotificationContent, which has no view of the link on a headless start, and two
+    // renderers that disagree are worse than one that says less. The link is visible in
+    // the app itself, and the first sync replaces this within one interval.
     return 'Ready to sync';
   }
 

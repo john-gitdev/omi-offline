@@ -119,32 +119,33 @@ class DeviceProvider extends ChangeNotifier
   // into "start the real grace now" instead of "disconnect now". Cleared whenever the
   // window is (re)opened or cancelled, so it always describes the current window.
   bool _pauseGraceSawSync = false;
-  // Background-connect settle watchdog. A scheduled-sync connect attempt paints
-  // a "Connecting…" notification and normally settles it back to the idle "Last
-  // Sync" line in its finally / _connectThenSyncOrFail when the device is
-  // unreachable. Under Doze the process can be frozen mid-attempt, so that
-  // settle never runs and the notification is stranded on "Connecting…" until
-  // the next scheduled wake (observed: stuck for ~20 min overnight). This timer
-  // is the safety net: armed whenever a background connect paints "Connecting…",
-  // it forces the notification to the idle line if we're still not connected and
-  // no sync owns it. A timer that comes due while the isolate is frozen fires as
-  // soon as the isolate thaws, so it also recovers a frozen attempt on the next
-  // CPU slice. The window is longer than the timer body's 3-attempt connect loop
-  // (~100 s) so a legitimately slow connect isn't cut short.
+  // Background-connect give-up watchdog. A scheduled-sync connect attempt that never
+  // resolves must still END the cycle: advance the auto-sync schedule and record the
+  // Skip, both of which [_failSyncCycleToIdle] does. Normally the attempt's own finally
+  // / [_connectThenSyncOrFail] gets there, but under Doze the process can be frozen
+  // mid-attempt so neither runs. This timer is the safety net; a timer that comes due
+  // while the isolate is frozen fires as soon as it thaws, so it also recovers a frozen
+  // attempt on the next CPU slice. The window is longer than the connect chain below it
+  // (~90 s) so a legitimately slow connect isn't cut short.
   //
-  // Belt-and-suspenders: the watchdog only recovers *after* a thaw, which under
-  // a long Doze can be many minutes away. So for the duration of the attempt we
-  // also hold a CPU partial wake-lock (see [_acquireConnectWakeLock]) so the
-  // process can't be frozen mid-connect in the first place — then this timer
-  // fires on schedule. The wake-lock is the primary fix; the timer is the
-  // fallback for when the wake-lock can't hold (battery-optimisation exemption
-  // denied) or the process is killed outright.
+  // This used to be described as a NOTIFICATION fix — it existed to un-stick a stranded
+  // "Connecting…" line. That transient no longer exists (the notification reports work and
+  // outcomes, never link state), so what is left is the schedule/Skip bookkeeping, which
+  // was always the load-bearing half: without it the three auto-sync triggers drift apart
+  // and the resting line goes on asserting a stale "Complete" through an outage.
+  //
+  // Belt-and-suspenders: the watchdog only recovers *after* a thaw, which under a long
+  // Doze can be many minutes away. So for the duration of the attempt we also hold a CPU
+  // partial wake-lock (see [_acquireConnectWakeLock]) so the process can't be frozen
+  // mid-connect in the first place — which protects the CONNECT itself, not just this
+  // timer. The wake-lock is the primary fix; the timer is the fallback for when it can't
+  // hold (battery-optimisation exemption denied) or the process is killed outright.
   Timer? _connectSettleWatchdog;
   static const Duration _connectSettleTimeout = Duration(seconds: 150);
   // Held (Android) while a background connect attempt is outstanding so Doze
-  // can't freeze the process mid-connect and strand a "Connecting…" notification
-  // — a freeze is exactly what stops the settle watchdog (and
-  // _connectThenSyncOrFail's give-up) from ever running. The native lock is
+  // can't freeze the process mid-connect and lose the whole cycle — a freeze is exactly
+  // what stops the give-up watchdog (and _connectThenSyncOrFail's own give-up) from ever
+  // running, and it stalls the connect it is meant to be making. The native lock is
   // reference-counted, so releasing it here never disturbs a concurrent DFU or
   // processing run. This flag keeps the acquire/release pair balanced across the
   // watchdog's several resolution paths (success, give-up, fire, dispose).
@@ -350,6 +351,12 @@ class DeviceProvider extends ChangeNotifier
     }
     SharedPreferencesUtil.lastSyncCompleted.addListener(_onSyncCompleted);
     _startBackgroundSyncTimer();
+    // Last, deliberately. It can push the notification, and _startBackgroundSyncTimer is
+    // what publishes nextSyncTime — sweeping earlier would render "Omi Offline" instead
+    // of "Next sync at H:MM". It also means the `_shouldSyncNow()` above ran without the
+    // skip this may set, so an orphan brings the next sync forward by a tick rather than
+    // forcing a connect during launch; the flag persists, so nothing is lost.
+    _sweepOrphanedSyncCycle();
   }
 
   /// Re-anchor the auto-sync schedule off the back of a completed sync, whoever ran it.
@@ -382,7 +389,6 @@ class DeviceProvider extends ChangeNotifier
       _doBackgroundSync();
     } else {
       _pendingBackgroundSync = true;
-      unawaited(SyncNotification.connecting());
       _armConnectSettleWatchdog();
       unawaited(_connectThenSyncOrFail());
     }
@@ -418,8 +424,7 @@ class DeviceProvider extends ChangeNotifier
 
   /// Connect for an alarm-triggered background sync. On success,
   /// [_finishDeviceSetup] clears the pending flag and runs [_doBackgroundSync];
-  /// on failure, advance to the next slot and settle to idle so the notification
-  /// doesn't stick on "Connecting…".
+  /// on failure, advance to the next slot and record the Skip.
   Future<void> _connectThenSyncOrFail() async {
     try {
       await scanAndConnectToDevice();
@@ -1128,13 +1133,16 @@ class DeviceProvider extends ChangeNotifier
 
   void updateConnectingStatus(bool value) {
     isConnecting = value;
-    // Route every background connection-state transition through the one idle
-    // notification, which ignores connection state. The device connects only
-    // briefly at scheduled-sync time, so without this the transient
-    // connect/scan would flip the notification between "Scanning…",
-    // "Connected", and the countdown instead of leaving a stable countdown.
-    // The foreground never shows this notification (it's stopped on resume),
-    // so connecting status surfaces through the widget tree instead.
+    // Refresh the one idle notification, which renders no connection state at all — so
+    // this is a re-read of the last-sync prefs and the next-sync title, not a transient.
+    // That is the point: the device connects only briefly at scheduled-sync time, and a
+    // line that flipped to "Connecting…"/"Connected" on each of those blips is exactly
+    // what used to strand. [isConnected] is still passed down because the battery clause
+    // needs it; it is not rendered as text.
+    //
+    // Background-only, not because the notification goes away in the foreground — it is
+    // persistent and survives resume — but because RecordingsController owns the line
+    // while the user is in the app, and the link is shown there by the app-bar spinner.
     if (!_isAppInForeground && !_syncOwnsNotification) {
       unawaited(_showIdleNotification());
     }
@@ -1236,10 +1244,10 @@ class DeviceProvider extends ChangeNotifier
   /// sync/process is running. With auto-sync on, the title is the next-sync time
   /// and the subtext is the last-sync summary; the absolute "Next sync at H:MM"
   /// needs no per-minute refresh (it's woken/advanced by the exact alarm). With
-  /// auto-sync off (Manual Only) the service isn't persistent, so this is a no-op
-  /// at the native layer unless a connection notification is already up.
+  /// auto-sync off (Manual Only) the service isn't pinned persistent, so this reaches
+  /// native only while the service happens to still be running.
   Future<void> _showIdleNotification() async {
-    await SyncNotification.idle(isConnected: isConnected, isConnecting: isConnecting);
+    await SyncNotification.idle(isConnected: isConnected);
   }
 
   void _pushBatteryToNative(int level) {
@@ -1320,7 +1328,6 @@ class DeviceProvider extends ChangeNotifier
           // background drop-guard knows this connection is a sanctioned
           // background sync and shouldn't be dropped.
           _pendingBackgroundSync = true;
-          unawaited(SyncNotification.connecting());
           _armConnectSettleWatchdog();
           bool connectedThisTick = false;
           try {
@@ -1343,8 +1350,8 @@ class DeviceProvider extends ChangeNotifier
             // and bypass the drop guard for future connections.
             if (!connectedThisTick) {
               _pendingBackgroundSync = false;
-              // Connect failed: advance to the next auto-sync slot and settle the
-              // notification back to idle (never leave it stuck on "Connecting…").
+              // Connect failed: advance to the next auto-sync slot and record the Skip,
+              // so the resting line stops asserting the previous outcome.
               _failSyncCycleToIdle();
             }
           }
@@ -1441,6 +1448,10 @@ class DeviceProvider extends ChangeNotifier
     // the shared wakelock. Cleared in the outer finally.
     if (_backgroundSyncActive) return false;
     _backgroundSyncActive = true;
+    // Past every guard, so this is a cycle. The connect path may already have marked it
+    // (a connect that then succeeded lands here); overwriting is correct — the marker
+    // names the most recent cycle, and that is the one an orphan sweep should report.
+    _markSyncCycleStarted();
     // Set only once every guard is passed, so the finally can tell a cycle that ran
     // from one that declined — see [_runDeferredSyncIntent].
     var ran = false;
@@ -1604,7 +1615,6 @@ class DeviceProvider extends ChangeNotifier
             !syncPending &&
             isConnected) {
           Logger.debug('Background sync done: disconnecting device.');
-          unawaited(SyncNotification.disconnecting());
           ServiceManager.instance().device.disconnectDevice(isManual: true);
         }
 
@@ -1618,6 +1628,10 @@ class DeviceProvider extends ChangeNotifier
       return true;
     } finally {
       _backgroundSyncActive = false;
+      // The cycle is over, whatever the outcome — a `finally`, so a throw counts too.
+      // Only process death can now leave the marker behind, which is exactly what the
+      // startup sweep reads it for.
+      _clearSyncCycleMarker();
       // Ordering matters: the guard is cleared first, so the handed-off cycle is not
       // turned away by the one handing it over.
       if (ran) _runDeferredSyncIntent();
@@ -1625,22 +1639,75 @@ class DeviceProvider extends ChangeNotifier
   }
 
   /// Arm the background-connect settle watchdog (see [_connectSettleWatchdog]).
-  /// Idempotent — re-arming cancels any prior timer, so each "Connecting…" paint
-  /// resets the window.
+  /// Idempotent — re-arming cancels any prior timer, so each new connect attempt resets
+  /// the window.
   void _armConnectSettleWatchdog() {
     _connectSettleWatchdog?.cancel();
+    _markSyncCycleStarted();
     _acquireConnectWakeLock();
     _connectSettleWatchdog = Timer(_connectSettleTimeout, () {
       _connectSettleWatchdog = null;
       // The connect window is over either way — drop the wake-lock now so it
       // can't outlive the attempt (give-up below releases it again, harmlessly).
       _releaseConnectWakeLock();
-      // A connection arrived, or a sync/process now owns the notification —
-      // whatever is showing isn't a stale "Connecting…", so leave it alone.
+      // A connection arrived, or a sync/process is now running — the cycle is alive, so
+      // it will end itself and must not be failed out from under.
       if (_disposed || isConnected || _backgroundSyncActive || _syncOwnsNotification) return;
-      Logger.debug('DeviceProvider: connect watchdog fired — settling stranded "Connecting…" notification to idle');
+      Logger.debug('DeviceProvider: connect watchdog fired — failing the cycle to idle');
       _failSyncCycleToIdle();
     });
+  }
+
+  /// Stamp "a background sync cycle is outstanding". Paired with
+  /// [_clearSyncCycleMarker] on every terminal path; see
+  /// [SharedPreferencesUtil.syncCycleStartedMs] for why liveness rather than a timeout
+  /// is what makes an orphan detectable.
+  void _markSyncCycleStarted() {
+    SharedPreferencesUtil().syncCycleStartedMs = DateTime.now().millisecondsSinceEpoch;
+  }
+
+  void _clearSyncCycleMarker() {
+    SharedPreferencesUtil().syncCycleStartedMs = 0;
+  }
+
+  /// The instant an orphaned cycle should be recorded at, or null when there is nothing
+  /// to record. Extracted and pure because both halves are easy to get wrong in the
+  /// direction of overwriting a real outcome with a fabricated one.
+  ///
+  /// Stamped at [startedMs], never at "now": the cycle failed when its process died,
+  /// possibly hours earlier, and the notification's job is to say when. And it yields to
+  /// any outcome already recorded at or after that instant — a foreground sync, or the
+  /// alarm's own Dart-not-up skip — so the writers cannot fight over one cycle.
+  @visibleForTesting
+  static int? orphanedCycleStatusMs({required int startedMs, required int lastStatusMs}) {
+    if (startedMs <= 0) return null;
+    if (lastStatusMs >= startedMs) return null;
+    return startedMs;
+  }
+
+  /// A cycle marked outstanding by a process that is gone can never finish, so record it
+  /// as the skip it was. Runs once per process, from the constructor.
+  ///
+  /// Stamped at the marker's own time, not now: the cycle failed when the process died,
+  /// which may have been hours ago, and "Last Sync: Skipped • 3:45 AM" is the true
+  /// statement. Yields to any outcome already recorded at or after that instant — a
+  /// foreground sync, or the alarm's own Dart-not-up skip — so the two writers cannot
+  /// fight over the same cycle.
+  void _sweepOrphanedSyncCycle() {
+    final prefs = SharedPreferencesUtil();
+    final started = prefs.syncCycleStartedMs;
+    // Cleared whatever the verdict: a marker this process did not set can never become
+    // valid, so leaving it would make the NEXT start re-report the same dead cycle.
+    if (started > 0) prefs.syncCycleStartedMs = 0;
+    final statusMs = orphanedCycleStatusMs(startedMs: started, lastStatusMs: prefs.lastSyncStatusMs);
+    if (statusMs == null) return;
+    Logger.debug('DeviceProvider: sync cycle started at $started never finished — recording it as a skip');
+    prefs.lastSyncSkipped = true;
+    prefs.lastSyncStatusMs = statusMs;
+    // The resting line may already be on screen showing the outcome this replaces —
+    // native's onCreate renders it from these same prefs, and on a headless start that
+    // happens before main() gets here.
+    unawaited(_showIdleNotification());
   }
 
   void _cancelConnectSettleWatchdog() {
@@ -1651,8 +1718,8 @@ class DeviceProvider extends ChangeNotifier
 
   /// Acquire/release the connect-phase CPU wake-lock. Reference-counted natively
   /// and guarded here so the pair stays balanced no matter which watchdog path
-  /// fires. Android-only: iOS has no stranded-"Connecting…" failure mode (no
-  /// persistent connection notification), and its acquireProcessingWakeLock
+  /// fires. Android-only: iOS runs background work through BGProcessingTask rather than
+  /// a wake-locked foreground service, and its acquireProcessingWakeLock
   /// starts a bounded background-task assertion we don't want to burn on every
   /// scheduled connect — so the gate keeps it from ever running there.
   void _acquireConnectWakeLock() {
@@ -1669,10 +1736,11 @@ class DeviceProvider extends ChangeNotifier
 
   /// A sync cycle could not run (e.g. the device wasn't reachable). Advance to
   /// the next auto-sync slot — re-arm the native exact alarm and recompute
-  /// [nextSyncTime] — and settle the notification back to the idle line so it
-  /// never sticks on "Connecting…".
+  /// [nextSyncTime] — record the Skip, and refresh the resting line so it reports
+  /// this cycle rather than the last one that succeeded.
   void _failSyncCycleToIdle() {
     _cancelConnectSettleWatchdog();
+    _clearSyncCycleMarker();
     // Anchor rather than just publish: a cycle that gave up is still a cycle, so the
     // Dart timer's phase has to move with the alarm. Publishing alone left them
     // disagreeing by however long the connect attempt took (~90 s), since only the
@@ -2082,6 +2150,13 @@ class DeviceProvider extends ChangeNotifier
       updateConnectingStatus(false);
       // Connected — the connect attempt is no longer in flight, so the settle
       // watchdog must not later fire and stamp a spurious "Skipped".
+      //
+      // Deliberately does NOT clear the cycle marker, which the watchdog's arming also
+      // set. Ownership of the cycle passes to _doBackgroundSync (whose `finally` clears
+      // it); if setup below throws before it gets there, the marker is left standing and
+      // the next process start reports the cycle as skipped — which is TRUE, since no
+      // sync ran. The sweep cannot over-report here: it yields to any outcome recorded at
+      // or after the marker, and every sync path stamps lastSyncStatusMs.
       _cancelConnectSettleWatchdog();
       notifyListeners();
       _startForegroundKeepAlive();
@@ -2377,7 +2452,8 @@ class DeviceProvider extends ChangeNotifier
     // the same path: fire _doBackgroundSync to pick up what the interrupted sync
     // left on the device.
     if (_pendingBackgroundSync || _pendingSyncResume) {
-      unawaited(SyncNotification.connected());
+      // No "Connected" transient: _startSanctionedBackgroundSync pushes "Syncing
+      // recordings" within a beat, and the notification reports work, not link state.
       _startSanctionedBackgroundSync();
     }
 

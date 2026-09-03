@@ -91,11 +91,6 @@ class MockDeviceConnection extends DeviceConnection {
   }
 
   @override
-  Future<BleAudioCodec> performGetAudioCodec() async {
-    return BleAudioCodec.unknown;
-  }
-
-  @override
   Future<StreamSubscription<List<int>>?> performGetBleBatteryLevelListener(
       {void Function(int p1)? onBatteryLevelChange, void Function(bool p1)? onChargingStateChange}) async {
     return null;

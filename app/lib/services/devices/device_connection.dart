@@ -250,11 +250,6 @@ abstract class DeviceConnection {
   /// wakes it, so no reconnect follows.
   Future<bool> sendShutdownCommand() async => false;
 
-  Future<BleAudioCodec?> getAudioCodec() async {
-    if (await isConnected()) return performGetAudioCodec();
-    return null;
-  }
-
   Future<bool> rotateFile() async {
     if (await isConnected()) return performRotateFile();
     return false;
@@ -412,7 +407,6 @@ abstract class DeviceConnection {
     void Function(int)? onBatteryLevelChange,
     void Function(bool)? onChargingStateChange,
   });
-  Future<BleAudioCodec> performGetAudioCodec();
   Future<List<int>> performGetStorageList();
   Future<bool> performWriteToStorage(int numFile, int command, int offset, {int? timestamp});
   Future<int> performGetFeatures();

@@ -35,7 +35,6 @@ class OmiDeviceConnection extends DeviceConnection {
   static const String featuresServiceUuid = '19b10020-e8f2-537e-4f6c-d104768a1214';
   static const String featuresCharacteristicUuid = '19b10021-e8f2-537e-4f6c-d104768a1214';
   // Codec ID read (opus=20 / opusFS320=21); lives under the Features service.
-  static const String featuresCodecCharacteristicUuid = '19b10022-e8f2-537e-4f6c-d104768a1214';
 
   static const String storageDataStreamServiceUuid = '30295780-4301-eabd-2904-2849adfeae43';
   static const String storageDataStreamCharacteristicUuid = '30295781-4301-eabd-2904-2849adfeae43';
@@ -101,7 +100,6 @@ class OmiDeviceConnection extends DeviceConnection {
   StreamSubscription<List<int>>? _dropStatsSubscription;
 
   // Cached audio codec to avoid redundant BLE reads
-  BleAudioCodec? _cachedAudioCodec;
 
   final Mutex _storageMutex = Mutex();
   String? _lockOwner;
@@ -157,8 +155,6 @@ class OmiDeviceConnection extends DeviceConnection {
     // SD a few hundred ms to start responding; worst case is bounded (~600ms).
     for (int i = 0; i < maxAttempts; i++) {
       final stats = await performGetStorageFileStats();
-      // Cache audio codec while awake (idempotent — cached after first read).
-      await performGetAudioCodec();
       if (stats != null) return; // SD confirmed responsive
       if (i < maxAttempts - 1) {
         await Future.delayed(Duration(milliseconds: 100 * (i + 1)));
@@ -440,7 +436,6 @@ class OmiDeviceConnection extends DeviceConnection {
     _timeoutTimer = null;
     _cccdRetryTimer?.cancel();
     _cccdRetryTimer = null;
-    _cachedAudioCodec = null;
   }
 
   @override
@@ -587,32 +582,6 @@ class OmiDeviceConnection extends DeviceConnection {
     _dropStatsSubscription = null;
     await stop();
     await super.disconnect(isManual: isManual);
-  }
-
-  @override
-  Future<BleAudioCodec> performGetAudioCodec() async {
-    if (_cachedAudioCodec != null) return _cachedAudioCodec!;
-    try {
-      final data = await transport.readCharacteristic(featuresServiceUuid, featuresCodecCharacteristicUuid);
-      if (data.isNotEmpty) {
-        // The device answered. Whatever it said is stable for this connection, including a
-        // byte we don't recognise — that is a real "not opus", not a failure — so cache it.
-        if (data[0] == 20) return _cachedAudioCodec = BleAudioCodec.opus;
-        if (data[0] == 21) return _cachedAudioCodec = BleAudioCodec.opusFS320;
-        return _cachedAudioCodec = BleAudioCodec.pcm8;
-      }
-    } catch (_) {}
-    // No answer — the read threw or came back empty. Fall back for this call but do NOT
-    // cache: caching here latched pcm8 for the life of the connection and never retried, so
-    // one transient GATT rejection mislabelled the codec until the next disconnect (the only
-    // thing that clears the cache). That rejection is not hypothetical — the 2026-08-17 log
-    // has three of them on a live link at 23:50:21, the storage keep-alive being the likely
-    // collider since it bypasses the GATT queue by design.
-    //
-    // Retrying is cheap and bounded: the two callers are a maxAttempts warmup loop and one
-    // call per WAL rebuild, so a persistently failing read costs a handful of reads, not a
-    // storm.
-    return BleAudioCodec.pcm8;
   }
 
   @override

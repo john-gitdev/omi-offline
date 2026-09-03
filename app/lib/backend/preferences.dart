@@ -820,6 +820,24 @@ class SharedPreferencesUtil {
 
   set lastSyncSkipped(bool v) => saveBool('lastSyncSkipped', v);
 
+  // Wall-clock ms at which a background sync cycle was accepted, or 0 when none is
+  // outstanding. The pair to it is *process liveness*, not a second timestamp: every
+  // terminal path clears this, so a non-zero value found by a FRESH process belongs to a
+  // cycle whose owner no longer exists and can therefore never finish. That is the whole
+  // detection — no staleness window, no heartbeat, nothing to tune.
+  //
+  // It exists because a cycle can end without producing an outcome. The alarm's own check
+  // (`SyncAlarmReceiver`, Dart-not-up) covers a cycle that never started; this covers one
+  // that started and was then killed. Neither can see a cycle merely FROZEN, because a
+  // freeze is not a death and nothing distinguishes them — that one resolves on thaw.
+  //
+  // Deliberately not "did lastSyncStatusMs advance since the last alarm?", which cannot
+  // tell a dead cycle from a sync legitimately running longer than one interval, and
+  // would write "Skipped" over a sync still in progress.
+  int get syncCycleStartedMs => getInt('syncCycleStartedMs', defaultValue: 0);
+
+  set syncCycleStartedMs(int v) => saveInt('syncCycleStartedMs', v);
+
   // Developer Diagnostics
   bool get devLogsToFileEnabled => getBool('devLogsToFileEnabled');
   set devLogsToFileEnabled(bool value) => saveBool('devLogsToFileEnabled', value);

@@ -31,65 +31,6 @@ enum ImageOrientation {
   }
 }
 
-/// Codecs the firmware can actually report on 0x19B10022: `20` = [opus],
-/// `21` = [opusFS320], anything else (or a failed read) falls back to [pcm8].
-/// [unknown] is not a wire codec — it is the sentinel `Wal.mapNameToCodec`
-/// returns for a name it can't parse.
-enum BleAudioCodec {
-  pcm8,
-  opus,
-  opusFS320,
-  unknown;
-
-  bool isOpusSupported() {
-    return this == BleAudioCodec.opus || this == BleAudioCodec.opusFS320;
-  }
-
-  int getFrameSize() {
-    return getFramesLengthInBytes();
-  }
-
-  int getFramesPerSecond() {
-    switch (this) {
-      case BleAudioCodec.opus:
-      case BleAudioCodec.opusFS320:
-        return 50;
-      case BleAudioCodec.pcm8:
-      case BleAudioCodec.unknown:
-        return 100;
-    }
-  }
-
-  int getFramesLengthInBytes() {
-    switch (this) {
-      case BleAudioCodec.opusFS320:
-        return 40;
-      case BleAudioCodec.pcm8:
-      case BleAudioCodec.opus:
-      case BleAudioCodec.unknown:
-        return 80;
-    }
-  }
-
-  // SD card stores [1-byte length prefix][VBR Opus payload]. Average payload at
-  // 32 kbps is ~80 bytes; total per frame ≈ 81 bytes. This is separate from
-  // getFramesLengthInBytes() which models BLE transport (MTU-constrained packets).
-  static const int _opusStorageAvgBytesPerFrame = 81; // ~80 B VBR payload + 1-byte prefix
-  static const int _opusFps = 50;
-
-  /// Estimated SD card bytes per minute of audio (pre-sync heuristic only).
-  /// Post-sync, exact frame count from Segment files is used instead.
-  int getStorageBytesPerMinute() {
-    switch (this) {
-      case BleAudioCodec.opus:
-      case BleAudioCodec.opusFS320:
-        return _opusStorageAvgBytesPerFrame * _opusFps * 60; // 243,000
-      default:
-        return getFramesLengthInBytes() * getFramesPerSecond() * 60;
-    }
-  }
-}
-
 /// Mirrors the firmware capability bitfield in `omi/firmware/omi/src/lib/core/
 /// features.h`, read from the Features service (`0021`). Keep the two in step.
 class OmiFeatures {
