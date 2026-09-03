@@ -1323,11 +1323,20 @@ meaningful VAD verdicts, no recordings. It is evidence about *framing*, and abou
 downstream of the decoder. VAD, splitting and stitching stay with the synthetic fixtures,
 which can script speech and silence deliberately.
 
-The 118-bin capture it came from also confirmed two things worth recording: the app's format
-model walks every one of them to exactly its length with no unparsed tail and no implausible
-frame, and SD-stored Opus frames are **VBR, 61–160 bytes**, not the fixed 40/80 B the codec-ID
-table quotes for the (nonexistent in this fork) BLE streaming path. Anything assuming a
-constant frame stride is wrong about real data.
+The 118-bin capture it came from settled three things. The app's format model walks every one
+of them to exactly its length, with no unparsed tail and no implausible frame. SD-stored Opus
+frames are **VBR, 61–160 B** (mean payload 87.0 B) — the fixed 40/80 B figures that used to sit
+in `BleAudioCodec` modelled MTU-sized packets for a live BLE audio stream this fork does not
+have, and are gone with the rest of that surface (`getFrameSize`, `getFramesPerSecond`,
+`getFramesLengthInBytes`, `isOpusSupported`, `Wal.getFrameSize`, all unreachable). And
+`getStorageBytesPerMinute()` was **21% low**: measured across 1,538,037 frames the real rate is
+~309,000 B/min, not the 243,000 the old model gave, because that model assumed a 1-byte length
+prefix (it is 4 bytes), an 80 B mean payload (87.0), and no block padding at all (10.3% of
+every bin).
+
+Its one consumer writes `Wal.seconds`, which nothing currently reads — so the correction is
+latent rather than user-visible today. Fixed anyway: a wrong constant that is only wrong
+off-screen is the kind that gets believed the moment someone surfaces it.
 
 ### "Calculating…" guard
 
