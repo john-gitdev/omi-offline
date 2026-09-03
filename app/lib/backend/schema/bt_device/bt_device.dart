@@ -31,44 +31,6 @@ enum ImageOrientation {
   }
 }
 
-/// Codecs the firmware can actually report on 0x19B10022: `20` = [opus],
-/// `21` = [opusFS320], anything else (or a failed read) falls back to [pcm8].
-/// [unknown] is not a wire codec — it is the sentinel `Wal.mapNameToCodec`
-/// returns for a name it can't parse.
-enum BleAudioCodec {
-  pcm8,
-  opus,
-  opusFS320,
-  unknown;
-
-  /// Estimated SD card bytes per minute of audio (pre-sync heuristic only).
-  /// Post-sync the exact frame count from the segment files is used instead.
-  ///
-  /// **Measured**, not modelled — the previous figure was a model and it was wrong.
-  /// Over the 118-bin, 151 MB capture in `app/test/fixtures/bins/`'s source (app 0.35.6,
-  /// 2026-08-29): 1,538,037 audio frames at a mean payload of 87.0 B, each preceded by a
-  /// **4-byte** length word and followed by a mean 1.49 B of 4-byte alignment padding, with
-  /// block padding and markers making up a further 10.3% of every bin. That is ~309,000
-  /// B/min. The old estimate said 243,000 — 21% low — because it assumed a *1-byte* length
-  /// prefix, an 80 B mean payload, and no block padding at all.
-  ///
-  /// Re-measure with a fresh capture if the encoder settings change (`CODEC_ID`, bitrate or
-  /// complexity in `lib/core/config.h`); nothing here derives it from those.
-  int getStorageBytesPerMinute() {
-    switch (this) {
-      case BleAudioCodec.opus:
-      case BleAudioCodec.opusFS320:
-        return 309000;
-      case BleAudioCodec.pcm8:
-      case BleAudioCodec.unknown:
-        // No device reports these — `performGetAudioCodec` returns pcm8 for an
-        // unrecognised codec id or a failed read — so this is a carried-over legacy
-        // figure, not a measurement. Kept so the switch stays total.
-        return 480000;
-    }
-  }
-}
-
 /// Mirrors the firmware capability bitfield in `omi/firmware/omi/src/lib/core/
 /// features.h`, read from the Features service (`0021`). Keep the two in step.
 class OmiFeatures {

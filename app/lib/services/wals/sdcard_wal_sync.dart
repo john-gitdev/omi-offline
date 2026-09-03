@@ -257,9 +257,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       if (connection != null) {
         // Skip lock when files are prefetched — _buildWalsFromFilesLocked only
         // needs BLE I/O (listFiles) when prefetchedFiles is null. With files
-        // already in hand the only remaining call is getAudioCodec(), which is
-        // cached, so acquiring the lock here would deadlock any caller that
-        // already holds it (e.g. refreshStorageStats).
+        // already in hand it needs none at all, so acquiring the lock here would
+        // deadlock any caller that already holds it (e.g. refreshStorageStats).
         if (prefetchedFiles == null) {
           await connection.acquireStorageLock('setDevice');
         }
@@ -469,7 +468,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     final files = listing.files;
     if (files.isEmpty) return (wals: <Wal>[], complete: listing.complete);
 
-    final codec = await connection.getAudioCodec() ?? BleAudioCodec.pcm8;
     final wals = <Wal>[];
 
     const int kMaxStorageBytes = 0x1E000000;
@@ -530,16 +528,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       final bool alreadyComplete =
           isMatchValid && existing!.status == WalStatus.synced && walOffset > 0 && file.size <= walOffset;
 
-      final newBytes = file.size - walOffset;
-      final ms = (newBytes / (codec.getStorageBytesPerMinute() / 60000.0)).truncate();
-      final seconds = (ms / 1000).truncate();
-
       // Trust the raw firmware timestamp. Never "invent" a UTC time here;
       // pre-sync files stay low (e.g. 1010) so the protocol remains honest.
       final timerStart = file.timestamp;
 
       final wal = Wal(
-        codec: codec,
         channel: 1,
         device: deviceId,
         fileNum: file.index,
@@ -549,7 +542,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         sessionId: file.sessionId,
         storage: WalStorage.sdcard,
         status: alreadyComplete ? WalStatus.synced : WalStatus.miss,
-        estimatedSegments: (seconds / 60).ceil().clamp(1, 999),
       );
       if (isMatchValid && existing!.isSyncing) {
         wal.isSyncing = true;

@@ -1,5 +1,3 @@
-import 'package:omi/backend/schema/bt_device/bt_device.dart';
-
 const segmentDurationSeconds = 60;
 const flushIntervalInSeconds = 90;
 const sdcardSegmentDurationSecs = 60;
@@ -22,7 +20,6 @@ enum SyncMethod {
 }
 
 class Wal {
-  final BleAudioCodec codec;
   final int channel;
   final String device;
   final int fileNum;
@@ -48,13 +45,10 @@ class Wal {
   // Placeholder fields for compatibility with existing UI/Utils
   String? filePath;
   List<int>? data;
-  int? seconds;
   int? sampleRate;
   String? deviceModel;
-  int estimatedSegments;
 
   Wal({
-    required this.codec,
     required this.channel,
     required this.device,
     required this.fileNum,
@@ -69,10 +63,8 @@ class Wal {
     this.syncMethod = SyncMethod.ble,
     this.filePath,
     this.data,
-    this.seconds,
     this.sampleRate,
     this.deviceModel,
-    this.estimatedSegments = 0,
   });
 
   // id is stable: keyed on timerStart (the file's Unix timestamp from firmware) so it
@@ -116,22 +108,8 @@ class Wal {
     return filePath;
   }
 
-  static BleAudioCodec mapNameToCodec(String name) {
-    switch (name.toLowerCase()) {
-      case 'pcm8':
-        return BleAudioCodec.pcm8;
-      case 'opus':
-        return BleAudioCodec.opus;
-      case 'opusfs320':
-        return BleAudioCodec.opusFS320;
-      default:
-        return BleAudioCodec.unknown;
-    }
-  }
-
   Map<String, dynamic> toJson() {
     return {
-      'codec': codec.name,
       'channel': channel,
       'device': device,
       'fileNum': fileNum,
@@ -143,10 +121,8 @@ class Wal {
       'status': status.name,
       'syncFailCount': syncFailCount,
       'filePath': filePath,
-      'seconds': seconds,
       'sampleRate': sampleRate,
       'deviceModel': deviceModel,
-      'estimatedSegments': estimatedSegments,
     };
   }
 
@@ -156,7 +132,6 @@ class Wal {
 
   factory Wal.fromJson(Map<String, dynamic> json) {
     return Wal(
-      codec: mapNameToCodec(json['codec'] ?? 'pcm8'),
       channel: json['channel'] ?? 1,
       device: json['device'] ?? '',
       fileNum: json['fileNum'] ?? 0,
@@ -168,15 +143,12 @@ class Wal {
       status: WalStatus.values.firstWhere((e) => e.name == json['status'], orElse: () => WalStatus.miss),
       syncFailCount: json['syncFailCount'] ?? 0,
       filePath: json['filePath'],
-      seconds: json['seconds'],
       sampleRate: json['sampleRate'],
       deviceModel: json['deviceModel'],
-      estimatedSegments: json['estimatedSegments'] ?? 0,
     );
   }
 
   Wal copyWith({
-    BleAudioCodec? codec,
     int? channel,
     String? device,
     int? fileNum,
@@ -191,13 +163,10 @@ class Wal {
     SyncMethod? syncMethod,
     String? filePath,
     List<int>? data,
-    int? seconds,
     int? sampleRate,
     String? deviceModel,
-    int? estimatedSegments,
   }) {
     return Wal(
-      codec: codec ?? this.codec,
       channel: channel ?? this.channel,
       device: device ?? this.device,
       fileNum: fileNum ?? this.fileNum,
@@ -212,10 +181,8 @@ class Wal {
       syncMethod: syncMethod ?? this.syncMethod,
       filePath: filePath ?? this.filePath,
       data: data ?? this.data,
-      seconds: seconds ?? this.seconds,
       sampleRate: sampleRate ?? this.sampleRate,
       deviceModel: deviceModel ?? this.deviceModel,
-      estimatedSegments: estimatedSegments ?? this.estimatedSegments,
     );
   }
 }
