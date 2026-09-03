@@ -196,7 +196,7 @@ Charging **bypasses the stealth gate at display time** rather than turning the g
 
 Most Omi services use base UUID `19b100xx-e8f2-537e-4f6c-d104768a1214`. Characteristics marked 🔒 require a bonded/encrypted connection. There is no live audio-stream service in this offline fork — audio goes Mic → SD → storage-sync, never a BLE stream. The device advertises its name (`Omi`) plus the Settings service (`0010`); the app matches on either.
 
-Handle stability matters here: Settings is registered first, so a new characteristic on it shifts every later service's handles and costs a re-pair. New attributes belong on the last-registered service, which is why `0080` exists and why the unused Button service is kept rather than removed.
+Handle stability matters here: Settings is registered early (third, behind only the button and haptic services), so a new characteristic on it shifts every later service's handles and costs a re-pair. New attributes belong on the last-registered service, which is why `0080` exists and why the unused Button service is kept rather than removed.
 
 | Service | UUID suffix | Purpose |
 |---------|-------------|---------|
