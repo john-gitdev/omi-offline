@@ -1334,9 +1334,20 @@ have, and are gone with the rest of that surface (`getFrameSize`, `getFramesPerS
 prefix (it is 4 bytes), an 80 B mean payload (87.0), and no block padding at all (10.3% of
 every bin).
 
-Its one consumer writes `Wal.seconds`, which nothing currently reads — so the correction is
-latent rather than user-visible today. Fixed anyway: a wrong constant that is only wrong
-off-screen is the kind that gets believed the moment someone surfaces it.
+Its one consumer is `sdcard_wal_sync.dart`, which turns the byte count into `seconds` and then
+into **`Wal.estimatedSegments`** — a field that is written, serialised and **never read**. The
+sync UI's "N of M segments" comes from `estimatedTotalSegments`, which counts WAL *entries*
+(`_wals.where(...).length`), not durations. So the correction is latent rather than
+user-visible today. Fixed anyway: a wrong constant that is only wrong off-screen is the kind
+that gets believed the moment someone surfaces it.
+
+Two vestiges sit at the end of that chain, both from upstream, where a WAL was a fixed-length
+chunk of *streamed* BLE audio with a real duration. `Wal.estimatedSegments` is written with a
+real value nothing consumes; `Wal.seconds` is not even written — production code never passes
+it, so it round-trips as `null`, and the only non-null values anywhere are in `wal_test.dart`
+asserting the round-trip of the field itself. Removing either is safe in both directions:
+`fromJson` ignores absent keys (`json['seconds']` → null into an `int?`; `estimatedSegments`
+has a `?? 0`), so an older build reads a newer WAL file and vice versa without migration.
 
 ### "Calculating…" guard
 
