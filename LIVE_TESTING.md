@@ -66,7 +66,7 @@ Wait out one sync interval without reopening.
 | The sync happens | The notification moves off the idle line into `Syncing recordings` on its own. **This is the whole test** — before 0.36.0 it stayed idle and the wake reported success having done nothing |
 | Recordings appear | Reopen afterwards: the new recordings are already there, not pulled down in a burst on open |
 | `flutter:` log activity during the window | Non-empty. The original failure was **native logging 300+ records and Dart two** over seventeen hours; that ratio is the signature |
-| No `Flutter engine not running — sync deferred to next app open` | Absent. If present, the engine did not survive |
+| No `Dart not up yet` from `OmiBle.SyncAlarm` / `OmiBle.BgSync` | Absent. If present, the engine did not survive. (Both wake paths used to log `Flutter engine not running — sync deferred to next app open`; that string is retired, so grepping for it now always passes) |
 
 ---
 
