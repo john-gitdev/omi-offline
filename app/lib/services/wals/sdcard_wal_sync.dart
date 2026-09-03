@@ -533,7 +533,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       final timerStart = file.timestamp;
 
       final wal = Wal(
-        channel: 1,
         device: deviceId,
         fileNum: file.index,
         walOffset: walOffset,
