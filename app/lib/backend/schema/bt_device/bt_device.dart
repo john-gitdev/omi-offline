@@ -41,51 +41,30 @@ enum BleAudioCodec {
   opusFS320,
   unknown;
 
-  bool isOpusSupported() {
-    return this == BleAudioCodec.opus || this == BleAudioCodec.opusFS320;
-  }
-
-  int getFrameSize() {
-    return getFramesLengthInBytes();
-  }
-
-  int getFramesPerSecond() {
-    switch (this) {
-      case BleAudioCodec.opus:
-      case BleAudioCodec.opusFS320:
-        return 50;
-      case BleAudioCodec.pcm8:
-      case BleAudioCodec.unknown:
-        return 100;
-    }
-  }
-
-  int getFramesLengthInBytes() {
-    switch (this) {
-      case BleAudioCodec.opusFS320:
-        return 40;
-      case BleAudioCodec.pcm8:
-      case BleAudioCodec.opus:
-      case BleAudioCodec.unknown:
-        return 80;
-    }
-  }
-
-  // SD card stores [1-byte length prefix][VBR Opus payload]. Average payload at
-  // 32 kbps is ~80 bytes; total per frame ≈ 81 bytes. This is separate from
-  // getFramesLengthInBytes() which models BLE transport (MTU-constrained packets).
-  static const int _opusStorageAvgBytesPerFrame = 81; // ~80 B VBR payload + 1-byte prefix
-  static const int _opusFps = 50;
-
   /// Estimated SD card bytes per minute of audio (pre-sync heuristic only).
-  /// Post-sync, exact frame count from Segment files is used instead.
+  /// Post-sync the exact frame count from the segment files is used instead.
+  ///
+  /// **Measured**, not modelled — the previous figure was a model and it was wrong.
+  /// Over the 118-bin, 151 MB capture in `app/test/fixtures/bins/`'s source (app 0.35.6,
+  /// 2026-08-29): 1,538,037 audio frames at a mean payload of 87.0 B, each preceded by a
+  /// **4-byte** length word and followed by a mean 1.49 B of 4-byte alignment padding, with
+  /// block padding and markers making up a further 10.3% of every bin. That is ~309,000
+  /// B/min. The old estimate said 243,000 — 21% low — because it assumed a *1-byte* length
+  /// prefix, an 80 B mean payload, and no block padding at all.
+  ///
+  /// Re-measure with a fresh capture if the encoder settings change (`CODEC_ID`, bitrate or
+  /// complexity in `lib/core/config.h`); nothing here derives it from those.
   int getStorageBytesPerMinute() {
     switch (this) {
       case BleAudioCodec.opus:
       case BleAudioCodec.opusFS320:
-        return _opusStorageAvgBytesPerFrame * _opusFps * 60; // 243,000
-      default:
-        return getFramesLengthInBytes() * getFramesPerSecond() * 60;
+        return 309000;
+      case BleAudioCodec.pcm8:
+      case BleAudioCodec.unknown:
+        // No device reports these — `performGetAudioCodec` returns pcm8 for an
+        // unrecognised codec id or a failed read — so this is a carried-over legacy
+        // figure, not a measurement. Kept so the switch stays total.
+        return 480000;
     }
   }
 }
