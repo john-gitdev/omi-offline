@@ -116,10 +116,6 @@ class Wal {
     return filePath;
   }
 
-  int getFrameSize() {
-    return codec.getFrameSize();
-  }
-
   static BleAudioCodec mapNameToCodec(String name) {
     switch (name.toLowerCase()) {
       case 'pcm8':
