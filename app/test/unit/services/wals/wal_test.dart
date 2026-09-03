@@ -5,7 +5,6 @@ void main() {
   group('Wal', () {
     test('id handles non-zero timerStart correctly', () {
       final wal = Wal(
-        channel: 1,
         device: 'device_id',
         fileNum: 5,
         walOffset: 0,
@@ -18,7 +17,6 @@ void main() {
 
     test('id falls back to fileNum when timerStart is 0', () {
       final wal = Wal(
-        channel: 1,
         device: 'device_id',
         fileNum: 5,
         walOffset: 0,
@@ -31,7 +29,6 @@ void main() {
 
     test('getSegmentFileNameByTimestamp returns correct format without sessionId', () {
       final wal = Wal(
-        channel: 1,
         device: 'device_id',
         fileNum: 1,
         walOffset: 0,
@@ -44,7 +41,6 @@ void main() {
 
     test('getSegmentFileNameByTimestamp returns correct format with sessionId', () {
       final wal = Wal(
-        channel: 1,
         device: 'device_id',
         fileNum: 1,
         walOffset: 0,
@@ -57,7 +53,6 @@ void main() {
 
     test('getFileName uses timerStart and sessionId', () {
       final wal = Wal(
-        channel: 1,
         device: 'device_id',
         fileNum: 1,
         walOffset: 0,
@@ -69,7 +64,6 @@ void main() {
       expect(wal.getFileName(), '1234567890_42.bin');
 
       final walNoSession = Wal(
-        channel: 1,
         device: 'device_id',
         fileNum: 1,
         walOffset: 0,
@@ -82,7 +76,6 @@ void main() {
 
     test('toJson serializes correctly', () {
       final wal = Wal(
-        channel: 2,
         device: 'device_123',
         fileNum: 10,
         walOffset: 512,
@@ -91,15 +84,11 @@ void main() {
         sessionId: 99,
         storage: WalStorage.sdcard,
         status: WalStatus.synced,
-        filePath: '/path/to/file',
-        sampleRate: 16000,
-        deviceModel: 'model_x',
       );
 
       final json = wal.toJson();
 
       expect(json, {
-        'channel': 2,
         'device': 'device_123',
         'fileNum': 10,
         'storageOffset': 512,
@@ -109,15 +98,11 @@ void main() {
         'storage': 'sdcard',
         'status': 'synced',
         'syncFailCount': 0,
-        'filePath': '/path/to/file',
-        'sampleRate': 16000,
-        'deviceModel': 'model_x',
       });
     });
 
     test('fromJson parses full data correctly', () {
       final json = {
-        'channel': 2,
         'device': 'device_123',
         'fileNum': 10,
         'storageOffset': 512,
@@ -127,14 +112,10 @@ void main() {
         'storage': 'sdcard',
         'status': 'synced',
         'syncFailCount': 3,
-        'filePath': '/path/to/file',
-        'sampleRate': 16000,
-        'deviceModel': 'model_x',
       };
 
       final wal = Wal.fromJson(json);
 
-      expect(wal.channel, 2);
       expect(wal.device, 'device_123');
       expect(wal.fileNum, 10);
       expect(wal.walOffset, 512);
@@ -144,9 +125,6 @@ void main() {
       expect(wal.storage, WalStorage.sdcard);
       expect(wal.status, WalStatus.synced);
       expect(wal.syncFailCount, 3);
-      expect(wal.filePath, '/path/to/file');
-      expect(wal.sampleRate, 16000);
-      expect(wal.deviceModel, 'model_x');
     });
 
     test('fromJson handles missing fields with defaults', () {
@@ -154,7 +132,6 @@ void main() {
 
       final wal = Wal.fromJson(json);
 
-      expect(wal.channel, 1);
       expect(wal.device, '');
       expect(wal.fileNum, 0);
       expect(wal.walOffset, 0);
@@ -164,68 +141,21 @@ void main() {
       expect(wal.storage, WalStorage.local);
       expect(wal.status, WalStatus.miss);
       expect(wal.syncFailCount, 0);
-      expect(wal.filePath, isNull);
-      expect(wal.sampleRate, isNull);
-      expect(wal.deviceModel, isNull);
     });
 
     test('fromJsonList maps a list of JSON to Wals', () {
       final jsonList = [
-        {'channel': 1},
-        {'channel': 2},
+        {'device': 'a', 'fileNum': 1},
+        {'device': 'b', 'fileNum': 2},
       ];
 
       final wals = Wal.fromJsonList(jsonList);
 
       expect(wals.length, 2);
-      expect(wals[0].channel, 1);
-      expect(wals[1].channel, 2);
-    });
-
-    test('copyWith updates specified fields and retains others', () {
-      final original = Wal(
-        channel: 1,
-        device: 'device1',
-        fileNum: 1,
-        walOffset: 10,
-        storageTotalBytes: 100,
-        timerStart: 123,
-        sessionId: 1,
-        storage: WalStorage.local,
-        status: WalStatus.syncing,
-        isSyncing: true,
-        syncMethod: SyncMethod.ble,
-        filePath: 'path',
-        data: [1, 2, 3],
-        sampleRate: 8000,
-        deviceModel: 'model1',
-      );
-
-      final updated = original.copyWith(
-        channel: 2,
-        walOffset: 20,
-        status: WalStatus.synced,
-        filePath: 'new_path',
-      );
-
-      // Changed fields
-      expect(updated.channel, 2);
-      expect(updated.walOffset, 20);
-      expect(updated.status, WalStatus.synced);
-      expect(updated.filePath, 'new_path');
-
-      // Unchanged fields
-      expect(updated.device, 'device1');
-      expect(updated.fileNum, 1);
-      expect(updated.storageTotalBytes, 100);
-      expect(updated.timerStart, 123);
-      expect(updated.sessionId, 1);
-      expect(updated.storage, WalStorage.local);
-      expect(updated.isSyncing, true);
-      expect(updated.syncMethod, SyncMethod.ble);
-      expect(updated.data, [1, 2, 3]);
-      expect(updated.sampleRate, 8000);
-      expect(updated.deviceModel, 'model1');
+      expect(wals[0].device, 'a');
+      expect(wals[0].fileNum, 1);
+      expect(wals[1].device, 'b');
+      expect(wals[1].fileNum, 2);
     });
   });
 }

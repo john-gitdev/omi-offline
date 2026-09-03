@@ -410,7 +410,6 @@ void main() {
 
   group('Wal incomplete-transfer identity', () {
     Wal walOf({required int offset, required int total, int timerStart = 1784260394, int? sessionId}) => Wal(
-          channel: 1,
           device: 'test-device',
           fileNum: 0,
           walOffset: offset,
@@ -468,7 +467,6 @@ void main() {
     }
 
     Wal makeWal({int totalBytes = 10, int walOffset = 0}) => Wal(
-          channel: 1,
           device: 'test-device',
           fileNum: 1,
           walOffset: walOffset,
@@ -652,7 +650,6 @@ void main() {
       final otherTs = (DateTime.now().millisecondsSinceEpoch ~/ 1000) + 500;
       await WalFileManager.saveWals([
         Wal(
-          channel: 1,
           device: 'other-omi',
           fileNum: 0,
           walOffset: 512,
@@ -678,7 +675,6 @@ void main() {
       // pruning; keying by the physical path keeps both.
       await WalFileManager.saveWals([
         Wal(
-            channel: 1,
             device: 'other-omi',
             fileNum: 0,
             walOffset: 100,
@@ -687,7 +683,6 @@ void main() {
             sessionId: 111,
             storage: WalStorage.sdcard),
         Wal(
-            channel: 1,
             device: 'other-omi',
             fileNum: 1,
             walOffset: 200,
@@ -912,7 +907,6 @@ void main() {
     // still reaches its advertised length and passes the completeness guard.
     // Assert on the offset actually put on the wire, not on our own bookkeeping.
     Wal resumeWal({required int offset, required int total, required int ts}) => Wal(
-          channel: 1,
           device: 'test',
           fileNum: 1,
           walOffset: offset,

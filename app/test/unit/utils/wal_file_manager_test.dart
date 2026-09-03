@@ -64,7 +64,6 @@ void main() {
 
     test('saveWals successfully saves and loadWals reads valid data', () async {
       final wal1 = Wal(
-        channel: 1,
         device: 'device_1',
         fileNum: 1,
         walOffset: 100,
@@ -75,7 +74,6 @@ void main() {
       );
 
       final wal2 = Wal(
-        channel: 2,
         device: 'device_2',
         fileNum: 2,
         walOffset: 0,
@@ -105,7 +103,6 @@ void main() {
 
     test('saveWals creates a backup of the previous file', () async {
       final wal1 = Wal(
-        channel: 1,
         device: 'device_1',
         fileNum: 1,
         walOffset: 100,
@@ -124,7 +121,6 @@ void main() {
       expect(backupFile.existsSync(), isFalse); // No backup on first save
 
       final wal2 = Wal(
-        channel: 2,
         device: 'device_2',
         fileNum: 2,
         walOffset: 0,
@@ -148,7 +144,6 @@ void main() {
 
     test('clearAll deletes both main and backup files', () async {
       final wal1 = Wal(
-        channel: 1,
         device: 'device_1',
         fileNum: 1,
         walOffset: 100,
@@ -175,7 +170,6 @@ void main() {
 
     test('saveWals merges WALs from different devices when deviceId is provided', () async {
       final wal1 = Wal(
-        channel: 1,
         device: 'device_1',
         fileNum: 1,
         walOffset: 100,
@@ -185,7 +179,6 @@ void main() {
       );
 
       final wal2 = Wal(
-        channel: 2,
         device: 'device_2',
         fileNum: 2,
         walOffset: 0,
@@ -210,7 +203,6 @@ void main() {
 
     test('saveWals overwrites previous WALs for the same deviceId', () async {
       final wal1 = Wal(
-        channel: 1,
         device: 'device_1',
         fileNum: 1,
         walOffset: 100,
@@ -220,7 +212,6 @@ void main() {
       );
 
       final wal1Updated = Wal(
-        channel: 1,
         device: 'device_1',
         fileNum: 1,
         walOffset: 500, // Updated offset
@@ -230,7 +221,6 @@ void main() {
       );
 
       final wal2 = Wal(
-        channel: 2,
         device: 'device_2',
         fileNum: 2,
         walOffset: 0,
@@ -261,7 +251,6 @@ void main() {
       await file.writeAsString('{ invalid_json ]');
 
       final wal1 = Wal(
-        channel: 1,
         device: 'device_1',
         fileNum: 1,
         walOffset: 100,
