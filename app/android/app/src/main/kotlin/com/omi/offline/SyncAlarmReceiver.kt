@@ -151,6 +151,13 @@ class SyncAlarmReceiver : BroadcastReceiver() {
         // Writing flutter.* prefs from native is only safe with no live isolate to race, and
         // that is exactly the branch we are in. lastSyncCompletedMs is deliberately untouched
         // — nothing was pulled, and a skip must not push the schedule out (CLAUDE.md).
+        //
+        // The write is also the BATON, which is the half that is easy to miss. Dart's
+        // _shouldSyncNow() returns true on lastSyncSkipped alone, and DeviceProvider's
+        // constructor calls it before dartReady (the `syncDue` branch, device_provider.dart),
+        // so on a cold start this flag is what makes the isolate now booting connect and
+        // sync with no UI ever attaching. Clearing it here, or stamping lastSyncCompletedMs
+        // instead, would strand the cycle until the user opened the app.
         if (flutterApi == null) {
             Log.i(TAG, "onReceive: Dart is not up — recording this cycle as a skip")
             prefs.edit()
@@ -174,10 +181,13 @@ class SyncAlarmReceiver : BroadcastReceiver() {
 
         // Drive a native reconnect from this Doze-exempt alarm window, independent of
         // the Flutter isolate. Native pauses its own retry loop once an outage is
-        // confirmed (AUTONOMOUS_RETRY_STOP_AFTER), so if Dart is frozen/dead this is
-        // the only thing that re-triggers the connect until the user opens the app.
-        // Idempotent: no-ops if already connected or the user disconnected. When the
-        // service was cold-started just above, `instance` isn't set yet — that path is
+        // confirmed (AUTONOMOUS_RETRY_STOP_AFTER), so if Dart is FROZEN — alive but
+        // wedged, never reaching its own connect — this is the only thing that re-triggers
+        // it. A killed process is the other case and does not need this: it is restarting
+        // on this very broadcast, and DeviceProvider's constructor connects on the skip flag
+        // recorded above.
+        // Idempotent either way: no-ops if already connected or the user disconnected. When
+        // the service was cold-started just above, `instance` isn't set yet — that path is
         // covered by onStartCommand's persistent restore.
         OmiBleForegroundService.instance?.ensureManagedReconnectFromAlarm()
 
@@ -187,7 +197,13 @@ class SyncAlarmReceiver : BroadcastReceiver() {
             }
             Log.d(TAG, "onReceive: delivered to Dart")
         } else {
-            Log.d(TAG, "onReceive: Flutter engine not running — sync deferred to next app open")
+            // Not a deferral to the user, despite how this used to read. Either the process
+            // is cold-starting on this broadcast — MyApp.onCreate has made the engine and
+            // executeDartEntrypoint has only SCHEDULED main(), so isFlutterAlive could not
+            // be set yet — and the skip recorded above hands the cycle to DeviceProvider's
+            // constructor seconds from now; or Dart is genuinely wedged, and the reconnect
+            // driven above is what carries it. Neither waits for an app open.
+            Log.d(TAG, "onReceive: Dart not up yet — cycle recorded as a skip for Dart startup to pick up")
         }
     }
 }
