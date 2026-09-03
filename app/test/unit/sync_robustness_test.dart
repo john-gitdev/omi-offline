@@ -231,8 +231,6 @@ class MockDeviceConnection implements DeviceConnection {
   @override
   Future<void> unpair() async {}
   @override
-  Future<BleAudioCodec?> getAudioCodec() async => BleAudioCodec.opus;
-  @override
   Future<bool> rotateFile() async => true;
   @override
   Future<int> getFeatures() async => 0;
@@ -277,8 +275,6 @@ class MockDeviceConnection implements DeviceConnection {
   Future<StreamSubscription<List<int>>?> performGetBleBatteryLevelListener(
           {void Function(int)? onBatteryLevelChange, void Function(bool)? onChargingStateChange}) =>
       throw UnimplementedError();
-  @override
-  Future<BleAudioCodec> performGetAudioCodec() => throw UnimplementedError();
   @override
   Future<List<int>> performGetStorageList() => throw UnimplementedError();
   @override
@@ -374,8 +370,6 @@ class MockBtDevice extends Fake implements BtDevice {
   final MockDeviceConnection connection = MockDeviceConnection();
   @override
   DeviceConnection? get connectionInstance => connection;
-  @override
-  BleAudioCodec get codec => BleAudioCodec.opus;
 }
 
 void main() {
@@ -416,7 +410,6 @@ void main() {
 
   group('Wal incomplete-transfer identity', () {
     Wal walOf({required int offset, required int total, int timerStart = 1784260394, int? sessionId}) => Wal(
-          codec: BleAudioCodec.opus,
           channel: 1,
           device: 'test-device',
           fileNum: 0,
@@ -475,7 +468,6 @@ void main() {
     }
 
     Wal makeWal({int totalBytes = 10, int walOffset = 0}) => Wal(
-          codec: BleAudioCodec.opus,
           channel: 1,
           device: 'test-device',
           fileNum: 1,
@@ -660,7 +652,6 @@ void main() {
       final otherTs = (DateTime.now().millisecondsSinceEpoch ~/ 1000) + 500;
       await WalFileManager.saveWals([
         Wal(
-          codec: BleAudioCodec.opus,
           channel: 1,
           device: 'other-omi',
           fileNum: 0,
@@ -687,7 +678,6 @@ void main() {
       // pruning; keying by the physical path keeps both.
       await WalFileManager.saveWals([
         Wal(
-            codec: BleAudioCodec.opus,
             channel: 1,
             device: 'other-omi',
             fileNum: 0,
@@ -697,7 +687,6 @@ void main() {
             sessionId: 111,
             storage: WalStorage.sdcard),
         Wal(
-            codec: BleAudioCodec.opus,
             channel: 1,
             device: 'other-omi',
             fileNum: 1,
@@ -923,7 +912,6 @@ void main() {
     // still reaches its advertised length and passes the completeness guard.
     // Assert on the offset actually put on the wire, not on our own bookkeeping.
     Wal resumeWal({required int offset, required int total, required int ts}) => Wal(
-          codec: BleAudioCodec.opus,
           channel: 1,
           device: 'test',
           fileNum: 1,

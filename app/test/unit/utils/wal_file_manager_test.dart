@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/wals.dart';
 import 'package:omi/utils/wal_file_manager.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
@@ -65,7 +64,6 @@ void main() {
 
     test('saveWals successfully saves and loadWals reads valid data', () async {
       final wal1 = Wal(
-        codec: BleAudioCodec.opus,
         channel: 1,
         device: 'device_1',
         fileNum: 1,
@@ -77,7 +75,6 @@ void main() {
       );
 
       final wal2 = Wal(
-        codec: BleAudioCodec.pcm8,
         channel: 2,
         device: 'device_2',
         fileNum: 2,
@@ -98,19 +95,16 @@ void main() {
 
       // Verify some properties
       expect(wals[0].id, 'device_1-1234567890');
-      expect(wals[0].codec, BleAudioCodec.opus);
       expect(wals[0].walOffset, 100);
       expect(wals[0].storage, WalStorage.sdcard);
       expect(wals[0].status, WalStatus.synced);
 
       expect(wals[1].id, 'device_2-1234567891');
-      expect(wals[1].codec, BleAudioCodec.pcm8);
       expect(wals[1].storage, WalStorage.local);
     });
 
     test('saveWals creates a backup of the previous file', () async {
       final wal1 = Wal(
-        codec: BleAudioCodec.opus,
         channel: 1,
         device: 'device_1',
         fileNum: 1,
@@ -130,7 +124,6 @@ void main() {
       expect(backupFile.existsSync(), isFalse); // No backup on first save
 
       final wal2 = Wal(
-        codec: BleAudioCodec.pcm8,
         channel: 2,
         device: 'device_2',
         fileNum: 2,
@@ -155,7 +148,6 @@ void main() {
 
     test('clearAll deletes both main and backup files', () async {
       final wal1 = Wal(
-        codec: BleAudioCodec.opus,
         channel: 1,
         device: 'device_1',
         fileNum: 1,
@@ -183,7 +175,6 @@ void main() {
 
     test('saveWals merges WALs from different devices when deviceId is provided', () async {
       final wal1 = Wal(
-        codec: BleAudioCodec.opus,
         channel: 1,
         device: 'device_1',
         fileNum: 1,
@@ -194,7 +185,6 @@ void main() {
       );
 
       final wal2 = Wal(
-        codec: BleAudioCodec.pcm8,
         channel: 2,
         device: 'device_2',
         fileNum: 2,
@@ -220,7 +210,6 @@ void main() {
 
     test('saveWals overwrites previous WALs for the same deviceId', () async {
       final wal1 = Wal(
-        codec: BleAudioCodec.opus,
         channel: 1,
         device: 'device_1',
         fileNum: 1,
@@ -231,7 +220,6 @@ void main() {
       );
 
       final wal1Updated = Wal(
-        codec: BleAudioCodec.opus,
         channel: 1,
         device: 'device_1',
         fileNum: 1,
@@ -242,7 +230,6 @@ void main() {
       );
 
       final wal2 = Wal(
-        codec: BleAudioCodec.pcm8,
         channel: 2,
         device: 'device_2',
         fileNum: 2,
@@ -274,7 +261,6 @@ void main() {
       await file.writeAsString('{ invalid_json ]');
 
       final wal1 = Wal(
-        codec: BleAudioCodec.opus,
         channel: 1,
         device: 'device_1',
         fileNum: 1,
