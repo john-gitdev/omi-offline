@@ -1262,12 +1262,72 @@ Three properties worth preserving:
   written that text, the very thing that stranded the line, and could only conclude anything
   on the *next* alarm, a full interval later.
 
-Not covered, deliberately: Dart is alive but **frozen** after receiving the request. `flutterApi`
-is non-null (freeze is not death, and no flag distinguishes them), so no skip is recorded and
-the line keeps the previous outcome until Dart thaws and `_failSyncCycleToIdle` runs. That is
-unchanged from before — the old settle could not see this case either, because `idle()` had
-already cancelled the settle alarm. Fixing it needs a started/finished marker pair, not a
-liveness flag.
+That alarm check covers a cycle that **never started**. A cycle that started and was then
+**killed** is covered by its sibling, the cycle marker.
+
+### The cycle marker
+
+`SharedPreferencesUtil.syncCycleStartedMs` is stamped when a cycle is accepted and cleared on
+every terminal path — `_armConnectSettleWatchdog` and `_doBackgroundSync`'s entry stamp it,
+`_doBackgroundSync`'s `finally` and `_failSyncCycleToIdle` clear it. The pair to it is
+**process liveness, not a second timestamp**: a non-zero value found by a *fresh* process
+belongs to a cycle whose owner no longer exists and can therefore never finish.
+`DeviceProvider._sweepOrphanedSyncCycle()` runs once from the constructor and records it.
+
+Why not the obvious check — "did `lastSyncStatusMs` advance since the last alarm?" That cannot
+tell a dead cycle from a sync legitimately running longer than one interval, so it would write
+"Skipped" over a sync still in progress, and (via `renderIdleFromPrefs`) clobber its live
+progress line. The liveness framing needs no staleness window and no heartbeat, so there is
+nothing to tune.
+
+Two rules, both in the pure `DeviceProvider.orphanedCycleStatusMs` so they are unit-testable
+(`test/unit/providers/orphaned_sync_cycle_test.dart`):
+
+- **Stamped at the marker's own time, never at "now".** The cycle failed when its process
+  died, possibly hours earlier; "Last Sync: Skipped • 3:45 AM" is the true statement.
+- **Yields to any outcome already recorded at or after that instant** — a foreground sync, or
+  the alarm's own Dart-not-up skip — so the writers cannot fight over one cycle. The `>=` is
+  the boundary a `>` would invert, and it fails toward fabricating a skip over a real result,
+  so it is pinned explicitly.
+
+The sweep runs **last** in the constructor: it can push the notification, and
+`_startBackgroundSyncTimer` is what publishes `nextSyncTime`, without which the title renders
+a bare "Omi Offline". The cost is that the `_shouldSyncNow()` earlier in the constructor ran
+without the skip this may set, so an orphan brings the next sync forward by a tick rather than
+forcing a connect during launch. The flag persists, so nothing is lost.
+
+Still not covered, deliberately: Dart alive but **frozen** after receiving the request, in a
+process that is never killed. `flutterApi` is non-null (a freeze is not a death, and no flag
+distinguishes them) and the marker's owner still exists, so the line keeps the previous outcome
+until Dart thaws and `_failSyncCycleToIdle` runs. Detecting *that* needs a heartbeat plus a
+staleness threshold, which is the tuned knob the rest of this design avoids.
+
+### Real-bin fixtures (`app/test/fixtures/bins/`)
+
+Every other bin in the suite is **synthesised by the test**, writing headers and frame headers
+by hand using the same model of the format the parser uses. A shared misunderstanding of what
+the firmware actually emits is therefore invisible to all of them, by construction. Two tiny
+fixtures off a real device (app 0.35.6, captured 2026-08-29) break that circle — 476 B with
+four frames and a `0xFFFFFFFD` VAD-resume, and 36 B of metadata header alone (an empty-bin
+rotation). `test/unit/services/real_bin_format_test.dart` drives the **production**
+`VadAudioProcessor` over them with a counting stand-in decoder.
+
+It earns its place: mutating the frame-advance rule from `4 + ((len + 3) & ~3)` to
+`4 + len` — dropping the 4-byte alignment — takes the frame count from 4 to 1 and fails the
+test, while every synthetic fixture, written by that same rule, stays green.
+
+**What it cannot express, and must not be read as covering.** Nothing about audio. `opus_dart`
+is FFI over libopus and `VadAudioProcessor` builds a decoder only on iOS/Android, so on the
+host every real Opus payload decodes to whatever the stand-in returns — no real PCM, no
+meaningful VAD verdicts, no recordings. It is evidence about *framing*, and about nothing
+downstream of the decoder. VAD, splitting and stitching stay with the synthetic fixtures,
+which can script speech and silence deliberately.
+
+The 118-bin capture it came from also confirmed two things worth recording: the app's format
+model walks every one of them to exactly its length with no unparsed tail and no implausible
+frame, and SD-stored Opus frames are **VBR, 61–160 bytes**, not the fixed 40/80 B the codec-ID
+table quotes for the (nonexistent in this fork) BLE streaming path. Anything assuming a
+constant frame stride is wrong about real data.
 
 ### "Calculating…" guard
 
