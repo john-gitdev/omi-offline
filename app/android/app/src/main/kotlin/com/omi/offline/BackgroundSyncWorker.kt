@@ -110,9 +110,23 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
                 Result.retry()
             }
         } else {
-            // Flutter engine is not running (process was killed). Sync-on-open
-            // will handle it the next time the user opens the app.
-            Log.d(TAG, "doWork: Flutter engine not running — sync deferred to next app open")
+            // Dart is not up in this process YET. On a cold start that is the norm, not a
+            // failure: the process is starting because of this very firing, MyApp.onCreate
+            // has already created the engine, and executeDartEntrypoint only SCHEDULES
+            // main() — so isFlutterAlive cannot be set by the time doWork runs.
+            //
+            // Nothing is lost and nothing waits for the user. The due-check above reads the
+            // same two prefs, under the same rule, as Dart's _shouldSyncNow(), so anything
+            // that got this far also satisfies the check DeviceProvider's constructor makes
+            // moments later, before dartReady (the `syncDue` branch, device_provider.dart).
+            // That branch sets _pendingAppOpenSync and connects even with no UI attached,
+            // and _finishDeviceSetup then runs the sync. A handoff, not a deferral.
+            //
+            // Do not "fix" it by waiting on dartReady here. Blocking buys a few seconds of
+            // head start and spends them against WorkManager's documented ~10-minute
+            // execution limit, past which the job is stopped — so it makes a long catch-up
+            // more likely to be torn down mid-sync, not less.
+            Log.d(TAG, "doWork: Dart not up yet — handing the cycle to DeviceProvider at Dart startup")
             Result.success()
         }
     }
