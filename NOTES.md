@@ -1134,8 +1134,22 @@ staged at the re-trigger, then nothing at all until a button tap force-drained i
   and every end-of-recording path discards them. This is pre-existing and unchanged: the VAD-sleep path
   has always called `preroll_reset()` there, and before this fix a Record Stop either wedged (noisy) or
   hit that same reset ten seconds later (quiet), so the tail was never emitted correctly in either case.
-  Fixing it properly means draining the backlog into the codec *before* `write_session_end_marker_to_
-  storage()` runs, which is a different change on a different code path; do not bolt it onto the reset.
+
+  **Two independent constraints block the obvious fix, and both were checked.** Draining the backlog
+  into the codec at the stop and *then* resetting does not work: those frames arrive after the
+  `0xFFFFFFFC`, and the app drops audio after a session-end marker until the next `0xFFFFFFFD` or
+  `0xFFFFFFFE` (`_sessionEndPendingResume`, `vad_audio_processor.dart:162`) — so the drained frames are
+  discarded on the phone and the firmware has spent complexity for nothing. Draining *before* the marker
+  means holding `write_session_end_marker_to_storage()` until a mic-thread round trip completes, i.e.
+  blocking on the BLE callback thread that the app's own threshold writes arrive on — which is the
+  documented ATT-timeout hazard that keeps the button-side rotate out of `aad_set_threshold()` in the
+  first place (see CLAUDE.md, "The active bin is not listed").
+
+  A real fix therefore needs the marker emission itself moved onto the mic thread and sequenced after
+  the drain, which is a restructuring of a path carrying several unrelated invariants (unconditional
+  emission, the `prev == 65535` reasoning, the WAKE race). Worth doing deliberately or not at all — do
+  not bolt it onto the reset, and do not ship the drain-after-marker version, which looks like a fix and
+  is a no-op.
 
 - **Not reproduced against the fix on hardware.** This repository has no firmware test harness, so the
   mechanism was derived by reading against the device log and the fix is verified by build only. The
