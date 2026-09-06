@@ -35,6 +35,7 @@
 #include <zephyr/storage/disk_access.h>
 #include <zephyr/sys/atomic.h>
 
+#include "aad.h"
 #include "rtc.h"
 #include "imu.h"
 
@@ -449,6 +450,43 @@ static void ring_handle_read_req(const sd_req_t *req);
  * bools are sufficient (no cross-thread access). */
 static bool sd_suppress_auto_rotate = false;
 static bool sd_draining = false;
+
+/* Is a set sd_write_paused contradicted by the capture state it was taken for?
+ *
+ * Only aad.c ever pauses, so without AAD there is nothing to be stale — the constant
+ * false keeps the gate below identical on that build rather than reaching for a symbol
+ * that is not linked in (src/aad.c is conditional in CMakeLists.txt). */
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+static inline bool pause_is_stale(void)
+{
+    return aad_is_recording();
+}
+#else
+static inline bool pause_is_stale(void)
+{
+    return false;
+}
+#endif
+
+/* Report a stale pause, at most once a second.
+ *
+ * The rate limit is not about log volume, it is about not destroying the evidence: the
+ * detecting site clears the pause, so a healthy detection is one record, and a repeat
+ * means something is re-pausing under live capture — a flap that at ~11.6 blocks/s would
+ * evict all 128 slots in eleven seconds and take the priority-record and vad_level
+ * records that give the onset its context with it. Worker-thread-local, so a plain
+ * static needs no lock. */
+static void diag_log_stale_pause(uint32_t block_len)
+{
+    static int64_t last_stale_pause_log_ms;
+    int64_t now = k_uptime_get();
+
+    if (last_stale_pause_log_ms != 0 && (now - last_stale_pause_log_ms) < 1000) {
+        return;
+    }
+    last_stale_pause_log_ms = now;
+    diag_log_event(DIAG_WRITE_BLOCKED, STORAGE_BACKEND_RING, DIAG_WRITE_BLOCKED_STALE_PAUSE, block_len);
+}
 
 static void drain_pending_write_queue_for_shutdown(void)
 {
@@ -1641,14 +1679,36 @@ static void process_write_data_req(const sd_req_t *req)
      * marker-bearing blocks (session-end / priority-start / tap / mute / resume)
      * through a pause; drop only plain audio. */
     if (!sd_draining && atomic_get(&sd_write_paused)) {
-        uint32_t pause_marker = block_scan_markers(req->u.write.buf, req->u.write.len, true);
-        if (pause_marker != 0) {
-            atomic_inc(&marker_pause_gate_saves);
-            /* arg0 = which marker was rescued (low16); arg1 = block length. */
-            diag_log_event(DIAG_MARKER_PAUSE_GATE_SAVE, STORAGE_BACKEND_RING, (uint16_t) (pause_marker & 0xFFFF),
-                           req->u.write.len);
+        /* ...and a pause that outlived the silence it was taken for is not even a power
+         * optimization. It is arriving audio being deleted, uncounted: the discard below
+         * bumps nothing, precisely because a paused VAD forwards no frames, so under the
+         * healthy premise there is nothing here to count. This block's existence
+         * falsifies that premise. See DIAG_WRITE_BLOCKED_STALE_PAUSE for the 2026-09-05
+         * outage that motivated it — 46 minutes deleted with every counter at zero.
+         *
+         * Open the gate rather than merely reporting it. The pause is only ever cleared
+         * on the VAD's silence→speech edge, so leaving it shut would keep the loss going
+         * until ambient noise happened to allow that edge; this makes recovery a property
+         * of the write path instead of the room. sd_write_pause(false) is a bare atomic
+         * clear (no queueing, no wait), so it is safe from the worker thread, and the
+         * ring's io_wake hook resumes the suspended bus on the first real access.
+         *
+         * It cannot swallow a legitimate pause. During a genuine VAD sleep
+         * aad_is_recording() is false — including for the blocks still in flight behind
+         * the sleep transition, which is exactly when the drop below IS correct. */
+        if (pause_is_stale()) {
+            sd_write_pause(false);
+            diag_log_stale_pause(req->u.write.len);
         } else {
-            return; /* no I/O performed */
+            uint32_t pause_marker = block_scan_markers(req->u.write.buf, req->u.write.len, true);
+            if (pause_marker != 0) {
+                atomic_inc(&marker_pause_gate_saves);
+                /* arg0 = which marker was rescued (low16); arg1 = block length. */
+                diag_log_event(DIAG_MARKER_PAUSE_GATE_SAVE, STORAGE_BACKEND_RING, (uint16_t) (pause_marker & 0xFFFF),
+                               req->u.write.len);
+            } else {
+                return; /* no I/O performed */
+            }
         }
     }
 
