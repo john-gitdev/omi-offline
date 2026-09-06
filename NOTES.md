@@ -929,7 +929,7 @@ Logger.error(
 
 ---
 
-## Firmware: 46 minutes of audio captured, encoded and deleted (2026-09-05) — INSTRUMENTED, cause not proved
+## Firmware: audio captured, encoded and deleted after an auto-mode Record Stop (2026-09-05) — REPRODUCIBLE, cause not proved
 
 **What happened.** An auto-mode Priority Recording was stopped by button at 17:22:32. From that second
 until 18:08:26 the Omi wrote no audio at all: three consecutive bins of 36 B / 476 B / 36 B where every
@@ -941,6 +941,51 @@ diagnostics reads spanning the outage — **99.17 % duty**. `codec_drops` stayed
 drained and the audio was Opus-encoded. The hourly `DIAG_VAD_LEVEL` record landed on its exact cadence
 throughout (3,600,358 ms, identical to the preceding three hours), which a stopped mic cannot produce, and
 reported a 5-minute peak of 8899 against a threshold of 250.
+
+### Reproduced on demand (2026-09-05 21:17) — the trigger is confirmed
+
+Deliberately reproduced on the same device and boot, second attempt of two. Auto-mode Record Start at
+21:17:24.652, Record Stop at 21:19:12.853, room kept noisy. The priority recording itself saved normally
+(`recording_1788668244652`, 1m48s). The bin created at the stop, `1788668352`, covering 21:19:12 →
+21:23:48, came back **36 bytes**. Still wedged 15+ minutes later, through both a force sync and an
+app-command rotation — on 2026-09-05 only a quiet room ever released it.
+
+**The measurement that removes the last doubt.** Two diagnostics reads bracketing a window entirely
+inside the blackout:
+
+    21:21:45  uptime=729,935,341  voiced=220,073,900
+    21:24:48  uptime=730,117,740  voiced=220,256,300
+              Δuptime=182,399ms   Δvoiced=182,400ms   → 100.00% duty
+
+The VAD held a recording open for every frame of that window while the bin covering it holds no audio at
+all. Two further reads at 21:26 and 21:28 gave 99.0% over another two minutes. Captured, Opus-encoded,
+discarded — measured, not inferred.
+
+**The pause gate is exonerated a second time, now directly.** `marker_pause_gate_save` fired at the stop
+with arg0 = 0xFFFC: the session-end marker met a closed gate and was rescued, which proves
+`sd_write_paused` was set at 21:19:12 — and is the rescue working as designed, not a fault. But `seEmits`
+1→2 proves the finalize ran, the finalize sets `vad_is_recording = false` unconditionally, and `voiced`
+kept accumulating afterwards — and the resume path is the ONLY thing that sets it true again. So the
+resume ran, and the resume clears the pause inline. The pause was set, then cleared, and audio still did
+not arrive. `pauseSaves` then stayed at 43 for the whole blackout: nothing else met that gate.
+
+Bin `1788668352` contains no `0xFFFFFFFD` either, so the resume packet the VAD staged at 21:19:13 never
+flushed — a staged marker only flushes when audio fills the block behind it. `write_to_storage()` was
+therefore never called across 4.5 minutes of 100%-duty capture. Same conclusion as the original outage,
+now on a controlled reproduction with the trigger nailed down.
+
+**The blind spot, demonstrated.** Throughout, the device's event log read `capture=true (confirmed 0s
+ago) ... held=0 dropped=0`. Armed, working, and with literally nothing to report while nine minutes of
+audio was being deleted. Every counter the device owns sits downstream of the failure.
+
+**Two measurement traps recorded so the next reader does not repeat them:**
+
+- `sd_msgq_peak_depth` staying at 64 is NOT evidence that nothing reached the SD worker. It is a
+  since-boot high-water mark, and blocks arriving one at a time would never move it. The 36-byte bin and
+  the unflushed resume marker are what carry that argument.
+- `vad_voiced_ms` against `live_uptime_ms` carries ±200 ms of sampling skew (several windows show
+  `voiced` EXCEEDING uptime by 11–31 ms, which is impossible in reality). A 237 ms dip is therefore not a
+  measurement of the 3-frame debounce; it is noise. Only multi-second differences are readable.
 
 ### Where it is NOT — the byte-level elimination
 
