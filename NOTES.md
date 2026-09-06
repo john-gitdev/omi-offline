@@ -929,172 +929,141 @@ Logger.error(
 
 ---
 
-## Firmware: audio captured, encoded and deleted after an auto-mode Record Stop (2026-09-05) — REPRODUCIBLE, cause not proved
+## Firmware: audio captured and discarded before the codec after an auto-mode Record Stop (2026-09-05) — ROOT CAUSE FOUND AND FIXED
 
-**What happened.** An auto-mode Priority Recording was stopped by button at 17:22:32. From that second
-until 18:08:26 the Omi wrote no audio at all: three consecutive bins of 36 B / 476 B / 36 B where every
-other bin that day was 1.6–3.7 MB. No reboot — uptime ran continuously across it and `device_session_id`
-never changed. It recovered when the room fell quiet for ~65 s.
+**What happened.** Pressing Record Stop in auto mode could leave the Omi capturing into nothing: the mic
+kept delivering, the VAD kept a recording open at ~100 % duty, and not one audio frame reached the SD
+card. Reproducible on demand — two priority stops in the 2026-09-05 log, two blackouts, no others all
+week. Both ended only when the room fell quiet.
 
-**It was not a capture failure.** `vad_voiced_ms` advanced 14,502.6 s over the 14,624 s between two
-diagnostics reads spanning the outage — **99.17 % duty**. `codec_drops` stayed 0, so the PCM ring was
-drained and the audio was Opus-encoded. The hourly `DIAG_VAD_LEVEL` record landed on its exact cadence
-throughout (3,600,358 ms, identical to the preceding three hours), which a stopped mic cannot produce, and
-reported a 5-minute peak of 8899 against a threshold of 250.
+    17:22:32 stop -> bins 36 B / 476 B / 36 B until 18:07:20   (44 min 46 s)
+    21:19:12 stop -> bins 36 B / 36 B        until 21:40:49    (21 min 37 s)
 
-### Reproduced on demand (2026-09-05 21:17) — the trigger is confirmed
+### The mechanism
 
-Deliberately reproduced on the same device and boot, second attempt of two. Auto-mode Record Start at
-21:17:24.652, Record Stop at 21:19:12.853, room kept noisy. The priority recording itself saved normally
-(`recording_1788668244652`, 1m48s). The bin created at the stop, `1788668352`, covering 21:19:12 →
-21:23:48, came back **36 bytes**. Still wedged 15+ minutes later, through both a force sync and an
-app-command rotation — on 2026-09-05 only a quiet room ever released it.
+`aad_process_audio()` replays pre-roll one frame per callback, parking the concurrent live frames in
+`vad_live_backlog_buf`. Both rings are 8 deep, so once replay finishes the backlog sits **pinned at 8**
+for the rest of the recording: each callback flushes one old frame and pushes the current one. That is
+the designed pacing, and it means the backlog is full at every moment a recording can end.
 
-**The measurement that removes the last doubt.** Two diagnostics reads bracketing a window entirely
-inside the blackout:
+`aad_set_threshold()`'s `finalize_now` branch — the auto-mode Record Stop — cleared `vad_is_recording`
+without calling `preroll_reset()`. The two sibling sites do: the silence -> sleep transition, and the
+mic-park path via `aad_note_capture_gap()`. The `aad_apply_mic_gate()` at the end of the finalize does
+not help, because auto mode keeps the mic running, so nothing parks and no capture gap is raised. **That
+is the entire reason manual standby and mute were immune and auto was not.**
 
-    21:21:45  uptime=729,935,341  voiced=220,073,900
-    21:24:48  uptime=730,117,740  voiced=220,256,300
-              Δuptime=182,399ms   Δvoiced=182,400ms   → 100.00% duty
+So the backlog stayed full across the stop. A noisy room then re-triggered the VAD within the 3-frame
+debounce, `preroll_queue_flush()` set `vad_preroll_flush_pending = 3` against a backlog of 8, and:
 
-The VAD held a recording open for every frame of that window while the bin covering it holds no audio at
-all. Two further reads at 21:26 and 21:28 gave 99.0% over another two minutes. Captured, Opus-encoded,
-discarded — measured, not inferred.
+```c
+if (vad_preroll_flush_pending > 0) {
+    if (!live_backlog_push(buffer)) {
+        return false;          /* returned WITHOUT preroll_push_one() */
+    }
+    preroll_push_one();
+```
 
-**The pause gate is exonerated a second time, now directly.** `marker_pause_gate_save` fired at the stop
-with arg0 = 0xFFFC: the session-end marker met a closed gate and was rescued, which proves
-`sd_write_paused` was set at 21:19:12 — and is the rescue working as designed, not a fault. But `seEmits`
-1→2 proves the finalize ran, the finalize sets `vad_is_recording = false` unconditionally, and `voiced`
-kept accumulating afterwards — and the resume path is the ONLY thing that sets it true again. So the
-resume ran, and the resume clears the pause inline. The pause was set, then cleared, and audio still did
-not arrive. `pauseSaves` then stayed at 43 for the whole blackout: nothing else met that gate.
+`pending` never decremented, the backlog never drained (`live_backlog_flush_one()` is only reachable in
+the `pending == 0` branch), and every subsequent frame took the same early return. **Nothing reached
+`codec_receive_pcm()` again.** Self-sustaining, and only `preroll_reset()` clears it — which in auto
+mode means the VAD-sleep transition, i.e. `CONFIG_OMI_VAD_HOLD_MS` (10 s) under threshold. A noisy room
+refreshes `vad_last_voice_ms` every frame, so it never slept. Hence "recovers when the room goes quiet",
+and hence reproducible on demand by keeping the room noisy.
 
-Bin `1788668352` contains no `0xFFFFFFFD` either, so the resume packet the VAD staged at 21:19:13 never
-flushed — a staged marker only flushes when audio fills the block behind it. `write_to_storage()` was
-therefore never called across 4.5 minutes of 100%-duty capture. Same conclusion as the original outage,
-now on a controlled reproduction with the trigger nailed down.
+Latent since `19f339bb` (2026-06-29) added the finalize path; the backlog predates it.
 
-**The blind spot, demonstrated.** Throughout, the device's event log read `capture=true (confirmed 0s
-ago) ... held=0 dropped=0`. Armed, working, and with literally nothing to report while nine minutes of
-audio was being deleted. Every counter the device owns sits downstream of the failure.
+### Why every counter read healthy — the traps that sent the first investigation downstream
 
-**Two measurement traps recorded so the next reader does not repeat them:**
+Each of these is a real reading of a real counter, and each one is wrong about what it appears to say.
 
-- `sd_msgq_peak_depth` staying at 64 is NOT evidence that nothing reached the SD worker. It is a
-  since-boot high-water mark, and blocks arriving one at a time would never move it. The 36-byte bin and
-  the unflushed resume marker are what carry that argument.
-- `vad_voiced_ms` against `live_uptime_ms` carries ±200 ms of sampling skew (several windows show
-  `voiced` EXCEEDING uptime by 11–31 ms, which is impossible in reality). A 237 ms dip is therefore not a
-  measurement of the 3-frame debounce; it is noise. Only multi-second differences are readable.
+- **`vad_voiced_ms` at 99–100 % duty is not proof of capture.** It is stamped on `vad_is_recording`
+  alone, upstream of the replay block that was dropping the frames. 100 % duty over a bin holding no
+  audio is exactly what this bug produces. The comment above it used to say "every frame the VAD holds a
+  recording open is a frame that gets encoded and written" — that was false, and is corrected.
+- **`codec_drops == 0` is not proof the audio was encoded.** `codec_dropped_count` only moves when
+  `codec_receive_pcm()` finds its ring full. Zero is equally consistent with nothing ever being
+  submitted, which is what happened. Reading it as "encoded, therefore the loss is downstream" is what
+  pushed the first analysis all the way to `pusher()`.
+- **`storage_block_drops == 0` really does rule out everything below the pusher**, and usefully so: a
+  block rejected for any reason, including the uncounted `sd_write_blocked` early return in
+  `write_to_file_impl()`, is counted one level up in `write_custom_packet_to_storage()`. So the loss was
+  provably above the SD worker. It was further above than it looked.
+- **`sd_msgq_peak_depth` unmoved proves nothing on its own** — it is a since-boot high-water mark.
+- **`marker_pause_gate_saves` moving at the stop is the rescue working**, not a fault, and it stayed put
+  for the whole blackout because nothing else met that gate.
+- **`vad_voiced_ms` vs `live_uptime_ms` carries ±200 ms of sampling skew** (some windows show `voiced`
+  exceeding uptime by 11–31 ms). Only multi-second differences are readable.
+- **`CONFIG_LOG` is unset in `omi.conf`**, so `live_backlog_push()`'s `LOG_ERR("live backlog overflow")`
+  compiled to nothing. The device hit that line ~10 times a second for 21 minutes in silence.
 
-### Where it is NOT — the byte-level elimination
+The 476 B bin is the single most direct piece of evidence and is worth keeping in mind as the signature:
+header + one 440 B block holding `0xFFFFFFFD` at offset 0 and `0xFFFFFFFE` at offset 20, 400 B of
+padding, zero audio frames. That is `buffer_offset` frozen at 20 for twenty minutes — the resume packet
+staged at the re-trigger, then nothing at all until a button tap force-drained it.
 
-The tempting reading is the `sd_write_paused` gate in `process_write_data_req()`, the one discard in the
-SD chain that counts nothing. **Two independent observations refute it**, and they are worth re-deriving
-before anyone re-proposes that theory:
+### The fix
 
-- The finalize at 17:22:32 force-drained the `0xFFFFFFFC` (it is in bin `1788653995`), resetting
-  `buffer_offset` to 0. The VAD resumed ~1 s later — it must have, `voiced` is at 99 % — staging a
-  `0xFFFFFFFD` at offset 0. Had audio then been staged behind it, that block fills at ~5 frames (~100 ms)
-  and flushes. Reaching the gate it would be **rescued**, not dropped: `block_scan_markers` is called with
-  `include_resume = true`, so `marker_pause_gate_saves` would step and the block would land in bin
-  `1788654154`. That bin is **36 B** and `pauseSaves` was **42 before and after**.
-- Bin `1788655367` is 476 B = header + ONE 440 B block holding `0xFFFFFFFD` at offset 0, `0xFFFFFFFE` at
-  offset 20, and 400 B of padding, with zero audio frames. That is `buffer_offset` sitting at 20 for
-  twenty minutes until the 17:42:47 button tap force-drained it — i.e. `write_to_storage()` was never
-  called in that window.
-
-`sd_msgq_peak_depth` also stayed at 64. **Nothing reached the SD worker.** The loss is upstream of it, and
-the SD pause gate is exonerated: the resume's inline `sd_write_pause(false)` did its job.
-
-### Where it is
-
-`pusher()` is the only stage left, and its gate
-(`!is_muted && sd_get_cached_total_size() < MAX_STORAGE_BYTES && is_sd_on()`) is ruled out term by term:
-`is_muted` false (no mute markers, mic never parked, `voiced` climbing); `is_sd_on()` true (markers reached
-the card at 17:42:47 and the app read them back); and the size term dead — `MAX_AUDIO_FILES` is 150 and the
-app never listed more than 27 files, so `cached_total_file_size` is a sum over ≤27 real segments, tens of MB
-against a 480 MB threshold, rebuilt by every `CMD_LIST_FILES`.
-
-That leaves the pusher not reaching `write_to_storage()` at all: either it never returned from
-`k_sem_take(&tx_queue_sem, K_FOREVER)`, or it was blocked inside. Both are consistent with
-`write_to_tx_queue()` failing on a full ring — which is **self-sustaining**, because that early return also
-skips the `k_sem_give`, so a pusher waiting on the semaphore is never woken again. What first stalled the
-pusher is **not established**. Every unbounded wait in its path (`storage_temp_mutex`, held across a
-≤500 ms `write_to_file_blocking`) is bounded on inspection, and Zephyr mutexes carry priority inheritance.
-
-### What was changed
-
-0. **`transport.c` — a stall probe on `pusher()` itself.** `pusher_last_drain_ms` is stamped on every
-   real consume; `write_to_tx_queue()` reports `DIAG_WRITE_BLOCKED_PUSHER_STALLED` when the ring holds
-   data and nothing has been consumed for `PUSHER_STALL_MS` (5 s), and signals `tx_queue_sem`. This
-   catches the CAUSE (pusher not draining) rather than the CONSEQUENCE (ring full), ~5 s in rather than
-   only once the ring has filled, and the kick breaks the self-sustaining half — a full ring makes
-   `write_to_tx_queue()` bail before its `k_sem_give`, so a pusher parked on that semaphore is never
-   woken again. If records keep arriving after the kick, the pusher is blocked rather than starved,
-   which is the question the 2026-09-05 log could not settle.
-
-1. **`transport.c` — `write_to_tx_queue()`'s ring-full drop now emits `DIAG_WRITE_BLOCKED`**
-   (`DIAG_WRITE_BLOCKED_TX_RING_FULL`, arg1 = running total), rate-limited to 1/s. This is the fix that
-   matters: it is the stage the evidence points at and it was completely invisible. A counter was not an
-   option — the 0x0062 payload is full at 100 B — and *when* the stall began is the diagnosis anyway.
-2. **`aad.c` — the queued-pause apply re-checks `vad_is_recording`, not just `vad_threshold == 65535`.**
-   A real window, closed on inspection, **not** shown to have fired here: `sd_write_pause(true)` sets the
-   flag before queueing `REQ_PAUSE_IO` and then waits on the worker for up to 10.5 s, and a silence→speech
-   transition in that span runs its own inline clear first, which ours then buries. The old test is false
-   in exactly that case, because a priority stop restores an AUTO threshold (250). `vad_is_recording`
-   became `volatile` for the re-read.
-3. **`sd_card.c` — `capture_is_live()` is a third term on the pause gate's existing condition**, beside
-   `sd_draining`, which already names a state in which the pause does not apply. Defence in depth only:
-   the elimination above says no block reached this gate during the outage, so **this would not have
-   prevented it**. It declines rather than clearing `sd_write_paused`, because that flag is aad.c's
-   bookkeeping and the worker has no business writing it.
+1. **`preroll_reset()` in `aad_set_threshold()`'s finalize branch.** The root cause. Every site that
+   clears `vad_is_recording` must clear the replay state with it.
+2. **`preroll_reset()` in the WAKE-consumed clear** (`aad_process_audio`). Same omission, and a
+   button-free second trigger: a hardware WAKE landing mid-recording clears `vad_is_recording` with the
+   backlog still pinned.
+3. **Pre-roll drains even when the live backlog push fails.** `preroll_push_one()` is now unconditional,
+   so a full backlog costs one dropped 100 ms frame instead of a permanent stall. This is the backstop
+   for the next site that forgets rule 1 — the reset discipline is what should keep us out of there, but
+   a missed reset must not be able to wedge the gate again.
+4. **`aad_set_threshold()`'s queued-pause re-check now tests `vad_is_recording`, not just
+   `vad_threshold == 65535`.** Independent of the wedge and not implicated in it, but a real window:
+   `sd_write_pause(true)` sets its flag before queueing `REQ_PAUSE_IO` and then waits on the worker for
+   up to 10.5 s, so a silence→speech transition in that span runs its own inline `sd_write_pause(false)`
+   first and ours buries it. The threshold test is false in exactly the case that matters, because a
+   priority stop restores an *auto* threshold (250) — confirmed in the device's own `vad_level` records
+   from the outage.
+5. **`DIAG_WRITE_BLOCKED` / `DIAG_WRITE_BLOCKED_VAD_BACKLOG_FULL` (arg0 = 2)** is emitted at that drop,
+   rate-limited to 1/s with a running total in arg1. It should read zero forever; it exists so a
+   regression says so rather than being inferred from an absence, which is what cost the first
+   investigation. `DIAG_WRITE_BLOCKED_TX_RING_FULL` (arg0 = 0) instruments the other uncounted discard
+   in the chain — `write_to_tx_queue()`'s ring-full return — which was never implicated here and
+   correctly stayed silent throughout.
 
 ### Residuals — read before "improving" this
 
-- **The ghost-row timestamp is a separate, unresolved bug.** Confirmed on-device 2026-09-05: the
-  discard for bin `1788656840` renders 18:07:20–18:09:20 when the audio it describes runs 18:08:26–
-  18:10:26 — a 66 s offset equal to that bin's silent head. `_buildDiscardRecordFor` takes its
-  `startMs` from `_recordingStartTime`, which is anchored per frame from `vadResumeTime` when a
-  `0xFFFFFFFD` has been seen (`vad_audio_processor.dart:1762`) — and the resume packet IS the first
-  entry in that bin, with `gapMs = 65050` proving the anchor was computed. So the anchor exists, looks
-  correct, and demonstrably did not reach the discard record. NOT guessed at further: the source bin is
-  deleted and `dart` is unavailable in the analysis container, so the next step is a unit test driving a
-  synthetic bin (resume packet at head, UTC 65 s after `timerStart`, then audio) asserting the discard
-  starts at the resume, not at the bin head. Do not "fix" this by re-deriving the start from the bin
-  header — that is the wrong value, it is just the one currently observed.
-
-- **The root cause is not fixed, because it is not known.** Changes 2 and 3 close and guard a mechanism the
-  byte evidence refutes as the cause here. Change 1 is instrumentation, not a repair. If this recurs, the
-  new record says whether the tx ring is the stage; if it fires, the next question is what stalled
-  `pusher()`, and the answer is not in any signal that exists today.
-- **Do not "fix" this by deleting the pause from `aad_set_threshold()`'s finalize path.** It looks like the
-  trigger and is correct as written for manual standby (the mic parks, nothing more arrives). Removing it
-  for the auto case costs unbounded idle power: the finalize sets `vad_is_recording = false`, and the
-  ordinary VAD-sleep pause only fires on that same transition, so nothing would re-pause until after the
-  *next* recording ends.
-- **Not unit-tested.** This repository has no firmware test harness — the only `*test*` files under
-  `omi/firmware/` are J-Link flash scripts — so all three changes are verified by reading, not execution.
-  What *was* checked: the gate is the only reader of `sd_write_paused` on the write path; `sd_draining`
-  short-circuits it, so shutdown drains are untouched; both pause-request sites order
-  `vad_is_recording = false` ahead of the request, so `capture_is_live()` cannot fire spuriously; and
-  `atomic_inc()` returns the OLD value, hence the `+ 1`.
+- **Not reproduced against the fix on hardware.** This repository has no firmware test harness, so the
+  mechanism was derived by reading against the device log and the fix is verified by build only. The
+  confirming test is cheap and specific: auto-mode Record Start, Record Stop, keep the room noisy, and
+  check that the bin covering the next few minutes is not 36 B.
+- **Do not "fix" a future recurrence by widening the backlog or the pre-roll ring.** Both were already
+  equal at 8; the wedge came from state surviving across a recording boundary, not from depth. A deeper
+  ring makes the wedge rarer and no less permanent.
+- **Do not gate the reset on `vad_is_recording` being true.** The finalize is deliberately unconditional
+  (see the comment above `leaving_always_record`) precisely because a WAKE can have cleared the flag
+  microseconds earlier; a gated reset would skip exactly the interleaving that needs it most.
+- **The ghost-row timestamp is a separate, unresolved bug.** Confirmed on-device 2026-09-05: the discard
+  for bin `1788656840` renders 18:07:20–18:09:20 when the audio it describes runs 18:08:26–18:10:26 — a
+  66 s offset equal to that bin's silent head. `_buildDiscardRecordFor` takes its `startMs` from
+  `_recordingStartTime`, which is anchored per frame from `vadResumeTime` when a `0xFFFFFFFD` has been
+  seen (`vad_audio_processor.dart:1762`), and the resume packet IS the first entry in that bin with
+  `gapMs = 65050`, so the anchor was computed and did not reach the discard record. Needs a unit test
+  over a synthetic bin (resume packet at head, UTC 65 s after `timerStart`, then audio) asserting the
+  discard starts at the resume. Do not "fix" it by re-deriving the start from the bin header — that is
+  the wrong value, it is just the one currently observed.
 
 ---
 
 ## Firmware + App: SD Write Drop Counters (diagnostic instrumentation)
 
 **Status:** shipped and load-bearing as a canary. **"No drops" is a statement about the paths these
-counters watch, and nothing more** — on 2026-09-05 the device deleted 46 minutes of captured, encoded
-audio with every counter below reading zero, because the path it died on is deliberately uninstrumented.
-See "46 minutes of audio captured, encoded and deleted" immediately above before quoting a zero
-from this section — and note that the loss was upstream of every counter listed here.
+counters watch, and nothing more.** On 2026-09-05 the device discarded 44 and 21 minutes of captured
+audio with every counter below reading zero — the loss was in the VAD gate, upstream of all of them,
+before the encoder. Worse, `codec_drops == 0` positively misled: it only moves when a submitted frame
+finds the ring full, so it reads zero just as convincingly when nothing is submitted at all. Read the
+section immediately above before drawing any conclusion from a zero here.
 
 ### Why this exists
 
 Originally built to validate a deferred proposal ("Sequence & Sync" marker re-synchronization, formerly in `IDEAS.md`). That proposal would have wrapped every audio packet in a sequence-number + uptime header so the app could detect dropped frames and reconstruct a gap-less timeline — protecting in-stream button-tap markers (`0xFFFFFFFE`) from drifting out of sync when frames are lost. In-stream markers currently rely on byte-position within the `.bin` stream to compute their audio timestamp; if the firmware/SD card drops frames the timeline "shrinks" but the marker stays at its byte-offset, so it drifts.
 
-That proposal's complexity is only justified **if SD write drops actually happen**. These counters were built to measure that. **Result: zero drops across the entire usage history since they shipped** (with the blind spot noted in
+That proposal's complexity is only justified **if SD write drops actually happen**. These counters were built to measure that. **Result: zero drops across the entire usage history since they shipped** (subject to the blind spot in
 the Status line above — a zero here does not mean no audio was lost) — so the Sequence & Sync proposal was dropped as solving a non-problem (the section was removed from `IDEAS.md` on 2026-05-28). The counters are retained as a permanent cheap canary: if a future firmware change reintroduces drops, the Debug Tools page surfaces it instead of silently shipping marker drift.
 
 ### Counters and their failure modes
