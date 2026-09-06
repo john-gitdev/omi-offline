@@ -929,6 +929,84 @@ Logger.error(
 
 ---
 
+## App: a downloaded bin can be skipped forever as "already decoded" (2026-09-06) — FIXED
+
+**What happened.** A 227 KB bin (`1788707553`, 42.1 s of speech) was downloaded off the Omi, deleted
+from the card, and never decoded. It produced no recording and no discard record, so it left no trace
+in the UI at all — the audio was simply absent. The file sat intact in `raw_segments/` the whole time;
+Force Process reported nothing to do. Settling it took a rebuilt debuggable APK and `adb run-as`.
+
+**The mechanism.** Before decoding, `coveredBinPaths` asks "has a recording already consumed this
+bin?" — a real question, because a kill between writing a recording and pruning its bins would
+otherwise re-decode and duplicate. It answered geometrically:
+`_buildMergedCoverageIntervals` gave every recording a window of
+`[start − 10 min, end + vadSplitSeconds]` and **merged overlapping windows**. A bin whose
+`[binStart, binEnd]` fell inside any merged window was skipped.
+
+Both slacks are individually defensible — the left one is the 10-minute `FILE_ROTATION_INTERVAL_MS`,
+so a bin really can start that far before the recording it fed — but merging makes coverage
+**additive across unrelated recordings**, and it is not. Five recordings around a Priority Recording
+stop:
+
+    recording_1788707524000  15:12:04   6.0 s  ->  [15:02:04 .. 15:12:12]
+    recording_1788707530512  15:12:10  21.1 s  ->  [15:02:10 .. 15:12:33]
+    recording_1788707551000  15:12:31   1.5 s  ->  [15:02:31 .. 15:14:32]
+    recording_1788707634611  15:13:54  31.0 s  ->  [15:03:54 .. 15:16:05]
+    recording_1788707748502  15:15:48 415.9 s  ->  [15:05:48 .. 15:24:44]
+                                       merged  ->  [15:02:04 .. 15:24:44]
+    bin 1788707553                             ->   15:12:33 .. 15:13:29   (inside)
+
+**Permanent, and self-reinforcing.** A skipped bin is never decoded, so it yields neither a recording
+nor a discard, so nothing revisits it — while every later recording nearby widens the block. A
+Priority Recording is the ideal trigger: it produces a dense cluster of short recordings, and a
+10-minute left slack on each guarantees they chain. The user's own ghost-row recoveries
+(`…551000`, `…634611`) each added a window and helped seal it.
+
+### The fix
+
+`coveredBinPaths` now answers from **exact membership**: every finalized `.meta` already lists the bins
+its audio came from (`Conversation.relativeBins`), parsed by the same `Conversation.fromFile` the
+interval builder was already calling and throwing away — so this costs no extra I/O.
+
+The decisive argument is that **`pruneConsumedBins` — the DELETING side of the same question — has
+always used that list**, and its doc comment already says legacy metas "contribute no entries and so
+simply retain their bins (conservative)". The two were inconsistent, and in the wrong direction: the
+function that deletes files was careful, and the function that merely skips them was guessing. A
+skipped bin is audio the user never sees and is never offered again, so "merely skips" was the more
+destructive of the two.
+
+Geometry survives only for recordings that **cannot** answer — a `.meta` predating the bin-list field,
+or one truncated by a kill between the `.wav` and the `.meta`. Recordings carrying a list contribute no
+interval, which is what dissolves the merged block. That fallback logs loudly whenever it actually
+skips something; **if that line never appears over real use, delete the geometry and make
+`coveredBinPaths` a pure list lookup.**
+
+- **Drafts stay in the exact set.** A draft already holds its bins' audio and grows by appending the
+  next sync's bins, so re-decoding its own would duplicate. This is a different question from the one
+  `pruneConsumedBins` answers, which is why that function *protects* the same bins from deletion. Do
+  not decode them again, and do not delete them yet — both are true at once, and
+  `recordings_manager_test.dart` pins each.
+- **`_runProcessing` now logs every excluded bin and why.** In a healthy run nothing is excluded, so it
+  is rare and high-signal. It exists because this failure is invisible by construction.
+- **Debug Tools → Storage Inventory** writes the same picture to the log on demand. Deliberately a
+  button that logs, not a screen: the app could already *delete* `raw_segments/` but never *show* it.
+
+### Read before "improving" this
+
+- **The size→duration estimate over-estimates, and that is load-bearing.** `opusBytesPerMs = 4050/1000`
+  computes 56 s for a bin holding 42 s, because ~16 % of a bin is sentinel padding. That widens
+  `[binStart, binEnd]`, which makes coverage HARDER to satisfy. "Correcting" the constant makes the
+  filter more aggressive — the direction that loses audio.
+- **Do not delete the merge from the legacy path.** A long bin genuinely straddling two consecutive
+  recordings is consumed by both, and `recordings_manager_test.dart` pins it. The merge was never wrong
+  in itself; applying it to recordings that could answer exactly was.
+- **The fix is retroactive.** Anything currently stranded decodes on the next run; no migration and no
+  recovery tooling. The 2026-09-06 bin was also pulled off the device and repackaged as Ogg-Opus, which
+  is a useful trick to remember: the bin format is a plain framed Opus stream (see **Audio pipeline**),
+  so 60 lines of Ogg paging turns any raw bin into a playable file without the app.
+
+---
+
 ## Firmware: audio captured and discarded before the codec after an auto-mode Record Stop (2026-09-05) — ROOT CAUSE FOUND AND FIXED
 
 **What happened.** Pressing Record Stop in auto mode could leave the Omi capturing into nothing: the mic
