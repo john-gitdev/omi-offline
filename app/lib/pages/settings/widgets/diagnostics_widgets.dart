@@ -454,13 +454,13 @@ DiagLevel diagEventLevel(DiagLogRecord r) {
       return DiagLevel.bad;
     case 14: // adv_watchdog_rescue
       return DiagLevel.warn;
-    // write_blocked — graded on arg0, because the record means different things. Reason 0
-    // (tx ring full) is encoded audio dropped between the codec and storage while every
-    // drop counter reads zero, which is the worst outcome this device has and is the
-    // signature of a stalled pusher; a future reason may be milder, so anything else
-    // keeps the old warn until it says otherwise.
+    // write_blocked — graded on arg0, because the record means different things.
+    // Reason 0 (tx ring full) is encoded audio already being dropped; reason 2 (pusher
+    // stalled) is the same failure caught earlier, before the ring fills, and is the one
+    // that explains a silent recording gap — both are the worst outcome this device has.
+    // Reason 1 is reserved and not emitted, so anything else keeps the old warn.
     case 9:
-      return r.arg0 == 0 ? DiagLevel.bad : DiagLevel.warn;
+      return (r.arg0 == 0 || r.arg0 == 2) ? DiagLevel.bad : DiagLevel.warn;
     // empty_bin_rotation — graded on arg0 (the rotation reason), not the code. A
     // rotation landing in a silent stretch closes an empty bin by design and is not
     // worth a colour. Reason 6 is: that bin should hold the recording's own markers,
