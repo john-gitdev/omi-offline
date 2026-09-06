@@ -18,6 +18,13 @@
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/ring_buffer.h>
 
+/* mic.h is still needed after on_mic_audio()'s removal (oo-3.1.3): settings_mic_gain_
+ * write_handler() calls mic_set_gain(). Dropping the include with the callback made that
+ * an implicit declaration — the same fault the aad.h note below describes, and the build
+ * only says so as a warning. It is the sole remaining use; every other mic_* in this file
+ * is inside a comment. */
+#include "mic.h"
+
 /* aad.h is needed for the one AAD call in this file — settings_vad_threshold_write_handler's
  * aad_set_threshold(). Without it that call was an implicit declaration: benign on this ABI
  * (uint16_t promotes to int in r0, void return ignored) but formally UB, unchecked against the
@@ -28,7 +35,6 @@
 #include "features.h"
 #include "haptic.h"
 #include "lib/battery/battery.h"
-#include "mic.h"
 #ifdef CONFIG_OMI_ENABLE_MONITOR
 #include "monitor.h"
 #endif
@@ -2578,10 +2584,15 @@ static bool write_to_tx_queue(uint8_t *data, size_t size)
         ring_buf_put_finish(&ring_buf, 0); // Release claimed space
         /* An encoded frame just died between the codec and storage, and nothing else
          * records it: our false becomes broadcast_audio_packets()'s -1, which the codec
-         * callback discards. One of only two uncounted audio-discard sites in the whole
-         * chain — the other is the VAD backlog (DIAG_WRITE_BLOCKED_VAD_BACKLOG_FULL),
-         * which is where the 2026-09-05 loss actually happened; this site stayed silent
-         * throughout, and correctly so.
+         * callback discards. Since oo-3.1.3 this is the ONLY uncounted audio-discard site
+         * in the chain. There were two: the other was the VAD holding ring
+         * (DIAG_WRITE_BLOCKED_VAD_BACKLOG_FULL), where the 2026-09-05 loss actually
+         * happened — this site stayed silent throughout, and correctly so. That ring no
+         * longer exists. What replaced it does NOT reopen the gap, and that took a second
+         * record to keep true: the encoder ring refusing a submitted block is counted by
+         * codec_receive_pcm() as DIAG_CODEC_DROP, and pre-roll trimmed off a burst BEFORE
+         * submission — which no downstream counter can see, precisely because it is never
+         * submitted — is counted as DIAG_WRITE_BLOCKED_PREROLL_TRIMMED.
          *
          * The ring only stays full if pusher() has stopped draining it, and the failure
          * is self-sustaining: bailing here also skips the k_sem_give below, so a pusher
@@ -2656,13 +2667,6 @@ static uint16_t storage_block_marker_low16 = 0;
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
 static uint8_t storage_temp_data[MAX_WRITE_SIZE];
-
-/* mic delivers 100ms mono blocks (1600 samples at 16kHz); forward to codec ring buffer */
-#define MIC_BLOCK_SAMPLES (16000 / 10)
-static void on_mic_audio(int16_t *pcm)
-{
-    codec_receive_pcm(pcm, MIC_BLOCK_SAMPLES);
-}
 
 static void on_codec_output(uint8_t *data, size_t len)
 {
@@ -3270,11 +3274,17 @@ int transport_start()
 
     LOG_INF("Pusher successfully started");
 
-    // Wire the audio pipeline: mic PCM → codec → pusher ring buffer
+    /* Wire the half of the audio pipeline this file owns: codec output → pusher ring
+     * buffer. The mic → codec half belongs to main.c, which registers mic_handler()
+     * after this function returns and before mic_start(); see the note there. This used
+     * to also register an on_mic_audio() that fed the codec directly, and it was left
+     * here when AAD took the capture policy over in oo-1.4.0 — dead, because main.c
+     * overwrote it seven lines later, and removed in oo-3.1.3. Do not re-add a mic
+     * registration here: whichever of the two runs last wins, and this one bypasses the
+     * VAD gate entirely. */
     set_codec_callback(on_codec_output);
     codec_start();
-    set_mic_callback(on_mic_audio);
-    LOG_INF("Audio pipeline wired: mic → codec → pusher");
+    LOG_INF("Audio pipeline wired: codec → pusher");
 
     return 0;
 }

@@ -76,6 +76,14 @@ int codec_receive_pcm(int16_t *data, size_t len) // this gets called after mic d
     return 0;
 }
 
+size_t codec_pcm_space_get(void)
+{
+    k_mutex_lock(&codec_ring_mutex, K_FOREVER);
+    size_t space = ring_buf_space_get(&codec_ring_buf);
+    k_mutex_unlock(&codec_ring_mutex);
+    return space;
+}
+
 //
 // Thread
 //

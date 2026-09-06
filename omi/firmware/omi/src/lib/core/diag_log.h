@@ -162,27 +162,48 @@ typedef enum {
      * numbering survives if that ever changes; do not reuse the value. */
     DIAG_WRITE_BLOCKED_STALE_PAUSE = 1,
 
-    /* A live mic frame was dropped in aad_process_audio() because the live backlog was
-     * full while pre-roll was still replaying. This is the earliest stage audio can die
-     * — before the codec, so codec_drops cannot see it, and upstream of every 0x0062
-     * counter that watches the path to the card.
+    /* RETIRED, and NOT reusable — see below. Emitted only by oo-3.1.1 and earlier; the
+     * app still decodes it because devices on those versions are in the field, and the
+     * numbering must stay stable for their records to keep their meaning.
      *
-     * NOT upstream of all of 0x0062, and the exception is the trap: vad_voiced_ms
-     * (offset 88) is stamped in aad_process_audio BEFORE this drop, so it keeps
-     * climbing straight through the loss. High capture duty is therefore not evidence
-     * that anything reached the codec — reading it as such is exactly what sent the
-     * 2026-09-05 investigation four stages downstream of the real fault.
+     * It meant: a live mic frame was dropped in aad_process_audio() because the holding
+     * ring that shadowed the pre-roll replay was full. That ring is gone as of oo-3.1.3.
+     * The pre-roll is now submitted to the encoder in one burst at the RECORDING
+     * transition (preroll_queue_flush), so no live frame ever waits behind a replay.
      *
-     * It is the 2026-09-05 stage. Ending a recording without preroll_reset() left the
-     * backlog pinned full, and a noisy re-trigger inside the debounce wedged the gate:
-     * pre-roll never drained, every frame was discarded, and the device reported perfect
-     * health throughout (vad_voiced_ms at 100 % duty because it is stamped upstream of
-     * here, codec_drops 0 because nothing was SUBMITTED). Both halves are fixed — the
-     * reset at every vad_is_recording clear, and pre-roll now draining even when the
-     * push fails — so this should read zero forever. It exists so the next regression
-     * says so instead of being inferred from an absence.
-     *   arg1 = live frames dropped here since boot. */
+     * The trap it documented outlives it and is worth keeping in view: vad_voiced_ms
+     * (offset 88) is stamped in aad_process_audio on vad_is_recording alone, upstream of
+     * every place a frame can still die, so it keeps climbing straight through any such
+     * loss. High capture duty is not evidence that anything reached the card — reading it
+     * as such is exactly what sent the 2026-09-05 investigation four stages downstream of
+     * the real fault.
+     *   arg1 = live frames dropped here since boot (oo-3.1.1 and earlier only). */
     DIAG_WRITE_BLOCKED_VAD_BACKLOG_FULL = 2,
+
+    /* preroll_queue_flush() (oo-3.1.3 on) trimmed its burst because the encoder ring had
+     * no room for the whole pre-roll, dropping the OLDEST frames — so a recording begins
+     * with a shorter lead-in than the ring held.
+     *
+     * This needs its own reason because the trim happens BEFORE any push, which makes it
+     * invisible to every counter downstream: codec_receive_pcm() is never called for the
+     * trimmed frames, so codec_drops does not move, and nothing further along ever sees
+     * audio that was never submitted. Reading "codec_drops == 0" as "the burst fits" is
+     * the same shape of mistake as reading vad_voiced_ms as capture — a check that
+     * structurally cannot express the failure it is being asked about.
+     *
+     * Should read zero. The burst runs only at the silence->speech transition, and a
+     * sleeping VAD submits nothing, so the ring has been draining with no producer for at
+     * least CONFIG_OMI_VAD_HOLD_MS; it is empty there by construction. A non-zero value
+     * means the encoder thread was starved long enough to still hold >1 block at that
+     * moment, which is a scheduling fault upstream of audio, not a VAD problem.
+     * Disjoint from DIAG_CODEC_DROP by construction, and the burst loop's `- 1` is what
+     * makes it so: a block the encoder REJECTS was submitted, so codec_receive_pcm()
+     * counts that one and this does not. Every pre-roll frame is therefore accounted for
+     * exactly once — delivered, counted there, or counted here. Keep it that way; folding
+     * the rejected block in as well tallies it twice and contradicts "never submitted"
+     * above.
+     *   arg1 = pre-roll frames dropped this way since boot. Rate-limited to 1/s. */
+    DIAG_WRITE_BLOCKED_PREROLL_TRIMMED = 3,
 } diag_write_blocked_t;
 
 /* arg0 values for DIAG_BOND_STATE. Appended-only, same discipline as the codes. */

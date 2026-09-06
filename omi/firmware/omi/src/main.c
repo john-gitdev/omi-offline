@@ -447,6 +447,16 @@ int main(void)
 
     boot_warming_sequence();
 
+    /* The one and only mic registration, and it must stay between transport_start()
+     * and mic_start(). set_mic_callback() is a bare assignment, so whichever call runs
+     * last wins; transport_start() used to make a second one (on_mic_audio, feeding the
+     * codec directly) that this line silently overwrote — removed in oo-3.1.3, because a
+     * dead VAD-less capture path sitting seven lines above the live one is a reordering
+     * away from recording continuously with no gate, no pre-roll, and no
+     * mic_last_frame_uptime_ms, i.e. diagnostics reporting a dead mic while the card
+     * fills. The ordering against mic_start() is separately load-bearing and documented
+     * at each of its own reasons (mic.h, mic.c, aad.c, sd_card.c); this is the callback's
+     * reason, which none of those cover. */
     set_mic_callback(mic_handler);
     ret = mic_start();
     if (ret) {
