@@ -162,26 +162,25 @@ typedef enum {
      * numbering survives if that ever changes; do not reuse the value. */
     DIAG_WRITE_BLOCKED_STALE_PAUSE = 1,
 
-    /* A live mic frame was dropped in aad_process_audio() because the live backlog was
-     * full while pre-roll was still replaying. This is the earliest stage audio can die
-     * — before the codec, so codec_drops cannot see it, and upstream of every 0x0062
-     * counter that watches the path to the card.
+    /* RETIRED as of oo-3.1.2, and NOT reusable — see below. No firmware from that
+     * version on emits it; the app still decodes it because a device on older firmware
+     * does, and the numbering must stay stable for those records to keep their meaning.
      *
-     * NOT upstream of all of 0x0062, and the exception is the trap: vad_voiced_ms
-     * (offset 88) is stamped in aad_process_audio BEFORE this drop, so it keeps
-     * climbing straight through the loss. High capture duty is therefore not evidence
-     * that anything reached the codec — reading it as such is exactly what sent the
-     * 2026-09-05 investigation four stages downstream of the real fault.
+     * It meant: a live mic frame was dropped in aad_process_audio() because the holding
+     * ring that shadowed the pre-roll replay was full. That ring is gone. The pre-roll is
+     * now submitted to the encoder in one burst at the RECORDING transition
+     * (preroll_queue_flush), so no live frame ever waits behind a replay, and the one way
+     * pre-roll audio can still be lost — the encoder ring having no room for it — is
+     * counted by codec_receive_pcm() itself as DIAG_CODEC_DROP. That leaves ONE accounting
+     * point for audio dying before the encoder where there were two.
      *
-     * It is the 2026-09-05 stage. Ending a recording without preroll_reset() left the
-     * backlog pinned full, and a noisy re-trigger inside the debounce wedged the gate:
-     * pre-roll never drained, every frame was discarded, and the device reported perfect
-     * health throughout (vad_voiced_ms at 100 % duty because it is stamped upstream of
-     * here, codec_drops 0 because nothing was SUBMITTED). Both halves are fixed — the
-     * reset at every vad_is_recording clear, and pre-roll now draining even when the
-     * push fails — so this should read zero forever. It exists so the next regression
-     * says so instead of being inferred from an absence.
-     *   arg1 = live frames dropped here since boot. */
+     * The trap it documented outlives it and is worth keeping in view: vad_voiced_ms
+     * (offset 88) is stamped in aad_process_audio on vad_is_recording alone, upstream of
+     * every place a frame can still die, so it keeps climbing straight through any such
+     * loss. High capture duty is not evidence that anything reached the card — reading it
+     * as such is exactly what sent the 2026-09-05 investigation four stages downstream of
+     * the real fault.
+     *   arg1 = live frames dropped here since boot (pre-oo-3.1.2 devices only). */
     DIAG_WRITE_BLOCKED_VAD_BACKLOG_FULL = 2,
 } diag_write_blocked_t;
 
