@@ -454,11 +454,10 @@ DiagLevel diagEventLevel(DiagLogRecord r) {
       return DiagLevel.bad;
     case 14: // adv_watchdog_rescue
       return DiagLevel.warn;
-    // write_blocked — graded on arg0, because the record means different things.
-    // Reason 0 (tx ring full) is encoded audio already being dropped; reason 2 (pusher
-    // stalled) is the same failure caught earlier, before the ring fills, and is the one
-    // that explains a silent recording gap — both are the worst outcome this device has.
-    // Reason 1 is reserved and not emitted, so anything else keeps the old warn.
+    // write_blocked — graded on arg0, because the record names different stages. Reason
+    // 0 (tx ring full) and reason 2 (VAD backlog full) are both captured audio already
+    // discarded, which is the worst outcome this device has. Reason 1 is reserved and
+    // not emitted, so anything else keeps the old warn rather than claiming a loss.
     case 9:
       return (r.arg0 == 0 || r.arg0 == 2) ? DiagLevel.bad : DiagLevel.warn;
     // empty_bin_rotation — graded on arg0 (the rotation reason), not the code. A
