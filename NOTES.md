@@ -1093,7 +1093,7 @@ staged at the re-trigger, then nothing at all until a button tap force-drained i
 2. **`preroll_reset()` in the WAKE-consumed clear** (`aad_process_audio`). Same omission, and a
    button-free second trigger: a hardware WAKE landing mid-recording clears `vad_is_recording` with the
    backlog still pinned.
-3. **`preroll_queue_flush()` clears the live backlog itself.** *(Superseded in oo-3.1.2 — the backlog no
+3. **`preroll_queue_flush()` clears the live backlog itself.** *(Superseded in oo-3.1.3 — the backlog no
    longer exists; see "Firmware: the pre-roll is submitted in one burst" below. Kept here because it is
    what made the wedge unreachable for the oo-3.1.1 shape of the code.)* A replay only ever starts at the
    RECORDING transition, so anything in the backlog then belongs to the previous recording and is stale
@@ -1101,7 +1101,7 @@ staged at the re-trigger, then nothing at all until a button tap force-drained i
    branch ran, so the wedge was unreachable — no matter which site forgot to reset, and no matter how the
    threads interleaved.
 
-4. **Pre-roll drains even when the live backlog push fails.** *(Superseded in oo-3.1.2 with the branch it
+4. **Pre-roll drains even when the live backlog push fails.** *(Superseded in oo-3.1.3 with the branch it
    guarded.)* `preroll_push_one()` was made unconditional, so a failed push cost one dropped 100 ms frame
    instead of a permanent stall.
 5. **`aad_set_threshold()`'s queued-pause re-check now tests `vad_is_recording`, not just
@@ -1112,16 +1112,18 @@ staged at the re-trigger, then nothing at all until a button tap force-drained i
    priority stop restores an *auto* threshold (250) — confirmed in the device's own `vad_level` records
    from the outage.
 6. **`DIAG_WRITE_BLOCKED` / `DIAG_WRITE_BLOCKED_VAD_BACKLOG_FULL` (arg0 = 2)** was emitted at that drop,
-   rate-limited to 1/s with a running total in arg1. *(Retired in oo-3.1.2 along with the ring it
+   rate-limited to 1/s with a running total in arg1. *(Retired in oo-3.1.3 along with the ring it
    counted. The reason code is NOT reusable — a device on older firmware still emits it and the app still
    decodes it.)* `DIAG_WRITE_BLOCKED_TX_RING_FULL` (arg0 = 0) instruments the other uncounted discard in
    the chain — `write_to_tx_queue()`'s ring-full return — which was never implicated here and correctly
-   stayed silent throughout. Since oo-3.1.2 it is the only one: pre-roll that the encoder ring cannot
+   stayed silent throughout. Since oo-3.1.3 it is still the only one, which took a second record to keep
+   true: pre-roll trimmed off a burst BEFORE submission is invisible to every downstream counter, so it
+   is counted as DIAG_WRITE_BLOCKED_PREROLL_TRIMMED. Pre-roll that the encoder ring cannot
    take is counted by `codec_receive_pcm()` as `DIAG_CODEC_DROP`.
 
 ### Residuals — read before "improving" this
 
-- **Every recording lost the ~0.8 s sitting in the live backlog when it ended.** *(Fixed in oo-3.1.2 —
+- **Every recording lost the ~0.8 s sitting in the live backlog when it ended.** *(Fixed in oo-3.1.3 —
   see the next section. The analysis below is kept because it is why the obvious fix is the wrong one,
   and someone will propose it again.)* The backlog ran one-in-one-out for the life of a recording, so its
   contents were always that recording's last 0.8 s, and every end-of-recording path discarded them.
@@ -1140,7 +1142,7 @@ staged at the re-trigger, then nothing at all until a button tap force-drained i
   the app's threshold writes arrive on — and on a *manual* stop the mic has already been parked by
   `aad_apply_mic_gate()`, so a marker deferred to the mic thread would never be emitted at all, which is
   the exact failure the unconditional emit exists to prevent. **Do not ship the drain-at-stop version.**
-  oo-3.1.2 removes the need for it instead: nothing is left in flight at a stop.
+  oo-3.1.3 removes the need for it instead: nothing is left in flight at a stop.
 
 - **Not reproduced against the fix on hardware.** This repository has no firmware test harness, so the
   mechanism was derived by reading against the device log and the fix is verified by build only. The
@@ -1164,7 +1166,7 @@ staged at the re-trigger, then nothing at all until a button tap force-drained i
 
 ---
 
-## Firmware: the pre-roll is submitted in one burst (oo-3.1.2) — the 0.8 s tail, fixed at the source
+## Firmware: the pre-roll is submitted in one burst (oo-3.1.3) — the 0.8 s tail, fixed at the source
 
 **What it fixes.** Every recording lost its last ~0.8 s. Stop mid-sentence and the last word was gone —
 on all four paths that can end a recording, most visibly the deliberate one (button / app Record Stop),
@@ -1218,7 +1220,7 @@ and *after* the `0xFFFFFFFD` write, where the queueing version sat before both:
 
 **Measured, both cores built from the same toolchain (NCS v2.9.0):**
 
-| | oo-3.1.1 | oo-3.1.2 | delta |
+| | oo-3.1.1 | oo-3.1.3 | delta |
 |---|---|---|---|
 | App-core RAM | 407,808 B (90.51 %) | 382,192 B (84.83 %) | **−25,616 B / −5.68 pp** |
 | App-core flash | 251,760 B | 251,536 B | −224 B |
@@ -1229,16 +1231,44 @@ remains at 25,600 B.
 ### Residuals — read before "improving" this
 
 - **Not exercised on hardware.** There is no firmware test harness in this repo; the change is verified by
-  build, symbol table, and trace. The confirming test is specific: record, stop mid-word, and check the
-  last word is in the file. A second, cheaper check is that `codec_frame_drops` (0x0062) stays 0 across a
-  few dozen recordings — a non-zero value there is the burst not fitting, which is the one risk taken.
-- **A stop landing between the marker write and the burst writes a pre-roll that the app then drops.**
-  The `0xFFFFFFFD` write can block up to 500 ms (`write_to_file_blocking`) when it fills a block, and a
-  finalize during that stall clears `vad_is_recording` and emits `0xFFFFFFFC` before the burst runs — so
-  the burst lands after the stop marker and `_sessionEndPendingResume` discards it. **Benign and left
-  unguarded deliberately:** the audio is one recording's lead-in, already lost in the old code for the
-  same reason, and the only cost is ~26 KB written to the card. It is not worth a re-read of
-  `vad_is_recording` inside `preroll_queue_flush()` whose correctness nothing here can test.
+  build, symbol table, an exhaustive test of the ring arithmetic, and trace. The confirming test is
+  specific: record, stop mid-word, and check the last word is in the file.
+
+  The cheaper on-device check is `DIAG_WRITE_BLOCKED` **arg0 = 3** (`PREROLL_TRIMMED`) staying absent from
+  the event log. **Do not use `codec_frame_drops` (0x0062) for this** — an earlier draft of this note did,
+  and it is exactly the class of mistake this file keeps recording. The trim happens *before* any push, so
+  `codec_receive_pcm()` is never called for the trimmed frames and that counter cannot move no matter how
+  much lead-in is lost. A check that structurally cannot express the failure it is asked about reads clean
+  forever; that is how the 0.34.9 log-loss metric passed for a year. Reason 3 exists to close exactly this
+  hole, and it is why the trim is instrumented at all rather than left as a silent branch.
+
+### A stop that lands around the burst
+
+A Record Stop arriving near the RECORDING transition puts its `0xFFFFFFFC` in the bin **ahead** of the
+burst's audio, and `_sessionEndPendingResume` then discards up to 0.8 s of that recording's lead-in.
+Reachable by two distinct routes, both confirmed against the generated Kconfig:
+
+- **A button stop preempts the mic thread outright.** `CONFIG_SYSTEM_WORKQUEUE_PRIORITY = -1` is
+  *cooperative*, above the mic thread's preemptible 5, so `button_work` can land between any two
+  instructions — including between the `0xFFFFFFFD` write and `preroll_queue_flush()`. No stall required;
+  an earlier draft of this note claimed the 500 ms `write_to_file_blocking` was needed, and it is not.
+- **An app stop cannot preempt, and does not need to.** `CONFIG_BT_RX_PRIO = 8` is below the mic thread,
+  so a threshold write waits for it to block — but by then the burst is in the encoder ring and still has
+  to cross the tx ring and the pusher, while the `0xFFFFFFFC` goes straight into `storage_temp_data`. The
+  marker skips the whole pipeline; that is the same asymmetry that makes draining at the stop impossible.
+
+**It is not a regression, and the arithmetic matters.** The paced version lost the identical 8 frames to
+the identical race: whatever had not yet been fed one-per-callback was discarded when the finalize's
+`replay_reset_pending` cleared `vad_preroll_flush_pending` on the next callback. Old and new both lose the
+whole pre-roll here. Away from this window the new code is strictly better — a stop several callbacks into
+a recording now loses at most the one frame in flight, where the paced version always lost its pinned 8.
+
+**Left unguarded deliberately.** A `vad_is_recording` re-read inside `preroll_queue_flush()` would skip the
+burst in the first route only; it cannot help the second, where the frames are already submitted. It
+recovers no audio in either — the app discards them regardless — and saves only a ~26 KB card write on a
+path that needs a stop inside a ~100 ms window. Closing it for real needs the marker emission moved onto
+the mic thread and sequenced behind the pipeline drain, which the three constraints above make a
+restructure rather than a fix. **Do not bolt a partial guard onto the burst and call it closed.**
 - **The wedge that motivated all of this is gone rather than guarded.** `DIAG_WRITE_BLOCKED_VAD_BACKLOG_FULL`
   is retired; the branch it instrumented no longer exists. Do not reuse reason code 2 — older firmware in
   the field still emits it and the app still decodes it.
