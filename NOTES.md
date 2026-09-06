@@ -929,15 +929,251 @@ Logger.error(
 
 ---
 
+## App: a downloaded bin can be skipped forever as "already decoded" (2026-09-06) — FIXED
+
+**What happened.** A 227 KB bin (`1788707553`, 42.1 s of speech) was downloaded off the Omi, deleted
+from the card, and never decoded. It produced no recording and no discard record, so it left no trace
+in the UI at all — the audio was simply absent. The file sat intact in `raw_segments/` the whole time;
+Force Process reported nothing to do. Settling it took a rebuilt debuggable APK and `adb run-as`.
+
+**The mechanism.** Before decoding, `coveredBinPaths` asks "has a recording already consumed this
+bin?" — a real question, because a kill between writing a recording and pruning its bins would
+otherwise re-decode and duplicate. It answered geometrically:
+`_buildMergedCoverageIntervals` gave every recording a window of
+`[start − 10 min, end + vadSplitSeconds]` and **merged overlapping windows**. A bin whose
+`[binStart, binEnd]` fell inside any merged window was skipped.
+
+Both slacks are individually defensible — the left one is the 10-minute `FILE_ROTATION_INTERVAL_MS`,
+so a bin really can start that far before the recording it fed — but merging makes coverage
+**additive across unrelated recordings**, and it is not. Five recordings around a Priority Recording
+stop:
+
+    recording_1788707524000  15:12:04   6.0 s  ->  [15:02:04 .. 15:12:12]
+    recording_1788707530512  15:12:10  21.1 s  ->  [15:02:10 .. 15:12:33]
+    recording_1788707551000  15:12:31   1.5 s  ->  [15:02:31 .. 15:14:32]
+    recording_1788707634611  15:13:54  31.0 s  ->  [15:03:54 .. 15:16:05]
+    recording_1788707748502  15:15:48 415.9 s  ->  [15:05:48 .. 15:24:44]
+                                       merged  ->  [15:02:04 .. 15:24:44]
+    bin 1788707553                             ->   15:12:33 .. 15:13:29   (inside)
+
+**Permanent, and self-reinforcing.** A skipped bin is never decoded, so it yields neither a recording
+nor a discard, so nothing revisits it — while every later recording nearby widens the block. A
+Priority Recording is the ideal trigger: it produces a dense cluster of short recordings, and a
+10-minute left slack on each guarantees they chain. The user's own ghost-row recoveries
+(`…551000`, `…634611`) each added a window and helped seal it.
+
+### The fix
+
+`coveredBinPaths` now answers from **exact membership**: every finalized `.meta` already lists the bins
+its audio came from (`Conversation.relativeBins`), parsed by the same `Conversation.fromFile` the
+interval builder was already calling and throwing away — so this costs no extra I/O.
+
+The decisive argument is that **`pruneConsumedBins` — the DELETING side of the same question — has
+always used that list**, and its doc comment already says legacy metas "contribute no entries and so
+simply retain their bins (conservative)". The two were inconsistent, and in the wrong direction: the
+function that deletes files was careful, and the function that merely skips them was guessing. A
+skipped bin is audio the user never sees and is never offered again, so "merely skips" was the more
+destructive of the two.
+
+Geometry survives only for recordings that **cannot** answer — a `.meta` predating the bin-list field,
+or one truncated by a kill between the `.wav` and the `.meta`. Recordings carrying a list contribute no
+interval, which is what dissolves the merged block. That fallback logs loudly whenever it actually
+skips something; **if that line never appears over real use, delete the geometry and make
+`coveredBinPaths` a pure list lookup.**
+
+- **Drafts stay in the exact set.** A draft already holds its bins' audio and grows by appending the
+  next sync's bins, so re-decoding its own would duplicate. This is a different question from the one
+  `pruneConsumedBins` answers, which is why that function *protects* the same bins from deletion. Do
+  not decode them again, and do not delete them yet — both are true at once, and
+  `recordings_manager_test.dart` pins each.
+- **`_runProcessing` now logs every excluded bin and why.** In a healthy run nothing is excluded, so it
+  is rare and high-signal. It exists because this failure is invisible by construction.
+- **Debug Tools → Storage Inventory** writes the same picture to the log on demand. Deliberately a
+  button that logs, not a screen: the app could already *delete* `raw_segments/` but never *show* it.
+
+### Read before "improving" this
+
+- **The size→duration estimate over-estimates, and that is load-bearing.** `opusBytesPerMs = 4050/1000`
+  computes 56 s for a bin holding 42 s, because ~16 % of a bin is sentinel padding. That widens
+  `[binStart, binEnd]`, which makes coverage HARDER to satisfy. "Correcting" the constant makes the
+  filter more aggressive — the direction that loses audio.
+- **Do not delete the merge from the legacy path.** A long bin genuinely straddling two consecutive
+  recordings is consumed by both, and `recordings_manager_test.dart` pins it. The merge was never wrong
+  in itself; applying it to recordings that could answer exactly was.
+- **The fix is retroactive.** Anything currently stranded decodes on the next run; no migration and no
+  recovery tooling. The 2026-09-06 bin was also pulled off the device and repackaged as Ogg-Opus, which
+  is a useful trick to remember: the bin format is a plain framed Opus stream (see **Audio pipeline**),
+  so 60 lines of Ogg paging turns any raw bin into a playable file without the app.
+
+---
+
+## Firmware: audio captured and discarded before the codec after an auto-mode Record Stop (2026-09-05) — ROOT CAUSE FOUND AND FIXED
+
+**What happened.** Pressing Record Stop in auto mode could leave the Omi capturing into nothing: the mic
+kept delivering, the VAD kept a recording open at ~100 % duty, and not one audio frame reached the SD
+card. Reproducible on demand — two priority stops in the 2026-09-05 log, two blackouts, no others all
+week. Both ended only when the room fell quiet.
+
+    17:22:32 stop -> bins 36 B / 476 B / 36 B until 18:07:20   (44 min 46 s)
+    21:19:12 stop -> bins 36 B / 36 B        until 21:40:49    (21 min 37 s)
+
+### The mechanism
+
+`aad_process_audio()` replays pre-roll one frame per callback, parking the concurrent live frames in
+`vad_live_backlog_buf`. Both rings are 8 deep, so once replay finishes the backlog sits **pinned at 8**
+for the rest of the recording: each callback flushes one old frame and pushes the current one. That is
+the designed pacing, and it means the backlog is full at every moment a recording can end.
+
+`aad_set_threshold()`'s `finalize_now` branch — the auto-mode Record Stop — cleared `vad_is_recording`
+without calling `preroll_reset()`. The two sibling sites do: the silence -> sleep transition, and the
+mic-park path via `aad_note_capture_gap()`. The `aad_apply_mic_gate()` at the end of the finalize does
+not help, because auto mode keeps the mic running, so nothing parks and no capture gap is raised. **That
+is the entire reason manual standby and mute were immune and auto was not.**
+
+So the backlog stayed full across the stop. A noisy room then re-triggered the VAD within the 3-frame
+debounce, `preroll_queue_flush()` set `vad_preroll_flush_pending = 3` against a backlog of 8, and:
+
+```c
+if (vad_preroll_flush_pending > 0) {
+    if (!live_backlog_push(buffer)) {
+        return false;          /* returned WITHOUT preroll_push_one() */
+    }
+    preroll_push_one();
+```
+
+`pending` never decremented, the backlog never drained (`live_backlog_flush_one()` is only reachable in
+the `pending == 0` branch), and every subsequent frame took the same early return. **Nothing reached
+`codec_receive_pcm()` again.** Self-sustaining, and only `preroll_reset()` clears it — which in auto
+mode means the VAD-sleep transition, i.e. `CONFIG_OMI_VAD_HOLD_MS` (10 s) under threshold. A noisy room
+refreshes `vad_last_voice_ms` every frame, so it never slept. Hence "recovers when the room goes quiet",
+and hence reproducible on demand by keeping the room noisy.
+
+Latent since `19f339bb` (2026-06-29) added the finalize path; the backlog predates it.
+
+### Why every counter read healthy — the traps that sent the first investigation downstream
+
+Each of these is a real reading of a real counter, and each one is wrong about what it appears to say.
+
+- **`vad_voiced_ms` at 99–100 % duty is not proof of capture.** It is stamped on `vad_is_recording`
+  alone, upstream of the replay block that was dropping the frames. 100 % duty over a bin holding no
+  audio is exactly what this bug produces. The comment above it used to say "every frame the VAD holds a
+  recording open is a frame that gets encoded and written" — that was false, and is corrected.
+- **`codec_drops == 0` is not proof the audio was encoded.** `codec_dropped_count` only moves when
+  `codec_receive_pcm()` finds its ring full. Zero is equally consistent with nothing ever being
+  submitted, which is what happened. Reading it as "encoded, therefore the loss is downstream" is what
+  pushed the first analysis all the way to `pusher()`.
+- **`storage_block_drops == 0` really does rule out everything below the pusher**, and usefully so: a
+  block rejected for any reason, including the uncounted `sd_write_blocked` early return in
+  `write_to_file_impl()`, is counted one level up in `write_custom_packet_to_storage()`. So the loss was
+  provably above the SD worker. It was further above than it looked.
+- **`sd_msgq_peak_depth` unmoved proves nothing on its own** — it is a since-boot high-water mark.
+- **`marker_pause_gate_saves` moving at the stop is the rescue working**, not a fault, and it stayed put
+  for the whole blackout because nothing else met that gate.
+- **`vad_voiced_ms` vs `live_uptime_ms` carries ±200 ms of sampling skew** (some windows show `voiced`
+  exceeding uptime by 11–31 ms). Only multi-second differences are readable.
+- **`CONFIG_LOG` is unset in `omi.conf`**, so `live_backlog_push()`'s `LOG_ERR("live backlog overflow")`
+  compiled to nothing. The device hit that line ~10 times a second for 21 minutes in silence.
+
+The 476 B bin is the single most direct piece of evidence and is worth keeping in mind as the signature:
+header + one 440 B block holding `0xFFFFFFFD` at offset 0 and `0xFFFFFFFE` at offset 20, 400 B of
+padding, zero audio frames. That is `buffer_offset` frozen at 20 for twenty minutes — the resume packet
+staged at the re-trigger, then nothing at all until a button tap force-drained it.
+
+### The fix
+
+1. **The finalize branch of `aad_set_threshold()` now resets the replay state.** The root cause. Every
+   site that clears `vad_is_recording` must clear the replay state with it.
+
+   **Posted, not called** (`replay_reset_pending`), because that branch runs on the button/BLE thread.
+   `preroll_reset()` is mic-thread-only for a concrete reason: `live_backlog_flush_one()` and
+   `preroll_push_one()` each test a count for zero and then decrement it, so a reset landing between the
+   two underflows a `uint8_t` to 255 and replays ~25 s of stale frames. The plain assignments that
+   branch already makes carry no such hazard — none is a read-modify-write — which is why this one had
+   to be posted and they did not. The file already states the rule, above `capture_gap_pending`.
+2. **`preroll_reset()` in the WAKE-consumed clear** (`aad_process_audio`). Same omission, and a
+   button-free second trigger: a hardware WAKE landing mid-recording clears `vad_is_recording` with the
+   backlog still pinned.
+3. **`preroll_queue_flush()` clears the live backlog itself.** This is the structural fix, and the one
+   that matters most: a replay only ever starts at the RECORDING transition, so anything in the backlog
+   then belongs to the previous recording and is stale by at least that recording's whole length. After
+   this line the backlog is never full when the replay branch runs, so the wedge is unreachable — no
+   matter which site forgot to reset, and no matter how the threads interleave. It needs no ordering of
+   its own: it runs on the mic thread, immediately before the pending count it protects is set.
+
+   It is deliberately not redundant with (1) and (2). Those drop the stale *pre-roll*, which this does
+   not touch, and (1) posts across threads and therefore cannot be ordered against a mic thread already
+   past its consume point. Do not delete this as duplication — it is what makes the other two
+   non-load-bearing.
+
+4. **Pre-roll drains even when the live backlog push fails.** `preroll_push_one()` is now unconditional,
+   so a failed push costs one dropped 100 ms frame instead of a permanent stall. Belt to (3)'s braces:
+   it bounds any interleaving that still reaches a full backlog to at most the 8 frames of one replay.
+5. **`aad_set_threshold()`'s queued-pause re-check now tests `vad_is_recording`, not just
+   `vad_threshold == 65535`.** Independent of the wedge and not implicated in it, but a real window:
+   `sd_write_pause(true)` sets its flag before queueing `REQ_PAUSE_IO` and then waits on the worker for
+   up to 10.5 s, so a silence→speech transition in that span runs its own inline `sd_write_pause(false)`
+   first and ours buries it. The threshold test is false in exactly the case that matters, because a
+   priority stop restores an *auto* threshold (250) — confirmed in the device's own `vad_level` records
+   from the outage.
+6. **`DIAG_WRITE_BLOCKED` / `DIAG_WRITE_BLOCKED_VAD_BACKLOG_FULL` (arg0 = 2)** is emitted at that drop,
+   rate-limited to 1/s with a running total in arg1. It should read zero forever; it exists so a
+   regression says so rather than being inferred from an absence, which is what cost the first
+   investigation. `DIAG_WRITE_BLOCKED_TX_RING_FULL` (arg0 = 0) instruments the other uncounted discard
+   in the chain — `write_to_tx_queue()`'s ring-full return — which was never implicated here and
+   correctly stayed silent throughout.
+
+### Residuals — read before "improving" this
+
+- **The backlog record should now be structurally unreachable, and is kept anyway.** With (3) in place
+  `vad_live_backlog_cnt` is 0 every time a replay begins, so the push cannot fail; the counter is a
+  canary for a future regression in this state machine, not a live signal. Read a non-zero value as
+  "someone changed the replay logic", not as a recurrence of the 2026-09-05 fault.
+
+- **Every recording still loses the ~0.8 s sitting in the live backlog when it ends.** The backlog runs
+  one-in-one-out for the life of a recording, so its contents are always that recording's last 0.8 s,
+  and every end-of-recording path discards them. This is pre-existing and unchanged: the VAD-sleep path
+  has always called `preroll_reset()` there, and before this fix a Record Stop either wedged (noisy) or
+  hit that same reset ten seconds later (quiet), so the tail was never emitted correctly in either case.
+  Fixing it properly means draining the backlog into the codec *before* `write_session_end_marker_to_
+  storage()` runs, which is a different change on a different code path; do not bolt it onto the reset.
+
+- **Not reproduced against the fix on hardware.** This repository has no firmware test harness, so the
+  mechanism was derived by reading against the device log and the fix is verified by build only. The
+  confirming test is cheap and specific: auto-mode Record Start, Record Stop, keep the room noisy, and
+  check that the bin covering the next few minutes is not 36 B.
+- **Do not "fix" a future recurrence by widening the backlog or the pre-roll ring.** Both were already
+  equal at 8; the wedge came from state surviving across a recording boundary, not from depth. A deeper
+  ring makes the wedge rarer and no less permanent.
+- **Do not gate the reset on `vad_is_recording` being true.** The finalize is deliberately unconditional
+  (see the comment above `leaving_always_record`) precisely because a WAKE can have cleared the flag
+  microseconds earlier; a gated reset would skip exactly the interleaving that needs it most.
+- **The ghost-row timestamp is a separate, unresolved bug.** Confirmed on-device 2026-09-05: the discard
+  for bin `1788656840` renders 18:07:20–18:09:20 when the audio it describes runs 18:08:26–18:10:26 — a
+  66 s offset equal to that bin's silent head. `_buildDiscardRecordFor` takes its `startMs` from
+  `_recordingStartTime`, which is anchored per frame from `vadResumeTime` when a `0xFFFFFFFD` has been
+  seen (`vad_audio_processor.dart:1762`), and the resume packet IS the first entry in that bin with
+  `gapMs = 65050`, so the anchor was computed and did not reach the discard record. Needs a unit test
+  over a synthetic bin (resume packet at head, UTC 65 s after `timerStart`, then audio) asserting the
+  discard starts at the resume. Do not "fix" it by re-deriving the start from the bin header — that is
+  the wrong value, it is just the one currently observed.
+
+---
+
 ## Firmware + App: SD Write Drop Counters (diagnostic instrumentation)
 
-**Status:** shipped and load-bearing as a canary; validated premise = no drops in real use.
+**Status:** shipped and load-bearing as a canary. **"No drops" is a statement about the paths these
+counters watch, and nothing more.** On 2026-09-05 the device discarded 44 and 21 minutes of captured
+audio with every counter below reading zero — the loss was in the VAD gate, upstream of all of them,
+before the encoder. Worse, `codec_drops == 0` positively misled: it only moves when a submitted frame
+finds the ring full, so it reads zero just as convincingly when nothing is submitted at all. Read the
+section immediately above before drawing any conclusion from a zero here.
 
 ### Why this exists
 
 Originally built to validate a deferred proposal ("Sequence & Sync" marker re-synchronization, formerly in `IDEAS.md`). That proposal would have wrapped every audio packet in a sequence-number + uptime header so the app could detect dropped frames and reconstruct a gap-less timeline — protecting in-stream button-tap markers (`0xFFFFFFFE`) from drifting out of sync when frames are lost. In-stream markers currently rely on byte-position within the `.bin` stream to compute their audio timestamp; if the firmware/SD card drops frames the timeline "shrinks" but the marker stays at its byte-offset, so it drifts.
 
-That proposal's complexity is only justified **if SD write drops actually happen**. These counters were built to measure that. **Result: zero drops across the entire usage history since they shipped** — so the Sequence & Sync proposal was dropped as solving a non-problem (the section was removed from `IDEAS.md` on 2026-05-28). The counters are retained as a permanent cheap canary: if a future firmware change reintroduces drops, the Debug Tools page surfaces it instead of silently shipping marker drift.
+That proposal's complexity is only justified **if SD write drops actually happen**. These counters were built to measure that. **Result: zero drops across the entire usage history since they shipped** (subject to the blind spot in
+the Status line above — a zero here does not mean no audio was lost) — so the Sequence & Sync proposal was dropped as solving a non-problem (the section was removed from `IDEAS.md` on 2026-05-28). The counters are retained as a permanent cheap canary: if a future firmware change reintroduces drops, the Debug Tools page surfaces it instead of silently shipping marker drift.
 
 ### Counters and their failure modes
 

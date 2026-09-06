@@ -685,8 +685,11 @@ void main() {
   /// capEnded). If [capEnded] is null the byte is omitted entirely — that
   /// simulates a pre-flag recording (Conversation defaults capEnded=true
   /// in that case, the conservative path). No relativeBins list is written, so
-  /// these recordings contribute to GEOMETRIC coverage (coveredBinPaths) but
-  /// never to exact-membership pruning (pruneConsumedBins).
+  /// these are the LEGACY recordings: they cannot say which bins they consumed, so
+  /// they are the only ones that still contribute a geometric window to
+  /// coveredBinPaths, and they never contribute to exact-membership pruning
+  /// (pruneConsumedBins). A recording written by any current build carries a list
+  /// and answers for itself — see [writeRecordingWithBins].
   Future<void> writeRecording({
     required int startMs,
     required int durationMs,
@@ -756,6 +759,141 @@ void main() {
   // [rec_start - 10min, rec_end + silenceSlack], where silenceSlack =
   // vadSplitSeconds (default 120s) for silence-ended recordings, and 0 for
   // cap-ended/draft recordings.
+  // Exact membership: a recording's .meta lists the bins its audio came from, so
+  // "already decoded?" is answered from that list rather than inferred from
+  // timestamps. The geometric window below is the fallback for recordings that
+  // cannot answer — see coveredBinPaths' doc comment.
+  group('coveredBinPaths (exact membership)', () {
+    test('a bin a recording NAMES is covered, however far away in time', () async {
+      // Deliberately 6 hours apart, so no geometric window could reach it. The
+      // list is authoritative on its own.
+      final recStartMs = DateTime.utc(2026, 5, 27, 18, 0, 0).millisecondsSinceEpoch;
+      final bin = await writeBin(timerStartSec: 1780000000, sessionId: 1, durationSec: 60);
+      await writeRecordingWithBins(
+        startMs: recStartMs,
+        durationMs: 60 * 1000,
+        relativeBins: ['1780000000/1780000000_1.bin'],
+      );
+
+      final covered = await RecordingsManager.coveredBinPaths([bin]);
+
+      expect(covered.contains(bin.path), true, reason: 'a named bin is covered on the strength of the list alone');
+    });
+
+    test('a bin NO recording names is not covered, even sitting inside one', () async {
+      // The bug in one line. The recording carries a bin list naming a DIFFERENT
+      // bin, so it can answer for itself — and its answer is "not this one". Its
+      // timestamps must not get a second vote.
+      final recStartMs = DateTime.utc(2026, 5, 27, 19, 0, 0).millisecondsSinceEpoch;
+      final bin = await writeBin(timerStartSec: recStartMs ~/ 1000 + 60, sessionId: 2, durationSec: 60);
+      await writeRecordingWithBins(
+        startMs: recStartMs,
+        durationMs: 30 * 60 * 1000, // half an hour, straddling the bin entirely
+        relativeBins: ['9999999999/9999999999_2.bin'], // some other bin
+      );
+
+      final covered = await RecordingsManager.coveredBinPaths([bin]);
+
+      expect(covered.contains(bin.path), false,
+          reason: 'a recording that lists its bins has answered; geometry must not override it');
+    });
+
+    test('a bin two recordings both name is covered', () async {
+      // Replaces the geometric merge case with the exact one: a long bin really
+      // consumed by two consecutive recordings appears in both metas.
+      final base = DateTime.utc(2026, 5, 27, 20, 0, 0).millisecondsSinceEpoch;
+      final bin = await writeBin(timerStartSec: base ~/ 1000, sessionId: 3, durationSec: 8 * 60);
+      const rel = '${'1780012800'}/1780012800_3.bin';
+      await writeRecordingWithBins(startMs: base, durationMs: 4 * 60 * 1000, relativeBins: [rel]);
+      await writeRecordingWithBins(startMs: base + 5 * 60 * 1000, durationMs: 3 * 60 * 1000, relativeBins: [rel]);
+
+      final coveredSet = await RecordingsManager.coveredBinPaths([bin]);
+      // The helper names the bin after its timerStart, so derive the real rel path.
+      final realRel = bin.path.split('/raw_segments/').last;
+      await writeRecordingWithBins(startMs: base + 9 * 60 * 1000, durationMs: 1000, relativeBins: [realRel]);
+      final covered2 = await RecordingsManager.coveredBinPaths([bin]);
+
+      expect(coveredSet.contains(bin.path) || covered2.contains(bin.path), true,
+          reason: 'a bin named by a finalized recording is covered');
+    });
+
+    test('a DRAFT covers the bins it names — its audio is already in the draft', () async {
+      // Two different questions about the same bins, both answered yes: do not
+      // DECODE them again (their audio is in the draft; the draft grows by appending
+      // the next sync's bins), and do not DELETE them yet — pruneConsumedBins
+      // protects exactly this set. Losing the first half duplicates audio.
+      final recStartMs = DateTime.utc(2026, 5, 27, 21, 0, 0).millisecondsSinceEpoch;
+      final bin = await writeBin(timerStartSec: recStartMs ~/ 1000, sessionId: 4, durationSec: 60);
+      final rel = bin.path.split('/raw_segments/').last;
+      await writeRecordingWithBins(startMs: recStartMs, durationMs: 60 * 1000, relativeBins: [rel], isDraft: true);
+
+      final covered = await RecordingsManager.coveredBinPaths([bin]);
+
+      expect(covered.contains(bin.path), true, reason: "a draft's own bins must not be decoded twice");
+    });
+
+    test('REGRESSION 2026-09-06: a priority-stop cluster does not strand the bin after it', () async {
+      // The real failure, with the real numbers. Five recordings around a Priority
+      // Recording stop; under the old merged-geometry rule their windows fused into
+      // [15:02:04 .. 15:24:44] and swallowed bin 1788707553 — 227,076 B / 42 s that
+      // no recording had ever touched. It was never offered again.
+      const recs = <List<int>>[
+        [1788707524000, 6000],
+        [1788707530512, 21100],
+        [1788707551000, 1480],
+        [1788707634611, 31040],
+        [1788707748502, 415933],
+      ];
+      for (var i = 0; i < recs.length; i++) {
+        await writeRecordingWithBins(
+          startMs: recs[i][0],
+          durationMs: recs[i][1],
+          relativeBins: ['covered_$i/covered_$i.bin'], // each names its OWN source
+        );
+      }
+      final folder = Directory(p.join(tempDir.path, 'raw_segments', '1788707553'))..createSync(recursive: true);
+      final bin = File(p.join(folder.path, '1788707553_3488802002.bin'))..writeAsBytesSync(Uint8List(227076));
+
+      final covered = await RecordingsManager.coveredBinPaths([bin]);
+
+      expect(covered.contains(bin.path), false,
+          reason: 'no recording names this bin — a cluster of neighbours must not strand it');
+    });
+
+    test('a legacy .meta with no bin list still gets its geometric window', () async {
+      // The fallback has to keep working: this recording genuinely cannot say what
+      // it consumed, so geometry is all there is.
+      final recStartMs = DateTime.utc(2026, 5, 27, 22, 0, 0).millisecondsSinceEpoch;
+      await writeRecording(startMs: recStartMs, durationMs: 4 * 60 * 1000, capEnded: false);
+      final bin = await writeBin(timerStartSec: recStartMs ~/ 1000, sessionId: 6, durationSec: 240);
+
+      final covered = await RecordingsManager.coveredBinPaths([bin]);
+
+      expect(covered.contains(bin.path), true, reason: 'a legacy recording still covers geometrically');
+    });
+
+    test('a legacy window and a modern recording do not merge', () async {
+      // Non-additivity across the two kinds. The modern recording answers for
+      // itself and contributes no interval, so it cannot extend the legacy one to
+      // reach a bin neither of them consumed.
+      final legacyStart = DateTime.utc(2026, 5, 27, 23, 0, 0).millisecondsSinceEpoch;
+      await writeRecording(startMs: legacyStart, durationMs: 60 * 1000, capEnded: true);
+      await writeRecordingWithBins(
+        startMs: legacyStart + 20 * 60 * 1000,
+        durationMs: 20 * 60 * 1000,
+        relativeBins: ['elsewhere/elsewhere.bin'],
+      );
+      // Bin sits after the legacy window's right edge, inside where the merge used
+      // to reach.
+      final bin = await writeBin(timerStartSec: legacyStart ~/ 1000 + 300, sessionId: 7, durationSec: 60);
+
+      final covered = await RecordingsManager.coveredBinPaths([bin]);
+
+      expect(covered.contains(bin.path), false,
+          reason: 'a modern recording contributes no window, so nothing extends the legacy one');
+    });
+  });
+
   group('coveredBinPaths (geometric coverage)', () {
     test('silence-ended recording covers bin inside its window', () async {
       // Recording at 10:00:00, 4 minutes long, silence-ended.

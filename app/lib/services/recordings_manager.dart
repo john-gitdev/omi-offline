@@ -3370,16 +3370,21 @@ class RecordingsManager {
   /// are normalised first for the same reason `relBinPath` does it.
   static String _segmentName(String path) => path.replaceAll('\\', '/').split('/').last;
 
-  /// Builds merged `[startMs, endMs]` coverage intervals from every recording
-  /// (finalized + drafts) on disk. See [pruneConsumedBins] for the coverage rule.
-  static Future<List<List<int>>> _buildMergedCoverageIntervals() async {
+  /// What the recordings on disk say about which bins are already decoded.
+  ///
+  /// [namedBins] is the EXACT answer: every finalized `.meta` lists the bins its
+  /// audio came from, so the question needs no inferring. [legacyIntervals] is the
+  /// geometric fallback, and is built ONLY from recordings that cannot answer for
+  /// themselves — see [coveredBinPaths] for why that restriction is the whole fix.
+  static Future<_CoverageSources> _buildCoverageSources() async {
     final directory = await getApplicationDocumentsDirectory();
     final recordingsDir = Directory('${directory.path}/recordings');
-    if (!await recordingsDir.exists()) return [];
+    if (!await recordingsDir.exists()) return const _CoverageSources({}, []);
 
     const int leftSlackMs = 10 * 60 * 1000;
     final int silenceSlackMs = SharedPreferencesUtil().vadSplitSeconds * 1000;
 
+    final namedBins = <String>{};
     final List<List<int>> intervals = [];
     await for (final dayFolder in recordingsDir.list()) {
       if (dayFolder is! Directory) continue;
@@ -3390,6 +3395,21 @@ class RecordingsManager {
         if (path.endsWith('.tmp.m4a') || path.contains('.tmp.')) continue;
         final isDraft = path.contains('_draft.');
         final conv = Conversation.fromFile(entity);
+
+        // Drafts count here, and must. A draft already holds its bins' audio, so
+        // re-decoding them would duplicate it; the draft grows by appending the NEXT
+        // sync's bins, not by re-reading its own. That is a different question from
+        // the one pruneConsumedBins asks, which is why it PROTECTS the same bins from
+        // deletion — do not decode them again, and do not delete them yet. Both are
+        // true at once.
+        if (conv.relativeBins.isNotEmpty) {
+          // Answers for itself, so it contributes no geometric window. That
+          // restriction is the fix: it stops a cluster of short recordings fusing
+          // into one multi-minute block.
+          namedBins.addAll(conv.relativeBins);
+          continue;
+        }
+
         if (conv.isUnknown) continue;
         final recStartMs = conv.startTime.millisecondsSinceEpoch;
         if (recStartMs <= 0) continue;
@@ -3398,7 +3418,7 @@ class RecordingsManager {
         intervals.add([recStartMs - leftSlackMs, rightEdge]);
       }
     }
-    if (intervals.isEmpty) return [];
+    if (intervals.isEmpty) return _CoverageSources(namedBins, const []);
 
     intervals.sort((a, b) => a[0].compareTo(b[0]));
     final List<List<int>> merged = [intervals.first];
@@ -3411,22 +3431,53 @@ class RecordingsManager {
         merged.add(cur);
       }
     }
-    return merged;
+    return _CoverageSources(namedBins, merged);
   }
 
-  /// Returns the subset of [candidates] whose `[binStart, binEnd]` is fully
-  /// covered by an existing recording. Does not delete anything — used in
-  /// skip bins that already have a recording.
+  /// The subset of [candidates] a recording has already decoded. Does not delete
+  /// anything — this is the read-only skip filter for a VAD run.
+  ///
+  /// EXACT membership first. Every finalized `.meta` lists the bins its audio came
+  /// from ([Conversation.relativeBins]), so "has this bin been decoded?" has a
+  /// recorded answer and never needs inferring. [pruneConsumedBins] — the DELETING
+  /// side of the same question — has always used that list. The two were
+  /// inconsistent, and in the wrong direction: deletion was conservative while this
+  /// filter guessed, even though a bin wrongly skipped here is audio the user never
+  /// sees and never gets offered again.
+  ///
+  /// The geometric window is now a fallback for recordings that cannot answer for
+  /// themselves — a `.meta` predating the bin-list field, or one truncated by a kill
+  /// between the `.wav` and the `.meta`. Every recording carrying a list contributes
+  /// none, and that restriction IS the fix: the windows are
+  /// `[rec_start - 10min, rec_end + vadSplit]` and they MERGE, so a cluster of short
+  /// recordings — precisely what a Priority Recording produces — used to fuse into
+  /// one multi-minute block that swallowed any undecoded bin whose timestamp landed
+  /// inside it. Confirmed on-device 2026-09-06: five recordings around a priority
+  /// stop merged into [15:02:04 .. 15:24:44] and stranded a 227 KB / 42 s bin no
+  /// recording had ever touched. Permanently — the block only grows as later
+  /// recordings land near it, so the bin is never re-offered.
+  ///
+  /// NOTE the size→duration estimate below OVER-estimates (a real 227 KB bin holds
+  /// 42 s of audio, not the 56 s it computes) because ~16% of a bin is sentinel
+  /// padding. That widens `[binStart, binEnd]`, which makes coverage HARDER to
+  /// satisfy — it fails safe. Do not "correct" the constant without realising it
+  /// makes this filter more aggressive, which is the direction that loses audio.
   static Future<Set<String>> coveredBinPaths(List<File> candidates) async {
     if (candidates.isEmpty) return const {};
-    final merged = await _buildMergedCoverageIntervals();
-    if (merged.isEmpty) return const {};
+    final sources = await _buildCoverageSources();
+    final merged = sources.legacyIntervals;
 
     const double opusBytesPerMs = 4050 / 1000;
     const int binHeaderBytes = 36;
 
     final covered = <String>{};
     for (final bin in candidates) {
+      final relParts = bin.path.replaceAll('\\', '/').split('/raw_segments/');
+      if (relParts.length == 2 && sources.namedBins.contains(relParts.last)) {
+        covered.add(bin.path);
+        continue;
+      }
+      if (merged.isEmpty) continue;
       final folderName = p.basename(bin.parent.path);
       if (folderName.startsWith('session_') || folderName.startsWith('unknown_') || folderName.startsWith('.')) {
         continue;
@@ -3449,6 +3500,15 @@ class RecordingsManager {
       for (final iv in merged) {
         if (binStartMs >= iv[0] && binEndMs <= iv[1]) {
           covered.add(bin.path);
+          // The only path that can still skip a bin no recording named. Loud on
+          // purpose: it is the one remaining way this filter can strand audio, and
+          // its whole justification is legacy/truncated metas. If this never fires
+          // over real use, the geometry can be deleted and coveredBinPaths becomes a
+          // pure list lookup — matching pruneConsumedBins exactly.
+          Logger.debug('RecordingsManager: ${p.basename(bin.path)} skipped by the LEGACY geometric window '
+              '(no recording names it; a .meta with no bin list put it inside '
+              '[${DateTime.fromMillisecondsSinceEpoch(iv[0]).toUtc()} .. '
+              '${DateTime.fromMillisecondsSinceEpoch(iv[1]).toUtc()}]).');
           break;
         }
       }
@@ -3635,4 +3695,15 @@ class CheckpointPlan {
         state = null,
         pendingDeletes = const <String>[],
         discard = true;
+}
+
+/// What the recordings on disk say about which bins are already decoded: the bins
+/// they NAMED, plus the geometric windows of the ones that named nothing. Kept as a
+/// pair because both come from a single pass over `recordings/` — the directory walk
+/// is the cost, and [Conversation.fromFile] already parses the bin list that pass
+/// used to throw away.
+class _CoverageSources {
+  final Set<String> namedBins;
+  final List<List<int>> legacyIntervals;
+  const _CoverageSources(this.namedBins, this.legacyIntervals);
 }

@@ -189,6 +189,26 @@ void main() {
       expect(diagEventLevel(rec(code: 12, arg0: 1, arg1: 2)), DiagLevel.bad);
     });
 
+    test('both emitted write_blocked stages are faults, a reserved one is not', () {
+      // write_blocked: arg0 names the stage. 0 = tx ring full (encoded frame dropped
+      // before storage), 2 = VAD backlog full (live frame dropped before the codec, the
+      // 2026-09-05 loss). Both are captured audio discarded uncounted. 1 is reserved and
+      // never emitted, so it must not claim a loss the device did not report.
+      expect(diagEventLevel(rec(code: 9, arg0: 0)), DiagLevel.bad);
+      expect(diagEventLevel(rec(code: 9, arg0: 2)), DiagLevel.bad);
+      expect(diagEventLevel(rec(code: 9, arg0: 1)), DiagLevel.warn);
+      expect(diagEventLevel(rec(code: 9, arg0: 7)), DiagLevel.warn);
+    });
+
+    test('write_blocked names its stage rather than dumping raw args', () {
+      // The row is the whole point of the record: a reader must not have to look up
+      // what arg0=2 meant. Unknown reasons still fall back to the raw values.
+      expect(rec(code: 9, arg0: 0, arg1: 12).description, contains('tx ring full'));
+      expect(rec(code: 9, arg0: 2, arg1: 12).description, contains('VAD backlog full'));
+      expect(rec(code: 9, arg0: 2, arg1: 12).description, contains('12'));
+      expect(rec(code: 9, arg0: 5, arg1: 12).description, contains('arg0=5'));
+    });
+
     test('a mic rail that was not cycled is a warning', () {
       expect(diagEventLevel(rec(code: 17, arg0: 1)), DiagLevel.info);
       expect(diagEventLevel(rec(code: 17, arg0: 0)), DiagLevel.warn);

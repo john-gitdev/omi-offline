@@ -483,6 +483,95 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
   }
 
+  /// Writes what is actually in phone storage — and why each raw bin is or is not
+  /// eligible for decoding — into the debug log.
+  ///
+  /// Deliberately a button that logs rather than a screen. The answer is wanted
+  /// perhaps twice a year, always while reading the log anyway, and the app already
+  /// has more windows than anyone can hold in their head. It exists because on
+  /// 2026-09-06 a 227 KB bin sat undecoded in raw_segments while the app insisted
+  /// there was nothing to process, and settling that took a rebuilt debuggable APK
+  /// and `adb run-as` — the app could delete this directory but never show it.
+  Future<void> _dumpStorageInventory() async {
+    Logger.debug('DebugTools: Storage Inventory tapped');
+    setState(() {
+      _isSyncing = true;
+      _statusMessage = 'Writing storage inventory to the log...';
+    });
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final rawDir = Directory('${directory.path}/raw_segments');
+      final bins = <File>[];
+      if (await rawDir.exists()) {
+        await for (final folder in rawDir.list()) {
+          if (folder is! Directory) continue;
+          await for (final f in folder.list()) {
+            if (f is File && f.path.endsWith('.bin')) bins.add(f);
+          }
+        }
+      }
+      bins.sort((a, b) => a.path.compareTo(b.path));
+
+      // The same three sets _runProcessing filters on, so the reason printed here is
+      // the reason that run will actually use — not a second opinion that can drift.
+      final covered = await RecordingsManager.coveredBinPaths(bins);
+      final discarded = await RecordingsManager.discardedRelBinPaths();
+      Set<String> incomplete;
+      try {
+        incomplete = await ServiceManager.instance().wal.getSyncs().incompleteBinRelPaths();
+      } catch (e) {
+        incomplete = const {};
+        Logger.debug('DebugTools: inventory could not read the mid-transfer set ($e) — shown as unknown');
+      }
+
+      Logger.debug('DebugTools: storage inventory — ${bins.length} raw bin(s) in raw_segments/');
+      var eligible = 0;
+      for (final f in bins) {
+        final rel = f.path.split('/raw_segments/').last;
+        final size = await f.length();
+        final String why;
+        if (incomplete.contains(rel)) {
+          why = 'SKIPPED: still mid-transfer';
+        } else if (discarded.contains(rel)) {
+          why = 'SKIPPED: has a discard record (recoverable from the ghost row)';
+        } else if (covered.contains(f.path)) {
+          why = 'SKIPPED: a recording already decoded it';
+        } else {
+          eligible++;
+          why = 'will be decoded on the next processing run';
+        }
+        Logger.debug('DebugTools:   $rel  ${size}B  — $why');
+      }
+      Logger.debug('DebugTools: storage inventory — $eligible of ${bins.length} bin(s) eligible to decode');
+
+      final discardedDir = Directory('${directory.path}/${RecordingsManager.discardedSegmentsDirName}');
+      var ghostBins = 0;
+      if (await discardedDir.exists()) {
+        await for (final folder in discardedDir.list()) {
+          if (folder is! Directory) continue;
+          await for (final f in folder.list()) {
+            if (f is File && f.path.endsWith('.bin')) ghostBins++;
+          }
+        }
+      }
+      Logger.debug('DebugTools: storage inventory — $ghostBins bin(s) retained under '
+          '${RecordingsManager.discardedSegmentsDirName}/ for ghost-row recovery');
+
+      if (!mounted) return;
+      setState(() {
+        _statusMessage = 'Storage inventory written to the log (${bins.length} bin(s), $eligible eligible).';
+        _isSyncing = false;
+      });
+    } catch (e) {
+      Logger.error('DebugTools: _dumpStorageInventory error — $e');
+      if (!mounted) return;
+      setState(() {
+        _statusMessage = 'Storage inventory failed: $e';
+        _isSyncing = false;
+      });
+    }
+  }
+
   Future<void> _deleteAllSegments() async {
     Logger.debug('DebugTools: Delete Phone Segments tapped');
     if (RecordingsManager.isProcessingAny) {
@@ -1144,6 +1233,16 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   icon: FontAwesomeIcons.trashCan,
                   color: Colors.redAccent,
                   onTap: _deleteAllPending,
+                ),
+                const SizedBox(height: 12),
+                DebugButton(
+                  label: 'Storage Inventory',
+                  description:
+                      'Writes every raw segment on this phone to the log, with the reason it will or will not be '
+                      'decoded. Read it back via Export Logs.',
+                  icon: FontAwesomeIcons.clipboardList,
+                  color: Colors.blueAccent,
+                  onTap: _dumpStorageInventory,
                 ),
                 const SizedBox(height: 12),
                 DebugButton(

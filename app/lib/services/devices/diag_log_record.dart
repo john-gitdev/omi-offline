@@ -202,7 +202,19 @@ class DiagLogRecord {
       case 8:
         return 'Codec drop — PCM block lost before encode (codecDrops=$arg1)';
       case 9:
-        return 'Write blocked$_backendSuffix — arg0=$arg0 arg1=$arg1';
+        // arg0 names the stage the audio died at; arg1 is that stage's running total.
+        // Both emitted reasons mean captured audio was discarded uncounted — the two
+        // sites in the chain that no 0x0062 counter can see.
+        switch (arg0) {
+          case 0:
+            return 'Write blocked$_backendSuffix — tx ring full, encoded frame dropped '
+                'before storage ($arg1 since boot)';
+          case 2:
+            return 'Write blocked — VAD backlog full, live mic frame dropped before the '
+                'codec ($arg1 since boot)';
+          default:
+            return 'Write blocked$_backendSuffix — arg0=$arg0 arg1=$arg1';
+        }
       case 10:
         return 'Ring IO error — arg0=$arg0 arg1=$arg1';
       case 11:
