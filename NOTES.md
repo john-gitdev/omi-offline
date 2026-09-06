@@ -1003,23 +1003,41 @@ staged at the re-trigger, then nothing at all until a button tap force-drained i
 
 ### The fix
 
-1. **`preroll_reset()` in `aad_set_threshold()`'s finalize branch.** The root cause. Every site that
-   clears `vad_is_recording` must clear the replay state with it.
+1. **The finalize branch of `aad_set_threshold()` now resets the replay state.** The root cause. Every
+   site that clears `vad_is_recording` must clear the replay state with it.
+
+   **Posted, not called** (`replay_reset_pending`), because that branch runs on the button/BLE thread.
+   `preroll_reset()` is mic-thread-only for a concrete reason: `live_backlog_flush_one()` and
+   `preroll_push_one()` each test a count for zero and then decrement it, so a reset landing between the
+   two underflows a `uint8_t` to 255 and replays ~25 s of stale frames. The plain assignments that
+   branch already makes carry no such hazard — none is a read-modify-write — which is why this one had
+   to be posted and they did not. The file already states the rule, above `capture_gap_pending`.
 2. **`preroll_reset()` in the WAKE-consumed clear** (`aad_process_audio`). Same omission, and a
    button-free second trigger: a hardware WAKE landing mid-recording clears `vad_is_recording` with the
    backlog still pinned.
-3. **Pre-roll drains even when the live backlog push fails.** `preroll_push_one()` is now unconditional,
-   so a full backlog costs one dropped 100 ms frame instead of a permanent stall. This is the backstop
-   for the next site that forgets rule 1 — the reset discipline is what should keep us out of there, but
-   a missed reset must not be able to wedge the gate again.
-4. **`aad_set_threshold()`'s queued-pause re-check now tests `vad_is_recording`, not just
+3. **`preroll_queue_flush()` clears the live backlog itself.** This is the structural fix, and the one
+   that matters most: a replay only ever starts at the RECORDING transition, so anything in the backlog
+   then belongs to the previous recording and is stale by at least that recording's whole length. After
+   this line the backlog is never full when the replay branch runs, so the wedge is unreachable — no
+   matter which site forgot to reset, and no matter how the threads interleave. It needs no ordering of
+   its own: it runs on the mic thread, immediately before the pending count it protects is set.
+
+   It is deliberately not redundant with (1) and (2). Those drop the stale *pre-roll*, which this does
+   not touch, and (1) posts across threads and therefore cannot be ordered against a mic thread already
+   past its consume point. Do not delete this as duplication — it is what makes the other two
+   non-load-bearing.
+
+4. **Pre-roll drains even when the live backlog push fails.** `preroll_push_one()` is now unconditional,
+   so a failed push costs one dropped 100 ms frame instead of a permanent stall. Belt to (3)'s braces:
+   it bounds any interleaving that still reaches a full backlog to at most the 8 frames of one replay.
+5. **`aad_set_threshold()`'s queued-pause re-check now tests `vad_is_recording`, not just
    `vad_threshold == 65535`.** Independent of the wedge and not implicated in it, but a real window:
    `sd_write_pause(true)` sets its flag before queueing `REQ_PAUSE_IO` and then waits on the worker for
    up to 10.5 s, so a silence→speech transition in that span runs its own inline `sd_write_pause(false)`
    first and ours buries it. The threshold test is false in exactly the case that matters, because a
    priority stop restores an *auto* threshold (250) — confirmed in the device's own `vad_level` records
    from the outage.
-5. **`DIAG_WRITE_BLOCKED` / `DIAG_WRITE_BLOCKED_VAD_BACKLOG_FULL` (arg0 = 2)** is emitted at that drop,
+6. **`DIAG_WRITE_BLOCKED` / `DIAG_WRITE_BLOCKED_VAD_BACKLOG_FULL` (arg0 = 2)** is emitted at that drop,
    rate-limited to 1/s with a running total in arg1. It should read zero forever; it exists so a
    regression says so rather than being inferred from an absence, which is what cost the first
    investigation. `DIAG_WRITE_BLOCKED_TX_RING_FULL` (arg0 = 0) instruments the other uncounted discard
@@ -1027,6 +1045,19 @@ staged at the re-trigger, then nothing at all until a button tap force-drained i
    correctly stayed silent throughout.
 
 ### Residuals — read before "improving" this
+
+- **The backlog record should now be structurally unreachable, and is kept anyway.** With (3) in place
+  `vad_live_backlog_cnt` is 0 every time a replay begins, so the push cannot fail; the counter is a
+  canary for a future regression in this state machine, not a live signal. Read a non-zero value as
+  "someone changed the replay logic", not as a recurrence of the 2026-09-05 fault.
+
+- **Every recording still loses the ~0.8 s sitting in the live backlog when it ends.** The backlog runs
+  one-in-one-out for the life of a recording, so its contents are always that recording's last 0.8 s,
+  and every end-of-recording path discards them. This is pre-existing and unchanged: the VAD-sleep path
+  has always called `preroll_reset()` there, and before this fix a Record Stop either wedged (noisy) or
+  hit that same reset ten seconds later (quiet), so the tail was never emitted correctly in either case.
+  Fixing it properly means draining the backlog into the codec *before* `write_session_end_marker_to_
+  storage()` runs, which is a different change on a different code path; do not bolt it onto the reset.
 
 - **Not reproduced against the fix on hardware.** This repository has no firmware test harness, so the
   mechanism was derived by reading against the device log and the fix is verified by build only. The

@@ -55,6 +55,16 @@ static atomic_t wake_consumed = ATOMIC_INIT(0);
  * wake_consumed: the VAD statics below belong to the mic callback, so a caller on
  * another thread posts a request instead of writing them. */
 static atomic_t capture_gap_pending = ATOMIC_INIT(0);
+/* Same contract, narrower job: drop the pre-roll / live-backlog replay state without
+ * claiming a capture gap. aad_set_threshold()'s finalize needs the reset (see there) but
+ * runs on the button/BLE thread, and preroll_reset() is NOT safe to call from there:
+ * live_backlog_flush_one() and preroll_push_one() each test a count for zero and then
+ * decrement it, so a reset landing between the two underflows a uint8_t to 255 and
+ * replays ~25 s of stale frames. The plain assignments the finalize already makes
+ * (vad_is_recording, vad_sleeping, vad_voice_streak) carry no such hazard because none
+ * is a read-modify-write. Posting keeps every write to the replay state on the mic
+ * thread, which is the rule the comment above states. */
+static atomic_t replay_reset_pending = ATOMIC_INIT(0);
 /* Button interaction in flight — an input to mic_should_run(). See
  * aad_set_mic_prearm(). */
 static atomic_t mic_prearm = ATOMIC_INIT(0);
@@ -253,6 +263,24 @@ static void preroll_store(const int16_t *buf)
 
 static void preroll_queue_flush(void)
 {
+    /* A replay is only ever started at the RECORDING transition, so anything still in
+     * the live backlog belongs to the previous recording and is at minimum 0.8 s stale —
+     * older than that recording's whole length, since the backlog stops draining the
+     * moment it ends. Dropping it here is correct on its own terms, and it is also what
+     * makes the 2026-09-05 wedge structurally unreachable: the replay branch fails only
+     * when this backlog is already full, and after this line it never is.
+     *
+     * Deliberately the invariant lives HERE, at the one consumer, rather than resting on
+     * all four vad_is_recording clears having remembered to reset. They do reset (that is
+     * what drops the stale pre-roll, which this does not touch), but one of them posts
+     * across threads and cannot be ordered against a mic thread already past its consume
+     * point. This line needs no ordering: it runs on the mic thread, immediately before
+     * the pending count it protects is set. Do not "simplify" it away as redundant with
+     * those resets — it is what makes them non-load-bearing. */
+    vad_live_backlog_rd = 0;
+    vad_live_backlog_wr = 0;
+    vad_live_backlog_cnt = 0;
+
     if (vad_preroll_cnt == 0) {
         return;
     }
@@ -605,6 +633,15 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
         vad_next_diag_level_ms = 0;
         vad_diag_level_max = 0;
         vad_diag_level_min = UINT16_MAX;
+    }
+
+    /* Deferred replay reset from a recording ended on another thread. Consumed here,
+     * ahead of every reader and writer of the replay state in this function — including
+     * the preroll_queue_flush() below, which is the one that must never see a backlog
+     * left full by the recording just ended. A capture gap above has already done this,
+     * so the two coalesce harmlessly. */
+    if (atomic_cas(&replay_reset_pending, 1, 0)) {
+        preroll_reset();
     }
 
     if (atomic_cas(&wake_consumed, 1, 0)) {
@@ -963,13 +1000,12 @@ void aad_set_threshold(uint16_t threshold)
          * for; it was simply never reachable before, because nothing else re-armed the
          * VAD without a reset.
          *
-         * Cross-thread: this runs on the button/BLE thread against mic-thread state,
-         * exactly as the three assignments above it already do. Bounded by inspection —
-         * every index is masked (% VAD_PREROLL_FRAMES / % VAD_PREROLL_FLUSH_MAX_FRAMES)
-         * and every count is only ever compared with <, so no interleaving can index out
-         * of bounds; the worst case is one replayed or one dropped frame at the stop
-         * boundary, which is the correct outcome there anyway. */
-        preroll_reset();
+         * POSTED, not called. This runs on the button/BLE thread and preroll_reset()
+         * belongs to the mic thread — calling it directly can underflow a count another
+         * thread is mid-decrement on (see replay_reset_pending). The mic thread consumes
+         * it at the top of aad_process_audio(), so it always lands before the next
+         * preroll_queue_flush(), which is the only ordering that matters. */
+        atomic_set(&replay_reset_pending, 1);
         atomic_set(&sd_pause_pending, 1);
         atomic_set(&adv_slow_req, 1);
         k_sem_give(&aad_sem);
