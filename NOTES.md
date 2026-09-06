@@ -1218,12 +1218,18 @@ and *after* the `0xFFFFFFFD` write, where the queueing version sat before both:
   than by the mic thread (priority 5) outrunning the encoder (priority 7) — which it does, but that is a
   scheduling accident and not something to encode a file format in.
 
-**Measured, both cores built from the same toolchain (NCS v2.9.0):**
+**Measured on the app core, both revisions built from the same toolchain (NCS v2.9.0).** Figures are the
+*shipped* oo-3.1.3, not an intermediate: the flash number in particular moved three times while this was
+being written (the burst, the dead-callback removal, then reason 3's instrumentation), so quote it from a
+build of the merge commit rather than from here if it matters.
 
 | | oo-3.1.1 | oo-3.1.3 | delta |
 |---|---|---|---|
-| App-core RAM | 407,808 B (90.51 %) | 382,192 B (84.83 %) | **−25,616 B / −5.68 pp** |
-| App-core flash | 251,760 B | 251,536 B | −224 B |
+| RAM | 407,808 B (90.51 %) | 382,208 B (84.83 %) | **−25,600 B / −5.68 pp** |
+| Flash | 251,760 B (26.06 %) | 251,600 B (26.04 %) | −160 B |
+
+The RAM delta is exactly `sizeof(vad_live_backlog_buf)`: the counters removed with it (~12 B) and the ones
+reason 3 added back (+12 B) cancel.
 
 `arm-zephyr-eabi-nm` confirms `vad_live_backlog_buf` is absent from the image and `vad_preroll_buf`
 remains at 25,600 B.
