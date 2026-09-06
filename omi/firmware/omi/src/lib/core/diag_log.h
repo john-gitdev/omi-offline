@@ -40,7 +40,18 @@ typedef enum {
     DIAG_SESSION_END_MARKER_EMIT = 6, /* arg1 = session_id */
     DIAG_SD_BLOCK_DROP = 7,           /* arg1 = block_drops snapshot (audio block lost) */
     DIAG_CODEC_DROP = 8,              /* arg1 = codec ring-full drop count snapshot */
-    DIAG_WRITE_BLOCKED = 9,           /* reserved (not yet instrumented) */
+    DIAG_WRITE_BLOCKED = 9,           /* audio was being discarded at a write gate that had no
+                                       * business being closed, i.e. real capture loss.
+                                       *   arg0 = diag_write_blocked_t (which gate, and why stale)
+                                       *   arg1 = length of the block that detected it
+                                       * The gates are silent by design: a pause drops plain audio
+                                       * without counting it, because in the healthy case the VAD is
+                                       * asleep and there is no audio to drop. This record fires only
+                                       * when that premise is false — so unlike every other drop
+                                       * signal it cannot be routine — and the detecting site opens
+                                       * the gate rather than only reporting it. Rate-limited: a
+                                       * flapping gate reports its onset instead of evicting the
+                                       * whole ring. */
     DIAG_RING_IO_ERROR = 10,          /* reserved (not yet instrumented) */
     DIAG_BACKEND_MOUNT = 11,          /* reserved (not yet instrumented) */
     DIAG_BOND_STATE = 12,             /* arg0 = diag_bond_cause_t; arg1 = bond count AFTER the event */
@@ -126,6 +137,22 @@ typedef enum {
     DIAG_MIC_STATE_RESUMED_SILENT = 3, /* START succeeded but the first frames were digital zero --
                                         * a wedged part, which a quiet room cannot produce */
 } diag_mic_state_t;
+
+/* arg0 values for DIAG_WRITE_BLOCKED. Appended-only, same discipline as the codes. */
+typedef enum {
+    /* sd_write_paused was set while the VAD held a recording open. Every plain-audio
+     * block was therefore being dropped at the pause gate, uncounted, while capture ran.
+     *
+     * The pause has exactly one clearing site — the VAD's silence→speech edge in
+     * aad_process_audio() — so a clear that is lost or clobbered survives until the NEXT
+     * such edge, which needs CONFIG_OMI_VAD_HOLD_MS of quiet first. A continuously noisy
+     * room can defer that for hours. Observed on-device 2026-09-05: a priority-record
+     * stop at 17:22:32 left the pause set, 46 minutes of audio was captured, Opus-encoded
+     * and discarded, and every drop counter still read zero; it recovered only when the
+     * room happened to fall quiet at 18:08 and the VAD could complete a sleep→wake cycle.
+     * The gate now opens itself here, so recovery no longer depends on ambient noise. */
+    DIAG_WRITE_BLOCKED_STALE_PAUSE = 0,
+} diag_write_blocked_t;
 
 /* arg0 values for DIAG_BOND_STATE. Appended-only, same discipline as the codes. */
 typedef enum {
