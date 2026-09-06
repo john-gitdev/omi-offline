@@ -361,6 +361,12 @@ static struct bt_gatt_attr battery_detail_service_attr[] = {
 static struct bt_gatt_service battery_detail_service = BT_GATT_SERVICE(battery_detail_service_attr);
 #endif
 
+/* Diagnostics: encoded frames dropped at write_to_tx_queue() because the tx ring was
+ * full. Not on 0x0062 (that payload is full at 100 B) — it rides DIAG_WRITE_BLOCKED's
+ * arg1 instead, which is the more useful shape anyway: a stall is diagnosed by when it
+ * started and whether the total is still climbing. Codec thread only. */
+static atomic_t tx_ring_full_drops;
+
 /* Diagnostics: count 440-byte storage block flushes the SD queue rejected.
  * Each rejected block contains up to ~5 Opus frames (~100 ms audio).
  * Bumped from write_custom_packet_to_storage(); read via 0x19B10062. */
@@ -2570,6 +2576,28 @@ static bool write_to_tx_queue(uint8_t *data, size_t size)
 
     if (allocated_size < required_size) {
         ring_buf_put_finish(&ring_buf, 0); // Release claimed space
+        /* An encoded frame just died between the codec and storage, and nothing else
+         * records it: our false becomes broadcast_audio_packets()'s -1, which the codec
+         * callback discards. That silence is what made the 2026-09-05 outage
+         * undiagnosable — 46 minutes captured and encoded, marker_pause_gate_saves and
+         * sd_msgq_peak_depth both unmoved (so nothing reached the SD worker), and every
+         * 0x0062 counter reading zero.
+         *
+         * The ring only stays full if pusher() has stopped draining it, and the failure
+         * is self-sustaining: bailing here also skips the k_sem_give below, so a pusher
+         * waiting on tx_queue_sem is never woken again. Hence a diag record rather than a
+         * counter — the 0x0062 payload is full at 100 B, and WHEN the stall began is the
+         * diagnosis anyway. Rate-limited to 1/s; arg1 carries the running total so the
+         * lost detail is only the timing of repeats, which the first record already
+         * establishes. Statics are fine unlocked: this runs solely on the codec thread. */
+        static int64_t last_tx_full_log_ms;
+        atomic_val_t total = atomic_inc(&tx_ring_full_drops) + 1; /* atomic_inc returns the OLD value */
+        int64_t now = k_uptime_get();
+        if (last_tx_full_log_ms == 0 || (now - last_tx_full_log_ms) >= 1000) {
+            last_tx_full_log_ms = now;
+            diag_log_event(DIAG_WRITE_BLOCKED, sd_get_active_backend(), DIAG_WRITE_BLOCKED_TX_RING_FULL,
+                           (uint32_t) total);
+        }
         return false;
     }
 
