@@ -196,6 +196,12 @@ typedef enum {
      * least CONFIG_OMI_VAD_HOLD_MS; it is empty there by construction. A non-zero value
      * means the encoder thread was starved long enough to still hold >1 block at that
      * moment, which is a scheduling fault upstream of audio, not a VAD problem.
+     * Disjoint from DIAG_CODEC_DROP by construction, and the burst loop's `- 1` is what
+     * makes it so: a block the encoder REJECTS was submitted, so codec_receive_pcm()
+     * counts that one and this does not. Every pre-roll frame is therefore accounted for
+     * exactly once — delivered, counted there, or counted here. Keep it that way; folding
+     * the rejected block in as well tallies it twice and contradicts "never submitted"
+     * above.
      *   arg1 = pre-roll frames dropped this way since boot. Rate-limited to 1/s. */
     DIAG_WRITE_BLOCKED_PREROLL_TRIMMED = 3,
 } diag_write_blocked_t;
