@@ -210,6 +210,8 @@ class DiagLogRecord {
             return 'Write blocked$_backendSuffix — tx ring full, encoded frame dropped '
                 'before storage ($arg1 since boot)';
           case 2:
+            // Retired firmware-side in oo-3.1.2 (the holding ring it counted was
+            // removed). Kept because a device on older firmware still emits it.
             return 'Write blocked — VAD backlog full, live mic frame dropped before the '
                 'codec ($arg1 since boot)';
           default:
