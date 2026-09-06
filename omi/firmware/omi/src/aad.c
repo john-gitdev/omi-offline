@@ -171,6 +171,10 @@ static int16_t vad_live_backlog_buf[VAD_PREROLL_FLUSH_MAX_FRAMES][MIC_BUFFER_SAM
 static uint8_t vad_live_backlog_rd = 0;
 static uint8_t vad_live_backlog_wr = 0;
 static uint8_t vad_live_backlog_cnt = 0;
+/* Live frames dropped because the backlog was full when pre-roll was still replaying.
+ * Rides DIAG_WRITE_BLOCKED's arg1 rather than 0x0062, whose payload is full at 100 B.
+ * Mic thread only. */
+static uint32_t vad_backlog_drops;
 
 #define VAD_STATUS_LOG_INTERVAL_MS 2000
 
@@ -609,6 +613,12 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
         vad_last_voice_ms = now_wake;
         if (now_wake >= force_wake_until_ms) {
             vad_is_recording = false;
+            /* Every site that ends a recording must clear the replay state with it, or
+             * the next preroll_queue_flush() runs against a backlog still pinned full
+             * from the recording just ended (see the wedge note in aad_process_audio).
+             * The VAD-sleep and capture-gap paths already do; this one and
+             * aad_set_threshold()'s finalize did not. */
+            preroll_reset();
         }
         LOG_INF("AAD: WAKE, VAD reset (force=%s)", now_wake < force_wake_until_ms ? "y" : "n");
     }
@@ -709,9 +719,15 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
         vad_next_status_ms = now + VAD_STATUS_LOG_INTERVAL_MS;
     }
 
-    /* Capture duty: every frame the VAD holds a recording open is a frame that gets
-     * encoded and written, so this total against uptime is what the auto-mode
-     * threshold actually costs. sample_count/16 = ms at the fixed 16 kHz rate. */
+    /* Capture duty: the time the VAD holds a recording open, against uptime, is what
+     * the auto-mode threshold actually costs. sample_count/16 = ms at the fixed 16 kHz
+     * rate.
+     *
+     * It is NOT a measure of audio reaching the card, and must never be read as one.
+     * This is stamped before the pre-roll/backlog replay below, so a frame counted here
+     * can still be dropped there — 100 % duty over a bin holding no audio at all is
+     * exactly what the 2026-09-05 backlog wedge produced, and reading duty as capture
+     * is what sent that investigation downstream of the real fault. */
     if (vad_is_recording) {
         vad_voiced_ms += (uint32_t) (sample_count / 16);
     }
@@ -761,11 +777,38 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
      * This avoids interleaving historical frames with current live frames
      * (which corrupts temporal ordering). */
     if (vad_preroll_flush_pending > 0) {
-        /* Preserve current live frame while we replay pre-roll. */
-        if (!live_backlog_push(buffer)) {
-            return false;
-        }
+        /* Preserve current live frame while we replay pre-roll. A full backlog means
+         * we cannot, and the live frame is lost — but the pre-roll MUST still drain.
+         *
+         * preroll_push_one() used to sit behind an early return here, so a push that
+         * failed left vad_preroll_flush_pending un-decremented with the backlog still
+         * full: every following frame took the same branch, neither queue could drain,
+         * and nothing reached codec_receive_pcm() again. That wedge is self-sustaining
+         * and silent — vad_voiced_ms keeps counting (it is stamped above, on
+         * vad_is_recording alone), codec_drops stays 0 because nothing is SUBMITTED,
+         * and every SD counter is downstream of a pusher that is handed nothing. It
+         * cost 44 and 21 minutes of captured audio on 2026-09-05, and only a quiet room
+         * cleared it, via the VAD-sleep preroll_reset() above. See NOTES.md.
+         *
+         * Losing one 100 ms frame to a full backlog is the correct trade; the reset
+         * discipline at every vad_is_recording clear is what should keep us out of
+         * here at all, and this is the backstop for the next site that forgets it. */
+        bool kept_live = live_backlog_push(buffer);
         preroll_push_one();
+        if (!kept_live) {
+            /* The only place a captured frame dies inside the VAD gate, and it counted
+             * nothing until now — live_backlog_push()'s LOG_ERR compiles out, since
+             * CONFIG_LOG is unset in omi.conf. Rate-limited to 1/s: this fires per
+             * dropped frame (10/s), and the onset is the diagnosis. arg1 carries the
+             * running total, so a climbing value is an ongoing overflow. Mic thread
+             * only, so the statics need no lock. */
+            static int64_t last_overflow_log_ms;
+            vad_backlog_drops++;
+            if (last_overflow_log_ms == 0 || (now - last_overflow_log_ms) >= 1000) {
+                last_overflow_log_ms = now;
+                diag_log_event(DIAG_WRITE_BLOCKED, 0, DIAG_WRITE_BLOCKED_VAD_BACKLOG_FULL, vad_backlog_drops);
+            }
+        }
         return false;
     }
 
@@ -902,6 +945,31 @@ void aad_set_threshold(uint16_t threshold)
         vad_is_recording = false;
         vad_sleeping = true;
         vad_voice_streak = 0;
+        /* THE 2026-09-05 BUG. Ending a recording without this left the live backlog
+         * pinned at its full 8 frames, and a noisy room re-triggered the VAD inside the
+         * 3-frame debounce — so preroll_queue_flush() ran against a full backlog and
+         * aad_process_audio() wedged, discarding every frame until the room fell quiet.
+         * Reproduced 2/2 on demand; 44 min and 21 min of audio lost.
+         *
+         * The mic keeps running in auto mode, so the aad_apply_mic_gate() below does
+         * NOT park it and therefore does NOT raise a capture gap — which is the only
+         * reason manual standby and mute were immune. This path has to reset for
+         * itself.
+         *
+         * It also drops audio that was already stale. preroll_store() only runs while
+         * !vad_is_recording, so during a recording the ring is frozen holding frames
+         * from before that recording STARTED — 1m48s old in the reproduction. Replaying
+         * those into the next recording is the same defect the capture-gap path resets
+         * for; it was simply never reachable before, because nothing else re-armed the
+         * VAD without a reset.
+         *
+         * Cross-thread: this runs on the button/BLE thread against mic-thread state,
+         * exactly as the three assignments above it already do. Bounded by inspection —
+         * every index is masked (% VAD_PREROLL_FRAMES / % VAD_PREROLL_FLUSH_MAX_FRAMES)
+         * and every count is only ever compared with <, so no interleaving can index out
+         * of bounds; the worst case is one replayed or one dropped frame at the stop
+         * boundary, which is the correct outcome there anyway. */
+        preroll_reset();
         atomic_set(&sd_pause_pending, 1);
         atomic_set(&adv_slow_req, 1);
         k_sem_give(&aad_sem);
