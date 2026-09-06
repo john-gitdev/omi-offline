@@ -164,8 +164,14 @@ typedef enum {
 
     /* A live mic frame was dropped in aad_process_audio() because the live backlog was
      * full while pre-roll was still replaying. This is the earliest stage audio can die
-     * — before the codec, so codec_drops cannot see it, and before everything the 0x0062
-     * counters watch.
+     * — before the codec, so codec_drops cannot see it, and upstream of every 0x0062
+     * counter that watches the path to the card.
+     *
+     * NOT upstream of all of 0x0062, and the exception is the trap: vad_voiced_ms
+     * (offset 88) is stamped in aad_process_audio BEFORE this drop, so it keeps
+     * climbing straight through the loss. High capture duty is therefore not evidence
+     * that anything reached the codec — reading it as such is exactly what sent the
+     * 2026-09-05 investigation four stages downstream of the real fault.
      *
      * It is the 2026-09-05 stage. Ending a recording without preroll_reset() left the
      * backlog pinned full, and a noisy re-trigger inside the debounce wedged the gate:
