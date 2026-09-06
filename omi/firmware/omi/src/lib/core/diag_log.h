@@ -40,16 +40,18 @@ typedef enum {
     DIAG_SESSION_END_MARKER_EMIT = 6, /* arg1 = session_id */
     DIAG_SD_BLOCK_DROP = 7,           /* arg1 = block_drops snapshot (audio block lost) */
     DIAG_CODEC_DROP = 8,              /* arg1 = codec ring-full drop count snapshot */
-    DIAG_WRITE_BLOCKED = 9,           /* encoded audio was discarded on its way to the card at a
+    DIAG_WRITE_BLOCKED = 9,           /* captured audio was discarded on its way to the card at a
                                        * stage that counts nothing, i.e. capture loss the 0x0062
                                        * counters cannot express.
                                        *   arg0 = diag_write_blocked_t (which stage)
                                        *   arg1 = stage-specific, see each reason
                                        * Rate-limited to one per second: these fire per dropped
-                                       * frame, so an unlimited stall would evict all 128 slots in
-                                       * ~11 s and take the priority-record and vad_level records
-                                       * that give the onset its context with it. The onset is the
-                                       * diagnosis; the repeat count is already in arg1. */
+                                       * frame, so unlimited they would evict all 128 slots in
+                                       * ~13 s (reason 2, one per 100 ms mic buffer) or ~2.6 s
+                                       * (reason 0, one per 20 ms Opus frame), taking the
+                                       * priority-record and vad_level records that give the onset
+                                       * its context with them. The onset is the diagnosis; the
+                                       * repeat count is already in arg1. */
     DIAG_RING_IO_ERROR = 10,          /* reserved (not yet instrumented) */
     DIAG_BACKEND_MOUNT = 11,          /* reserved (not yet instrumented) */
     DIAG_BOND_STATE = 12,             /* arg0 = diag_bond_cause_t; arg1 = bond count AFTER the event */
@@ -141,39 +143,40 @@ typedef enum {
     /* The tx ring was full, so an encoded Opus frame was dropped between the codec and
      * the storage staging buffer. write_to_tx_queue() returns false, broadcast_audio_
      * packets() turns that into -1, and the codec callback discards it — no counter, no
-     * log. The ring only stays full if pusher() has stopped draining it, so this is the
-     * signature of a stalled or gated pusher, and it is self-sustaining: once the ring
-     * fills, write_to_tx_queue() also stops signalling tx_queue_sem.
+     * log. The ring only stays full if pusher() has stopped draining it, and it is
+     * self-sustaining: once full, write_to_tx_queue() also stops signalling
+     * tx_queue_sem, so a pusher parked on it is never woken again.
      *
-     * This is the stage the 2026-09-05 outage points at. 46 minutes of audio was captured
-     * (vad_voiced_ms 99.17% duty) and Opus-encoded (codec_drops 0) and never reached the
-     * card, while marker_pause_gate_saves and sd_msgq_peak_depth BOTH stayed put — so no
-     * block reached the SD worker at all, and the loss was upstream of it. Nothing on the
-     * device could see that; this record is what makes the next one diagnosable.
+     * Never observed. It is instrumented because it is a real uncounted discard, not
+     * because anything points at it — the 2026-09-05 outage was upstream of here, in the
+     * VAD gate (reason 2), and this record correctly stayed silent throughout. Do not
+     * re-argue that history from a zero here; see NOTES.md.
      *   arg1 = frames dropped here since boot, so a rising value is an ongoing stall. */
     DIAG_WRITE_BLOCKED_TX_RING_FULL = 0,
 
-    /* sd_write_paused was set while the VAD held a recording open, so plain-audio blocks
-     * were being dropped at the pause gate while capture ran. Not currently emitted: the
-     * gate declines instead of discarding (see process_write_data_req), which leaves
-     * nothing to report. Reserved so the reason numbering survives if that changes. */
+    /* Reserved, never emitted. Held for a stale sd_write_paused discarding plain-audio
+     * blocks at the pause gate (process_write_data_req) while capture ran — a state the
+     * aad.c re-check on vad_is_recording is meant to make unreachable. Instrumenting it
+     * would mean counting inside that gate, which is deliberately silent because a paused
+     * VAD forwards nothing, so healthily there is nothing there to count. Kept so the
+     * numbering survives if that ever changes; do not reuse the value. */
     DIAG_WRITE_BLOCKED_STALE_PAUSE = 1,
 
-    /* pusher() has not consumed a frame for PUSHER_STALL_MS while the tx ring still
-     * holds data. This is the pathology itself rather than its consequence, and it is
-     * observable ~5 s in instead of only once the ring has filled — on 2026-09-05 the
-     * consequence took 46 minutes to become visible and even then only as an absence.
+    /* A live mic frame was dropped in aad_process_audio() because the live backlog was
+     * full while pre-roll was still replaying. This is the earliest stage audio can die
+     * — before the codec, so codec_drops cannot see it, and before everything the 0x0062
+     * counters watch.
      *
-     * The detecting site also signals tx_queue_sem. That is a mitigation, not a repair:
-     * the failure is self-sustaining because a full ring makes write_to_tx_queue() bail
-     * BEFORE its k_sem_give, so a pusher parked on that semaphore is never woken again;
-     * one give breaks exactly that loop. It cannot help a pusher blocked elsewhere, and
-     * a spurious give is harmless (the pusher loops once and finds nothing), so the kick
-     * is safe on every path. If the records keep coming after it, the pusher is blocked
-     * rather than starved — which is itself the answer to the question we could not
-     * settle from the 2026-09-05 log.
-     *   arg1 = ms since the pusher last consumed a frame. */
-    DIAG_WRITE_BLOCKED_PUSHER_STALLED = 2,
+     * It is the 2026-09-05 stage. Ending a recording without preroll_reset() left the
+     * backlog pinned full, and a noisy re-trigger inside the debounce wedged the gate:
+     * pre-roll never drained, every frame was discarded, and the device reported perfect
+     * health throughout (vad_voiced_ms at 100 % duty because it is stamped upstream of
+     * here, codec_drops 0 because nothing was SUBMITTED). Both halves are fixed — the
+     * reset at every vad_is_recording clear, and pre-roll now draining even when the
+     * push fails — so this should read zero forever. It exists so the next regression
+     * says so instead of being inferred from an absence.
+     *   arg1 = live frames dropped here since boot. */
+    DIAG_WRITE_BLOCKED_VAD_BACKLOG_FULL = 2,
 } diag_write_blocked_t;
 
 /* arg0 values for DIAG_BOND_STATE. Appended-only, same discipline as the codes. */
