@@ -177,6 +177,10 @@ static bool vad_diag_level_was_silent = true;
 static int16_t vad_preroll_buf[VAD_PREROLL_FRAMES][MIC_BUFFER_SAMPLES];
 static uint8_t vad_preroll_wr = 0;
 static uint8_t vad_preroll_cnt = 0;
+/* Pre-roll frames dropped by preroll_queue_flush()'s trim, i.e. lead-in audio the encoder
+ * ring had no room for. Rides DIAG_WRITE_BLOCKED's arg1 rather than 0x0062, whose payload
+ * is full at 100 B. Mic thread only. */
+static uint32_t vad_preroll_trim_drops;
 
 #define VAD_STATUS_LOG_INTERVAL_MS 2000
 
@@ -280,10 +284,10 @@ static void preroll_queue_flush(void)
     for (uint8_t i = 0; i < frames_to_flush; i++) {
         /* Trimmed to fit above, so this should not fail. If it does, stop rather than
          * skip: the frames after it are the ones adjacent to the live audio, and
-         * submitting them around a hole is worse than a shorter lead-in. The loss is
-         * counted by codec_receive_pcm() itself (codec_dropped_count / DIAG_CODEC_DROP),
-         * which is now the single accounting point for audio that dies before the
-         * encoder — the old backlog was a second, separate one. */
+         * submitting them around a hole is worse than a shorter lead-in. The rejected
+         * frame is counted by codec_receive_pcm() itself (DIAG_CODEC_DROP); the ones
+         * abandoned by the break are folded into `dropped` and counted below, so the
+         * whole loss is accounted for either way. */
         if (codec_receive_pcm(vad_preroll_buf[rd], MIC_BUFFER_SAMPLES) != 0) {
             LOG_ERR("VAD: pre-roll burst rejected at %u/%u", i, frames_to_flush);
             dropped = (uint8_t) (vad_preroll_cnt - i);
@@ -293,6 +297,28 @@ static void preroll_queue_flush(void)
     }
 
     LOG_INF("VAD: burst %u/%u pre-roll frame(s), dropped %u", frames_to_flush, vad_preroll_cnt, dropped);
+
+    if (dropped > 0) {
+        /* The trim above discards captured audio, and it does so BEFORE any push — so
+         * codec_receive_pcm() is never called for those frames and codec_drops cannot
+         * move. Without this record the loss is invisible on a shipped device: CONFIG_LOG
+         * is unset, so the LOG_INF right above compiles out entirely. Instrumenting it
+         * here is what keeps "the tx ring is the only uncounted audio-discard site" true
+         * (see write_to_tx_queue) rather than quietly opening a second one.
+         *
+         * Rate-limited to 1/s in the same shape as the sites it replaces: this fires at
+         * most once per recording start, but a persistently starved encoder would trim
+         * every start and evict a 128-slot ring shared with everything else. arg1 carries
+         * the running total, so the lost detail is only the timing of repeats. Mic thread
+         * only, so the statics need no lock. */
+        static int64_t last_trim_log_ms;
+        vad_preroll_trim_drops += dropped;
+        int64_t now_trim = k_uptime_get();
+        if (last_trim_log_ms == 0 || (now_trim - last_trim_log_ms) >= 1000) {
+            last_trim_log_ms = now_trim;
+            diag_log_event(DIAG_WRITE_BLOCKED, 0, DIAG_WRITE_BLOCKED_PREROLL_TRIMMED, vad_preroll_trim_drops);
+        }
+    }
 
     vad_preroll_wr = 0;
     vad_preroll_cnt = 0;
@@ -699,7 +725,20 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
                  * keeps the bin layout identical to the paced version ([0xFFFFFFFD]
                  * [pre-roll][live]) rather than resting on the mic thread outrunning the
                  * encoder — which it does, at priority 5 against the encoder's 7, but that
-                 * is a scheduling accident and not something to encode a file format in. */
+                 * is a scheduling accident and not something to encode a file format in.
+                 *
+                 * A stop landing around here still beats the burst to the card, and no
+                 * ordering available on this thread fixes it. The system workqueue runs at
+                 * -1 (cooperative), so a BUTTON stop preempts this thread outright, between
+                 * any two instructions; an APP stop arrives on BT RX at 8 and cannot preempt
+                 * us, but lands just as well while these blocks are still crossing the
+                 * encoder and the tx ring, because the 0xFFFFFFFC goes straight into
+                 * storage_temp_data and skips both. Either way the app discards the burst
+                 * (_sessionEndPendingResume). It costs the same 8 frames the paced version
+                 * lost to the same race — there the finalize's reset cleared the pending
+                 * replay instead — so this is not a regression. See NOTES.md, "A stop that
+                 * lands around the burst"; the three reasons it cannot be closed here are
+                 * written up there. */
                 preroll_queue_flush();
 
                 atomic_set(&sd_pause_pending, 2);
