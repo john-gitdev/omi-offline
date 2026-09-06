@@ -1386,6 +1386,34 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       );
     }).toList();
 
+    // Every bin on disk that this run will NOT decode, and why. In a healthy run
+    // nothing is excluded — bins are consumed and pruned promptly — so this is a rare,
+    // high-signal line rather than noise. It exists because the failure mode it names
+    // is invisible by construction: a bin wrongly excluded is simply never decoded,
+    // produces no recording and no discard, and is silently re-excluded on every
+    // subsequent run. Confirmed on-device 2026-09-06, where that state went unnoticed
+    // until the file was read off the phone over adb. If the same bin appears here run
+    // after run, that is the bug, not housekeeping.
+    {
+      final excluded = <String>[];
+      for (final f in allBins) {
+        final rel = f.path.split('/raw_segments/').last;
+        if (incompleteBins.contains(rel)) {
+          excluded.add('$rel (mid-transfer)');
+        } else if (discardedBins.contains(rel)) {
+          excluded.add('$rel (discarded)');
+        } else if (coveredBins.contains(f.path)) {
+          excluded.add('$rel (already decoded by a recording)');
+        }
+      }
+      if (excluded.isNotEmpty) {
+        final shown = excluded.take(20).join(', ');
+        final more = excluded.length > 20 ? ' … and ${excluded.length - 20} more' : '';
+        Logger.debug('RecordingsController: ${excluded.length} of ${allBins.length} bin(s) excluded from this '
+            'run — $shown$more');
+      }
+    }
+
     // Drain any pre-mode-switch backlogs with the settings that were live when
     // they were recorded, and take those bins out of this run so only
     // current-mode audio is processed below. Returns the batches unchanged when
