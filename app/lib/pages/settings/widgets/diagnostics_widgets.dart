@@ -452,9 +452,14 @@ DiagLevel diagEventLevel(DiagLogRecord r) {
     case 13: // adv_start_fail
     case 15: // adv_stop_fail
       return DiagLevel.bad;
-    case 9: // write_blocked
     case 14: // adv_watchdog_rescue
       return DiagLevel.warn;
+    // write_blocked — graded on arg0, because the record means different things. Reason 0
+    // (stale pause) is audio that was being captured, encoded and then deleted with every
+    // drop counter reading zero, which is the worst outcome this device has; a future
+    // reason may be milder, so it keeps the old warn until it says otherwise.
+    case 9:
+      return r.arg0 == 0 ? DiagLevel.bad : DiagLevel.warn;
     // empty_bin_rotation — graded on arg0 (the rotation reason), not the code. A
     // rotation landing in a silent stretch closes an empty bin by design and is not
     // worth a colour. Reason 6 is: that bin should hold the recording's own markers,
