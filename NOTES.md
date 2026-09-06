@@ -980,6 +980,15 @@ pusher is **not established**. Every unbounded wait in its path (`storage_temp_m
 
 ### What was changed
 
+0. **`transport.c` — a stall probe on `pusher()` itself.** `pusher_last_drain_ms` is stamped on every
+   real consume; `write_to_tx_queue()` reports `DIAG_WRITE_BLOCKED_PUSHER_STALLED` when the ring holds
+   data and nothing has been consumed for `PUSHER_STALL_MS` (5 s), and signals `tx_queue_sem`. This
+   catches the CAUSE (pusher not draining) rather than the CONSEQUENCE (ring full), ~5 s in rather than
+   only once the ring has filled, and the kick breaks the self-sustaining half — a full ring makes
+   `write_to_tx_queue()` bail before its `k_sem_give`, so a pusher parked on that semaphore is never
+   woken again. If records keep arriving after the kick, the pusher is blocked rather than starved,
+   which is the question the 2026-09-05 log could not settle.
+
 1. **`transport.c` — `write_to_tx_queue()`'s ring-full drop now emits `DIAG_WRITE_BLOCKED`**
    (`DIAG_WRITE_BLOCKED_TX_RING_FULL`, arg1 = running total), rate-limited to 1/s. This is the fix that
    matters: it is the stage the evidence points at and it was completely invisible. A counter was not an
@@ -997,6 +1006,18 @@ pusher is **not established**. Every unbounded wait in its path (`storage_temp_m
    bookkeeping and the worker has no business writing it.
 
 ### Residuals — read before "improving" this
+
+- **The ghost-row timestamp is a separate, unresolved bug.** Confirmed on-device 2026-09-05: the
+  discard for bin `1788656840` renders 18:07:20–18:09:20 when the audio it describes runs 18:08:26–
+  18:10:26 — a 66 s offset equal to that bin's silent head. `_buildDiscardRecordFor` takes its
+  `startMs` from `_recordingStartTime`, which is anchored per frame from `vadResumeTime` when a
+  `0xFFFFFFFD` has been seen (`vad_audio_processor.dart:1762`) — and the resume packet IS the first
+  entry in that bin, with `gapMs = 65050` proving the anchor was computed. So the anchor exists, looks
+  correct, and demonstrably did not reach the discard record. NOT guessed at further: the source bin is
+  deleted and `dart` is unavailable in the analysis container, so the next step is a unit test driving a
+  synthetic bin (resume packet at head, UTC 65 s after `timerStart`, then audio) asserting the discard
+  starts at the resume, not at the bin head. Do not "fix" this by re-deriving the start from the bin
+  header — that is the wrong value, it is just the one currently observed.
 
 - **The root cause is not fixed, because it is not known.** Changes 2 and 3 close and guard a mechanism the
   byte evidence refutes as the cause here. Change 1 is instrumentation, not a repair. If this recurs, the
