@@ -2578,10 +2578,12 @@ static bool write_to_tx_queue(uint8_t *data, size_t size)
         ring_buf_put_finish(&ring_buf, 0); // Release claimed space
         /* An encoded frame just died between the codec and storage, and nothing else
          * records it: our false becomes broadcast_audio_packets()'s -1, which the codec
-         * callback discards. One of only two uncounted audio-discard sites in the whole
-         * chain — the other is the VAD backlog (DIAG_WRITE_BLOCKED_VAD_BACKLOG_FULL),
-         * which is where the 2026-09-05 loss actually happened; this site stayed silent
-         * throughout, and correctly so.
+         * callback discards. Since oo-3.1.2 this is the ONLY uncounted audio-discard site
+         * in the chain. There were two: the other was the VAD holding ring
+         * (DIAG_WRITE_BLOCKED_VAD_BACKLOG_FULL), where the 2026-09-05 loss actually
+         * happened — this site stayed silent throughout, and correctly so. That ring no
+         * longer exists, and the loss that replaced it (the encoder ring refusing a
+         * pre-roll burst) is counted by codec_receive_pcm() as DIAG_CODEC_DROP.
          *
          * The ring only stays full if pusher() has stopped draining it, and the failure
          * is self-sustaining: bailing here also skips the k_sem_give below, so a pusher
