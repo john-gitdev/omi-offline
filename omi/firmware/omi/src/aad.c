@@ -284,13 +284,20 @@ static void preroll_queue_flush(void)
     for (uint8_t i = 0; i < frames_to_flush; i++) {
         /* Trimmed to fit above, so this should not fail. If it does, stop rather than
          * skip: the frames after it are the ones adjacent to the live audio, and
-         * submitting them around a hole is worse than a shorter lead-in. The rejected
-         * frame is counted by codec_receive_pcm() itself (DIAG_CODEC_DROP); the ones
-         * abandoned by the break are folded into `dropped` and counted below, so the
-         * whole loss is accounted for either way. */
+         * submitting them around a hole is worse than a shorter lead-in.
+         *
+         * The two counters must stay DISJOINT, and the `- 1` is what keeps them so. At a
+         * break on index i, frames 0..i-1 were accepted, frame i was SUBMITTED and
+         * rejected — so codec_receive_pcm() has already counted it as DIAG_CODEC_DROP —
+         * and frames i+1..frames_to_flush-1 were never attempted. Adding those to the
+         * ones trimmed before the loop gives (vad_preroll_cnt - i - 1) frames that no
+         * codec counter can see, which is exactly what reason 3 is for. Folding in the
+         * rejected frame as well would tally it twice and contradict reason 3's own
+         * definition ("never submitted"). No underflow: i < frames_to_flush <=
+         * vad_preroll_cnt at every break. */
         if (codec_receive_pcm(vad_preroll_buf[rd], MIC_BUFFER_SAMPLES) != 0) {
             LOG_ERR("VAD: pre-roll burst rejected at %u/%u", i, frames_to_flush);
-            dropped = (uint8_t) (vad_preroll_cnt - i);
+            dropped = (uint8_t) (vad_preroll_cnt - i - 1);
             break;
         }
         rd = (uint8_t) ((rd + 1) % VAD_PREROLL_FRAMES);
