@@ -162,17 +162,14 @@ typedef enum {
      * numbering survives if that ever changes; do not reuse the value. */
     DIAG_WRITE_BLOCKED_STALE_PAUSE = 1,
 
-    /* RETIRED as of oo-3.1.2, and NOT reusable — see below. No firmware from that
-     * version on emits it; the app still decodes it because a device on older firmware
-     * does, and the numbering must stay stable for those records to keep their meaning.
+    /* RETIRED, and NOT reusable — see below. Emitted only by oo-3.1.1 and earlier; the
+     * app still decodes it because devices on those versions are in the field, and the
+     * numbering must stay stable for their records to keep their meaning.
      *
      * It meant: a live mic frame was dropped in aad_process_audio() because the holding
-     * ring that shadowed the pre-roll replay was full. That ring is gone. The pre-roll is
-     * now submitted to the encoder in one burst at the RECORDING transition
-     * (preroll_queue_flush), so no live frame ever waits behind a replay, and the one way
-     * pre-roll audio can still be lost — the encoder ring having no room for it — is
-     * counted by codec_receive_pcm() itself as DIAG_CODEC_DROP. That leaves ONE accounting
-     * point for audio dying before the encoder where there were two.
+     * ring that shadowed the pre-roll replay was full. That ring is gone as of oo-3.1.3.
+     * The pre-roll is now submitted to the encoder in one burst at the RECORDING
+     * transition (preroll_queue_flush), so no live frame ever waits behind a replay.
      *
      * The trap it documented outlives it and is worth keeping in view: vad_voiced_ms
      * (offset 88) is stamped in aad_process_audio on vad_is_recording alone, upstream of
@@ -180,8 +177,27 @@ typedef enum {
      * loss. High capture duty is not evidence that anything reached the card — reading it
      * as such is exactly what sent the 2026-09-05 investigation four stages downstream of
      * the real fault.
-     *   arg1 = live frames dropped here since boot (pre-oo-3.1.2 devices only). */
+     *   arg1 = live frames dropped here since boot (oo-3.1.1 and earlier only). */
     DIAG_WRITE_BLOCKED_VAD_BACKLOG_FULL = 2,
+
+    /* preroll_queue_flush() (oo-3.1.3 on) trimmed its burst because the encoder ring had
+     * no room for the whole pre-roll, dropping the OLDEST frames — so a recording begins
+     * with a shorter lead-in than the ring held.
+     *
+     * This needs its own reason because the trim happens BEFORE any push, which makes it
+     * invisible to every counter downstream: codec_receive_pcm() is never called for the
+     * trimmed frames, so codec_drops does not move, and nothing further along ever sees
+     * audio that was never submitted. Reading "codec_drops == 0" as "the burst fits" is
+     * the same shape of mistake as reading vad_voiced_ms as capture — a check that
+     * structurally cannot express the failure it is being asked about.
+     *
+     * Should read zero. The burst runs only at the silence->speech transition, and a
+     * sleeping VAD submits nothing, so the ring has been draining with no producer for at
+     * least CONFIG_OMI_VAD_HOLD_MS; it is empty there by construction. A non-zero value
+     * means the encoder thread was starved long enough to still hold >1 block at that
+     * moment, which is a scheduling fault upstream of audio, not a VAD problem.
+     *   arg1 = pre-roll frames dropped this way since boot. Rate-limited to 1/s. */
+    DIAG_WRITE_BLOCKED_PREROLL_TRIMMED = 3,
 } diag_write_blocked_t;
 
 /* arg0 values for DIAG_BOND_STATE. Appended-only, same discipline as the codes. */
