@@ -1014,7 +1014,7 @@ kept delivering, the VAD kept a recording open at ~100 % duty, and not one audio
 card. Reproducible on demand — two priority stops in the 2026-09-05 log, two blackouts, no others all
 week. Both ended only when the room fell quiet.
 
-    17:22:32 stop -> bins 36 B / 476 B / 36 B until 18:07:20   (44 min 46 s)
+    17:22:32 stop -> bins 36 B / 476 B / 36 B until 18:07:20   (44 min 48 s)
     21:19:12 stop -> bins 36 B / 36 B        until 21:40:49    (21 min 37 s)
 
 ### The mechanism
