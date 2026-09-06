@@ -40,18 +40,16 @@ typedef enum {
     DIAG_SESSION_END_MARKER_EMIT = 6, /* arg1 = session_id */
     DIAG_SD_BLOCK_DROP = 7,           /* arg1 = block_drops snapshot (audio block lost) */
     DIAG_CODEC_DROP = 8,              /* arg1 = codec ring-full drop count snapshot */
-    DIAG_WRITE_BLOCKED = 9,           /* audio was being discarded at a write gate that had no
-                                       * business being closed, i.e. real capture loss.
-                                       *   arg0 = diag_write_blocked_t (which gate, and why stale)
-                                       *   arg1 = length of the block that detected it
-                                       * The gates are silent by design: a pause drops plain audio
-                                       * without counting it, because in the healthy case the VAD is
-                                       * asleep and there is no audio to drop. This record fires only
-                                       * when that premise is false — so unlike every other drop
-                                       * signal it cannot be routine — and the detecting site opens
-                                       * the gate rather than only reporting it. Rate-limited: a
-                                       * flapping gate reports its onset instead of evicting the
-                                       * whole ring. */
+    DIAG_WRITE_BLOCKED = 9,           /* encoded audio was discarded on its way to the card at a
+                                       * stage that counts nothing, i.e. capture loss the 0x0062
+                                       * counters cannot express.
+                                       *   arg0 = diag_write_blocked_t (which stage)
+                                       *   arg1 = stage-specific, see each reason
+                                       * Rate-limited to one per second: these fire per dropped
+                                       * frame, so an unlimited stall would evict all 128 slots in
+                                       * ~11 s and take the priority-record and vad_level records
+                                       * that give the onset its context with it. The onset is the
+                                       * diagnosis; the repeat count is already in arg1. */
     DIAG_RING_IO_ERROR = 10,          /* reserved (not yet instrumented) */
     DIAG_BACKEND_MOUNT = 11,          /* reserved (not yet instrumented) */
     DIAG_BOND_STATE = 12,             /* arg0 = diag_bond_cause_t; arg1 = bond count AFTER the event */
@@ -140,18 +138,26 @@ typedef enum {
 
 /* arg0 values for DIAG_WRITE_BLOCKED. Appended-only, same discipline as the codes. */
 typedef enum {
-    /* sd_write_paused was set while the VAD held a recording open. Every plain-audio
-     * block was therefore being dropped at the pause gate, uncounted, while capture ran.
+    /* The tx ring was full, so an encoded Opus frame was dropped between the codec and
+     * the storage staging buffer. write_to_tx_queue() returns false, broadcast_audio_
+     * packets() turns that into -1, and the codec callback discards it — no counter, no
+     * log. The ring only stays full if pusher() has stopped draining it, so this is the
+     * signature of a stalled or gated pusher, and it is self-sustaining: once the ring
+     * fills, write_to_tx_queue() also stops signalling tx_queue_sem.
      *
-     * The pause has exactly one clearing site — the VAD's silence→speech edge in
-     * aad_process_audio() — so a clear that is lost or clobbered survives until the NEXT
-     * such edge, which needs CONFIG_OMI_VAD_HOLD_MS of quiet first. A continuously noisy
-     * room can defer that for hours. Observed on-device 2026-09-05: a priority-record
-     * stop at 17:22:32 left the pause set, 46 minutes of audio was captured, Opus-encoded
-     * and discarded, and every drop counter still read zero; it recovered only when the
-     * room happened to fall quiet at 18:08 and the VAD could complete a sleep→wake cycle.
-     * The gate now opens itself here, so recovery no longer depends on ambient noise. */
-    DIAG_WRITE_BLOCKED_STALE_PAUSE = 0,
+     * This is the stage the 2026-09-05 outage points at. 46 minutes of audio was captured
+     * (vad_voiced_ms 99.17% duty) and Opus-encoded (codec_drops 0) and never reached the
+     * card, while marker_pause_gate_saves and sd_msgq_peak_depth BOTH stayed put — so no
+     * block reached the SD worker at all, and the loss was upstream of it. Nothing on the
+     * device could see that; this record is what makes the next one diagnosable.
+     *   arg1 = frames dropped here since boot, so a rising value is an ongoing stall. */
+    DIAG_WRITE_BLOCKED_TX_RING_FULL = 0,
+
+    /* sd_write_paused was set while the VAD held a recording open, so plain-audio blocks
+     * were being dropped at the pause gate while capture ran. Not currently emitted: the
+     * gate declines instead of discarding (see process_write_data_req), which leaves
+     * nothing to report. Reserved so the reason numbering survives if that changes. */
+    DIAG_WRITE_BLOCKED_STALE_PAUSE = 1,
 } diag_write_blocked_t;
 
 /* arg0 values for DIAG_BOND_STATE. Appended-only, same discipline as the codes. */
