@@ -929,15 +929,95 @@ Logger.error(
 
 ---
 
+## Firmware: audio deleted at the SD pause gate (2026-09-05) — FIXED
+
+**What happened.** An auto-mode Priority Recording was stopped by button at 17:22:32. From that second
+until 18:08:26 the Omi wrote no audio at all: three consecutive bins of 36 B / 476 B / 36 B (header, plus
+two markers in the middle one) where every other bin that day was 1.6–3.7 MB. It recovered on its own,
+with no reboot — uptime ran continuously across it and the `device_session_id` never changed.
+
+**It was not a capture failure.** `vad_voiced_ms` advanced 14,502.6 s over the 14,624 s between two
+diagnostics reads spanning the outage — **99.17 % duty**, so ≥95.9 % of the blackout worst-case had a
+recording open. `codec_drops` stayed 0, so the PCM ring was drained and the audio was Opus-encoded. The
+hourly `DIAG_VAD_LEVEL` record landed on its exact cadence throughout (3,600,358 ms, identical to the
+preceding three hours), which a stopped mic cannot produce, and reported a 5-minute peak of 8899 against
+a threshold of 250 — the same acoustic picture as the hour before, when it was recording continuously.
+
+**Where it went.** `process_write_data_req()`'s `sd_write_paused` gate was the only discard in the whole
+chain that incremented nothing: `if (pause_marker != 0) {...} else { return; }`. Every other exit is
+instrumented and all of them read zero (`block_drops`, `stat_dropped_frames`, `boot_dropped_frames`,
+`codec_drops`, `ring_io_errors`, `marker_write_drops`), as did `sd_msgq_peak_depth` and
+`marker_pause_gate_saves`. The silence is by design — a paused VAD forwards no frames, so healthily there
+is nothing at that gate to count. The outage falsified the premise, not the counter.
+
+**Why it lasted 46 minutes.** `sd_write_paused` had exactly one clearing site: the VAD's silence→speech
+edge in `aad_process_audio()`, which calls `sd_write_pause(false)` inline before writing its `0xFFFFFFFD`.
+Nothing re-asserted it. So a clear that is lost survives until the *next* such edge — and reaching one
+first requires `CONFIG_OMI_VAD_HOLD_MS` (10 s) of sub-threshold audio. At 99 % duty that edge is rare: the
+room stayed busy, so the gate stayed shut. It opened at 18:08:26 only because the room finally fell quiet
+for ~65 s, which is exactly the `VAD resume — gap 65050ms` the app logged at the head of the recovering
+bin. **Recovery was a property of ambient noise.** A busier afternoon would have cost hours.
+
+**The fix, in two parts.**
+
+1. `aad.c`, AAD handler: the queued-pause apply already re-checked for a racing `record_start()`, but only
+   via `vad_threshold == 65535`. That test is false in precisely the case that bit us — a priority stop
+   restores an *auto* threshold (250). The re-check is now `vad_threshold == 65535 || vad_is_recording`.
+   The window is real and wide: `sd_write_pause(true)` sets the flag *before* it queues `REQ_PAUSE_IO`,
+   then waits on the worker for up to 10.5 s, so any silence→speech transition in that span runs its own
+   inline clear first and ours buries it. `vad_is_recording` became `volatile` for that re-read.
+2. `sd_card.c`, the gate itself: a pause contradicted by `aad_is_recording()` is stale by construction —
+   both pause-request sites set `vad_is_recording = false` *before* `sd_pause_pending = 1`, so under
+   healthy operation the condition cannot hold, including for blocks still in flight behind a sleep
+   transition. The gate now clears the pause and lets the block through, and emits `DIAG_WRITE_BLOCKED`
+   (arg0 `DIAG_WRITE_BLOCKED_STALE_PAUSE`, arg1 the block length), rate-limited to 1/s so a flapping gate
+   reports its onset instead of evicting all 128 ring slots in eleven seconds.
+
+Part 2 is the load-bearing one: it makes recovery a property of the write path rather than of the room,
+whatever loses the clear. Part 1 closes the one concrete window that can lose it.
+
+**Residuals — read before "improving" this.**
+
+- **The exact lost-clear was never proved.** The evidence narrows it to two uninstrumented discards — this
+  gate, and `write_to_tx_queue()`'s ring-full return, whose `-1` `broadcast_audio_packets()` discards — and
+  the `pusher()` gate at `transport.c` whose three conditions are each independently ruled out (`is_muted`
+  false: no mute markers and `voiced` kept climbing; `is_sd_on()` true: markers reached the card;
+  `cached_total_file_size` ≈ MB against a 480 MB threshold, rebuilt by the app's own LIST+DELETE). The
+  race closed in part 1 is a genuine hole but was not shown to be *the* one that fired. This is why the fix
+  is a backstop plus a report, not a pinpoint repair — and why `DIAG_WRITE_BLOCKED` matters more than the
+  race fix: the next occurrence names itself.
+- **The tempting wrong fix is deleting the pause from `aad_set_threshold()`'s finalize path.** It looks
+  like the trigger, and for the manual-standby case it is correct as written (the mic parks, nothing more
+  arrives). Removing it for the auto case costs real power with no bound: the finalize sets
+  `vad_is_recording = false`, and the ordinary VAD-sleep pause only fires on that same transition, so with
+  the finalize's pause gone nothing re-pauses until after the *next* recording ends — the SPI bus stays
+  awake through an arbitrarily long quiet stretch.
+- **`write_to_tx_queue()`'s silent drop is still silent.** It is the other candidate above and is left
+  uninstrumented; closing it needs the same treatment. The 0x0062 payload is full at 100 B, so any new
+  signal there has to be a diag-log event, not a counter.
+- **Not unit-tested.** This repository has no firmware test harness — the only `*test*` files under
+  `omi/firmware/` are J-Link flash scripts — so both parts are verified by reading, not by execution. What
+  *was* checked: the gate at line 1681 is the only reader of `sd_write_paused` on the write path;
+  `ring_io_wake_cb` is registered as the ring's `.io_wake` and resumes the bus suspended by
+  `sd_set_io_low_power(true)`, so clearing the flag from the worker is sufficient; `sd_draining`
+  short-circuits the whole gate, so shutdown drains are untouched; and both pause-request sites order
+  `vad_is_recording = false` ahead of the request.
+
+---
+
 ## Firmware + App: SD Write Drop Counters (diagnostic instrumentation)
 
-**Status:** shipped and load-bearing as a canary; validated premise = no drops in real use.
+**Status:** shipped and load-bearing as a canary. **"No drops" is a statement about the paths these
+counters watch, and nothing more** — on 2026-09-05 the device deleted 46 minutes of captured, encoded
+audio with every counter below reading zero, because the path it died on is deliberately uninstrumented.
+See "Audio deleted at the SD pause gate" immediately above before quoting a zero from this section.
 
 ### Why this exists
 
 Originally built to validate a deferred proposal ("Sequence & Sync" marker re-synchronization, formerly in `IDEAS.md`). That proposal would have wrapped every audio packet in a sequence-number + uptime header so the app could detect dropped frames and reconstruct a gap-less timeline — protecting in-stream button-tap markers (`0xFFFFFFFE`) from drifting out of sync when frames are lost. In-stream markers currently rely on byte-position within the `.bin` stream to compute their audio timestamp; if the firmware/SD card drops frames the timeline "shrinks" but the marker stays at its byte-offset, so it drifts.
 
-That proposal's complexity is only justified **if SD write drops actually happen**. These counters were built to measure that. **Result: zero drops across the entire usage history since they shipped** — so the Sequence & Sync proposal was dropped as solving a non-problem (the section was removed from `IDEAS.md` on 2026-05-28). The counters are retained as a permanent cheap canary: if a future firmware change reintroduces drops, the Debug Tools page surfaces it instead of silently shipping marker drift.
+That proposal's complexity is only justified **if SD write drops actually happen**. These counters were built to measure that. **Result: zero drops across the entire usage history since they shipped** (with the blind spot noted in
+the Status line above — a zero here does not mean no audio was lost) — so the Sequence & Sync proposal was dropped as solving a non-problem (the section was removed from `IDEAS.md` on 2026-05-28). The counters are retained as a permanent cheap canary: if a future firmware change reintroduces drops, the Debug Tools page surfaces it instead of silently shipping marker drift.
 
 ### Counters and their failure modes
 
