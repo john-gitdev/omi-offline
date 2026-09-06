@@ -455,9 +455,10 @@ DiagLevel diagEventLevel(DiagLogRecord r) {
     case 14: // adv_watchdog_rescue
       return DiagLevel.warn;
     // write_blocked — graded on arg0, because the record means different things. Reason 0
-    // (stale pause) is audio that was being captured, encoded and then deleted with every
-    // drop counter reading zero, which is the worst outcome this device has; a future
-    // reason may be milder, so it keeps the old warn until it says otherwise.
+    // (tx ring full) is encoded audio dropped between the codec and storage while every
+    // drop counter reads zero, which is the worst outcome this device has and is the
+    // signature of a stalled pusher; a future reason may be milder, so anything else
+    // keeps the old warn until it says otherwise.
     case 9:
       return r.arg0 == 0 ? DiagLevel.bad : DiagLevel.warn;
     // empty_bin_rotation — graded on arg0 (the rotation reason), not the code. A
