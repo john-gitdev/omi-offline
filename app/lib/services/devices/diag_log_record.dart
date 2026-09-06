@@ -210,9 +210,15 @@ class DiagLogRecord {
             return 'Write blocked$_backendSuffix — tx ring full, encoded frame dropped '
                 'before storage ($arg1 since boot)';
           case 2:
-            // Retired firmware-side in oo-3.1.2 (the holding ring it counted was
-            // removed). Kept because a device on older firmware still emits it.
+            // Emitted only by oo-3.1.1 and earlier — the holding ring it counted was
+            // removed in oo-3.1.3. Kept because those devices are still in the field.
             return 'Write blocked — VAD backlog full, live mic frame dropped before the '
+                'codec ($arg1 since boot)';
+          case 3:
+            // oo-3.1.3 on. The pre-roll burst was trimmed to fit the encoder ring, so a
+            // recording began with a shorter lead-in. Trimmed frames are never submitted,
+            // which is why this needs its own record: no downstream counter can see them.
+            return 'Write blocked — pre-roll trimmed, lead-in audio dropped before the '
                 'codec ($arg1 since boot)';
           default:
             return 'Write blocked$_backendSuffix — arg0=$arg0 arg1=$arg1';
