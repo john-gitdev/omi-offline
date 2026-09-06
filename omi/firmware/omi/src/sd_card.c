@@ -35,7 +35,6 @@
 #include <zephyr/storage/disk_access.h>
 #include <zephyr/sys/atomic.h>
 
-#include "aad.h"
 #include "rtc.h"
 #include "imu.h"
 
@@ -450,29 +449,6 @@ static void ring_handle_read_req(const sd_req_t *req);
  * bools are sufficient (no cross-thread access). */
 static bool sd_suppress_auto_rotate = false;
 static bool sd_draining = false;
-
-/* Is a set sd_write_paused contradicted by the capture state it was taken for?
- *
- * Both pause-request sites in aad.c clear vad_is_recording BEFORE queueing the pause,
- * so under healthy operation this is false whenever the gate below is reached — including
- * for the blocks still in flight behind a sleep transition, which is exactly when the
- * gate's discard IS correct. True means live capture is being deleted.
- *
- * Only aad.c ever pauses, so on a build without it there is nothing to be stale; the
- * constant keeps the gate identical rather than referencing a symbol that is not linked
- * in (src/aad.c is conditional in CMakeLists.txt). Same shim pattern as button.c's
- * priority_record_stop(). */
-#ifdef CONFIG_OMI_ENABLE_T5838_AAD
-static inline bool capture_is_live(void)
-{
-    return aad_is_recording();
-}
-#else
-static inline bool capture_is_live(void)
-{
-    return false;
-}
-#endif
 
 static void drain_pending_write_queue_for_shutdown(void)
 {
@@ -1663,17 +1639,8 @@ static void process_write_data_req(const sd_req_t *req)
 
     /* Pause gate: a pause is a power optimization, not a correctness gate. Keep
      * marker-bearing blocks (session-end / priority-start / tap / mute / resume)
-     * through a pause; drop only plain audio.
-     *
-     * capture_is_live() is the third term for the same reason sd_draining is the first:
-     * both name a state in which the pause does not apply, so the gate declines rather
-     * than discards. A pause that outlived its silence is not a power optimization, it
-     * is arriving audio being deleted — and deleted uncounted, because the discard below
-     * deliberately bumps nothing (a paused VAD forwards no frames, so healthily there is
-     * nothing here to count). Declining is preferred to clearing sd_write_paused from
-     * this thread: the flag belongs to aad.c's pause/resume bookkeeping, the worker has
-     * no business writing it, and the next legitimate resume clears it anyway. */
-    if (!sd_draining && !capture_is_live() && atomic_get(&sd_write_paused)) {
+     * through a pause; drop only plain audio. */
+    if (!sd_draining && atomic_get(&sd_write_paused)) {
         uint32_t pause_marker = block_scan_markers(req->u.write.buf, req->u.write.len, true);
         if (pause_marker != 0) {
             atomic_inc(&marker_pause_gate_saves);
