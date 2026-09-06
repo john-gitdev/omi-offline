@@ -28,7 +28,9 @@
 # matters more than convenience here: the app-private data IS the evidence, and an
 # uninstall/reinstall would destroy it. If key.properties is missing, the debug build
 # falls back to the default debug keystore, the signature will not match, and the
-# install is refused — cleanly, without touching the data. This script checks up front.
+# install is refused — cleanly, without touching the data. Checked up front for --install,
+# and warned about loudly otherwise: a build-only run is still useful to someone with no
+# release APK installed, where there is no signature to match and nothing to preserve.
 #
 #   ./ccbuilddev.sh              build only
 #   ./ccbuilddev.sh --install    build, then install over whatever is on the device
@@ -55,12 +57,28 @@ done
 say() { printf '\033[1mccbuilddev:\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mccbuilddev: %s\033[0m\n' "$*" >&2; exit 1; }
 
-# Fail before spending ten minutes: without key.properties the signature will not
-# match the installed release build and the install is refused at the end.
-[[ -f "$ROOT_DIR/android/key.properties" || -f "$APP_DIR/android/key.properties" ]] \
-  || die "android/key.properties missing — a debug build would be signed with the default
-  debug keystore, would NOT match the installed release APK, and could only be installed
-  by uninstalling first, which destroys the app-private data this build exists to read."
+# The ONLY path Gradle reads. android/app/build.gradle does
+# `rootProject.file('key.properties')`, and inside a Flutter Android project rootProject is
+# app/android — so app/android/key.properties is the single file deciding whether
+# signingConfigs.debug uses the release keystore. Do NOT also accept
+# <repo>/android/key.properties: no such directory exists, Gradle would never load it, and
+# a stray file there would let this check pass while the build was signed with the default
+# debug keystore — the exact outcome the check exists to prevent.
+KEY_PROPS="$APP_DIR/android/key.properties"
+
+# Everything that can reject this run, checked BEFORE the build rather than after it. A
+# ten-minute build ending in "no device attached" is a bad trade for three lines.
+if [[ $DO_INSTALL -eq 1 ]]; then
+  command -v adb >/dev/null 2>&1 || die "--install given but adb is not on PATH"
+  adb get-state >/dev/null 2>&1 || die "--install given but no device is attached (adb devices)"
+  # Fatal only for --install, where the package manager would refuse us at the end anyway.
+  # A build-only run is still useful to someone with no release APK installed: there is no
+  # signature to match and nothing to preserve.
+  [[ -f "$KEY_PROPS" ]] || die "app/android/key.properties missing — a debug build is then signed with the
+  default debug keystore, will NOT match an installed release APK, and could only be
+  installed by uninstalling first, which destroys the app-private data this build exists
+  to read. Refusing rather than doing that."
+fi
 
 VERSION="$(awk '/^version:/ {print $2; exit}' "$PUBSPEC")"
 [[ -n "${VERSION:-}" ]] || die "could not parse version from $PUBSPEC"
@@ -69,6 +87,15 @@ short_version() { local c; c=$(echo "$1" | tr -d '.-'); [[ "$c" == oo* ]] && ech
 OUT_PATH="$RELEASES_DIR/$(short_version "$VERSION")-debug.apk"
 
 say "version=$VERSION  output=$OUT_PATH"
+if [[ ! -f "$KEY_PROPS" ]]; then
+  # Not fatal here, but never silent: this artifact cannot be installed over an existing
+  # release build, and discovering that by uninstalling is how the data gets destroyed.
+  printf '\033[1;33mccbuilddev: WARNING\033[0m %s\n' \
+    "app/android/key.properties is missing, so this APK is signed with the default debug
+  keystore. It will NOT install over an existing release build — 'adb install -r' is
+  refused. Do NOT uninstall to work around that: the app-private data is usually the whole
+  reason for building this." >&2
+fi
 mkdir -p "$RELEASES_DIR"
 
 # No `flutter clean` here, unlike build-apk.sh. That costs ten minutes and buys
@@ -87,8 +114,6 @@ mv "$SRC_APK" "$OUT_PATH"
 say "wrote $OUT_PATH"
 
 if [[ $DO_INSTALL -eq 1 ]]; then
-  command -v adb >/dev/null 2>&1 || die "--install given but adb is not on PATH"
-  adb get-state >/dev/null 2>&1 || die "--install given but no device is attached (adb devices)"
   say "installing as an update (app data preserved)…"
   adb install -r "$OUT_PATH"
   say "installed. run-as is now available, e.g."
