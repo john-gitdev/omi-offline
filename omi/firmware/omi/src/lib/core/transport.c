@@ -367,6 +367,15 @@ static struct bt_gatt_service battery_detail_service = BT_GATT_SERVICE(battery_d
  * started and whether the total is still climbing. Codec thread only. */
 static atomic_t tx_ring_full_drops;
 
+/* Last time pusher() actually consumed a frame, and how long a silence from it counts
+ * as a stall. Written by the pusher thread, read by the codec thread; a torn 32-bit read
+ * is impossible on this core and a stale one only shifts the detection by a frame. 5 s is
+ * ~250x the normal drain latency, so it cannot fire on ordinary scheduling jitter, and it
+ * is only ever evaluated while audio is being produced — during genuine silence there are
+ * no writes and the probe never runs. */
+#define PUSHER_STALL_MS 5000
+static uint32_t pusher_last_drain_ms;
+
 /* Diagnostics: count 440-byte storage block flushes the SD queue rejected.
  * Each rejected block contains up to ~5 Opus frames (~100 ms audio).
  * Bumped from write_custom_packet_to_storage(); read via 0x19B10062. */
@@ -2568,6 +2577,25 @@ static bool write_to_tx_queue(uint8_t *data, size_t size)
         return false;
     }
 
+    /* Stall probe. Deliberately BEFORE the claim: the ring filling is the consequence,
+     * the pusher not draining is the cause, and this catches the cause while frames are
+     * still landing. Costs one compare per encoded frame on the healthy path. */
+    if (pusher_last_drain_ms != 0 && ring_buf_size_get(&ring_buf) > 0) {
+        uint32_t stalled_ms = (uint32_t) k_uptime_get() - pusher_last_drain_ms;
+        if (stalled_ms > PUSHER_STALL_MS) {
+            static int64_t last_stall_log_ms;
+            int64_t now_ms = k_uptime_get();
+            if (last_stall_log_ms == 0 || (now_ms - last_stall_log_ms) >= 1000) {
+                last_stall_log_ms = now_ms;
+                diag_log_event(DIAG_WRITE_BLOCKED, sd_get_active_backend(), DIAG_WRITE_BLOCKED_PUSHER_STALLED,
+                               stalled_ms);
+            }
+            /* Break the self-sustaining half of the failure: a full ring bails out below
+             * before k_sem_give, so a pusher parked on the semaphore is never woken. */
+            k_sem_give(&tx_queue_sem);
+        }
+    }
+
     uint8_t *allocated_data;
     uint32_t required_size = CODEC_OUTPUT_MAX_BYTES + RING_BUFFER_HEADER_SIZE;
 
@@ -2914,6 +2942,10 @@ void transport_note_priority_record_stop(void)
 void pusher(void)
 {
     k_msleep(500);
+    /* Arm the stall probe from here, not from the first successful drain: a pusher that
+     * never manages a single consume is exactly the case worth catching, and leaving this
+     * at 0 would make the probe skip it forever. */
+    pusher_last_drain_ms = (uint32_t) k_uptime_get();
     while (!atomic_get(&pusher_stop_flag)) {
         /* Block until a frame is enqueued or stop is requested. */
         k_sem_take(&tx_queue_sem, K_FOREVER);
@@ -2925,6 +2957,10 @@ void pusher(void)
         if (!read_from_tx_queue()) {
             continue;
         }
+        /* Liveness for the stall probe in write_to_tx_queue(). Stamped on a real
+         * consume, not on waking: a pusher that wakes and finds nothing has not
+         * proved it can still drain. */
+        pusher_last_drain_ms = (uint32_t) k_uptime_get();
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
         // Always write to storage for offline-only recording

@@ -158,6 +158,22 @@ typedef enum {
      * gate declines instead of discarding (see process_write_data_req), which leaves
      * nothing to report. Reserved so the reason numbering survives if that changes. */
     DIAG_WRITE_BLOCKED_STALE_PAUSE = 1,
+
+    /* pusher() has not consumed a frame for PUSHER_STALL_MS while the tx ring still
+     * holds data. This is the pathology itself rather than its consequence, and it is
+     * observable ~5 s in instead of only once the ring has filled — on 2026-09-05 the
+     * consequence took 46 minutes to become visible and even then only as an absence.
+     *
+     * The detecting site also signals tx_queue_sem. That is a mitigation, not a repair:
+     * the failure is self-sustaining because a full ring makes write_to_tx_queue() bail
+     * BEFORE its k_sem_give, so a pusher parked on that semaphore is never woken again;
+     * one give breaks exactly that loop. It cannot help a pusher blocked elsewhere, and
+     * a spurious give is harmless (the pusher loops once and finds nothing), so the kick
+     * is safe on every path. If the records keep coming after it, the pusher is blocked
+     * rather than starved — which is itself the answer to the question we could not
+     * settle from the 2026-09-05 log.
+     *   arg1 = ms since the pusher last consumed a frame. */
+    DIAG_WRITE_BLOCKED_PUSHER_STALLED = 2,
 } diag_write_blocked_t;
 
 /* arg0 values for DIAG_BOND_STATE. Appended-only, same discipline as the codes. */
