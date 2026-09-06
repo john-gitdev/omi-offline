@@ -114,8 +114,16 @@ static int64_t last_hw_wake_ms = -100000; // Initialize to long ago
 
 extern volatile bool is_muted;
 
-/* ---- VAD state (mic callback context only) ---- */
-static bool vad_is_recording = false;
+/* ---- VAD state (written on the mic callback thread only) ---- */
+/* volatile for the same reason vad_threshold is, and now with a second reader that
+ * depends on it: the AAD handler thread re-reads this after its blocking
+ * sd_write_pause(true) returns, specifically to notice a resume that landed during the
+ * wait. A cached pre-call value would defeat that re-read — sd_write_pause() lives in
+ * another translation unit but this static's address is never taken, so the compiler is
+ * free to assume the call cannot touch it. (main.c's LED loop and aad_is_recording()
+ * read it too.) Aligned byte loads/stores are atomic on this Cortex-M33, so plain
+ * volatile is sufficient. */
+static volatile bool vad_is_recording = false;
 static bool vad_sleeping = false;
 static uint16_t vad_voice_streak = 0;
 static int64_t vad_last_voice_ms = 0;
@@ -520,8 +528,20 @@ static void aad_thread_fn(void *p1, void *p2, void *p3)
                  * 0xFFFFFFF8 marker. Re-read and undo if so. Between this re-check and
                  * record_start()'s sd_write_pause(false), one of the two clears the
                  * flag in every interleaving, so writes are always enabled once
-                 * force-capture is on. */
-                if (vad_threshold == 65535) {
+                 * force-capture is on.
+                 *
+                 * vad_is_recording covers the SAME hazard from the MIC thread, and the
+                 * window is far wider than the button one: sd_write_pause(true) sets the
+                 * flag before it queues REQ_PAUSE_IO and then waits on the worker for up
+                 * to 10.5 s, and any silence→speech transition in that span runs its own
+                 * inline sd_write_pause(false) BEFORE ours — so ours wins and buries a
+                 * live recording behind a closed gate. Testing the threshold alone missed
+                 * it entirely: a priority stop restores an AUTO threshold (250), so the
+                 * 65535 test is false in exactly the case that matters. Pausing while the
+                 * VAD holds a recording open is never right regardless of how it arose,
+                 * which is why the condition is the recording state and not a list of
+                 * racing callers. */
+                if (vad_threshold == 65535 || vad_is_recording) {
                     sd_write_pause(false);
                 }
             } else {
