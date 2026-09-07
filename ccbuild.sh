@@ -26,8 +26,14 @@
 # to consider at all. (--if-changed is accepted and does nothing; it is now the
 # default. --no-skip is a synonym for --force.)
 #
+# Runs on Linux, macOS and Windows (Git Bash) unchanged. The only thing that
+# genuinely differs is where the nRF Connect SDK lives, which is searched for; the
+# toolchain layouts underneath it already differ by more than a path separator and
+# are both handled below.
+#
 # Environment overrides (all auto-detected otherwise):
-#   NCS_ROOT        default C:/ncs
+#   NCS_ROOT        first of $HOME/ncs, /opt/nordic/ncs, /opt/ncs, /c/ncs, /d/ncs
+#                   that looks like an SDK install
 #   ZEPHYR_BASE     default the newest NCS_ROOT/v*/zephyr
 #   NCS_TOOLCHAIN   default the newest NCS_ROOT/toolchains/<hash>
 
@@ -37,6 +43,15 @@ ROOT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 FW_DIR="$ROOT_DIR/omi/firmware/omi"
 FW_BUILD_DIR="$FW_DIR/build/omi"
 RELEASES_DIR="$ROOT_DIR/releases"
+
+# Where to look for the nRF Connect SDK, in order. The old code defaulted to
+# /c/ncs — one machine's Windows path — so a Linux or macOS run died pointing at a
+# drive letter that cannot exist there. $HOME/ncs is the Toolchain Manager default
+# on Linux and macOS, /opt/nordic/ncs the common system-wide one, /c/ncs the
+# Windows installer default (and /d/ for a second drive). Listing all of them on
+# every platform is harmless: the ones belonging to the other OS simply do not
+# exist. NCS_ROOT still wins outright, so an unusual install needs no edit here.
+NCS_CANDIDATES=("$HOME/ncs" /opt/nordic/ncs /opt/ncs /c/ncs /d/ncs)
 
 DO_FW=1
 DO_APK=1
@@ -129,6 +144,40 @@ up_to_date() {
   return 0
 }
 
+# ── Where is the SDK? ───────────────────────────────────────────────────────────
+# A candidate has to LOOK like an SDK install, not merely exist. An empty ~/ncs
+# left behind by an abandoned install would otherwise win over a real one further
+# down the list, and the run would then die at the toolchain hunt instead — with a
+# message about a missing toolchain rather than the wrong root, which is the
+# harder of the two to act on.
+looks_like_ncs() {
+  [[ -d "$1/toolchains" ]] && return 0
+  [[ -n "$(find "$1" -mindepth 1 -maxdepth 1 -type d -name 'v*' -print -quit 2>/dev/null)" ]]
+}
+
+# Sets NCS_DIR, or dies. Deliberately not a `$(...)` helper: `die` exits, and from
+# inside a command substitution that only ends the subshell — the caller would carry
+# on with an empty string and report a second, vaguer error over the real one.
+NCS_DIR=""
+resolve_ncs() {
+  # An explicit NCS_ROOT wins even when it does not look like an install: saying
+  # "you pointed me at this and it is not there" beats quietly searching elsewhere
+  # and building against a different SDK than the one that was asked for.
+  if [[ -n "${NCS_ROOT:-}" ]]; then
+    [[ -d "$NCS_ROOT" ]] || die "NCS_ROOT is set to '$NCS_ROOT', which is not a directory."
+    NCS_DIR="$NCS_ROOT"
+    return 0
+  fi
+  local c
+  for c in "${NCS_CANDIDATES[@]}"; do
+    if [[ -d "$c" ]] && looks_like_ncs "$c"; then
+      NCS_DIR="$c"
+      return 0
+    fi
+  done
+  die "no nRF Connect SDK found. Looked in: ${NCS_CANDIDATES[*]} — set NCS_ROOT to your install."
+}
+
 # ── Firmware ────────────────────────────────────────────────────────────────────
 build_firmware() {
   local fw_ver
@@ -144,20 +193,28 @@ build_firmware() {
   fi
   BUILT=1
 
-  local ncs="${NCS_ROOT:-/c/ncs}"
-  [[ -d "$ncs" ]] || die "NCS not found at $ncs — set NCS_ROOT to your nRF Connect SDK install."
+  resolve_ncs
+  local ncs="$NCS_DIR"
 
   # Newest toolchain hash, unless pinned. The hash changes with an SDK update, which
   # is exactly why this is not hardcoded.
+  #
+  # `|| true` on both searches, and it is not defensive noise. Under `set -o
+  # pipefail` a failing `find` (a missing directory, an unreadable one) makes the
+  # whole pipeline non-zero, an assignment takes its command substitution's status,
+  # and `set -e` then kills the script THERE — silently, exit 1, no output at all,
+  # never reaching the `die` on the next line that says what is actually wrong.
+  # Reachable for real: a `west init` install has v2.9.0 and no bundled toolchains/
+  # at all, which is an ordinary Linux setup, and those users got the silent exit.
   local tc="${NCS_TOOLCHAIN:-}"
-  if [[ -z "$tc" ]]; then
-    tc="$(find "$ncs/toolchains" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -1)"
+  if [[ -z "$tc" && -d "$ncs/toolchains" ]]; then
+    tc="$(find "$ncs/toolchains" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -1)" || true
   fi
   [[ -n "$tc" && -d "$tc" ]] || die "no toolchain under $ncs/toolchains — set NCS_TOOLCHAIN."
 
   local zbase="${ZEPHYR_BASE:-}"
   if [[ -z "$zbase" ]]; then
-    zbase="$(find "$ncs" -mindepth 2 -maxdepth 2 -type d -name zephyr 2>/dev/null | sort | tail -1)"
+    zbase="$(find "$ncs" -mindepth 2 -maxdepth 2 -type d -name zephyr 2>/dev/null | sort | tail -1)" || true
   fi
   [[ -n "$zbase" && -d "$zbase" ]] || die "no Zephyr tree under $ncs — set ZEPHYR_BASE."
 
