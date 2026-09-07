@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
 # Build a flashable pair — firmware DFU zip + dev APK — and drop both in releases/.
 #
-# The gap this fills: app/build-fw.sh does NOT compile anything. It packages an
-# already-built dfu_application.zip and then deletes the build directory. So the
-# firmware half has meant either a VS Code / nRF Connect build first, or setting up
-# the Zephyr environment by hand. This does the compile too.
+# The single implementation behind all three entry points. app/build.sh,
+# app/build-fw.sh and app/build-apk.sh are thin wrappers that call this with no
+# flag, --fw and --apk respectively, and pass everything else straight through.
 #
-# Deterministic only, matching app/build.sh: no version bump, no commit, no push.
-# Version numbers come from app/pubspec.yaml and CONFIG_BT_DIS_FW_REV_STR as they
-# stand right now.
+# It used to be the other way round: build.sh drove build-apk.sh and build-fw.sh,
+# and this script called those same two. That left the version-naming rule in three
+# copies, and a build-fw.sh that could not compile anything despite its name — it
+# packaged a dfu_application.zip somebody else had already built, so the firmware
+# half meant a VS Code / nRF Connect build first or a Zephyr environment set up by
+# hand. This does the compile.
+#
+# Deterministic only: no version bump, no commit, no push. Version numbers come from
+# app/pubspec.yaml and CONFIG_BT_DIS_FW_REV_STR as they stand right now.
+#
+# A missing Zephyr/nRF toolchain is a NOTICE when both halves were asked for (the
+# run carries on to the APK; an app-only developer has no SDK and still wants one)
+# and an ERROR under --fw, where firmware is what was asked for.
 #
 #   ./ccbuild.sh                 firmware + APK, skipping whichever is already current
 #   ./ccbuild.sh --force         build both regardless
@@ -77,8 +86,24 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-say() { printf '\033[1mccbuild:\033[0m %s\n' "$*"; }
-die() { printf '\033[1;31mccbuild: %s\033[0m\n' "$*" >&2; exit 1; }
+say()  { printf '\033[1mccbuild:\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33mccbuild: %s\033[0m\n' "$*" >&2; }
+die()  { printf '\033[1;31mccbuild: %s\033[0m\n' "$*" >&2; exit 1; }
+
+# Fatal when the firmware was ASKED for, a notice when it was merely implied.
+#
+# The distinction is the whole reason app/build.sh could be pointed here: an
+# app-only developer has no Zephyr toolchain and never will, and a plain run that
+# died on that before touching the APK would be useless to them. Asking for
+# firmware explicitly (--fw) and not getting it is a different thing, and stays an
+# error. Only environment problems go through here — no SDK, no toolchain, no west.
+# An actual compile failure is fatal either way: that is a broken tree, not a
+# machine without the tools, and quietly shipping an APK beside it would hide it.
+fw_missing() {
+  if [[ $DO_APK -eq 0 ]]; then die "$*"; fi
+  warn "$* — skipping firmware, continuing to the APK"
+  return 1
+}
 
 # cmake wants Windows-style paths (C:/…), bash gives POSIX (/c/…).
 winpath() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else echo "$1"; fi; }
@@ -175,7 +200,7 @@ resolve_ncs() {
       return 0
     fi
   done
-  die "no nRF Connect SDK found. Looked in: ${NCS_CANDIDATES[*]} — set NCS_ROOT to your install."
+  fw_missing "no nRF Connect SDK found (looked in: ${NCS_CANDIDATES[*]}; set NCS_ROOT)"
 }
 
 # ── Firmware ────────────────────────────────────────────────────────────────────
@@ -193,7 +218,7 @@ build_firmware() {
   fi
   BUILT=1
 
-  resolve_ncs
+  resolve_ncs || return 1
   local ncs="$NCS_DIR"
 
   # Most recently installed toolchain, unless pinned. The hash changes with an SDK
@@ -219,13 +244,13 @@ build_firmware() {
     tc="$(ls -td "$ncs/toolchains"/*/ 2>/dev/null | head -1)" || true
     tc="${tc%/}"
   fi
-  [[ -n "$tc" && -d "$tc" ]] || die "no toolchain under $ncs/toolchains — set NCS_TOOLCHAIN."
+  [[ -n "$tc" && -d "$tc" ]] || fw_missing "no toolchain under $ncs/toolchains (set NCS_TOOLCHAIN)" || return 1
 
   local zbase="${ZEPHYR_BASE:-}"
   if [[ -z "$zbase" ]]; then
     zbase="$(find "$ncs" -mindepth 2 -maxdepth 2 -type d -name zephyr 2>/dev/null | sort | tail -1)" || true
   fi
-  [[ -n "$zbase" && -d "$zbase" ]] || die "no Zephyr tree under $ncs — set ZEPHYR_BASE."
+  [[ -n "$zbase" && -d "$zbase" ]] || fw_missing "no Zephyr tree under $ncs (set ZEPHYR_BASE)" || return 1
 
   # Both toolchain layouts, because they differ by more than a path separator. The
   # Windows bundle puts west under opt/bin and runs the system Python; the Linux one
@@ -244,7 +269,7 @@ build_firmware() {
   export ZEPHYR_SDK_INSTALL_DIR="$tc/opt/zephyr-sdk"
   export ZEPHYR_TOOLCHAIN_VARIANT=zephyr
 
-  command -v west >/dev/null 2>&1 || die "west not on PATH even after toolchain setup ($tc)."
+  command -v west >/dev/null 2>&1 || fw_missing "west not on PATH even after toolchain setup ($tc)" || return 1
 
   say "firmware $fw_ver  (toolchain $(basename "$tc"), $(basename "$(dirname "$zbase")"))"
 
@@ -324,22 +349,44 @@ build_firmware() {
   local zip="$FW_BUILD_DIR/dfu_application.zip"
   [[ -f "$zip" ]] || die "build reported success but $zip is missing."
 
+  package_firmware_zip "$zip" "$fw_ver"
+}
+
+# Name the built zip after the firmware version and put it in releases/, then clear
+# the build directory unless asked to keep it.
+#
+# Was app/build-fw.sh, called from here as a separate process. Folded in so that the
+# thing which builds the firmware is also the thing which files it — the split meant
+# two copies of the version-naming rule, and a build-fw.sh that could not compile
+# anything, which is the confusion this script was written to end.
+package_firmware_zip() {
+  local zip="$1" conf_ver="$2"
+  local raw short
+
+  # `unzip` is NOT part of a default Git for Windows install, so falling back to the
+  # file version.txt is generated from is what makes this work there at all: one
+  # answer reached two ways, not a guess. (Verified equal on the current build.)
+  raw="$(unzip -p "$zip" version.txt 2>/dev/null || true)"
+  if [[ -z "$raw" && -n "$conf_ver" ]]; then
+    raw="$conf_ver"
+    say "could not read version.txt (no unzip?) — using omi.conf: $raw"
+  fi
+  [[ -n "$raw" ]] || die "could not name $zip: no version.txt in it and no version in omi.conf."
+
+  short="$(short_version "$raw")"
+  mkdir -p "$RELEASES_DIR"
+  cp "$zip" "$RELEASES_DIR/$short.zip"
+  say "wrote $RELEASES_DIR/$short.zip (firmware version $raw)"
+
+  # Only ever deleted once the zip is safely in releases/. Deleting a build whose
+  # artifact was never filed destroys the only copy of it, and the rebuild is minutes.
+  # An incremental rebuild is ~1 min against ~5 for a fresh configure, which is what
+  # --keep-build is for.
   if [[ $KEEP_BUILD -eq 1 ]]; then
-    # Same naming as build-fw.sh, but without its rm -rf: an incremental rebuild is
-    # ~1 min against ~5 for a fresh configure, which matters while iterating.
-    local raw short
-    raw="$(unzip -p "$zip" version.txt 2>/dev/null || true)"
-    # Same fallback as build-fw.sh, for the same reason: `unzip` is not part of a
-    # default Git for Windows install, and omi.conf is where the zip's version.txt
-    # came from — one answer reached two ways, not a guess.
-    [[ -n "$raw" ]] || raw="$fw_ver"
-    [[ -n "$raw" ]] || die "could not read version.txt from $zip, and omi.conf gave nothing either"
-    short="$(echo "$raw" | tr -d '.-')"; [[ "$short" == oo* ]] || short="oo$short"
-    mkdir -p "$RELEASES_DIR"
-    cp "$zip" "$RELEASES_DIR/$short.zip"
-    say "wrote $RELEASES_DIR/$short.zip (build dir kept)"
-  else
-    bash "$ROOT_DIR/app/build-fw.sh"
+    say "keeping $FW_DIR/build for incremental rebuilds (--keep-build)"
+  elif [[ -d "$FW_DIR/build" ]]; then
+    say "cleaning up $FW_DIR/build"
+    rm -rf "$FW_DIR/build"
   fi
 }
 
@@ -355,20 +402,45 @@ build_apk() {
   fi
   BUILT=1
   say "app $app_ver  (flutter clean + build apk --flavor dev — several minutes)"
-  bash "$ROOT_DIR/app/build-apk.sh"
+
+  # Was app/build-apk.sh. Same reason as the firmware half: one implementation, and
+  # the version-naming rule stated once.
+  local out="$RELEASES_DIR/$(short_version "$app_ver").apk"
+  mkdir -p "$RELEASES_DIR"
+  # In a subshell so the `cd` cannot leak. build-apk.sh got this for free by being a
+  # separate process; folded in, a bare `cd` would leave the rest of the run standing
+  # somewhere it did not choose.
+  ( cd "$ROOT_DIR/app" && flutter clean && flutter build apk --flavor dev ) || die "flutter build failed"
+
+  local src="$ROOT_DIR/app/build/app/outputs/flutter-apk/app-dev-release.apk"
+  [[ -f "$src" ]] || die "flutter reported success but $src is missing."
+  mv "$src" "$out"
+  say "wrote $out"
 }
 
 # ── Run ─────────────────────────────────────────────────────────────────────────
 # Firmware first: it is the half that fails fast, and the APK is the slow one. No
 # point spending ten minutes on an APK to then find the firmware would not compile.
 BUILT=0
-[[ $DO_FW  -eq 1 ]] && build_firmware
+FW_SKIPPED=0
+# `|| FW_SKIPPED=1` rather than a bare call: build_firmware returns non-zero when
+# fw_missing let it through, and under `set -e` an unguarded non-zero here would end
+# the run before the APK — the exact failure this arrangement exists to avoid.
+if [[ $DO_FW -eq 1 ]]; then
+  build_firmware || FW_SKIPPED=1
+fi
 [[ $DO_APK -eq 1 ]] && build_apk
 
 # Skipping is the default, so a run that built nothing has to say so outright —
 # otherwise it reads as a build that finished suspiciously fast.
 if [[ $BUILT -eq 0 ]]; then
   say "everything already current — nothing rebuilt (--force builds anyway)"
+fi
+# Said again at the end because the notice above scrolls past a ten-minute APK
+# build, and "done" over a run that silently built half of what was asked is how a
+# stale firmware zip gets flashed.
+if [[ $FW_SKIPPED -eq 1 ]]; then
+  warn "firmware was NOT built (see above) — any .zip below is from an earlier run"
 fi
 say "done — artifacts in releases/"
 ls -lh "$RELEASES_DIR" 2>/dev/null | tail -n +2 | awk '{printf "  %s  %s\n", $5, $9}'
