@@ -26,12 +26,22 @@ cd app && bash test.sh
 dart format --line-length 120 <files>
 clang-format -i <files>          # firmware C/C++
 
-# Build dev-flavor APK, rename oo<version>.apk, drop in releases/ at repo root.
-# Reads version from app/pubspec.yaml; deterministic only — no bump/commit/push.
-# Also builds the firmware zip if the Zephyr/nRF toolchain is present; that step is
-# best-effort and is skipped (non-fatal) when the toolchain is missing.
-./app/build.sh
+# Three entry points, all thin wrappers over ./ccbuild.sh, which holds the single
+# implementation. Deterministic only — no bump/commit/push. Versions come from
+# app/pubspec.yaml (oo<digits>.apk) and CONFIG_BT_DIS_FW_REV_STR (oo<digits>.zip);
+# both land in releases/ at the repo root. Each half is skipped when its artifact is
+# already current and no input has been touched since — pass --force to override.
+./app/build.sh          # both halves
+./app/build-fw.sh       # firmware only — COMPILES it, not just packages it
+./app/build-apk.sh      # APK only
+./ccbuild.sh --help     # the flags all three pass through (--force, --keep-build, …)
 ```
+
+A missing Zephyr/nRF toolchain is a **notice** for `build.sh`, which carries on and
+builds the APK — an app-only developer has no SDK and still wants one. It is an
+**error** for `build-fw.sh`, where firmware is what was asked for. The SDK is looked
+for at `$HOME/ncs`, `/opt/nordic/ncs`, `/opt/ncs`, `/c/ncs`, `/d/ncs`; `NCS_ROOT`
+overrides. All of this runs unchanged on Linux, macOS and Windows (Git Bash).
 
 The per-version history lives in [CHANGELOG.md](CHANGELOG.md).
 
@@ -326,6 +336,6 @@ clang-format -i <files>                  # C/C++ firmware
 - Never push or create PRs unless explicitly asked — commit locally by default.
 
 ### RELEASE / release command
-When the user says "release" or "RELEASE", increment the patch digit in `app/pubspec.yaml` by 1, commit, and push. The patch digit serves as the build number — there is no separate `+N` suffix. Example: `0.3.18` → `0.3.19`. After the bump, `app/build.sh` can produce the matching `oo<digits>.apk` at repo root (deterministic, no extra git ops).
+When the user says "release" or "RELEASE", increment the patch digit in `app/pubspec.yaml` by 1, commit, and push. The patch digit serves as the build number — there is no separate `+N` suffix. Example: `0.3.18` → `0.3.19`. After the bump, `app/build-apk.sh` (or `app/build.sh` for both halves) can produce the matching `oo<digits>.apk` at repo root (deterministic, no extra git ops).
 
 Document user-visible behavioural changes in `CHANGELOG.md`, which has two top-level sections — `## App` and `## Firmware` — each with newest on top. Entries are keyed by **minor** version (`### 0.36`), not by patch: a patch bump folds into the existing minor section rather than opening a new one, and each section states the **net** behaviour at the end of that series, so superseded or reverted intermediate steps are edited out rather than appended to. `README.md` only links to it.
