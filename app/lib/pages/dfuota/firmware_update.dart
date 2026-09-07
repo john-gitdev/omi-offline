@@ -336,30 +336,40 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
   /// on its next sighting) for a device that is already here. Safe to call from build:
   /// it is a bare field write with no notification behind it.
   ///
-  /// **And let the rest of the app move again.** `isFirmwareUpdateInProgress` is set by
-  /// `prepareDFU()` and gates background sync and `scanAndConnectToDevice`; before this
-  /// screen waited for anything, it was cleared a second or two after the re-pair, when
-  /// the user tapped Done. Holding them here would otherwise stretch that to however
-  /// long they sit and read. `_isOnFirmwareUpdatePage` deliberately stays set until
-  /// dispose: it is what exempts this link from `_handleDeviceConnected`'s
-  /// background-drop guard and from the pause-disconnect, and the page is still up.
+  /// **`isFirmwareUpdateInProgress` is deliberately NOT cleared here.** It gates
+  /// background sync and `scanAndConnectToDevice`, and clearing it on the latch looks
+  /// free — the flash is over, and the user may now sit on this screen for minutes with
+  /// sync blocked. It is not free, because of *when* the latch closes.
+  /// `_onDeviceConnected` flips `isConnected` early (right after `setConnectedDevice`),
+  /// and everything that matters comes after: `wal.setDevice`, the GATT fingerprint,
+  /// and then the deferred `recycleConnection()` that drops Android's stale attribute
+  /// table — the refresh that exists precisely because a flash just changed the
+  /// firmware. That deferred block yields to a sync in flight ("deferred, not
+  /// dropped"), so a sync starting inside the setup window costs this connect its
+  /// refresh. And two triggers can start one the moment the flag goes:
+  /// `_onBackgroundSyncRequested` (the native alarm/WorkManager, which fires whatever
+  /// the foreground state, and which `prepareDFU` does not cancel) and `onAppResumed`.
+  /// Clearing it when the user LEAVES — dispose and `_leaveUpdateScreen`, as before —
+  /// costs a few minutes of blocked background sync while they look at a success
+  /// screen, which is the cheaper side by a wide margin.
   ///
-  /// **And repaint the page, not just this section.** The latch is read from inside the
+  /// `_isOnFirmwareUpdatePage` likewise stays set until dispose: it is what exempts
+  /// this link from `_handleDeviceConnected`'s background-drop guard and from the
+  /// pause-disconnect, and the page is still up.
+  ///
+  /// **Repaint the page, not just this section.** The latch is read from inside the
   /// `Consumer`, which a provider notification rebuilds on its own — but
   /// [_backLeavesNothingReconnecting] is evaluated up in [build], which that
   /// notification does NOT re-run. Without a `setState` here `canPop` keeps the value it
   /// had before the re-pair, so back stays redirected to Find Devices for a user who is
   /// already connected, until some unrelated `setState` happens to rebuild the page.
   ///
-  /// Deferred to a post-frame callback because both calls below reach into a rebuild,
-  /// and this runs from inside a build.
+  /// Deferred to a post-frame callback because the `setState` runs from inside a build.
   void _onRepairLatched() {
     cancelPostFlashReconnect();
-    final provider = _deviceProvider;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       setState(() {});
-      provider?.resetFirmwareUpdateState();
     });
   }
 
