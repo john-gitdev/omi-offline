@@ -196,8 +196,8 @@ build_firmware() {
   resolve_ncs
   local ncs="$NCS_DIR"
 
-  # Newest toolchain hash, unless pinned. The hash changes with an SDK update, which
-  # is exactly why this is not hardcoded.
+  # Most recently installed toolchain, unless pinned. The hash changes with an SDK
+  # update, which is exactly why this is not hardcoded.
   #
   # `|| true` on both searches, and it is not defensive noise. Under `set -o
   # pipefail` a failing `find` (a missing directory, an unreadable one) makes the
@@ -208,7 +208,16 @@ build_firmware() {
   # at all, which is an ordinary Linux setup, and those users got the silent exit.
   local tc="${NCS_TOOLCHAIN:-}"
   if [[ -z "$tc" && -d "$ncs/toolchains" ]]; then
-    tc="$(find "$ncs/toolchains" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -1)" || true
+    # `ls -t` (mtime, newest first), not `sort` on the name. These directories are
+    # opaque hashes, so sorting them lexicographically picks an arbitrary one — which
+    # is not what the comment above says, and not what anyone wants the moment an SDK
+    # update installs a second alongside the first. Identical with one installed,
+    # which is why it went unnoticed. `ls -t` is POSIX; `find -printf '%T@'` would be
+    # the obvious alternative and is GNU-only, so it would work here and on Git Bash
+    # and break on macOS. The trailing slash restricts the glob to directories, which
+    # is what -type d was doing (toolchains/ also holds a toolchains.json).
+    tc="$(ls -td "$ncs/toolchains"/*/ 2>/dev/null | head -1)" || true
+    tc="${tc%/}"
   fi
   [[ -n "$tc" && -d "$tc" ]] || die "no toolchain under $ncs/toolchains — set NCS_TOOLCHAIN."
 
@@ -320,7 +329,11 @@ build_firmware() {
     # ~1 min against ~5 for a fresh configure, which matters while iterating.
     local raw short
     raw="$(unzip -p "$zip" version.txt 2>/dev/null || true)"
-    [[ -n "$raw" ]] || die "could not read version.txt from $zip"
+    # Same fallback as build-fw.sh, for the same reason: `unzip` is not part of a
+    # default Git for Windows install, and omi.conf is where the zip's version.txt
+    # came from — one answer reached two ways, not a guess.
+    [[ -n "$raw" ]] || raw="$fw_ver"
+    [[ -n "$raw" ]] || die "could not read version.txt from $zip, and omi.conf gave nothing either"
     short="$(echo "$raw" | tr -d '.-')"; [[ "$short" == oo* ]] || short="oo$short"
     mkdir -p "$RELEASES_DIR"
     cp "$zip" "$RELEASES_DIR/$short.zip"
