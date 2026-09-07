@@ -381,10 +381,15 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     });
 
-    testWidgets('the re-pair releases the rest of the app without waiting for a tap', (tester) async {
-      // isFirmwareUpdateInProgress gates background sync and scanAndConnectToDevice, and
-      // used to be cleared a second or two after the re-pair, when the user tapped Done.
-      // Holding them here would otherwise stretch that to however long they sit reading.
+    testWidgets('the re-pair does not unblock background sync before setup has finished', (tester) async {
+      // Tempting to clear isFirmwareUpdateInProgress here: the flash is over, and the
+      // user may now sit on this screen for minutes with background sync blocked. It
+      // costs more than it saves. _onDeviceConnected flips isConnected — which is what
+      // closes this latch — early, and the deferred GATT recycleConnection() that drops
+      // Android's stale attribute table runs at the END of setup, yielding to any sync
+      // in flight. A sync started in between (the native alarm fires whatever the
+      // foreground state, and prepareDFU does not cancel it) costs this connect the one
+      // refresh a flash makes necessary. It clears when the user leaves instead.
       final provider = FakeDeviceProvider();
       await pumpInstalledScreen(tester, provider, phase: PostFlashPhase.waiting);
       expect(provider.firmwareStateReset, isFalse);
@@ -392,7 +397,8 @@ void main() {
       provider.reconnect();
       await settleFrames(tester);
 
-      expect(provider.firmwareStateReset, isTrue);
+      expect(find.text('Paired again'), findsOneWidget, reason: 'the latch still closes');
+      expect(provider.firmwareStateReset, isFalse, reason: 'setup is still running on this very link');
     });
 
     testWidgets('the GATT-cache recycle does not walk the screen backwards', (tester) async {

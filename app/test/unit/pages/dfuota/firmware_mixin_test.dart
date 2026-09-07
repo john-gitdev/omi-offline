@@ -183,18 +183,6 @@ void main() {
   /// that reaches the connect does not end with its timer still pending.
   const connectBackstop = Duration(seconds: 90);
 
-  /// Run the loop to a stop: a cancel, then enough pumping for whatever was already
-  /// in flight to finish and the loop to notice.
-  ///
-  /// **Every test that arms a loop must end with this**, including the ones that reach
-  /// the connect. The loop holds DeviceService's mutex for the duration of an
-  /// `ensureConnection`, and tearDown's `forgetDevice` takes the same lock — but
-  /// tearDown does no pumping, so a connect still waiting on the transport's 75 s
-  /// device-ready backstop can never expire and the two deadlock, hanging the run
-  /// rather than failing it. Hence the connectBackstop pump before the scan pumps: it
-  /// unwinds a connect first, then the scan behind it. The cancel goes first so the
-  /// loop stops at the check it makes as soon as the connect returns, instead of
-  /// starting the next scan.
   /// Pump until [condition] holds, or give up after [steps] one-second frames.
   ///
   /// Returns whether the condition was ever seen, so a caller can assert on that rather
@@ -219,6 +207,18 @@ void main() {
     return condition();
   }
 
+  /// Run the loop to a stop: a cancel, then enough pumping for whatever was already
+  /// in flight to finish and the loop to notice.
+  ///
+  /// **Every test that arms a loop must end with this**, including the ones that reach
+  /// the connect. The loop holds DeviceService's mutex for the duration of an
+  /// `ensureConnection`, and tearDown's `forgetDevice` takes the same lock — but
+  /// tearDown does no pumping, so a connect still waiting on the transport's 75 s
+  /// device-ready backstop can never expire and the two deadlock, hanging the run
+  /// rather than failing it. Hence the connectBackstop pump before the scan pumps: it
+  /// unwinds a connect first, then the scan behind it. The cancel goes first so the
+  /// loop stops at the check it makes as soon as the connect returns, instead of
+  /// starting the next scan.
   Future<void> settleLoop(WidgetTester tester, _MixinHostState state) async {
     state.cancelPostFlashReconnect();
     await tester.pump(connectBackstop);
@@ -434,6 +434,30 @@ void main() {
   });
 
   group('the phase the screen waits on', () {
+    testWidgets('stops saying "Pairing..." the moment the connect concludes', (tester) async {
+      // The screen renders `connecting` as "Pairing... / Accept the pairing request if
+      // your phone asks". Once the connect has come back null there is no request
+      // pending, so holding that until the top of the next iteration — a gap away —
+      // describes something that is over.
+      //
+      // Asserted through a cancel rather than by timing the gap, deliberately. The
+      // cancel lands while the connect is still in flight and is checked immediately
+      // after it returns, so the phase this leaves behind is whatever the FAILURE PATH
+      // set — `waiting` if it sets one itself, `connecting` if it waits for the next
+      // iteration to do it. No dependence on where a pump happens to land.
+      final state = await pumpHost(tester);
+      deviceIsAdvertising = true;
+
+      unawaited(state.reconnectWhenDeviceReturns(btDevice));
+      await tester.pump(scanCycle);
+      expect(state.postFlashPhase, PostFlashPhase.connecting, reason: 'the connect is genuinely in flight here');
+
+      await settleLoop(tester, state);
+
+      expect(state.postFlashPhase, PostFlashPhase.waiting,
+          reason: 'a concluded connect must not leave the screen prompting for a pairing request');
+    });
+
     testWidgets('is armed synchronously, before the release has done anything', (tester) async {
       // The DFU success callback calls releasePairingOnSuccess unawaited and flips
       // isInstalled in the same block, so the success screen's FIRST frame is drawn from
