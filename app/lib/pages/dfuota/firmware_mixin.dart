@@ -392,7 +392,26 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   /// sighting is acted on. A scan that straddles it still ran, and a device it heard
   /// is a device that is back; dropping that to honour the bound to the second would
   /// discard a confirmed sighting and hand the user a manual re-pair they no longer
-  /// need. The overshoot is one scan.
+  /// need.
+  ///
+  /// **[window] is therefore not a wall-clock bound, and the gap is bigger than one
+  /// scan.** Since a null connect resumes the loop rather than ending it, the overshoot
+  /// is a scan PLUS a full connect attempt — and an attempt is ~77 s (the transport's
+  /// 75 s device-ready backstop, then its 2 s settle). A device that advertises but
+  /// never completes pairing therefore reaches [PostFlashPhase.timedOut] at about
+  /// 168 s on the 2-minute default, and at worst ~204 s if a scan straddles the
+  /// deadline. That is the intended trade — an unanswered pairing dialog gets another
+  /// request rather than a button — but it is a trade, not a promise of two minutes.
+  /// Bounding it properly means bounding the connect, i.e. abandoning a pairing
+  /// mid-SMP, which is the worse outcome and is why it is not done here.
+  ///
+  /// **No test in this file can see any of that**, and none should be written to
+  /// claim it: `tester.pump()` advances fake timers but NOT `DateTime.now()`, which is
+  /// what the deadline reads. `'the window bounds the loop'` passes on a 1 ms window
+  /// because 1 ms of real time elapses immediately — it proves the deadline is read,
+  /// never that it bounds anything. Measured instead by driving the loop with
+  /// device-ready withheld and watching it run past 400 fake seconds on a 20 s window
+  /// without the deadline firing once.
   ///
   /// Two races here are deliberately left alone. `removeBond()` is asynchronous —
   /// it returns before Android's BOND_NONE lands — but nothing can reconnect until
@@ -438,6 +457,14 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
           // about two attempts, not a dozen. That is the intended shape — an unanswered
           // pairing dialog gets one more chance, and past that the screen says it could
           // not find the Omi and offers another search.
+          //
+          // Report the search resuming HERE rather than at the top of the next
+          // iteration, which is a gap away: the screen renders `connecting` as
+          // "Pairing... / Accept the pairing request if your phone asks", and there is
+          // no request pending once the connect has concluded. It does still say that
+          // for the ~77 s the attempt itself takes, and that part is honest — the app
+          // cannot know a dialog was dismissed, only that the connect has not answered.
+          _setPostFlashPhase(PostFlashPhase.waiting);
           Logger.debug('Post-update: the connect did not take — still looking');
           if (_postFlashReconnectCancelled) return;
         }
