@@ -1192,8 +1192,10 @@ class DeviceProvider extends ChangeNotifier
       // fails — and the firmware now deliberately holds the link open through that
       // window (transport.c PAIRING_GRACE_MS). Recycling into it would undo, from
       // the phone side, exactly what the firmware is protecting. isFirmwareUpdate-
-      // InProgress does not cover it: on success that flag clears when the user
-      // taps Done, which is before the device has finished rebooting and pairing.
+      // InProgress does not cover it: on success that flag clears the moment the
+      // update screen sees the re-pair land (FirmwareUpdate._onRepairLatched, and
+      // before that it was the user's Done tap) — either way while the pairing is
+      // still settling, and long before a keep-alive has proved anything.
       if (_consecutiveKeepAliveFails >= 2 && _keepAliveEverSucceeded && !isFirmwareUpdateInProgress) {
         Logger.debug('KeepAlive: 2 consecutive failures on a link that was working, recycling to resync state');
         _consecutiveKeepAliveFails = 0;

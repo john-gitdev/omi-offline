@@ -2898,6 +2898,23 @@ class RecordingsManager {
       }
     }
 
+    // Deterministic order, because step 2 below has a winner and a loser. Two
+    // recordings that share a `startUptime` derive the same target name, one claims it
+    // and the other is left under the Omi's own timestamp — and until this sort, which
+    // one that was came out of `Directory.list()`, i.e. readdir order. Same data, same
+    // code, different outcome on a different phone or after the files are rewritten,
+    // and nothing to point at when a user asks why *that* recording kept a wrong date.
+    //
+    // Earliest first, so the claim goes to the oldest recording in the session. That is
+    // the one [applyClockAnchors] anchors the whole correction on (it picks the lowest
+    // uptime as `base`, and every target here is derived from its offset), so it is the
+    // recording the correction is least defensible in refusing.
+    sessionConversations.sort((a, b) {
+      final byStart = a.startTime.compareTo(b.startTime);
+      // Same-instant names still have to break a tie, or the sort is only mostly a sort.
+      return byStart != 0 ? byStart : a.file.path.compareTo(b.file.path);
+    });
+
     // 2. Perform renames and moves for processed recordings
     //
     // Every target here is derived from `convUptime`, which the `.meta` stores in whole

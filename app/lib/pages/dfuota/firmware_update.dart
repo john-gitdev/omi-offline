@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/cupertino.dart';
@@ -19,7 +20,7 @@ class FirmwareUpdate extends StatefulWidget {
 
   const FirmwareUpdate({super.key, this.device, this.isRollback = false, this.localZipPath});
 
-  /// The stack Done leaves behind, bottom first.
+  /// The stack this screen leaves behind when the user goes, bottom first.
   ///
   /// Home is always the base: the update reset the pairing, so keeping the screens
   /// the user came in through would leave them pointed at a device that no longer
@@ -28,8 +29,9 @@ class FirmwareUpdate extends StatefulWidget {
   /// route into it is gated on being disconnected, and it closes itself on connect),
   /// so pushing it would only make them dismiss it.
   ///
-  /// Split out from the button so the branch can be asserted without standing up
-  /// either destination page.
+  /// Reached by every exit — Done, the manual escape hatch, and an intercepted back
+  /// press — through [_FirmwareUpdateState._leaveUpdateScreen]. Split out from them so
+  /// the branch can be asserted without standing up either destination page.
   @visibleForTesting
   static List<Widget> postUpdateDestinations({required bool isReconnected}) => [
         const RecordingsPage(),
@@ -48,8 +50,10 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
   // Store reference to provider for safe disposal
   DeviceProvider? _deviceProvider;
 
-  // Latch for [_hasRepaired] — set there and nowhere else.
+  // Latches for [_hasRepaired] — set there and nowhere else. The first records the
+  // pre-DFU link being seen down; the second records the re-pair, once and for good.
   bool _preFlashLinkGone = false;
+  bool _repairLatched = false;
 
   @override
   void initState() {
@@ -294,19 +298,79 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
   /// ordinary case — the device rebooted during the flash, so `isConnected` is
   /// already false when this screen first builds and the latch closes on that frame.
   ///
-  /// Latching from inside build is safe here because it cannot affect the frame it
-  /// runs in: it is only set on the branch that returns false, which is what an
-  /// unlatched read would have returned anyway. It changes later frames only, and
-  /// every later frame comes from a provider notification that rebuilds this Consumer
-  /// regardless. It also fails in the recoverable direction — a disconnect that never
-  /// reaches Dart at all (`unmanageDevice` no-ops for a device already unmanaged)
-  /// leaves the latch open, which keeps the instructions and the fallback up.
+  /// Latching from inside build is safe here because neither latch can affect the
+  /// frame it runs in: `_preFlashLinkGone` is only set on the branch that returns
+  /// false, and `_repairLatched` only on the branch that returns true — in both cases
+  /// what an unlatched read would have returned anyway. They change later frames only,
+  /// and every later frame comes from a provider notification that rebuilds this
+  /// Consumer regardless. It also fails in the recoverable direction — a disconnect
+  /// that never reaches Dart at all (`unmanageDevice` no-ops for a device already
+  /// unmanaged) leaves the latch open, which keeps the instructions and the fallback
+  /// up.
+  ///
+  /// **And once observed, the re-pair never un-observes.** `isConnected` is expected to
+  /// flap moments after the re-pair, by design and on the commonest path of all: a
+  /// flash that changes the firmware revision changes the GATT fingerprint, so setup's
+  /// deferred block calls `recycleConnection()` (DeviceProvider) to drop Android's
+  /// stale attribute cache — a soft disconnect, up to a 5 s wait, then a fresh link.
+  /// Read live, that walks the screen back from "Paired again" to "waiting for your
+  /// Omi" and then forward again, in front of a user who is now being asked to wait
+  /// here for exactly that signal. The pairing did happen; a deliberate recycle is not
+  /// its undoing, so the latch is one-way.
   bool _hasRepaired(bool isConnected) {
+    if (_repairLatched) return true;
     if (!isConnected) {
       _preFlashLinkGone = true;
       return false;
     }
-    return _preFlashLinkGone;
+    if (!_preFlashLinkGone) return false;
+    _repairLatched = true;
+    _onRepairLatched();
+    return true;
+  }
+
+  /// Fired once, on the frame the re-pair is first observed.
+  ///
+  /// **Stop looking.** The link is up; another scan can only disturb it, and the loop
+  /// would otherwise keep going until its window expires (or issue a redundant connect
+  /// on its next sighting) for a device that is already here. Safe to call from build:
+  /// it is a bare field write with no notification behind it.
+  ///
+  /// **`isFirmwareUpdateInProgress` is deliberately NOT cleared here.** It gates
+  /// background sync and `scanAndConnectToDevice`, and clearing it on the latch looks
+  /// free — the flash is over, and the user may now sit on this screen for minutes with
+  /// sync blocked. It is not free, because of *when* the latch closes.
+  /// `_onDeviceConnected` flips `isConnected` early (right after `setConnectedDevice`),
+  /// and everything that matters comes after: `wal.setDevice`, the GATT fingerprint,
+  /// and then the deferred `recycleConnection()` that drops Android's stale attribute
+  /// table — the refresh that exists precisely because a flash just changed the
+  /// firmware. That deferred block yields to a sync in flight ("deferred, not
+  /// dropped"), so a sync starting inside the setup window costs this connect its
+  /// refresh. And two triggers can start one the moment the flag goes:
+  /// `_onBackgroundSyncRequested` (the native alarm/WorkManager, which fires whatever
+  /// the foreground state, and which `prepareDFU` does not cancel) and `onAppResumed`.
+  /// Clearing it when the user LEAVES — dispose and `_leaveUpdateScreen`, as before —
+  /// costs a few minutes of blocked background sync while they look at a success
+  /// screen, which is the cheaper side by a wide margin.
+  ///
+  /// `_isOnFirmwareUpdatePage` likewise stays set until dispose: it is what exempts
+  /// this link from `_handleDeviceConnected`'s background-drop guard and from the
+  /// pause-disconnect, and the page is still up.
+  ///
+  /// **Repaint the page, not just this section.** The latch is read from inside the
+  /// `Consumer`, which a provider notification rebuilds on its own — but
+  /// [_backLeavesNothingReconnecting] is evaluated up in [build], which that
+  /// notification does NOT re-run. Without a `setState` here `canPop` keeps the value it
+  /// had before the re-pair, so back stays redirected to Find Devices for a user who is
+  /// already connected, until some unrelated `setState` happens to rebuild the page.
+  ///
+  /// Deferred to a post-frame callback because the `setState` runs from inside a build.
+  void _onRepairLatched() {
+    cancelPostFlashReconnect();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() {});
+    });
   }
 
   Widget _buildSuccessSection() {
@@ -323,6 +387,19 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
     return Consumer<DeviceProvider>(
       builder: (context, deviceProvider, _) {
         final isReconnected = _hasRepaired(deviceProvider.isConnected);
+        // The latch outranks the phase everywhere, in both directions. The loop can
+        // still be mid-scan when the link comes up by another route (native's own
+        // ladder, or a user tap in the system dialog arriving during a scan), and it
+        // can equally have given up seconds before a slow pairing completes. What the
+        // phase describes is what *we* are doing; only the latch says the Omi is back.
+        //
+        // Collapsed to `idle` rather than to a fourth flag, because that is what idle
+        // already means everywhere else on this screen: there is nothing to wait for.
+        final phase = isReconnected ? PostFlashPhase.idle : postFlashPhase;
+        final isWatching = phase == PostFlashPhase.waiting ||
+            phase == PostFlashPhase.connecting ||
+            phase == PostFlashPhase.reconnecting;
+        final hasGivenUp = phase == PostFlashPhase.timedOut;
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -350,12 +427,28 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      isReconnected
-                          ? 'Your ${widget.device?.name ?? "Omi device"} is paired again and connected.'
-                          : 'Your ${widget.device?.name ?? "Omi device"} is restarting to finish the update.',
+                      _successSubtitle(isReconnected: isReconnected, phase: phase),
                       textAlign: TextAlign.center,
                       style: TextStyle(fontSize: 15, color: Colors.grey.shade400, height: 1.4),
                     ),
+                    // Only once the re-pair has landed, and only when the device tells
+                    // us something new. See [_firmwareRevisionNowRunning].
+                    if (isReconnected) ...[
+                      if (_firmwareRevisionNowRunning(deviceProvider) case final revision?) ...[
+                        const SizedBox(height: 12),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF1A3D2E),
+                            borderRadius: BorderRadius.circular(100),
+                          ),
+                          child: Text(
+                            'Now running $revision',
+                            style: const TextStyle(color: Color(0xFF4ADE80), fontSize: 13, fontWeight: FontWeight.w500),
+                          ),
+                        ),
+                      ],
+                    ],
                   ],
                 ),
               ),
@@ -363,46 +456,165 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
             const SizedBox(height: 16),
             // Once the pairing request has been accepted there is nothing left to
             // instruct — leaving "You need to pair again" up in front of a connected
-            // device would be telling the user to redo what they just did.
-            isReconnected ? _buildReconnectedNotice() : _buildRepairInstructions(),
+            // device would be telling the user to redo what they just did. And once the
+            // loop has given up, the instructions describe a wait that is over.
+            if (isReconnected)
+              _buildReconnectedNotice()
+            else if (hasGivenUp)
+              _buildSearchAgainNotice()
+            else
+              _buildRepairInstructions(isWatching: isWatching),
             const SizedBox(height: 24),
-            // Done button — Material+InkWell so the tap shows a ripple inside the rounded corners.
-            Material(
-              color: Colors.transparent,
-              child: Ink(
-                decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14)),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(14),
-                  onTap: () {
-                    deviceProvider.resetFirmwareUpdateState();
-                    // The navigator is captured up front because the stack reset
-                    // below unmounts this page's context.
-                    final navigator = Navigator.of(context);
-                    final destinations = FirmwareUpdate.postUpdateDestinations(isReconnected: isReconnected);
-                    // The first goes on as the new root — replacing the whole stack
-                    // with a later one would leave it with nothing to pop back to.
-                    navigator.pushAndRemoveUntil(_pageRoute(destinations.first), (route) => false);
-                    for (final destination in destinations.skip(1)) {
-                      navigator.push(_pageRoute(destination));
-                    }
-                  },
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    child: const Center(
-                      child: Text(
-                        'Done',
-                        style: TextStyle(color: Colors.black, fontSize: 17, fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                  ),
+            _buildPrimaryAction(deviceProvider,
+                phase: phase, isReconnected: isReconnected, isWatching: isWatching, hasGivenUp: hasGivenUp),
+            // The escape hatch, and the reason waiting can be made the default without
+            // trapping anyone: it is present in every state the loop can be in,
+            // including a wedged one, and it goes exactly where Done used to.
+            if (isWatching || hasGivenUp) ...[
+              const SizedBox(height: 8),
+              TextButton(
+                onPressed: () => _leaveUpdateScreen(deviceProvider, isReconnected: false),
+                child: Text(
+                  'Pair manually instead',
+                  style: TextStyle(color: Colors.grey.shade400, fontSize: 15, fontWeight: FontWeight.w500),
                 ),
               ),
-            ),
+            ],
           ],
         );
       },
     );
+  }
+
+  /// What the success card says under "Firmware updated!".
+  ///
+  /// [PostFlashPhase.idle] keeps the original wording: it is what iOS reads (no
+  /// rediscovery loop is armed there) and what a not-yet-armed Android frame reads for
+  /// the instant before [FirmwareMixin.releasePairingOnSuccess] runs.
+  String _successSubtitle({required bool isReconnected, required PostFlashPhase phase}) {
+    final name = widget.device?.name ?? 'Omi device';
+    if (isReconnected) return 'Your $name is paired again and connected.';
+    switch (phase) {
+      case PostFlashPhase.waiting:
+        return 'Your $name is restarting. Waiting for it to come back — you can stay on this screen.';
+      case PostFlashPhase.connecting:
+        return 'Found your $name. Accept the pairing request if your phone asks.';
+      case PostFlashPhase.reconnecting:
+        return 'Pairing with your $name...';
+      case PostFlashPhase.timedOut:
+        return 'Your $name has not come back on its own yet.';
+      case PostFlashPhase.idle:
+        return 'Your $name is restarting to finish the update.';
+    }
+  }
+
+  /// The firmware revision to show as proof the flash took, or null to show nothing.
+  ///
+  /// Read from `pairedDevice`, which `_onDeviceConnected` refreshes from DIS on the
+  /// re-paired link — deliberately not from `widget.device`, which is the pre-flash
+  /// object this page was pushed with.
+  ///
+  /// **Silent unless it changed, because a stale read is indistinguishable from a
+  /// current one.** `getDeviceInfo()` falls back to the device it was handed when the
+  /// DIS read fails, and on a reconnect that device can have come from the stored
+  /// `btDevice` pref — which still carries the version we just flashed OVER. Rendering
+  /// that would claim the update did not take, in the one place a user looks to check
+  /// that it did. A same-version reflash therefore shows nothing at all, which is the
+  /// safe direction: the flash is already reported by the screen it is written on.
+  String? _firmwareRevisionNowRunning(DeviceProvider deviceProvider) {
+    final revision = deviceProvider.pairedDevice?.firmwareRevision;
+    if (revision == null || revision.isEmpty) return null;
+    if (revision == widget.device?.firmwareRevision) return null;
+    return revision;
+  }
+
+  /// The one primary button, in its three shapes.
+  ///
+  /// Waiting is the only state with no primary action, and it is deliberately a
+  /// disabled button rather than an absent one: the slot keeps its height, so the
+  /// screen does not jump when the re-pair lands, and the label is where the wait
+  /// reports itself. Nobody is stuck in it — "Pair manually instead" sits underneath in
+  /// exactly the states this is disabled in.
+  Widget _buildPrimaryAction(
+    DeviceProvider deviceProvider, {
+    required PostFlashPhase phase,
+    required bool isReconnected,
+    required bool isWatching,
+    required bool hasGivenUp,
+  }) {
+    if (isWatching) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(14)),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            SizedBox(
+              width: 16,
+              height: 16,
+              child:
+                  CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation(Colors.grey.shade500)),
+            ),
+            const SizedBox(width: 12),
+            Text(
+              // The caller's latch-aware phase, not the raw field: everything else on this
+              // screen already defers to the latch, and reading the field here would be
+              // the one place that could disagree with it.
+              phase == PostFlashPhase.waiting ? 'Waiting for your Omi...' : 'Pairing...',
+              style: TextStyle(color: Colors.grey.shade400, fontSize: 17, fontWeight: FontWeight.w600),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final label = hasGivenUp ? 'Search again' : 'Done';
+    // Material+InkWell so the tap shows a ripple inside the rounded corners.
+    return Material(
+      color: Colors.transparent,
+      child: Ink(
+        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14)),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: () {
+            if (hasGivenUp) {
+              final device = widget.device;
+              if (device != null) unawaited(retryPostFlashReconnect(device));
+              return;
+            }
+            _leaveUpdateScreen(deviceProvider, isReconnected: isReconnected);
+          },
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            child: Center(
+              child: Text(
+                label,
+                style: const TextStyle(color: Colors.black, fontSize: 17, fontWeight: FontWeight.w600),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Leave for [FirmwareUpdate.postUpdateDestinations]. The single exit: Done, the
+  /// manual escape hatch, and an intercepted back press all come through here, so
+  /// there is one description of where this screen lets go of the user.
+  void _leaveUpdateScreen(DeviceProvider deviceProvider, {required bool isReconnected}) {
+    deviceProvider.resetFirmwareUpdateState();
+    // The navigator is captured up front because the stack reset below unmounts this
+    // page's context.
+    final navigator = Navigator.of(context);
+    final destinations = FirmwareUpdate.postUpdateDestinations(isReconnected: isReconnected);
+    // The first goes on as the new root — replacing the whole stack with a later one
+    // would leave it with nothing to pop back to.
+    navigator.pushAndRemoveUntil(_pageRoute(destinations.first), (route) => false);
+    for (final destination in destinations.skip(1)) {
+      navigator.push(_pageRoute(destination));
+    }
   }
 
   /// Replaces the re-pair instructions once the device is back on the link — same
@@ -436,6 +648,57 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
                   ),
                 ],
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Replaces the re-pair instructions once the rediscovery window has expired: they
+  /// describe a wait that is no longer happening, and their first step ("wait a few
+  /// seconds") is the one thing that has demonstrably not worked.
+  ///
+  /// Expiring is not a failure of the update — the firmware is flashed and the device's
+  /// key slot is free. It is a failure to *find* the device, which has ordinary causes
+  /// (it is out of range, it went flat, the pairing request was dismissed), so the copy
+  /// names those rather than implying the flash went wrong.
+  Widget _buildSearchAgainNotice() {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF1C1C1E),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFF2A2A2E)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                FaIcon(FontAwesomeIcons.magnifyingGlass, color: Color(0xFF8E8E93), size: 16),
+                SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Could not find your Omi',
+                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'The update itself is done. The app listened for a couple of minutes and your Omi did not come '
+              'back on the air — it may be out of range, off, or waiting on a pairing request that was '
+              'dismissed. Bring it close and search again.',
+              style: TextStyle(color: Colors.grey.shade400, fontSize: 14, height: 1.4),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Still nothing? Tap the button on your Omi 5 times, holding the last tap for 10 seconds, to '
+              'clear its pairing, then pair manually.',
+              style: TextStyle(color: Colors.grey.shade500, fontSize: 13, height: 1.4),
             ),
           ],
         ),
@@ -483,21 +746,22 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
   // removal, so there the user has to clear it by hand, hence the extra step). So
   // re-pairing is not an "if something went wrong" fallback here, it is the normal
   // next step, and it is why Done opens the scan list.
-  Widget _buildRepairInstructions() {
-    // On Android the app waits for the Omi to start advertising again and then
-    // reconnects on its own (FirmwareMixin.reconnectWhenDeviceReturns), so the
-    // pairing request arrives without the user doing anything — the manual route is
-    // the fallback for when that window expires. iOS cannot clear its own bond, so
-    // there the user has to forget the device first and the manual route is the only
-    // one.
+  Widget _buildRepairInstructions({required bool isWatching}) {
+    // [isWatching], not Platform.isAndroid: what decides whether there is anything to
+    // wait for is whether a rediscovery loop is actually running, and that is exactly
+    // what the phase reports. iOS never arms one (there is no programmatic bond removal
+    // to arm it for), so it reads this as false and gets the manual route — and so does
+    // the sliver of a frame on Android before releasePairingOnSuccess arms the loop,
+    // which is the honest answer for that frame too.
     final steps = <String>[
       'Wait a few seconds for your Omi to finish restarting.',
-      if (Platform.isIOS) ...[
-        'On your phone: open Settings → Bluetooth, tap the ⓘ next to your Omi, and choose "Forget This Device".',
+      if (!isWatching) ...[
+        if (Platform.isIOS)
+          'On your phone: open Settings → Bluetooth, tap the ⓘ next to your Omi, and choose "Forget This Device".',
         'Tap Done below, then tap your Omi in the list to pair with it again.',
       ] else ...[
         'Accept the pairing request when it appears — your Omi reconnects on its own.',
-        'If it doesn\'t appear, tap Done below and tap your Omi in the list to pair with it again.',
+        'Stay on this screen; it updates by itself the moment your Omi is back.',
       ],
     ];
     return Container(
@@ -529,7 +793,7 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
               // reconnects by itself once it hears the Omi advertising again, so
               // "it will not reconnect on its own" — true on iOS, where the bond can
               // only be cleared by hand — would contradict the step right below it.
-              Platform.isIOS
+              !isWatching
                   ? 'The update cleared the Bluetooth pairing between your Omi and this phone, so it will not '
                       'reconnect on its own. Pair it again to finish:'
                   : 'The update cleared the Bluetooth pairing between your Omi and this phone. The app '
@@ -540,9 +804,12 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
             const SizedBox(height: 16),
             for (var i = 0; i < steps.length; i++) _buildRepairStep(i + 1, steps[i]),
             Text(
-              'Omi not in the list? Give it another few seconds and tap the refresh icon. If it still won\'t '
-              'pair, tap the button on your Omi 5 times, holding the last tap for 10 seconds, to clear its '
-              'pairing, then scan again.',
+              isWatching
+                  ? 'Rather do it yourself? "Pair manually instead" below opens the device list, where tapping '
+                      'your Omi pairs it the same way.'
+                  : 'Omi not in the list? Give it another few seconds and tap the refresh icon. If it still '
+                      'won\'t pair, tap the button on your Omi 5 times, holding the last tap for 10 seconds, to '
+                      'clear its pairing, then scan again.',
               style: TextStyle(color: Colors.grey.shade500, fontSize: 13, height: 1.4),
             ),
           ],
@@ -769,10 +1036,34 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
     );
   }
 
+  /// Whether a back press should be redirected to the manual re-pair rather than
+  /// popping.
+  ///
+  /// The plain pop goes back to Device Settings — a page about a device that, right
+  /// now, is not paired with this phone — and takes the rediscovery loop down with it
+  /// (dispose cancels it), leaving nothing at all trying to reconnect. That was
+  /// tolerable while Done was the obvious action and back was the odd one out. It is
+  /// not tolerable now that the screen asks the user to wait, because waiting is
+  /// exactly when a back press means "I don't want to wait", and the answer to that is
+  /// the device list, not a dead end.
+  ///
+  /// Narrow on purpose: only after a flash, only while the re-pair has not landed, and
+  /// only when a loop was actually armed ([PostFlashPhase.idle] covers iOS and the
+  /// pre-flash screen, where back keeps its ordinary meaning).
+  bool get _backLeavesNothingReconnecting => isInstalled && !_repairLatched && postFlashPhase != PostFlashPhase.idle;
+
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: !isDownloading && !isInstalling,
+      canPop: !isDownloading && !isInstalling && !_backLeavesNothingReconnecting,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        // A download/install in flight is a hard no — that block predates this and must
+        // stay one, since leaving mid-flash can brick the device.
+        if (!_backLeavesNothingReconnecting) return;
+        final provider = _deviceProvider;
+        if (provider != null) _leaveUpdateScreen(provider, isReconnected: false);
+      },
       child: Scaffold(
         backgroundColor: const Color(0xFF0D0D0D),
         appBar: AppBar(
@@ -780,9 +1071,13 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
           elevation: 0,
           leading: (isDownloading || isInstalling)
               ? const SizedBox()
+              // maybePop, not pop: only maybePop consults the route's pop disposition,
+              // so a plain pop here would walk straight past the PopScope above and out
+              // of the screen the wait depends on. The system back gesture already goes
+              // through maybePop; this makes the button agree with it.
               : IconButton(
                   icon: const FaIcon(FontAwesomeIcons.chevronLeft, size: 18),
-                  onPressed: () => Navigator.of(context).pop(),
+                  onPressed: () => Navigator.maybePop(context),
                   tooltip: 'Back',
                 ),
           title: Text(
