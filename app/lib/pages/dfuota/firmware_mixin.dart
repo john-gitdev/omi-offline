@@ -68,6 +68,40 @@ Future<Map<String, dynamic>> getStableFirmwareVersion({required String deviceMod
 
 // --- End of skeletons ---
 
+/// How far the post-flash re-pair has got — see [FirmwareMixin.reconnectWhenDeviceReturns].
+///
+/// The loop that owns this is the only thing happening between "the flash landed"
+/// and "the Omi is paired again", and it used to report nothing at all: the success
+/// screen looked identical at t=0 and t=90 s, so the one affordance on it (Done) was
+/// the only thing to do — and tapping it cancelled the very loop that was about to
+/// finish the job.
+///
+/// [idle] means no loop is running: iOS (where [FirmwareMixin.releasePairingOnSuccess]
+/// returns before arming one, because there is no programmatic bond removal to arm it
+/// for), or a screen that has not flashed anything. It is deliberately the same state
+/// as "this platform re-pairs by hand", so the page needs no platform test to decide
+/// whether to wait for something.
+enum PostFlashPhase {
+  /// Nothing to wait for — no rediscovery loop is running on this screen.
+  idle,
+
+  /// Scanning. The Omi has not been heard since the flash: it is still rebooting, or
+  /// at least not yet advertising.
+  waiting,
+
+  /// Heard it, and the connect (which forces the pairing request) is in flight.
+  connecting,
+
+  /// A connect returned a live connection. Whether the *pairing* landed is not this
+  /// enum's to say — that is the page's latch on `DeviceProvider.isConnected`, which
+  /// flips a beat later, after setup has read the device info.
+  reconnecting,
+
+  /// The window expired without a connection. Not a failure of the update, and not
+  /// terminal for the user: the screen offers another search and the manual route.
+  timedOut,
+}
+
 mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   Map latestFirmwareDetails = {};
   bool isDownloading = false;
@@ -111,9 +145,35 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   // actually changed. Expiring is not a failure — it just hands the re-pair back to
   // Find Devices, where Done lands the user anyway.
   static const Duration _postFlashReconnectWindow = Duration(minutes: 2);
+  // 5 s of scanning per 2 s of gap. Android throttles an app to 5 scan starts per
+  // 30 s window (SCAN_FAILED_SCANNING_TOO_FREQUENTLY) and each pass here is one real
+  // startScan/stopScan pair, so this cadence sits at ~4.3 starts per 30 s — under the
+  // limit with very little room. Lengthening the window is free; SHORTENING THE GAP
+  // to make the screen feel livelier is not, and would blind the loop instead.
   static const Duration _postFlashScanTimeout = Duration(seconds: 5);
   static const Duration _postFlashScanGap = Duration(seconds: 2);
   bool _postFlashReconnectCancelled = false;
+  // One loop at a time. releasePairingOnSuccess arms one and [retryPostFlashReconnect]
+  // can arm another; two running together would scan on top of each other, and
+  // DeviceService.discover() answers an empty list to whichever asks second (it
+  // refuses to run while a scan is in flight) — so the loser would read "still not
+  // back" off a scan that never happened.
+  bool _postFlashLoopRunning = false;
+
+  /// What the rediscovery loop is doing, for the screen that now waits on it.
+  /// Written only by [_setPostFlashPhase].
+  PostFlashPhase postFlashPhase = PostFlashPhase.idle;
+
+  /// Assigns the phase and repaints, and is safe to call after the page has gone: the
+  /// loop deliberately outlives a cancel by one scan (the flag is only read where the
+  /// loop next touches it), so the last transition of a cancelled loop can land on an
+  /// unmounted State. The field is still assigned then — nothing reads it, and leaving
+  /// it stale would be worse if the object were ever re-mounted.
+  void _setPostFlashPhase(PostFlashPhase phase) {
+    if (postFlashPhase == phase) return;
+    postFlashPhase = phase;
+    if (mounted) setState(() {});
+  }
 
   /// Process ZIP file and return firmware image list
   Future<List<mcumgr.Image>> processZipFile(Uint8List zipFileData) async {
@@ -234,7 +294,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   /// - **The release threw.** Native's ladder was never stopped, so it is already
   ///   reconnecting into the reboot — that is the damage, and it is done whether or
   ///   not we go on to scan. [reconnectWhenDeviceReturns] cannot add to it: it
-  ///   scans, and the only connect it makes is after a sighting, which by
+  ///   scans, and every connect it makes is after a sighting, which by
   ///   definition is a device that has finished booting. If the wipe then succeeded,
   ///   the pairing state is in fact exactly right, and skipping the automatic path
   ///   would cost the user a manual tap for nothing.
@@ -245,9 +305,10 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   ///   a failed manual one, not with a working one.
   ///
   /// And the fallback is already reached in both cases without any gate here: a
-  /// reconnect that does not land leaves `_hasRepaired` false on the success screen,
-  /// so Done pushes `FindDevicesPage` — where Reset Connection is what actually
-  /// clears a stale phone bond.
+  /// reconnect that does not land leaves the success screen's re-pair latch open, so
+  /// its escape hatch (and, once the window expires, its primary button) pushes
+  /// `FindDevicesPage` — where Reset Connection is what actually clears a stale phone
+  /// bond.
   ///
   /// Unconditional on Android, with no pre-flash handshake and nothing to opt
   /// into. The device arms its own wipe from the mcumgr DFU_PENDING hook, so both
@@ -286,6 +347,14 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   @visibleForTesting
   Future<void> releasePairingOnSuccess(BtDevice btDevice) async {
     if (defaultTargetPlatform != TargetPlatform.android) return;
+    // Synchronously, before the first await. The DFU success callback calls this
+    // unawaited and then flips `isInstalled` in the same block, so the success
+    // screen's FIRST frame is drawn from here — and a phase still reading `idle` on
+    // that frame is the page's signal that nothing is coming and the user should
+    // re-pair by hand (the iOS state). Arming it a few hundred milliseconds later,
+    // once the two host calls below have returned, would show that state and then
+    // take it away.
+    _setPostFlashPhase(PostFlashPhase.waiting);
     try {
       await BleHostApi().unmanageDevice(btDevice.id);
     } catch (e) {
@@ -341,23 +410,70 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   /// actual discover-then-connect sequence rather than a description of it.
   @visibleForTesting
   Future<void> reconnectWhenDeviceReturns(BtDevice btDevice, {Duration window = _postFlashReconnectWindow}) async {
-    final deadline = DateTime.now().add(window);
-    while (!_postFlashReconnectCancelled && DateTime.now().isBefore(deadline)) {
-      final seen = await ServiceManager.instance().device.discover(timeout: _postFlashScanTimeout.inSeconds);
-      if (_postFlashReconnectCancelled) return;
-      if (seen.any((device) => device.id == btDevice.id)) {
-        Logger.debug('Post-update: device is advertising again — reconnecting');
-        await ServiceManager.instance().device.ensureConnection(btDevice.id, force: true, requiresBond: true);
-        return;
+    if (_postFlashLoopRunning) return;
+    _postFlashLoopRunning = true;
+    try {
+      final deadline = DateTime.now().add(window);
+      while (!_postFlashReconnectCancelled && DateTime.now().isBefore(deadline)) {
+        _setPostFlashPhase(PostFlashPhase.waiting);
+        final seen = await ServiceManager.instance().device.discover(timeout: _postFlashScanTimeout.inSeconds);
+        if (_postFlashReconnectCancelled) return;
+        if (seen.any((device) => device.id == btDevice.id)) {
+          Logger.debug('Post-update: device is advertising again — reconnecting');
+          _setPostFlashPhase(PostFlashPhase.connecting);
+          final connection =
+              await ServiceManager.instance().device.ensureConnection(btDevice.id, force: true, requiresBond: true);
+          if (connection != null) {
+            _setPostFlashPhase(PostFlashPhase.reconnecting);
+            return;
+          }
+          // A null is an explicit failure — the connect threw, or the transport's
+          // device-ready backstop expired — so the device is emphatically NOT paired,
+          // and stopping here would leave the screen waiting on a connect that is
+          // already over. Keep looking instead: the commonest cause is a pairing
+          // request the user has not answered yet, and the next sighting re-issues it.
+          //
+          // A failed attempt is not cheap: the transport waits out its own 75 s
+          // device-ready backstop before answering null, so the two minutes here hold
+          // about two attempts, not a dozen. That is the intended shape — an unanswered
+          // pairing dialog gets one more chance, and past that the screen says it could
+          // not find the Omi and offers another search.
+          Logger.debug('Post-update: the connect did not take — still looking');
+          if (_postFlashReconnectCancelled) return;
+        }
+        await Future.delayed(_postFlashScanGap);
       }
-      await Future.delayed(_postFlashScanGap);
+      // The while exits on EITHER condition, and they mean opposite things: a cancel is
+      // the page going away (or the re-pair having landed by another route), which must
+      // not be reported as having given up.
+      if (_postFlashReconnectCancelled) return;
+      _setPostFlashPhase(PostFlashPhase.timedOut);
+      Logger.debug('Post-update: device did not return in time — leaving the re-pair to Find Devices');
+    } finally {
+      _postFlashLoopRunning = false;
     }
-    Logger.debug('Post-update: device did not return in time — leaving the re-pair to Find Devices');
+  }
+
+  /// Start looking again after the window expired, for the screen's "Search again".
+  ///
+  /// The cancel flag is one-shot and cleared only here. It is deliberately NOT cleared
+  /// while a loop is still running: [cancelPostFlashReconnect] cannot abort a scan
+  /// already in flight, so clearing it under one would resurrect a loop the page had
+  /// just cancelled on its way out — reconnecting behind the back of a user who has
+  /// left. Refusing instead costs nothing, because the only caller is a button that is
+  /// shown exclusively in the [PostFlashPhase.timedOut] state, where by definition no
+  /// loop is running.
+  Future<void> retryPostFlashReconnect(BtDevice btDevice) {
+    if (_postFlashLoopRunning) return Future.value();
+    _postFlashReconnectCancelled = false;
+    return reconnectWhenDeviceReturns(btDevice);
   }
 
   /// Stop the post-flash rediscovery loop: no further scan, and no reconnect out of
   /// one already in flight. Called from the page's dispose, so leaving the update
-  /// screen ends the loop rather than reconnecting behind the user's back.
+  /// screen ends the loop rather than reconnecting behind the user's back — and again
+  /// the moment the page's re-pair latch closes, because a link that is already up is
+  /// nothing left to look for, and scanning over it only disturbs it.
   ///
   /// It cannot abort a scan already running — the flag is read where the loop next
   /// touches it, after `discover()` returns — and it does not need to. Find Devices
