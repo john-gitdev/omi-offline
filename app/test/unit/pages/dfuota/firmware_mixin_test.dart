@@ -79,7 +79,19 @@ void main() {
   const ok = <Object?>[null];
   const boom = <Object?>['release_failed', 'unmanageDevice blew up', null];
 
-  const mockedMethods = ['unmanageDevice', 'removeBond', 'startScan', 'stopScan', 'manageDevice'];
+  // unsubscribeCharacteristic is not part of anything under test: it is reached only by
+  // tearDown's forgetDevice, and only in the one test that drives the link all the way
+  // to connected. Unmocked, pigeon throws a channel error there — after the test body
+  // has passed — which the runner reports as a failure of a test that had already
+  // succeeded.
+  const mockedMethods = [
+    'unmanageDevice',
+    'removeBond',
+    'startScan',
+    'stopScan',
+    'manageDevice',
+    'unsubscribeCharacteristic',
+  ];
 
   setUp(() async {
     hostCalls = [];
@@ -87,7 +99,7 @@ void main() {
     failRelease = false;
     manageDeviceArgs = null;
 
-    for (final method in ['unmanageDevice', 'removeBond', 'stopScan']) {
+    for (final method in ['unmanageDevice', 'removeBond', 'stopScan', 'unsubscribeCharacteristic']) {
       mockHost(method, (message) async {
         hostCalls.add(method);
         if (method == 'unmanageDevice' && failRelease) return boom;
@@ -129,7 +141,18 @@ void main() {
     // non-null one rather than building a fresh transport, which would silently make
     // the next test's connect a no-op. Torn down here, while the host mocks are still
     // installed to answer it.
-    await ServiceManager.instance().device.forgetDevice(device);
+    //
+    // Timed out because a test that fails an expectation never reaches its settleLoop,
+    // so its rediscovery loop is still holding DeviceService's mutex — on a FAKE timer
+    // that nothing here will ever advance, since tearDown runs outside the test's async
+    // zone. forgetDevice wants the same mutex, and without this bound the whole run
+    // hangs on the first failed assertion instead of reporting it. Five real seconds,
+    // then move on: the next test is already compromised by the leftover connection,
+    // but a reported failure beats a silent hang.
+    await ServiceManager.instance().device.forgetDevice(device).timeout(
+          const Duration(seconds: 5),
+          onTimeout: () => debugPrint('tearDown: forgetDevice timed out — a loop from a failed test still holds it'),
+        );
     for (final method in mockedMethods) {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockDecodedMessageHandler<Object?>(hostChannel(method), null);
@@ -160,10 +183,46 @@ void main() {
   /// that reaches the connect does not end with its timer still pending.
   const connectBackstop = Duration(seconds: 90);
 
-  /// Run the loop to a stop: a cancel, then enough pumping for the scan that was
-  /// already running to finish and the loop to notice.
+  /// Run the loop to a stop: a cancel, then enough pumping for whatever was already
+  /// in flight to finish and the loop to notice.
+  ///
+  /// **Every test that arms a loop must end with this**, including the ones that reach
+  /// the connect. The loop holds DeviceService's mutex for the duration of an
+  /// `ensureConnection`, and tearDown's `forgetDevice` takes the same lock — but
+  /// tearDown does no pumping, so a connect still waiting on the transport's 75 s
+  /// device-ready backstop can never expire and the two deadlock, hanging the run
+  /// rather than failing it. Hence the connectBackstop pump before the scan pumps: it
+  /// unwinds a connect first, then the scan behind it. The cancel goes first so the
+  /// loop stops at the check it makes as soon as the connect returns, instead of
+  /// starting the next scan.
+  /// Pump until [condition] holds, or give up after [steps] one-second frames.
+  ///
+  /// Returns whether the condition was ever seen, so a caller can assert on that rather
+  /// than on wherever a fixed pump happened to stop — a single coarse `pump(90s)` runs
+  /// the whole scan/connect/gap cycle past the state being asserted, and a step count
+  /// sized by hand lands a microtask short of it.
+  ///
+  /// **The runAsync turn is load-bearing.** A SECOND pigeon call on a channel does not
+  /// get its reply delivered inside the fake-async zone: it sits pending across any
+  /// number of pumps and only completes once the zone is torn down. So a test that
+  /// drives two connects sees the second `manageDevice` never happen, which looks
+  /// exactly like the code failing to retry. Verified against a scratch test that made
+  /// two bare `ensureConnection(force: true)` calls with nothing else involved: pumps
+  /// alone stalled it, one real-async turn resolved it. Harness only — on a device the
+  /// replies come off the platform thread and there is no fake zone.
+  Future<bool> pumpUntil(WidgetTester tester, bool Function() condition, {int steps = 100}) async {
+    for (var i = 0; i < steps; i++) {
+      if (condition()) return true;
+      await tester.pump(const Duration(seconds: 1));
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 1)));
+    }
+    return condition();
+  }
+
   Future<void> settleLoop(WidgetTester tester, _MixinHostState state) async {
     state.cancelPostFlashReconnect();
+    await tester.pump(connectBackstop);
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 1)));
     await tester.pump(scanCycle);
     await tester.pump(scanCycle);
   }
@@ -271,7 +330,7 @@ void main() {
       await tester.pump(scanCycle);
 
       expect(hostCalls, contains('manageDevice'));
-      await tester.pump(connectBackstop);
+      await settleLoop(tester, state);
     });
 
     testWidgets('the connect it makes is the one the device list makes', (tester) async {
@@ -285,7 +344,7 @@ void main() {
       await tester.pump(scanCycle);
 
       expect(manageDeviceArgs, <Object?>[device, true]);
-      await tester.pump(connectBackstop);
+      await settleLoop(tester, state);
     });
 
     testWidgets('leaving the page stops it looking', (tester) async {
@@ -337,6 +396,169 @@ void main() {
           reason: 'the deadline gates the next scan, so the overshoot is the one already running');
       expect(scansStarted(), scansAfterExpiry, reason: 'an expired window must stop the loop, not slow it');
       expect(hostCalls, isNot(contains('manageDevice')));
+    });
+
+    testWidgets('a connect that does not take is not the end of it', (tester) async {
+      // The transport's device-ready backstop expires with no native answer, so
+      // ensureConnection answers null — an explicit failure, and the commonest cause on
+      // a real phone is a pairing request the user has not answered yet. Stopping there
+      // would leave the screen waiting on a connect that is already over, so the loop
+      // goes back to looking and the next sighting re-issues the request.
+      final state = await pumpHost(tester);
+      deviceIsAdvertising = true;
+
+      unawaited(state.reconnectWhenDeviceReturns(btDevice));
+      await tester.pump(scanCycle);
+      final connectsAfterFirst = hostCalls.where((call) => call == 'manageDevice').length;
+      expect(connectsAfterFirst, greaterThan(0), reason: 'the first sighting must connect');
+      expect(state.postFlashPhase, PostFlashPhase.connecting);
+
+      // Stepped, and watched for the transition rather than read at the end: the whole
+      // cycle — the connect giving up, the gap, the next scan, the next connect — fits
+      // inside a single coarse pump, so a read afterwards only shows wherever that
+      // landed. What has to be observed is that the phase passes back THROUGH waiting:
+      // a failed connect must not leave the screen sitting on "Pairing...".
+      var sawWaitingAgain = false;
+      final reconnected = await pumpUntil(tester, () {
+        if (state.postFlashPhase == PostFlashPhase.waiting) sawWaitingAgain = true;
+        return hostCalls.where((call) => call == 'manageDevice').length > connectsAfterFirst;
+      });
+
+      expect(sawWaitingAgain, isTrue, reason: 'a failed connect is not a paired device — go back to looking');
+      expect(state.postFlashPhase, isNot(PostFlashPhase.reconnecting),
+          reason: 'a null connection must never be reported as a live one');
+      expect(reconnected, isTrue, reason: 'the next sighting has to re-issue the pairing request');
+
+      await settleLoop(tester, state);
+    });
+  });
+
+  group('the phase the screen waits on', () {
+    testWidgets('is armed synchronously, before the release has done anything', (tester) async {
+      // The DFU success callback calls releasePairingOnSuccess unawaited and flips
+      // isInstalled in the same block, so the success screen's FIRST frame is drawn from
+      // there. A phase still reading idle on that frame is what the page renders as "no
+      // automatic re-pair is coming, do it by hand" — the iOS state — so arming it after
+      // the two host calls would show that and then take it away.
+      await runOn(TargetPlatform.android, () async {
+        final state = await pumpHost(tester);
+
+        unawaited(state.releasePairingOnSuccess(btDevice));
+
+        expect(state.postFlashPhase, PostFlashPhase.waiting,
+            reason: 'no pump, no await: this is the frame the success screen is built on');
+        await settleLoop(tester, state);
+      });
+    });
+
+    testWidgets('stays idle off Android, where nothing re-pairs on its own', (tester) async {
+      await runOn(TargetPlatform.iOS, () async {
+        final state = await pumpHost(tester);
+
+        await state.releasePairingOnSuccess(btDevice);
+        await tester.pump(scanCycle);
+
+        expect(state.postFlashPhase, PostFlashPhase.idle,
+            reason: 'iOS cannot clear its own bond, so the screen must ask for a manual re-pair');
+      });
+    });
+
+    testWidgets('walks waiting -> connecting -> reconnecting as the device comes back', (tester) async {
+      final state = await pumpHost(tester);
+
+      unawaited(state.reconnectWhenDeviceReturns(btDevice));
+      await tester.pump(const Duration(seconds: 1)); // mid-scan
+      expect(state.postFlashPhase, PostFlashPhase.waiting);
+
+      deviceIsAdvertising = true;
+      await tester.pump(scanCycle);
+      await tester.pump(scanCycle);
+      expect(state.postFlashPhase, PostFlashPhase.connecting,
+          reason: 'the device was heard and the pairing request is in flight');
+
+      // Native answers device-ready, which is what makes the connect return a live
+      // connection rather than expiring on the backstop. Delivered through BleBridge,
+      // the same entry point native calls — and carrying a service, because the
+      // transport deliberately DROPS a ready with an empty table (an empty one is never
+      // a usable link; see _handleDeviceReady).
+      BleBridge.instance.onDeviceReady(device, [
+        BleService(uuid: '19b10010-e8f2-537e-4f6c-d104768a1214', characteristicUuids: const []),
+      ]);
+      final reachedReconnecting =
+          await pumpUntil(tester, () => state.postFlashPhase == PostFlashPhase.reconnecting, steps: 10);
+
+      expect(reachedReconnecting, isTrue);
+      await settleLoop(tester, state);
+    });
+
+    testWidgets('reports the expiry, and a cancel is not an expiry', (tester) async {
+      // The two exits share the same `while`, and they mean opposite things: an expiry
+      // is the screen's cue to offer another search, while a cancel is the page going
+      // away (or the re-pair having landed by another route) and must leave the screen
+      // exactly as it was.
+      final expired = await pumpHost(tester);
+      unawaited(expired.reconnectWhenDeviceReturns(btDevice, window: const Duration(milliseconds: 1)));
+      await tester.pump(scanCycle);
+      await tester.pump(scanCycle);
+      expect(expired.postFlashPhase, PostFlashPhase.timedOut);
+
+      // Cancelled DURING THE GAP, deliberately. The loop has two ways out and they must
+      // be told apart at the right one: a cancel caught by the check inside the body
+      // returns before the post-loop line is ever reached, so it cannot see whether that
+      // line is guarded. Only a cancel that lands while the loop is parked between scans
+      // — after the body's own check has passed — leaves via the `while` condition,
+      // which is the exit the expiry also uses and therefore the one that has to
+      // distinguish them. The scan is 5 s and the gap 2 s, so t=6 is inside it.
+      final cancelled = await pumpHost(tester);
+      unawaited(cancelled.reconnectWhenDeviceReturns(btDevice));
+      await tester.pump(const Duration(seconds: 6));
+      cancelled.cancelPostFlashReconnect();
+      await tester.pump(const Duration(seconds: 4));
+
+      expect(cancelled.postFlashPhase, PostFlashPhase.waiting,
+          reason: 'a cancelled loop has not given up — nobody is left to offer a retry to');
+      await settleLoop(tester, cancelled);
+    });
+  });
+
+  group('searching again after the window expires', () {
+    testWidgets('re-arms the loop the expiry left cancelled-shaped', (tester) async {
+      final state = await pumpHost(tester);
+
+      unawaited(state.reconnectWhenDeviceReturns(btDevice, window: const Duration(milliseconds: 1)));
+      await tester.pump(scanCycle);
+      await tester.pump(scanCycle);
+      final scansAtExpiry = scansStarted();
+      expect(state.postFlashPhase, PostFlashPhase.timedOut);
+
+      unawaited(state.retryPostFlashReconnect(btDevice));
+      await tester.pump(scanCycle);
+
+      expect(scansStarted(), greaterThan(scansAtExpiry), reason: 'Search again has to actually scan again');
+      expect(state.postFlashPhase, PostFlashPhase.waiting);
+
+      await settleLoop(tester, state);
+    });
+
+    testWidgets('cannot resurrect a loop the page cancelled on its way out', (tester) async {
+      // The cancel flag is one-shot and cannot abort a scan already in flight, so
+      // clearing it under a running loop would put a screen the user has left back to
+      // reconnecting behind their back. Refusing costs nothing: the only real caller is
+      // a button shown exclusively in the timedOut state, where no loop is running.
+      final state = await pumpHost(tester);
+      deviceIsAdvertising = true;
+
+      unawaited(state.reconnectWhenDeviceReturns(btDevice));
+      await tester.pump(const Duration(seconds: 1)); // mid-scan
+      state.cancelPostFlashReconnect();
+      unawaited(state.retryPostFlashReconnect(btDevice));
+      await tester.pump(scanCycle);
+      await tester.pump(scanCycle);
+
+      expect(scansStarted(), 1, reason: 'the straddling scan is the only one');
+      expect(hostCalls, isNot(contains('manageDevice')));
+
+      await settleLoop(tester, state);
     });
   });
 }
