@@ -71,6 +71,21 @@ struct conn_fail_record {
 
 static struct conn_fail_record conn_fail = {0};
 
+/* One-shot record left by the link-wedge reboot (transport.c), consumed by the next
+ * boot. In flash rather than retained RAM on purpose: this is the one reboot the
+ * firmware causes by itself, so putting mute back afterwards must depend on nothing
+ * but flash — not on the retained slice having survived a bootloader this repo does
+ * not control (retained.h). */
+struct wedge_reboot_record {
+    uint8_t pending;
+    uint8_t muted;
+    uint16_t err_magnitude;
+    uint32_t mute_since_utc_s;
+    uint32_t waited_ms;
+};
+
+static struct wedge_reboot_record wedge_reboot = {0};
+
 /* 6 bytes: 1 tap, 1 tap hold, 2 tap, 2 tap hold, 3 tap, 3 tap hold.
  * Actions: 0=None, 1=Mute, 2=Marker, 3=Toggle LED, 4=Record Start, 5=Record Stop,
  * 6=Record Toggle (see button_action_t; the write handler rejects anything higher).
@@ -463,6 +478,13 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         return rc;
     }
 
+    if (settings_name_steq(name, "wedge_rb", &next) && !next) {
+        if (len != sizeof(wedge_reboot)) {
+            return -EINVAL;
+        }
+        rc = read_cb(cb_arg, &wedge_reboot, sizeof(wedge_reboot));
+        return (rc >= 0) ? 0 : rc;
+    }
 
     return -ENOENT;
 }
@@ -717,6 +739,43 @@ void app_settings_get_conn_fail(uint32_t *count, uint8_t *last_adv_slow, uint32_
     if (estab_count) {
         *estab_count = conn_fail.estab_count;
     }
+}
+
+int app_settings_save_wedge_reboot(bool muted, uint32_t mute_since_utc_s, uint16_t err_magnitude, uint32_t waited_ms)
+{
+    wedge_reboot.pending = 1;
+    wedge_reboot.muted = muted ? 1 : 0;
+    wedge_reboot.err_magnitude = err_magnitude;
+    wedge_reboot.mute_since_utc_s = muted ? mute_since_utc_s : 0;
+    wedge_reboot.waited_ms = waited_ms;
+    int err = settings_save_one("omi/wedge_rb", &wedge_reboot, sizeof(wedge_reboot));
+    if (err) {
+        LOG_ERR("Failed to save wedge_rb (err %d)", err);
+    }
+    return err;
+}
+
+bool app_settings_take_wedge_reboot(bool *muted,
+                                    uint32_t *mute_since_utc_s,
+                                    uint16_t *err_magnitude,
+                                    uint32_t *waited_ms)
+{
+    if (!wedge_reboot.pending) {
+        return false;
+    }
+    *muted = wedge_reboot.muted != 0;
+    *mute_since_utc_s = wedge_reboot.mute_since_utc_s;
+    *err_magnitude = wedge_reboot.err_magnitude;
+    *waited_ms = wedge_reboot.waited_ms;
+    /* Consumed once. A failed clear leaves it pending, so the next boot reports the
+     * same reboot again and restores mute again — both idempotent, and the right way
+     * round for a record whose job includes keeping a mute. */
+    wedge_reboot.pending = 0;
+    int err = settings_save_one("omi/wedge_rb", &wedge_reboot, sizeof(wedge_reboot));
+    if (err) {
+        LOG_ERR("Failed to clear wedge_rb (err %d)", err);
+    }
+    return true;
 }
 
 int app_settings_save_button_config(const uint8_t config[6])
