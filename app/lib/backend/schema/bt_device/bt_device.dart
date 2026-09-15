@@ -53,6 +53,10 @@ class OmiFeatures {
   // be turned off, and the LED master gate has a persisted boot value. Gates
   // both Customization switches — older firmware has neither.
   static const int ledService = 1 << 13;
+  // The recording-state characteristic (0x0083, inside the LED service) exists:
+  // the device reports a manual / Priority Recording live, read on connect and
+  // notified on change. Gates the Priority Recording banner (oo-3.1.4).
+  static const int recordingState = 1 << 14;
 
   static bool hasFeature(int features, int feature) {
     return (features & feature) != 0;
