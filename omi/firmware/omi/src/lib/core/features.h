@@ -40,8 +40,9 @@ typedef enum {
      * notify of whether a manual or Priority Recording is running right now, and
      * since when. Lets the app show a live "Priority Recording" banner instead of
      * inferring it from inline markers, which only reach the phone once the bin
-     * holding them has rotated (up to 10 min late) and can be lost. AAD builds only —
-     * both recording kinds are AAD thresholds. */
+     * holding them has rotated (up to 10 min late) and can be lost. Always set, like
+     * the LED service it lives in: the state is derived from the AAD thresholds, and
+     * AAD is mandatory in this fork (main.c #errors without it). */
     OMI_FEATURE_RECORDING_STATE = (1 << 14),
 } omi_feature_t;
 
