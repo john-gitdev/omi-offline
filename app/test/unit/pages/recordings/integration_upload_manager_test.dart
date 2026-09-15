@@ -669,13 +669,16 @@ void main() {
       await settle(m);
       expect(omi.uploadCalls, isEmpty);
 
+      expect(m.deferredSweepReady, false, reason: 'not while it is still processing');
+
       processing = false;
-      expect(m.takeDeferredSweep(), true, reason: 'the held sweep must be reported so the controller re-runs it');
-      expect(m.takeDeferredSweep(), false, reason: 'reported once, not on every poll');
+      expect(m.deferredSweepReady, true, reason: 'the held sweep must be reported so the controller re-runs it');
+      expect(m.deferredSweepReady, true, reason: 'asking does not clear it — a re-run whose reload fails is retried');
 
       m.tryAutoUploadAll();
       await settle(m);
       expect(omi.uploadCalls.map((c) => c.uploadKey), ['a1']);
+      expect(m.deferredSweepReady, false, reason: 'cleared by the sweep that ran');
     });
 
     test('a sweep that ran leaves nothing held', () async {
@@ -686,7 +689,63 @@ void main() {
       await settle(m);
 
       expect(omi.uploadCalls.map((c) => c.uploadKey), ['a1']);
-      expect(m.takeDeferredSweep(), false);
+      expect(m.deferredSweepReady, false);
+    });
+
+    // A job queued before a run began must not start mid-run: the stitch may be about to
+    // fold its recording into an earlier draft, or the clock pass to re-file it.
+    test('queued auto work waits out processing too, and the re-run picks it up', () async {
+      var processing = false;
+      final gate = Completer<void>();
+      final omi = FakeIntegration('Omi Cloud', autoUpload: true)..enabledByDefault = true;
+      omi.onUpload = (c) async {
+        await gate.future;
+        omi.deliver(c);
+      };
+      final m = makeManager(
+        [omi],
+        batchesProvider: () => [autoBatch('a1', dir: tempDir), autoBatch('a2', dir: tempDir)],
+        isProcessing: () => processing,
+      );
+
+      m.tryAutoUploadAll(); // one in flight (gated), one queued behind it
+      await Future.delayed(const Duration(milliseconds: 5));
+      expect(omi.uploadCalls.length, 1);
+
+      processing = true; // a run starts while the second is still queued
+      gate.complete();
+      await settle(m);
+      expect(omi.uploadCalls.length, 1, reason: 'the queued job must not start mid-run');
+      expect(m.deferredSweepReady, false);
+
+      processing = false;
+      expect(m.deferredSweepReady, true, reason: 'the parked lane is the controller\'s cue to re-run');
+      m.tryAutoUploadAll();
+      await settle(m);
+      expect(omi.uploadCalls.map((c) => c.uploadKey).toSet(), {'a1', 'a2'});
+    });
+
+    test('a queued job whose recording has gone is skipped, not uploaded or failed', () async {
+      final gate = Completer<void>();
+      final a = FakeIntegration('A');
+      a.onUpload = (c) async {
+        await gate.future;
+        a.deliver(c);
+      };
+      final m = makeManager([a]);
+
+      await m.uploadConversation(conv('k1')); // in flight (gated)
+      await m.uploadConversation(conv('k2')); // queued
+      await m.uploadConversation(conv('k3')); // queued
+      // k2 is renamed, stitched away or deleted while it waits.
+      a.availableByDefault = false;
+      a.setAvailable(conv('k1'), true);
+      a.setAvailable(conv('k3'), true);
+      gate.complete();
+      await settle(m);
+
+      expect(a.uploadCalls.map((c) => c.uploadKey), ['k1', 'k3'],
+          reason: 'k2 is skipped, and k3 still runs — the lane was not failed-fast');
     });
   });
 
