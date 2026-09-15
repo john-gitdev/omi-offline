@@ -1801,6 +1801,34 @@ void main() {
       expect(next.lengthSync(), 44 + nextMs * 32, reason: 'and nothing was prepended to it');
     });
 
+    // Out-of-order audio: the draft is older audio that arrived late, and the recording
+    // after it was finished by an earlier run — the user may already have seen it.
+    test('joining onto a recording that was already finished leaves a one-time notice', () async {
+      SharedPreferencesUtil().lateMergeNotices = const [];
+      await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true);
+      final next = await writeStitchable(startMs: nextStart, durationMs: nextMs);
+
+      await RecordingsManager().stitchDraftRecordingsForTest();
+
+      expect(next.existsSync(), isFalse, reason: 'folded into the draft');
+      expect(SharedPreferencesUtil().lateMergeNotices, ['$nextStart:$draftStart']);
+    });
+
+    // The everyday cross-sync join: the recording after the draft was created by this
+    // same run, so nobody has seen it and there is nothing to tell anyone.
+    test('the everyday join onto a recording this run created says nothing', () async {
+      SharedPreferencesUtil().lateMergeNotices = const [];
+      await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true);
+      late File next;
+
+      await RecordingsManager().stitchDraftRecordingsForTest(
+        duringRun: () async => next = await writeStitchable(startMs: nextStart, durationMs: nextMs),
+      );
+
+      expect(next.existsSync(), isFalse, reason: 'still joined');
+      expect(SharedPreferencesUtil().lateMergeNotices, isEmpty);
+    });
+
     // The mode stamp is written ONCE, by VadAudioProcessor._saveMetadata, and then
     // has to survive every later rewrite of the .meta it shares a byte with. Both
     // rewrites are read-modify-write and both were checked by inspection; these pin
@@ -2342,6 +2370,87 @@ void main() {
       expect(
           File(p.join(tempDir.path, 'recordings', '2026-08-01', 'recording_$wrappedStartMs.wav')).existsSync(), isTrue,
           reason: 'the recording that could not be placed safely stays put');
+    });
+
+    // A boot the Omi guessed wrong holds two kinds of recording: before the phone first
+    // reached it they carry the guess, after it the phone's time. Only the first kind is
+    // wrong. The pass used to re-file the whole session, which renamed the correct ones
+    // too (onto a whole-second uptime), stamped them, and handed undo an offset that was
+    // never theirs.
+    group('a boot with both wrong and right recordings', () {
+      // 5 h into the session, after the phone connected: stamped with the phone's time.
+      // The ms tail is what a real filename carries and a whole-second uptime cannot.
+      const laterUptimeSec = recUptimeSec + 3 * 60 * 60;
+      const laterStartMs = anchorWallMs - anchorUptimeMs + laterUptimeSec * 1000 + 437;
+
+      void writeBoth() {
+        writeRecording(
+          dateFolder: '2026-08-01',
+          basename: 'recording_$wrappedStartMs',
+          sessionId: anchorSessionId,
+          startUptimeSec: recUptimeSec,
+        );
+        writeRecording(
+          dateFolder: RecordingsManager.fmtDate(DateTime.fromMillisecondsSinceEpoch(laterStartMs)),
+          basename: 'recording_$laterStartMs',
+          sessionId: anchorSessionId,
+          startUptimeSec: laterUptimeSec,
+        );
+      }
+
+      test('only the wrong recording moves; the right one keeps its name and gets no arrow', () async {
+        setAnchor();
+        writeBoth();
+
+        expect(await RecordingsManager.applyClockAnchors(), 1);
+
+        final recs = allRecordings();
+        expect(recs.containsKey('recording_$trueStartMs'), isTrue, reason: 'the guessed one is re-filed');
+        expect(recs['recording_$trueStartMs']!.clockCorrected, isTrue);
+        expect(recs.containsKey('recording_$laterStartMs'), isTrue, reason: 'the right one is not renamed at all');
+        expect(recs['recording_$laterStartMs']!.clockCorrected, isFalse,
+            reason: 'nothing was corrected, so there is nothing to undo');
+      });
+
+      test('undo moves back only what the correction moved', () async {
+        setAnchor();
+        writeBoth();
+        expect(await RecordingsManager.applyClockAnchors(), 1);
+
+        await RecordingsManager.revertClockCorrection(allRecordings()['recording_$trueStartMs']!);
+
+        final recs = allRecordings();
+        expect(recs.containsKey('recording_$wrappedStartMs'), isTrue, reason: 'the guessed one goes back');
+        expect(recs.containsKey('recording_$laterStartMs'), isTrue,
+            reason: 'the right one must not be moved onto the guessed offset');
+        expect(recs.length, 2);
+      });
+    });
+
+    test('the manual date picker moves only recordings with no time of their own', () async {
+      // An unknown_ recording from before the phone connected, and one from after it.
+      final unknown = writeRecording(
+        dateFolder: '1970-01-01',
+        basename: 'unknown_7200000',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$trueStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec + 3600,
+      );
+
+      final picked = DateTime(2026, 7, 1, 9, 0);
+      await RecordingsManager.promoteSessionToDate(Conversation.fromFile(unknown), picked,
+          include: (c) => c.isUnknown); // exactly what recording_player_page passes
+
+      final recs = allRecordings();
+      expect(recs.containsKey('recording_${picked.millisecondsSinceEpoch}'), isTrue,
+          reason: 'placed where the user said');
+      expect(recs.containsKey('recording_$trueStartMs'), isTrue, reason: 'the timestamped one is left alone');
+      expect(recs.length, 2);
     });
   });
 
