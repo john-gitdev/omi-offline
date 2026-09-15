@@ -4,13 +4,15 @@ Patch releases are rolled up into their minor version. Each section reflects the
 
 ## App
 
-### 0.36
+### 0.37
 
 - **New: a banner shows while your Omi is making a Priority Recording.** When the app connects and your Omi is holding a Priority Recording open, a red banner at the top of the recordings screen — the same one that tells you it is muted — says "Priority Recording since 3:42 PM", and the notification's resting line says the same. It comes straight from the Omi, so it appears the moment the app connects rather than after the recording has been synced, and it goes away when the recording stops. The two banners never show together: the Omi refuses a mute during a Priority Recording and a Priority Recording while muted. Needs firmware `oo-3.1.4`; on older firmware nothing changes.
 
 - **Fix: a leftover end-of-transfer signal could end a download with nothing in it.** The app treated the Omi's "that's the whole file" signal as final whenever it arrived — even before the Omi had acknowledged the request, when it can only belong to an earlier transfer that was abandoned on a timeout. The new download then finished instantly and empty. The completeness check caught that and retried, so nothing was lost there, but each such attempt counted as a failure toward the limit after which the app gives up on a file it cannot read — and giving up deletes it from the Omi. The app now ignores that signal until the request has been acknowledged, as it already did for the audio itself.
 
 - **Debug Tools: the event log understands a restart.** The Omi's event log now survives a restart (firmware `oo-3.1.4`), so one read can hold events from more than one boot. The log names the two new records — each boot, with why the Omi restarted, and a restart the Omi performed itself to recover a stuck connection — and no longer puts a clock time on an event from before the latest restart, which it would have got wrong: the time is worked out from the Omi's running clock, and that clock starts again at every boot.
+
+### 0.36
 
 - **Change: the firmware update screen now waits with you until your Omi pairs itself back, instead of handing you the Bluetooth device list.** Every update clears the Bluetooth pairing on both sides, and the app has been re-pairing on its own for a while — it listens for your Omi to start advertising again after its reboot and then asks to pair, so all you do is accept the request. You just couldn't see any of it happening: the screen looked identical a second after the flash and ninety seconds later, and the only thing on it was a Done button that took you to the device list — which also *cancelled* the automatic re-pair, because leaving the screen stops it. The good outcome was the one you had to know not to tap out of.
 
