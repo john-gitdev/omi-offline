@@ -30,6 +30,10 @@ import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 /// Builds a PACKET_ACK: [0x03][result]
 List<int> ackPacket(int result) => [0x03, result];
 
+/// Builds the oo-3.1.4+ CMD_READ_FILE ACK: [0x03][result][ts LE 4B]
+List<int> readAckPacket(int result, int ts) =>
+    [0x03, result, ts & 0xFF, (ts >> 8) & 0xFF, (ts >> 16) & 0xFF, (ts >> 24) & 0xFF];
+
 /// Builds a PACKET_DATA: [0x01][offset LE 4B][payload]
 List<int> dataPacket(int offset, List<int> payload) {
   return [
@@ -527,6 +531,47 @@ void main() {
       await pump();
       mockConn.add(eotPacket());
       await expectLater(syncFuture, completes);
+    });
+
+    test('a start ACK naming another file is ignored, and so is that file\'s stream', () async {
+      // The firmware finished a slow setup for an EARLIER read after the app had moved on
+      // to this file. Taking its ACK would open this download to the other file's DATA and
+      // EOT — completing it with the wrong audio, which a big enough stream would pass the
+      // completeness check with and then delete this file from the card.
+      const ownTs = 1789000000;
+      const otherTs = 1789000600;
+      final syncFuture = sync.syncWal(
+        wal: Wal(
+          device: 'test-device',
+          fileNum: 1,
+          walOffset: 0,
+          storageTotalBytes: 10,
+          timerStart: ownTs,
+          storage: WalStorage.sdcard,
+        ),
+      );
+      await pump();
+      mockConn.add(readAckPacket(0x00, otherTs));
+      await pump();
+      mockConn.add(dataPacket(0, List<int>.filled(10, 0xDD)));
+      await pump();
+      mockConn.add(eotPacket());
+      await pump();
+
+      // This read's own ACK, stream and EOT.
+      mockConn.add(readAckPacket(0x00, ownTs));
+      await pump();
+      mockConn.add(dataPacket(0, List<int>.filled(10, 0xAA)));
+      await pump();
+      mockConn.add(eotPacket());
+      await syncFuture;
+
+      // Judged on the bytes, not on timing: completion awaits real disk I/O, which the
+      // zero-delay pumps above do not wait for, so "not completed yet" could not fail.
+      // Had the other file's ACK been taken, its EOT would have completed this download
+      // with 0xDD and locked the stream, and this read's own bytes would never land.
+      final bin = File('${tempDir.path}/raw_segments/$ownTs/${ownTs}_0.bin');
+      expect(await bin.readAsBytes(), List<int>.filled(10, 0xAA));
     });
 
     test('syncWal does NOT delete a device file on an incomplete (short) transfer', () async {
