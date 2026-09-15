@@ -1763,6 +1763,7 @@ void main() {
       bool hardStart = false,
       bool hardEnd = false,
       bool? recordedManual,
+      bool forceSynced = false,
     }) async {
       final dateDir = Directory(p.join(tempDir.path, 'recordings', coverageDateOf(startMs)))
         ..createSync(recursive: true);
@@ -1777,6 +1778,7 @@ void main() {
       meta[416] = 0; // keyLen
       // [3] bit0 isSilero, bit1 hardStart, bit2 hardEnd, bit3 modeKnown, bit4 manual
       final mode = recordedManual == null ? 0x00 : (0x08 | (recordedManual ? 0x10 : 0x00));
+      meta[418] = forceSynced ? 0x01 : 0x00; // [1] forceSynced — the bolt
       meta[420] = (hardStart ? 0x02 : 0x00) | (hardEnd ? 0x04 : 0x00) | mode;
       File(p.join(dateDir.path, 'recording_$startMs$suffix.meta')).writeAsBytesSync(meta);
       return wav;
@@ -1799,6 +1801,92 @@ void main() {
           reason: 'closed means promoted to a finalized recording');
       expect(next.existsSync(), isTrue, reason: 'the boundary recording keeps its own file');
       expect(next.lengthSync(), 44 + nextMs * 32, reason: 'and nothing was prepended to it');
+    });
+
+    // Out-of-order audio: the draft is older audio that arrived late, and the recording
+    // after it was finished by an earlier run — the user may already have seen it.
+    test('joining onto a recording that was already finished leaves a one-time notice', () async {
+      SharedPreferencesUtil().lateMergeNotices = const [];
+      await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true);
+      final next = await writeStitchable(startMs: nextStart, durationMs: nextMs);
+
+      await RecordingsManager().stitchDraftRecordingsForTest();
+
+      expect(next.existsSync(), isFalse, reason: 'folded into the draft');
+      expect(SharedPreferencesUtil().lateMergeNotices, ['$nextStart:$draftStart']);
+    });
+
+    // The everyday cross-sync join: the recording after the draft was created by this
+    // same run, so nobody has seen it and there is nothing to tell anyone.
+    test('the everyday join onto a recording this run created says nothing', () async {
+      SharedPreferencesUtil().lateMergeNotices = const [];
+      await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true);
+      late File next;
+
+      await RecordingsManager().stitchDraftRecordingsForTest(
+        duringRun: () async => next = await writeStitchable(startMs: nextStart, durationMs: nextMs),
+      );
+
+      expect(next.existsSync(), isFalse, reason: 'still joined');
+      expect(SharedPreferencesUtil().lateMergeNotices, isEmpty);
+    });
+
+    // A late merge only adds audio in front of a recording the user already saw
+    // finished, and must not reopen it. With nothing after it, the merged recording used
+    // to drop back to "Conversation in progress" until the next conversation.
+    test('late audio joined onto a recording finished before this run is finished with it', () async {
+      await writeStitchable(startMs: nextStart, durationMs: nextMs);
+      late File draft;
+
+      // The draft is the late audio: this run wrote it.
+      await RecordingsManager().stitchDraftRecordingsForTest(
+        duringRun: () async => draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true),
+      );
+
+      expect(draft.existsSync(), isFalse, reason: 'not left in progress');
+      final finalized = File(draft.path.replaceAll('_draft.wav', '.wav'));
+      expect(finalized.existsSync(), isTrue, reason: 'listed, at the earlier start the message names');
+      final meta = File(finalized.path.replaceAll('.wav', '.meta')).readAsBytesSync();
+      expect(ByteData.sublistView(meta).getUint32(4, Endian.little), draftMs + nextMs);
+    });
+
+    test('a recording after the absorbed one stays its own, as the user saw it', () async {
+      await writeStitchable(startMs: nextStart, durationMs: nextMs);
+      final after = await writeStitchable(startMs: nextStart + nextMs, durationMs: 2000);
+      late File draft;
+
+      await RecordingsManager().stitchDraftRecordingsForTest(
+        duringRun: () async => draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true),
+      );
+
+      expect(after.existsSync(), isTrue, reason: 'the absorbed recording ended before it, and that end stands');
+      expect(after.lengthSync(), 44 + 2000 * 32);
+      expect(File(draft.path.replaceAll('_draft.wav', '.wav')).existsSync(), isTrue);
+    });
+
+    test('the bolt of a Force-Synced recording carries onto the merged one', () async {
+      await writeStitchable(startMs: nextStart, durationMs: nextMs, forceSynced: true);
+      late File draft;
+
+      await RecordingsManager().stitchDraftRecordingsForTest(
+        duringRun: () async => draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true),
+      );
+
+      final meta = File(draft.path.replaceAll('_draft.wav', '.meta')).readAsBytesSync();
+      expect(meta[418] & 0x01, 0x01, reason: 'its end is still the one Force Sync chose');
+    });
+
+    // A draft already on disk meets a finished recording only when the previous run
+    // died between moving its recordings and stitching them. That run would have kept
+    // joining, so the resumed one must too.
+    test('a draft that was already on disk keeps joining, as the interrupted run would have', () async {
+      final draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true);
+      final next = await writeStitchable(startMs: nextStart, durationMs: nextMs);
+
+      await RecordingsManager().stitchDraftRecordingsForTest();
+
+      expect(next.existsSync(), isFalse, reason: 'joined');
+      expect(draft.existsSync(), isTrue, reason: 'and left open, exactly as before the late-merge close existed');
     });
 
     // The mode stamp is written ONCE, by VadAudioProcessor._saveMetadata, and then
@@ -1840,9 +1928,12 @@ void main() {
 
     test('an ordinary next recording at the same zero gap is still stitched (control)', () async {
       final draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true);
-      final next = await writeStitchable(startMs: nextStart, durationMs: nextMs);
+      late File next;
 
-      await RecordingsManager().stitchDraftRecordingsForTest();
+      // Created by this run — the everyday cross-sync join, which leaves the draft open.
+      await RecordingsManager().stitchDraftRecordingsForTest(
+        duringRun: () async => next = await writeStitchable(startMs: nextStart, durationMs: nextMs),
+      );
 
       expect(next.existsSync(), isFalse, reason: 'consumed into the draft');
       expect(draft.existsSync(), isTrue, reason: 'still open — stitched, not finalized');
@@ -2342,6 +2433,316 @@ void main() {
       expect(
           File(p.join(tempDir.path, 'recordings', '2026-08-01', 'recording_$wrappedStartMs.wav')).existsSync(), isTrue,
           reason: 'the recording that could not be placed safely stays put');
+    });
+
+    // A boot the Omi guessed wrong holds two kinds of recording: before the phone first
+    // reached it they carry the guess, after it the phone's time. Only the first kind is
+    // wrong. The pass used to re-file the whole session, which renamed the correct ones
+    // too (onto a whole-second uptime), stamped them, and handed undo an offset that was
+    // never theirs.
+    group('a boot with both wrong and right recordings', () {
+      // 5 h into the session, after the phone connected: stamped with the phone's time.
+      // The ms tail is what a real filename carries and a whole-second uptime cannot.
+      const laterUptimeSec = recUptimeSec + 3 * 60 * 60;
+      const laterStartMs = anchorWallMs - anchorUptimeMs + laterUptimeSec * 1000 + 437;
+
+      void writeBoth() {
+        writeRecording(
+          dateFolder: '2026-08-01',
+          basename: 'recording_$wrappedStartMs',
+          sessionId: anchorSessionId,
+          startUptimeSec: recUptimeSec,
+        );
+        writeRecording(
+          dateFolder: RecordingsManager.fmtDate(DateTime.fromMillisecondsSinceEpoch(laterStartMs)),
+          basename: 'recording_$laterStartMs',
+          sessionId: anchorSessionId,
+          startUptimeSec: laterUptimeSec,
+        );
+      }
+
+      test('only the wrong recording moves; the right one keeps its name and gets no arrow', () async {
+        setAnchor();
+        writeBoth();
+
+        expect(await RecordingsManager.applyClockAnchors(), 1);
+
+        final recs = allRecordings();
+        expect(recs.containsKey('recording_$trueStartMs'), isTrue, reason: 'the guessed one is re-filed');
+        expect(recs['recording_$trueStartMs']!.clockCorrected, isTrue);
+        expect(recs.containsKey('recording_$laterStartMs'), isTrue, reason: 'the right one is not renamed at all');
+        expect(recs['recording_$laterStartMs']!.clockCorrected, isFalse,
+            reason: 'nothing was corrected, so there is nothing to undo');
+      });
+
+      test('undo moves back only what the correction moved', () async {
+        setAnchor();
+        writeBoth();
+        expect(await RecordingsManager.applyClockAnchors(), 1);
+
+        await RecordingsManager.revertClockCorrection(allRecordings()['recording_$trueStartMs']!);
+
+        final recs = allRecordings();
+        expect(recs.containsKey('recording_$wrappedStartMs'), isTrue, reason: 'the guessed one goes back');
+        expect(recs.containsKey('recording_$laterStartMs'), isTrue,
+            reason: 'the right one must not be moved onto the guessed offset');
+        expect(recs.length, 2);
+      });
+    });
+
+    test('the manual date picker moves only recordings with no time of their own', () async {
+      // An unknown_ recording from before the phone connected, and one from after it.
+      final unknown = writeRecording(
+        dateFolder: '1970-01-01',
+        basename: 'unknown_7200000',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$trueStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec + 3600,
+      );
+
+      final picked = DateTime(2026, 7, 1, 9, 0);
+      await RecordingsManager.promoteSessionToDate(Conversation.fromFile(unknown), picked,
+          include: (c) => c.isUnknown); // exactly what recording_player_page passes
+
+      final recs = allRecordings();
+      expect(recs.containsKey('recording_${picked.millisecondsSinceEpoch}'), isTrue,
+          reason: 'placed where the user said');
+      expect(recs.containsKey('recording_$trueStartMs'), isTrue, reason: 'the timestamped one is left alone');
+      expect(recs.length, 2);
+    });
+
+    test('a hand-set date holds recordingsUnsettled while it renames', () async {
+      final unknown = writeRecording(
+        dateFolder: '1970-01-01',
+        basename: 'unknown_7200000',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      final seen = <bool>[];
+      void listener() => seen.add(RecordingsManager.recordingsUnsettled);
+      RecordingsManager.recordingsChangeNotifier.addListener(listener);
+      try {
+        await RecordingsManager.promoteSessionToDate(Conversation.fromFile(unknown), DateTime(2026, 7, 1, 9),
+            include: (c) => c.isUnknown);
+      } finally {
+        RecordingsManager.recordingsChangeNotifier.removeListener(listener);
+      }
+
+      expect(seen, isNotEmpty);
+      expect(seen, everyElement(isTrue), reason: 'no auto upload may start between the in-flight check and the rename');
+      expect(RecordingsManager.recordingsUnsettled, isFalse, reason: 'released once the move is over');
+    });
+
+    // The run's clock pass comes after its stitch, so the recording a late-merge notice
+    // names can be re-filed before anyone sees the message.
+    test('a pending late-merge notice follows the recording it names when that is re-filed', () async {
+      setAnchor();
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      SharedPreferencesUtil().lateMergeNotices = ['1000:$wrappedStartMs', '2000:3000'];
+
+      expect(await RecordingsManager.applyClockAnchors(), 1);
+
+      expect(SharedPreferencesUtil().lateMergeNotices, ['1000:$trueStartMs', '2000:3000'],
+          reason: 'the message must give the start the list shows; other notices are untouched');
+    });
+
+    test('a pass holds recordingsUnsettled while it re-files, so auto uploads wait for it', () async {
+      setAnchor();
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      // The rename's own notification is what sets a sweep off on the recordings page.
+      final seen = <bool>[];
+      void listener() => seen.add(RecordingsManager.recordingsUnsettled);
+      RecordingsManager.recordingsChangeNotifier.addListener(listener);
+      try {
+        expect(RecordingsManager.recordingsUnsettled, isFalse);
+        expect(await RecordingsManager.applyClockAnchors(), 1);
+      } finally {
+        RecordingsManager.recordingsChangeNotifier.removeListener(listener);
+      }
+
+      expect(seen, isNotEmpty);
+      expect(seen, everyElement(isTrue), reason: 'still held when the pass announces the rename');
+      expect(RecordingsManager.recordingsUnsettled, isFalse, reason: 'released once the pass is over');
+    });
+
+    // Omi's upload state is keyed by the upload file's path, which is the recording's name.
+    test('the Omi Cloud upload file and its upload state move with a re-filed recording', () async {
+      setAnchor();
+      final audio = writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      final oldBin = RecordingsManager.omiBinPathFor(audio);
+      File(oldBin).writeAsBytesSync([1, 2, 3]);
+      final prefs = SharedPreferencesUtil();
+      await prefs.markOmiSynced(oldBin);
+      await prefs.markOmiSegmentSynced('$oldBin#0');
+      await prefs.setOmiSegmentTotal(oldBin, 1);
+      await prefs.incrementAutoUploadRetry(oldBin);
+
+      expect(await RecordingsManager.applyClockAnchors(), 1);
+
+      final newBin = RecordingsManager.omiBinPathFor(allRecordings()['recording_$trueStartMs']!.file);
+      expect(newBin, isNot(oldBin));
+      expect(File(newBin).readAsBytesSync(), [1, 2, 3], reason: 'the upload file follows the recording');
+      expect(File(oldBin).existsSync(), isFalse, reason: 'nothing orphaned under the old name');
+      expect(prefs.isOmiSynced(newBin), isTrue, reason: 'already sent — must not be sent again');
+      expect(prefs.isOmiSynced(oldBin), isFalse);
+      expect(prefs.isOmiSegmentSynced('$newBin#0'), isTrue);
+      expect(prefs.getOmiSegmentTotal(newBin), 1);
+      expect(prefs.getAutoUploadRetries(newBin), 1, reason: 'the retry budget is the recording\'s, not reset');
+      expect(prefs.getAutoUploadRetries(oldBin), 0);
+    });
+
+    test('moving Omi upload state keeps a delivered mark already under the new path', () async {
+      final prefs = SharedPreferencesUtil();
+      await prefs.markOmiSynced('/r/b.bin'); // e.g. an older build left the recording's own file here
+      await prefs.moveOmiUploadState('/r/a.bin', '/r/b.bin'); // nothing recorded under a
+
+      expect(prefs.isOmiSynced('/r/b.bin'), isTrue, reason: 'losing it would re-send the audio');
+    });
+
+    // Omi's upload records its progress under the file's path as it goes, so a rename
+    // mid-upload would land the final "delivered" mark on a dead path.
+    test('a recording being uploaded is not re-filed until the upload is done', () async {
+      setAnchor();
+      final audio = writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+
+      RecordingsManager.noteUploadStarted(audio);
+      try {
+        await RecordingsManager.applyClockAnchors();
+        expect(allRecordings().containsKey('recording_$wrappedStartMs'), isTrue, reason: 'left under its name');
+      } finally {
+        RecordingsManager.noteUploadFinished(audio);
+      }
+
+      await RecordingsManager.applyClockAnchors();
+      expect(allRecordings().containsKey('recording_$trueStartMs'), isTrue, reason: 're-filed by the next pass');
+      expect(allRecordings().containsKey('recording_$wrappedStartMs'), isFalse);
+    });
+
+    test('a hand-set date on a recording being uploaded is applied when the upload ends', () async {
+      final unknown = writeRecording(
+        dateFolder: '1970-01-01',
+        basename: 'unknown_7200000',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      final picked = DateTime(2026, 7, 1, 9, 0);
+      final target = 'recording_${picked.millisecondsSinceEpoch}';
+
+      RecordingsManager.noteUploadStarted(unknown);
+      await RecordingsManager.promoteSessionToDate(Conversation.fromFile(unknown), picked, include: (c) => c.isUnknown);
+      expect(allRecordings().containsKey('unknown_7200000'), isTrue, reason: 'not renamed mid-upload');
+
+      RecordingsManager.noteUploadFinished(unknown); // the upload ends
+      for (var i = 0; i < 200 && !allRecordings().containsKey(target); i++) {
+        await Future.delayed(const Duration(milliseconds: 10));
+      }
+      expect(allRecordings().containsKey(target), isTrue,
+          reason: 'the date the user set, applied as soon as it could be');
+      expect(SharedPreferencesUtil().pendingRefiles, isEmpty);
+    });
+
+    test('a re-file still waiting when the app dies is applied by the next clock pass', () async {
+      final unknown = writeRecording(
+        dateFolder: '1970-01-01',
+        basename: 'unknown_7200000',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      final picked = DateTime(2026, 7, 1, 9, 0);
+
+      RecordingsManager.noteUploadStarted(unknown);
+      await RecordingsManager.promoteSessionToDate(Conversation.fromFile(unknown), picked, include: (c) => c.isUnknown);
+      RecordingsManager.forgetUploadsInFlightForTest(); // the process died mid-upload
+
+      await RecordingsManager.applyClockAnchors();
+
+      expect(allRecordings().containsKey('recording_${picked.millisecondsSinceEpoch}'), isTrue);
+      expect(SharedPreferencesUtil().pendingRefiles, isEmpty);
+    });
+
+    // Target-free checks and renames are separated by awaits, so two moves running at
+    // once could both find a slot free and one rename onto the other.
+    test('two moves started together run one at a time, so neither renames onto the other', () async {
+      final a = writeRecording(dateFolder: '1970-01-01', basename: 'unknown_1000', sessionId: 7, startUptimeSec: 100);
+      final b = writeRecording(dateFolder: '1970-01-02', basename: 'unknown_2000', sessionId: 8, startUptimeSec: 100);
+      final t = DateTime(2026, 7, 1, 9, 0);
+
+      await Future.wait([
+        RecordingsManager.promoteSessionToDate(Conversation.fromFile(a), t, include: (c) => c.isUnknown),
+        RecordingsManager.promoteSessionToDate(Conversation.fromFile(b), t, include: (c) => c.isUnknown),
+      ]);
+
+      expect(allRecordings().length, 2, reason: 'one moved, the other refused — nothing overwritten');
+    });
+
+    Directory targetDateDir() => Directory(
+        p.join(tempDir.path, 'recordings', RecordingsManager.fmtDate(DateTime.fromMillisecondsSinceEpoch(trueStartMs))))
+      ..createSync(recursive: true);
+
+    // The Omi Cloud upload file is named by the recording, so it is part of the slot.
+    test('a re-file is refused when a different Omi upload file already holds the target name', () async {
+      setAnchor();
+      final audio = writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      final ownBin = RecordingsManager.omiBinPathFor(audio);
+      File(ownBin).writeAsBytesSync([1, 2, 3]);
+      await SharedPreferencesUtil().markOmiSynced(ownBin);
+      final other = File(p.join(targetDateDir().path, 'recording_fs320_$trueStartMs.bin'))..writeAsBytesSync([9, 9]);
+
+      await RecordingsManager.applyClockAnchors();
+
+      expect(allRecordings().containsKey('recording_$wrappedStartMs'), isTrue,
+          reason: 'moved, it would be tied to an upload file that is not its audio');
+      expect(File(ownBin).readAsBytesSync(), [1, 2, 3], reason: 'its own upload file stays with it');
+      expect(other.readAsBytesSync(), [9, 9], reason: 'and the other is never overwritten');
+      expect(SharedPreferencesUtil().isOmiSynced(ownBin), isTrue);
+    });
+
+    test('a target upload file with none of its own to move does not block the re-file', () async {
+      setAnchor();
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      // Most likely its own, orphaned under this name by an older build's correction.
+      final waiting = File(p.join(targetDateDir().path, 'recording_fs320_$trueStartMs.bin'))..writeAsBytesSync([4, 5]);
+
+      await RecordingsManager.applyClockAnchors();
+
+      expect(allRecordings().containsKey('recording_$trueStartMs'), isTrue,
+          reason: 'the undo/reunion case is not blocked');
+      expect(waiting.readAsBytesSync(), [4, 5]);
     });
   });
 

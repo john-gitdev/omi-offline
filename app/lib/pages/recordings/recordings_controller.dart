@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:omi/gen/pigeon_communicator.g.dart';
 import 'package:omi/utils/logger.dart';
@@ -41,6 +42,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     batchesProvider: () => _batches,
     isDisposed: () => _isDisposed,
     isPipelineIdle: () => _spState == SyncProcessState.idle,
+    isProcessing: () => RecordingsManager.recordingsUnsettled,
     notifyUi: notifyListeners,
     acquireWake: _acquireWake,
     releaseWake: _releaseWake,
@@ -142,11 +144,54 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   String? _pendingSnackMessage;
   String? consumePendingSnack() {
     final msg = _pendingSnackMessage;
-    _pendingSnackMessage = null;
-    return msg;
+    if (msg != null) {
+      _pendingSnackMessage = null;
+      return msg;
+    }
+    // A late merge is reported here, once, rather than as anything in the list itself.
+    // Not while recordings are unsettled: a run's clock pass comes after its stitch and
+    // can re-file the recording a notice names, and the notice is brought up to date
+    // only once that rename has happened (RecordingsManager._remapLateMergeNotices).
+    if (RecordingsManager.recordingsUnsettled) return null;
+    final notices = _prefs.lateMergeNotices;
+    if (notices.isEmpty) return null;
+    _prefs.lateMergeNotices = const [];
+    return lateMergeMessage(notices, use24Hour: _prefs.use24HourTime);
+  }
+
+  /// The one-time message for recordings the stitcher joined onto earlier audio after
+  /// they had been finished. Entries are "<absorbedStartMs>:<mergedStartMs>" (see
+  /// SharedPreferencesUtil.lateMergeNotices); malformed ones are skipped.
+  @visibleForTesting
+  static String? lateMergeMessage(List<String> notices, {required bool use24Hour}) {
+    final pairs = <(DateTime, DateTime)>[];
+    for (final n in notices) {
+      final parts = n.split(':');
+      if (parts.length != 2) continue;
+      final absorbed = int.tryParse(parts[0]);
+      final merged = int.tryParse(parts[1]);
+      if (absorbed == null || merged == null) continue;
+      pairs.add((DateTime.fromMillisecondsSinceEpoch(absorbed), DateTime.fromMillisecondsSinceEpoch(merged)));
+    }
+    if (pairs.isEmpty) return null;
+    if (pairs.length > 1) {
+      return 'Audio that arrived late was added to ${pairs.length} of your recordings. '
+          'Each is now listed from its earlier start time.';
+    }
+    final (absorbed, merged) = pairs.single;
+    String time(DateTime t) => DateFormat(use24Hour ? 'HH:mm' : 'h:mm a').format(t);
+    String day(DateTime t) => DateFormat('EEE d MMM').format(t);
+    final otherDay = DateUtils.isSameDay(absorbed, merged) ? '' : ' on ${day(merged)}';
+    return 'Audio that arrived late was added to your ${time(absorbed)} recording from ${day(absorbed)} — '
+        'it now starts at ${time(merged)}$otherDay.';
   }
 
   Timer? _pollTimer;
+
+  /// When _poll last re-ran a held auto-upload sweep; spaces out retries of one whose
+  /// reload failed. See _poll.
+  DateTime _deferredSweepAttemptAt = DateTime.fromMillisecondsSinceEpoch(0);
+  static const _deferredSweepRetryInterval = Duration(seconds: 10);
   bool _isUserTriggered = false;
   Completer<void>? _pipelineCompleter;
 
@@ -690,6 +735,27 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         _throttledUpdate(force: true);
         _loadBatches();
       }
+    }
+
+    // An auto-upload sweep, or queued auto work, held back while recordings were
+    // unsettled (see IntegrationUploadManager.tryAutoUploadAll). Re-run it once they
+    // have settled — through _loadBatches rather than the sweep alone, because the run
+    // may have stitched away a recording the held sweep's batch list still names.
+    //   - Not while a reload is running: the processing-completion branch above has
+    //     just started one, and its sweep is the re-run. A second would scan the disk
+    //     and enforce retention concurrently with it.
+    //   - Not during successUi: a foreground run's dismissSuccess reload sweeps after
+    //     the clock-anchor pass, and this must not pre-empt it.
+    //   - The hold clears only when a sweep actually runs, so a reload that fails is
+    //     tried again — but spaced out, since one that fails every time would
+    //     otherwise reload the page twice a second.
+    if (_uploads.deferredSweepReady &&
+        !_isLoading &&
+        !isPipelineBusy &&
+        _spState != SyncProcessState.successUi &&
+        now.difference(_deferredSweepAttemptAt) >= _deferredSweepRetryInterval) {
+      _deferredSweepAttemptAt = now;
+      unawaited(_loadBatches());
     }
 
     _pollHeyPocket();
@@ -1534,11 +1600,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     // "nothing to process" early-return reaches here still holding it.
     _releaseWakelock();
 
-    // Re-file anything the Omi mis-dated, now that this run's recordings exist on disk
-    // and this connect's clock anchor has been captured. Here rather than beside
-    // processAll because the "nothing to process" early-return also reaches this point:
-    // an anchor taken on a connect that had no new audio to fetch still answers for
-    // recordings an earlier run already wrote under a wrong clock.
+    // Re-file anything the Omi mis-dated. processAll already did, for a run that had
+    // audio; this covers the "nothing to process" early-return, which also reaches this
+    // point: an anchor taken on a connect that had no new audio to fetch still answers
+    // for recordings an earlier run already wrote under a wrong clock.
     //
     // Cheap when there is nothing to do — no anchors, or no session disagreeing with
     // one, costs a directory scan and no writes — and it must never take the pipeline

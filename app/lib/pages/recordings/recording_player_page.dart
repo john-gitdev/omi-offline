@@ -152,7 +152,10 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
 
     try {
       await _player.stop();
-      await RecordingsManager.promoteSessionToDate(widget.conversation, newStart);
+      // Only the session's recordings that have no time of their own. The rest were
+      // timestamped by the phone; an offset derived from this one would move them onto
+      // whatever date was just picked.
+      await RecordingsManager.promoteSessionToDate(widget.conversation, newStart, include: (c) => c.isUnknown);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to assign date.')));

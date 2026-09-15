@@ -472,11 +472,15 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
             // including a wedged one, and it goes exactly where Done used to.
             if (isWatching || hasGivenUp) ...[
               const SizedBox(height: 8),
-              TextButton(
-                onPressed: () => _leaveUpdateScreen(deviceProvider, isReconnected: false),
-                child: Text(
-                  'Pair manually instead',
-                  style: TextStyle(color: Colors.grey.shade400, fontSize: 15, fontWeight: FontWeight.w500),
+              // Centered explicitly: this Column is crossAxisAlignment.start, which would
+              // otherwise pin the link to the left edge under a full-width primary button.
+              Center(
+                child: TextButton(
+                  onPressed: () => _leaveUpdateScreen(deviceProvider, isReconnected: false),
+                  child: Text(
+                    'Pair manually instead',
+                    style: TextStyle(color: Colors.grey.shade400, fontSize: 15, fontWeight: FontWeight.w500),
+                  ),
                 ),
               ),
             ],
