@@ -3560,8 +3560,10 @@ int transport_start()
 
     /* Priority 6: one step ABOVE the codec thread (7) that feeds it, since oo-3.1.4. At
      * equal priority with no time slicing the codec encoded its whole backlog before
-     * the pusher ran once — and a VAD pre-roll burst is a 40-frame backlog — so every
-     * frame past the ring's 32 slots died in write_to_tx_queue()
+     * the pusher ran once — the 40-frame pre-roll PLUS the live frames that kept
+     * arriving while it caught up, ~75-80 frames — so every frame past the ring's 32
+     * slots (each commits a full CODEC_OUTPUT_MAX_BYTES) died in write_to_tx_queue():
+     * 43 or 48 per speech onset, the lost ~0.9 s straddling the start of speech
      * (DIAG_WRITE_BLOCKED_TX_RING_FULL; see diag_log.h). One step above, each
      * k_sem_give() there readies the pusher, which preempts the codec and takes the
      * frame at once. Still below the mic and AAD threads (5): the pusher must never
