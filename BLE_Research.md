@@ -205,6 +205,7 @@ Record the sub-class in the "Recovery trigger" column below.
 | 7 | 2026-08-04 03:07→03:08 | 1m 38s | *(none — sub-threshold)* | **BT toggle** (`error=bluetooth_off` → reconnect in 2.5 s) | **Yes** | +0 (flat at 19) | fast | *none — all `-1`* |
 | 8 | 2026-08-12 22:39→23:24 | 45m 38s | SILENT ×3 | **BT toggle** (`error=bluetooth_off` → reconnect in 8 s) | **Yes** | +0 (flat at 93) | fast | **147** |
 | 9 | 2026-08-17 01:19→02:13 | 54m 06s | **ADVERTISING @ −93/−88 dBm** | **BT toggle** (`error=bluetooth_off` → reconnect in 9 s); an app *restart* 4 min earlier did not | **Yes** | +0 (flat at 100) | fast | *none — all `-1`* |
+| 10 | 2026-09-13 after 22:59→~23:23 | ≤ ~24m | *(not captured)* — the app's scan found nothing | **device power-cycle** (two BT toggles tried, both ineffective) | **Yes — ineffective** | *(not captured)* | — | *(not captured)* |
 
 **Wedge 5 is SOLVED** — see the resolution block below. Root cause: the post-disconnect
 `bt_le_adv_start()` in `transport.c` was fire-and-forget, so a single failure left the device
@@ -248,6 +249,15 @@ more than it sounds, because §6 has several candidate interventions that amount
 Its `estab_fail_count` is **flat at 100** either side of the outage, so the class signature now reads:
 flat estab + toggle-cured + **restart-immune**, with `-1` still not part of it (Wedge 8 carried real
 `147`s). Four episodes, one fault.
+
+**Wedge 10 is a different class — peripheral-side, and the first where the device *believed it was
+connected*.** The LED was solid blue, which the firmware shows only while `is_connected` is set, yet
+there was no link: the phone could neither connect nor see it advertising, two toggles did nothing, and
+a power cycle cured it immediately. It had not crashed. Every firmware recovery path keys on
+`is_connected`, which only the disconnect callback clears, so one disconnect the stack never reported
+strands the device off the air with its advertising watchdog stood down. No device-side evidence
+survived (the diag ring was RAM). oo-3.1.4 recovers from it by reboot and keeps the ring across one —
+see its detail record.
 
 Wedge 5 is the first **unresolved** episode on record — it is still failing when the log ends —
 and the first where `screen_interactive=true` for the entire outage, which removes screen-wake
@@ -1144,6 +1154,60 @@ emits a `native_log_records_dropped` record carrying the count — silence was t
 this run undiagnosed, so the fix must not be able to lose anything quietly. Cross-writer integrity is
 pinned by `app/test/unit/utils/debug_log_manager_test.dart`, which fails if the records are routed
 around the lock.
+
+### Detail — Wedge 10 (2026-09-13, ≤ ~24 min) — the device thought it was connected
+
+- Log source: app 0.36.x, firmware oo-3.1.3. The first read after recovery (23:24:04 UTC) reports
+  `last reset = low power wake; prior boot ran 21h 40m` — an ordinary power-off, not a crash. The last
+  device read before it, at 22:59:06, reported 21h 15m 51s of uptime, so that boot ended at ≈23:23: the
+  user's power cycle. The onset is somewhere after 22:59:06.
+- Symptom: LED solid blue (connected) with no link; the app could not connect, and a scan for the Omi
+  found nothing.
+- Bluetooth toggle in window? Yes, twice; neither helped. After the power cycle the pending connect
+  landed as soon as the device booted.
+- Device evidence: none. The diag ring was plain RAM and the power cycle erased it.
+- Bucket: **peripheral — lost disconnect.** Not the toggle-required class (3/7/8/9), where the device is
+  on the air and the central is stuck; here the device is off the air, holding a link that is not there.
+
+**What the firmware state must have been.** `is_connected` is set in `_transport_connected` and cleared
+only in `_transport_disconnected`. Stuck at 1, it explains every symptom at once: the advertising
+watchdog is gated on it (so no advertising — invisible to a scan), the idle-disconnect timer does not
+re-arm itself after issuing its `bt_conn_disconnect()` (so nothing retried), and the LED shows
+connected.
+
+**A theory that was put forward and retracted.** The first analysis blamed a permanent deadlock: a GATT
+notify on the BT RX thread blocking for an ATT buffer, while the disconnect that would free one needs
+that same thread. Zephyr (NCS v2.9.0) does not work that way. Disconnection Complete is split: its
+priority half (`hci_disconn_complete_prio`) runs outside the RX workqueue, marks the connection
+disconnected and releases its unacknowledged buffers (`process_unack_tx`), and the TX processor on the
+system workqueue drains a connection that is no longer connected. A blocked RX-thread allocation is
+therefore released without the RX thread's help. It resolves itself; it cannot have held a device for
+twenty-odd minutes.
+
+**What remains — not provable from this log:** (A) a hung controller or network core that never
+delivered Disconnection Complete at all; (B) something else holding the RX workqueue, so the normal half
+(`bt_l2cap_disconnected` + `notify_disconnected` → our callback) never ran.
+
+**Fix (oo-3.1.4) — recover rather than diagnose** (`transport.c`, "Lost-disconnect recovery"):
+
+- The idle timer marks the disconnect it requests as **owed**, inside the `conn_mutex` section that takes
+  `current_connection`; `_transport_disconnected` clears it inside the section that releases it. A set
+  can never land after its clear, so an ordinary disconnect cannot trip the recovery.
+- Still owed after 60 s — past the spec's 32 s maximum supervision timeout — the device **reboots**, but
+  only in silence: never during a manual or Priority Recording, never while the VAD holds a recording
+  open, and not before 30 s of quiet. Until then it keeps recording to the card. It saves a flash record
+  first (mute, errno, wait), then the IMU clock bridge, unmounts the SD card, and cold-reboots.
+- The next boot logs `DIAG_LINK_WEDGE_REBOOT` (arg0 = errno magnitude of the `bt_conn_disconnect()`;
+  107 = `ENOTCONN`, i.e. the host already thought the link was down and only the callback was missing;
+  arg1 = ms waited), and `DIAG_BOOT` marks every boot, because the ring now survives restarts in retained
+  RAM.
+- The idle timer's transfer exemption is bounded: a transfer that has delivered nothing for 2 min stops
+  exempting the link — but only in silence, because `bt_conn_disconnect()` is a synchronous HCI command
+  whose timeout is a `BT_ASSERT` (halt, then watchdog reset), which the silence rule could not stop once
+  the call was made. `write_to_gatt()` now marks activity per delivered packet, which is what makes
+  "nothing delivered" measurable.
+- Not reproducible on demand, so verified by build and trace only. If it fires, the next log names which
+  of (A)/(B) is likelier by its errno.
 
 ---
 

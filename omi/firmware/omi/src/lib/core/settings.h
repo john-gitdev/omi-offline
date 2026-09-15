@@ -209,6 +209,27 @@ int app_settings_save_conn_fail(uint32_t count, uint8_t last_adv_slow, uint32_t 
 void app_settings_get_conn_fail(uint32_t *count, uint8_t *last_adv_slow, uint32_t *estab_count);
 
 /**
+ * @brief Record that the firmware is about to reboot itself to recover a link wedge.
+ *
+ * One-shot, consumed by @ref app_settings_take_wedge_reboot on the next boot, which
+ * reports it (DIAG_LINK_WEDGE_REBOOT) and, if retained RAM did not survive, restores
+ * mute from it. See transport.c
+ * "Lost-disconnect recovery".
+ *
+ * @param muted            whether the device was muted when it rebooted
+ * @param mute_since_utc_s when that mute was engaged (0 if unknown)
+ * @param err_magnitude    -(bt_conn_disconnect() result), 0 if it was accepted
+ * @param waited_ms        ms from the disconnect request to the reboot
+ */
+int app_settings_save_wedge_reboot(bool muted, uint32_t mute_since_utc_s, uint16_t err_magnitude, uint32_t waited_ms);
+
+/** @brief Consume the wedge-reboot record. Returns false if the last reboot was not one. */
+bool app_settings_take_wedge_reboot(bool *muted,
+                                    uint32_t *mute_since_utc_s,
+                                    uint16_t *err_magnitude,
+                                    uint32_t *waited_ms);
+
+/**
  * @brief Save the button configuration.
  *
  * @param config Array of 6 bytes representing button tap actions.

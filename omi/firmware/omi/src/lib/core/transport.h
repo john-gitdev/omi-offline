@@ -85,6 +85,15 @@ bool write_priority_recording_marker_to_storage(void);
 void transport_note_priority_record_stop(void);
 
 /**
+ * @brief The manual / Priority Recording state may have changed.
+ *
+ * Re-derives the state behind the 0x19B10083 recording-state characteristic and
+ * notifies it if it changed. Schedule-only — safe from any thread, including the BT
+ * RX thread. aad_set_threshold() calls it, which covers every start and stop.
+ */
+void transport_note_recording_state(void);
+
+/**
  * @brief Broadcast audio packets over BLE
  *
  * @param buffer Buffer containing audio data

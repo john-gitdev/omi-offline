@@ -1017,10 +1017,14 @@ class VadAudioProcessor {
         final gapMs = segmentStartTime.difference(_lastSegmentEndTime!).inMilliseconds;
         final sessionChanged = _currentSessionId != null && sessionId != null && _currentSessionId != sessionId;
 
-        // If we were muted (mute-on seen, no mute-off) and the session changed,
-        // the device powered off while muted — `is_muted` never survives a reboot,
-        // so the new session is effectively the unmute. Close the muted interval
-        // at the new session's start (an upper bound on the unmute time).
+        // If we were muted (mute-on seen, no mute-off) and the session changed, the
+        // device restarted while muted. Close the muted interval at the new session's
+        // start (an upper bound on the unmute time): whatever happens next, the span
+        // between the two sessions was no audio, not muted audio. Up to oo-3.1.3 the
+        // mute itself was lost on every restart, so this WAS the unmute. From oo-3.1.4
+        // the device restores it (retained RAM, button.c mute_restore_at_boot) and
+        // opens the new session with its own mute-on (0xFFFFFFFA), which re-opens the
+        // interval straight away — so closing here stays correct on both.
         if (_muted && sessionChanged) {
           _emitMutedDiscard(segmentStartTime.millisecondsSinceEpoch);
         }

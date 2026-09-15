@@ -14,6 +14,7 @@
 #include <zephyr/sys/reboot.h>
 
 #include "button.h"
+#include "imu.h"
 #include "sd_card.h"
 #include "settings.h"
 #include "transport.h"
@@ -64,7 +65,12 @@ static uint32_t current_read_offset = 0;
 #define HEARTBEAT 50
 
 /* Retry storage_notify up to N times on -ENOMEM, yielding between attempts.
- * Caps retries so a permanently-stuck BLE TX queue doesn't spin forever. */
+ *
+ * Do not read this as flow control for a full TX queue: it is not one. On this thread
+ * (and the BT RX thread) Zephyr allocates notification PDUs with K_FOREVER — only the
+ * system workqueue gets K_NO_WAIT (conn.c bt_conn_create_pdu_timeout) — so a full ATT
+ * pool makes the call WAIT, not return -ENOMEM. What still returns -ENOMEM is a payload
+ * that no ATT channel's MTU can fit, which a retry cannot fix; the cap just bounds it. */
 #define NOTIFY_RETRY_MAX 50
 #define STORAGE_NOTIFY(conn, buf, len)                                      \
     do {                                                                    \
@@ -767,7 +773,10 @@ static void write_to_gatt(struct bt_conn *conn)
             put_current_connection(valid_conn);
 
             if (err == -ENOMEM) {
-                /* TX buffers full — yield and wait for next connection event */
+                /* Not "TX buffers full": a full ATT pool blocks inside storage_notify()
+                 * on this thread (see NOTIFY_RETRY_MAX) — that wait IS the flow control.
+                 * -ENOMEM here is an MTU mismatch; kept as a yield-and-retry because it
+                 * is harmless, not because it paces anything. */
                 k_yield();
                 continue;
             }
@@ -783,6 +792,13 @@ static void write_to_gatt(struct bt_conn *conn)
             sync_speed_add_bytes(chunk);
             current_read_offset += chunk;
             atomic_sub(&remaining_length, chunk);
+            /* Per delivered packet, not once per call: one call streams a whole file, so
+             * the mark at the top of this function could be minutes old on a healthy
+             * transfer. The idle timer's stalled-transfer bound (transport.c,
+             * TRANSFER_STALL_MS) reads this as "the link is still carrying data", and a
+             * notify only returns once the stack had a buffer for it — i.e. once the
+             * link has been acknowledging packets. One atomic store per packet. */
+            transport_mark_activity();
         }
     }
 }
@@ -812,9 +828,37 @@ void storage_write(void)
             uint32_t expected_ts  = read_request_expected_ts;
 
             int res = setup_file_transfer(file_index, request_off, has_ts, expected_ts);
+
+            /* Superseded while it was being set up: a newer CMD_READ_FILE arrived during
+             * setup_file_transfer(). The app only sends one after giving up on this one
+             * (its 30 s start window expired, possibly on a slow SD open) — and it may
+             * have moved on to a DIFFERENT file, since a stall that exhausts its retries
+             * advances to the next file without a STOP. ACKing and streaming this one now
+             * would land its bytes in that newer request's download: if they were at least
+             * the other file's size, the app would mark it complete and delete it from the
+             * card, keeping the wrong audio under its name. Drop it unacknowledged; the
+             * newer request is set up on the next pass. setup_file_transfer() also clears
+             * stop_started, so a STOP cannot be relied on to cancel this for us. */
+            if (atomic_get(&read_request_pending)) {
+                atomic_clear(&remaining_length);
+                LOG_WRN("CMD_READ_FILE ts=%u superseded during setup, dropped unacknowledged", expected_ts);
+                put_current_connection(conn);
+                continue;
+            }
+
             uint8_t result = (res < 0) ? FILE_NOT_FOUND : 0;
             if (conn) {
-                uint8_t ack[2] = {PACKET_ACK, result};
+                /* [ACK][result][ts:4 LE] since oo-3.1.4: the timestamp the request asked
+                 * for (0 from an app that sent none), so the app can tell this read's ACK
+                 * from a late one meant for an earlier read — the ACK was otherwise the
+                 * same two bytes for every read. Older apps read only bytes 0-1. Every
+                 * other ACK stays two bytes. */
+                uint8_t ack[6] = {PACKET_ACK,
+                                  result,
+                                  (uint8_t) expected_ts,
+                                  (uint8_t) (expected_ts >> 8),
+                                  (uint8_t) (expected_ts >> 16),
+                                  (uint8_t) (expected_ts >> 24)};
                 STORAGE_NOTIFY(conn, ack, sizeof(ack));
             }
             if (res >= 0) {
@@ -991,6 +1035,13 @@ void storage_write(void)
                 STORAGE_NOTIFY(conn, ack, sizeof(ack));
             }
             LOG_INF("CMD_REBOOT: rebooting now");
+#ifdef CONFIG_LSM6DSL
+            /* Save the IMU clock bridge first, exactly as a power-off does, so the next
+             * boot recovers the time before a phone reconnects. Without it the boot
+             * adjust spends the bridge saved at the LAST power-off, which the IMU
+             * counter has run on from ever since. */
+            lsm6dsl_time_prepare_for_system_off();
+#endif
             if (is_sd_on()) {
                 app_sd_off();
             }

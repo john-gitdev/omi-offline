@@ -96,6 +96,11 @@ rpmsg_nrf53_sram:
   size: 0x10000
 sram_primary:
   address: 0x20002000
+  end_address: 0x2006f000
+  region: sram_primary
+  size: 0x6d000
+sram_retained_mem:
+  address: 0x2006f000
   end_address: 0x20070000
   region: sram_primary
-  size: 0x6e000
+  size: 0x1000

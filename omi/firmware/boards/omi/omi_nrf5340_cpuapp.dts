@@ -121,6 +121,27 @@
 		buttons = &buttons;
 		lsm6dsl = &lsm6ds3tr_c;
 	};
+
+	/* Retained RAM (oo-3.1.4): mute state and the diagnostic event ring, kept across a
+	 * reboot, a crash and a power-off (src/lib/core/retained.h). MUST match
+	 * sram_retained_mem in pm_static.yml — the Partition Manager is what keeps the
+	 * linker and the malloc arena out of it; this node is what keeps it powered in
+	 * System OFF (retained_mem_nrf_ram_ctrl.c reads the parent's reg). 4 KB at a 4 KB
+	 * boundary is exactly one nRF5340 RAM retention section, so no neighbouring RAM is
+	 * held powered with it. Same pattern as Nordic's thingy91x_nrf5340. */
+	sram@2006f000 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <0x2006f000 DT_SIZE_K(4)>;
+		zephyr,memory-region = "RetainedMem";
+		status = "okay";
+
+		omi_retained: retainedmem {
+			compatible = "zephyr,retained-ram";
+			status = "okay";
+			#address-cells = <1>;
+			#size-cells = <1>;
+		};
+	};
 };
 
 &gpio0 {

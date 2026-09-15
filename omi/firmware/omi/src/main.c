@@ -20,6 +20,7 @@
 #include "lib/core/codec.h"
 #include "lib/core/config.h"
 #include "lib/core/diag_log.h"
+#include "lib/core/retained.h"
 #ifdef CONFIG_OMI_ENABLE_MONITOR
 #include "lib/core/monitor.h"
 #endif
@@ -357,9 +358,15 @@ int main(void)
      * below. */
     is_led_enabled = app_settings_get_led_boot_enabled();
 
-    /* Zero the diagnostic event ring before any thread could enqueue (no-op when
-     * CONFIG_OMI_DIAG_LOG is off). Starts disabled — the app enables it at runtime. */
-    diag_log_init();
+    /* Validate retained RAM (mute + the diagnostic event ring) before anything reads or
+     * writes it. A slice that does not carry this firmware's signature is reset. */
+    const bool retained_kept = retained_init();
+
+    /* Adopt the previous boot's diagnostic event ring if it survived, otherwise start
+     * it empty — before any thread could enqueue (no-op when CONFIG_OMI_DIAG_LOG is
+     * off). Starts disabled — the app enables it at runtime. */
+    const bool diag_kept = diag_log_init();
+    uint32_t boot_cause = 0;
 
 #ifdef CONFIG_OMI_ENABLE_MONITOR
     /* Same reason, and it must stay AHEAD of transport_start(): the pusher that
@@ -374,6 +381,7 @@ int main(void)
         uint32_t this_cause = 0;
         hwinfo_get_reset_cause(&this_cause);
         hwinfo_clear_reset_cause();
+        boot_cause = this_cause;
 
         /* this_cause = why THIS boot started = how the PREVIOUS session ended.
          * prev_cause = NVS value = why the PREVIOUS boot started = how boot-before-that ended.
@@ -404,6 +412,11 @@ int main(void)
 
     }
 #endif
+
+    /* First record of every boot. The ring now survives restarts, so this is what tells
+     * a reader where one boot's records (and their uptime clock) end. Forced: the gate
+     * is closed until the app connects. */
+    diag_log_event_forced(DIAG_BOOT, 0, diag_kept ? 1 : 0, boot_cause);
 
     app_sd_init();
     init_rtc();
@@ -446,6 +459,43 @@ int main(void)
     mgmt_callback_register(&ota_mgmt_cb);
 
     boot_warming_sequence();
+
+    /* Did the last boot reboot itself to recover a link wedge (transport.c, "Lost-
+     * disconnect recovery")? Reported from its flash record, so the evidence does not
+     * depend on the retained ring. Consumed here, directly before the mute restore that
+     * is its other use, so the record is not cleared seconds before anything acts on it. */
+    bool wedge_muted = false;
+    uint32_t wedge_mute_since = 0;
+    {
+        uint16_t err_magnitude = 0;
+        uint32_t waited_ms = 0;
+        if (app_settings_take_wedge_reboot(&wedge_muted, &wedge_mute_since, &err_magnitude, &waited_ms)) {
+            LOG_WRN("[BOOT] Previous boot rebooted itself: BLE disconnect never reported (err %d, %u ms)",
+                    -(int) err_magnitude,
+                    waited_ms);
+            diag_log_event_forced(DIAG_LINK_WEDGE_REBOOT, 0, err_magnitude, waited_ms);
+        }
+    }
+
+    /* Put back a mute that was on when the device last went down — before the mic
+     * starts, and after the SD card is ready so the mute-on marker reaches it.
+     *
+     * Retained RAM is the record whenever it survived: it tracked every mute change up
+     * to the moment the device went down, a reboot, a crash or a power-off. The wedge
+     * record is only the backstop for when it did not, so a stale one — a clear that
+     * failed to persist, re-reported on every later boot — can never override a mute the
+     * user has changed since. */
+    {
+        uint32_t mute_since = 0;
+        bool muted = retained_mute_get(&mute_since);
+        if (!retained_kept && wedge_muted) {
+            muted = true;
+            mute_since = wedge_mute_since;
+        }
+        if (muted) {
+            mute_restore_at_boot(mute_since);
+        }
+    }
 
     /* The one and only mic registration, and it must stay between transport_start()
      * and mic_start(). set_mic_callback() is a bare assignment, so whichever call runs

@@ -2,7 +2,7 @@
 #define DIAG_LOG_H
 
 /*
- * On-device diagnostic event log — a lightweight, volatile RAM event ring.
+ * On-device diagnostic event log — a lightweight RAM event ring that survives restarts.
  *
  * Purpose: the drop counters (0x19B10062) are aggregate-since-boot totals — they
  * say HOW MANY empty-bin rotations / marker drops / pause-gate saves happened, but
@@ -12,8 +12,15 @@
  *
  * Design constraints:
  *   - Zero filesystem interference (lives entirely in RAM, never touches the SD FS).
- *   - RAM-neutral: the ring's bytes are reclaimed from SD_WORKER_STACK_SIZE (see
- *     DIAG_LOG_RING_BYTES use in sd_card.c), so a dev build costs the same RAM as prod.
+ *   - Survives a reboot, a crash and a power-off into System OFF (oo-3.1.4) — not a
+ *     battery that runs flat, which takes the RAM with it. The ring lives in the
+ *     retained-RAM partition (retained.h), not in .bss. Before that it was wiped by the
+ *     one recovery a user can perform on a wedged device — a power cycle — so the
+ *     2026-09-13 wedge left no device-side trace at all (BLE_Research.md, Wedge 10).
+ *     A DIAG_BOOT record is written at every boot so a reader can tell which records
+ *     belong to an earlier boot: their uptime_ms is on THAT boot's clock.
+ *   - RAM: the ring's 2 KB sit in the retained partition, which every build reserves
+ *     (pm_static.yml), so the ring itself adds nothing to .bss.
  *   - Compiled out entirely in production (CONFIG_OMI_DIAG_LOG) — zero .bss, zero code.
  *   - Runtime-gated by a dev-tools toggle (default OFF, not persisted): a disabled log
  *     costs a single predictable branch per call site.
@@ -127,6 +134,28 @@ typedef enum {
                                        * transition as well as every time sync, so in auto mode an
                                        * undeduplicated failure would emit tens of FORCED records an
                                        * hour and evict the whole 128-slot ring. */
+    DIAG_LINK_WEDGE_REBOOT = 20,      /* The PREVIOUS boot rebooted itself because the BLE stack
+                                       * never reported a disconnect it was asked for (oo-3.1.4,
+                                       * BLE_Research.md Wedge 10). Written at the boot that
+                                       * follows, from a flash record, so it does not depend on
+                                       * the retained ring having survived.
+                                       *   arg0 = errno MAGNITUDE of the bt_conn_disconnect() the
+                                       *          idle timer issued (0 = accepted; 107 = ENOTCONN,
+                                       *          i.e. the controller had already dropped the link
+                                       *          and only the callback was missing)
+                                       *   arg1 = ms from that request to the reboot, which includes
+                                       *          the wait for silence */
+    DIAG_BOOT = 21,                   /* First record of every boot (oo-3.1.4). The ring survives
+                                       * restarts, so records older than the newest DIAG_BOOT carry
+                                       * an EARLIER boot's uptime and must not be mapped onto the
+                                       * current boot's clock.
+                                       *   arg0 = 1 if the previous boot's ring was adopted, 0 if
+                                       *          not: retained RAM held no valid ring (first boot
+                                       *          after a flash of older firmware, a flat battery),
+                                       *          or the ring failed diag_log_init()'s checks. It
+                                       *          describes the RING, not the whole retained slice —
+                                       *          mute can survive while arg0 is 0.
+                                       *   arg1 = hwinfo reset-cause bits for this boot */
 } diag_event_code_t;
 
 /* arg0 values for DIAG_MIC_STATE. Appended-only, same discipline as the codes. */
@@ -147,10 +176,17 @@ typedef enum {
      * self-sustaining: once full, write_to_tx_queue() also stops signalling
      * tx_queue_sem, so a pusher parked on it is never woken again.
      *
-     * Never observed. It is instrumented because it is a real uncounted discard, not
-     * because anything points at it — the 2026-09-05 outage was upstream of here, in the
-     * VAD gate (reason 2), and this record correctly stayed silent throughout. Do not
-     * re-argue that history from a zero here; see NOTES.md.
+     * Firing on every speech onset on oo-3.1.3, and the "only if pusher() has stopped"
+     * reading above was wrong: the pusher does not have to stop, it only has to not be
+     * SCHEDULED. oo-3.1.3 hands the encoder the whole 0.8 s pre-roll at once, the encoder
+     * thread drains its backlog without blocking, and the pusher ran at the same priority
+     * (7) with time slicing off, so it could not run until the encoder caught up — by
+     * which point everything past the ring's 32 slots was gone. Measured 2026-09-14: 193
+     * episodes in 23 h, 176 of them exactly 48 or 43 frames (one 100 ms mic buffer apart),
+     * ~4 min of audio a day, the lost second straddling the start of speech. Fixed in
+     * oo-3.1.4 by running the pusher at 6, above the encoder, so each frame is drained as
+     * it is queued. A non-zero value from oo-3.1.4 on is therefore a REAL pusher stall
+     * and worth a look; see NOTES.md.
      *   arg1 = frames dropped here since boot, so a rising value is an ongoing stall. */
     DIAG_WRITE_BLOCKED_TX_RING_FULL = 0,
 
@@ -226,8 +262,6 @@ typedef struct __packed {
 
 #define DIAG_LOG_RECORD_SIZE 16
 #define DIAG_LOG_RING_DEPTH 128
-/* Bytes reclaimed from SD_WORKER_STACK_SIZE when the feature is compiled in. */
-#define DIAG_LOG_RING_BYTES (DIAG_LOG_RING_DEPTH * DIAG_LOG_RECORD_SIZE)
 
 /* 0x19B10063 drain header prepended to the record stream (little-endian):
  *   [u8  record_size = 16][u8 reserved][u16 record_count]
@@ -237,7 +271,9 @@ typedef struct __packed {
 
 #ifdef CONFIG_OMI_DIAG_LOG
 
-void diag_log_init(void);           /* zero state; enabled = false */
+/* Adopt the ring left in retained RAM by the previous boot if it is intact, otherwise
+ * start empty; enabled = false either way. Returns true if records were kept. */
+bool diag_log_init(void);
 void diag_log_set_enabled(bool on); /* dev-tools toggle target (0x0064 enable bit) */
 void diag_log_event(uint8_t code, uint8_t backend, uint16_t arg0, uint32_t arg1);
 
@@ -277,7 +313,10 @@ uint32_t diag_log_dropped_count(void);   /* keep-newest overwrites since last ac
 
 #else /* !CONFIG_OMI_DIAG_LOG — no-op stubs so call sites compile with zero cost */
 
-static inline void diag_log_init(void) {}
+static inline bool diag_log_init(void)
+{
+    return false;
+}
 static inline void diag_log_set_enabled(bool on)
 {
     (void) on;

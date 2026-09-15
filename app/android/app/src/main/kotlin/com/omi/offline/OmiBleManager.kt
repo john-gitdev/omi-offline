@@ -1015,7 +1015,7 @@ class OmiBleManager private constructor(private val application: Application) {
 
         // Register session BEFORE enqueuing CMD_READ_FILE so the start-ACK (0x03 0x00)
         // is never missed if the write callback and the notification race.
-        val session = StorageDownloadSession(addr, offset, outputPath, callback)
+        val session = StorageDownloadSession(addr, offset, outputPath, timerStart, callback)
         activeDownloads[addr] = session
         // Registered, so applyConnectionPriority now reads "transferring". Raised before
         // CMD_READ_FILE is enqueued rather than on the first packet: the whole point is
@@ -1041,6 +1041,10 @@ class OmiBleManager private constructor(private val application: Application) {
             BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
 
         enqueueCommand("CMD_READ_FILE idx=$fileIndex off=$offset ts=$timerStart") {
+            // From here on an ACK can be this read's. Set BEFORE the write so the start ACK
+            // cannot beat it; see StorageDownloadSession.readIssued for why the ordering is
+            // airtight.
+            session.readIssued = true
             val success = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
                 gatt.writeCharacteristic(characteristic, cmd, writeType) == android.bluetooth.BluetoothStatusCodes.SUCCESS
             } else {
@@ -1063,15 +1067,28 @@ class OmiBleManager private constructor(private val application: Application) {
         private val address: String,
         startOffset: Long,
         outputPath: String,
+        // The file timestamp this read asked for; oo-3.1.4+ echoes it in the start ACK.
+        private val expectedTs: Long,
         private val callback: (Result<Unit>) -> Unit
     ) {
         private var expectedOffset = startOffset
         private val fos: java.io.FileOutputStream
         private val completed = java.util.concurrent.atomic.AtomicBoolean(false)
         private var hasReceivedStartAck = false
+        // Whether CMD_READ_FILE has been handed to the stack yet. An ACK before that is not
+        // this read's: the session is registered before the command is enqueued, and a
+        // keep-alive (0x32) that slipped into the queue just ahead of the sync's storage
+        // lock is answered with the very same [0x03, 0x00]. Counted as the start ACK, it
+        // opened the gates below to an earlier transfer's DATA and EOT. The ordering is
+        // airtight because the storage characteristic is WRITE-with-response only
+        // (storage.c): the firmware notifies a keep-alive's ACK inside its write handler,
+        // before the write response, and the GATT queue is single-in-flight, so that ACK is
+        // already delivered before this command's lambda runs and sets the flag. Volatile:
+        // set on main, read on the binder thread.
+        @Volatile var readIssued = false
         // Selects which inactivity window applies (see [timeoutMs]). Distinct from
-        // hasReceivedStartAck, which the keep-alive's ACK can also set — that flag says
-        // "the stream is open", this one says "the device is actually delivering".
+        // hasReceivedStartAck — that flag says "the stream is open", this one says "the
+        // device is actually delivering".
         // Volatile: written on the binder thread (onPacket), read on main when the
         // timeout fires. The functional read — picking the delay — happens on the binder
         // thread, so only the message text depends on the cross-thread one, but there is
@@ -1126,6 +1143,27 @@ class OmiBleManager private constructor(private val application: Application) {
 
             when (value[0].toInt() and 0xFF) {
                 0x03 -> { // ACK
+                    // Ignored until this read is issued — see readIssued. That covers an error
+                    // ACK too: before the command exists, no ACK can be about it.
+                    if (!readIssued) return
+                    // oo-3.1.4+ echoes the requested timestamp: [0x03][result][ts:4 LE]. A
+                    // mismatch is a late ACK for an EARLIER read — the firmware finishing a
+                    // slow setup after this app gave up on it and moved on, perhaps to another
+                    // file. Accepted, that file's whole stream would land in this download,
+                    // and a stream at least this file's size passes the completeness check,
+                    // which marks it synced and deletes the real one from the card. 0 (from
+                    // firmware or a request without a timestamp) cannot be correlated, so it
+                    // is taken as before; a two-byte ACK is older firmware.
+                    if (value.size >= 6 && expectedTs != 0L) {
+                        val echoed = (value[2].toLong() and 0xFF) or
+                            ((value[3].toLong() and 0xFF) shl 8) or
+                            ((value[4].toLong() and 0xFF) shl 16) or
+                            ((value[5].toLong() and 0xFF) shl 24)
+                        if (echoed != 0L && echoed != (expectedTs and 0xFFFFFFFFL)) {
+                            Log.w(TAG, "ACK for ts=$echoed while reading ts=$expectedTs — a late ACK from an earlier read; ignored")
+                            return
+                        }
+                    }
                     if (value.size >= 2) {
                         val code = value[1].toInt() and 0xFF
                         if (code == 0) hasReceivedStartAck = true
@@ -1180,6 +1218,16 @@ class OmiBleManager private constructor(private val application: Application) {
                     }
                 }
                 0x02 -> { // EOT — transfer complete
+                    // Only after this transfer's start ACK, exactly as DATA is gated above.
+                    // The firmware ACKs a CMD_READ_FILE before it streams a byte, so an EOT
+                    // arriving first cannot be this transfer's: it is the tail of an earlier
+                    // one (a transfer abandoned on a timeout, whose firmware side ran on).
+                    // Accepted, it completed THIS download successfully with nothing
+                    // written, and the file was then treated as fully synced.
+                    if (!hasReceivedStartAck) {
+                        Log.w(TAG, "EOT before start ACK — stale, from an earlier transfer; ignored")
+                        return
+                    }
                     activeDownloads.remove(address)
                     // Flush, then finish through complete() like every other exit. This
                     // branch used to inline its own teardown — same CAS, same callback —

@@ -56,6 +56,16 @@ turnoff_result_t turnoff_all();
  * change. Returns true if the state actually changed. */
 bool mute_apply(bool on);
 
+/* Put a mute back after a restart (oo-3.1.4). Mute used to be lost on every reboot,
+ * crash and power-off, so a device the user had muted came back recording. main()
+ * calls this once, before mic_start(), when retained RAM or the wedge-reboot record
+ * says the device was muted. since_utc_s is when the mute was first engaged, kept as
+ * given: 0 means it was engaged before a time sync, and stays 0 (the app shows a timeless
+ * "muted") rather than being replaced by the boot time. No-op in manual mode, which
+ * ignores mute, and when a mute was already applied during boot. Writes a mute-on marker
+ * so the new session's audio stream opens muted, and notifies the mute characteristic. */
+void mute_restore_at_boot(uint32_t since_utc_s);
+
 /* Snapshot the mute state for the BLE mute characteristic. *since_* are when
  * mute was engaged (0 when not muted): utc_s = RTC epoch seconds (0 if
  * pre-time-sync), uptime_ms = monotonic ms for app-side wall-time derivation. */

@@ -77,6 +77,16 @@ uint16_t aad_get_threshold(void);
 bool aad_is_recording(void);
 
 /**
+ * @brief Milliseconds since the VAD last saw voice (or since boot, if never).
+ *
+ * "Voice" is every site that stamps vad_last_voice_ms: the gate's has_voice test (so the
+ * always-record threshold and a marker's force-wake window count), and a hardware WAKE
+ * being consumed — even when the frames after it then fail has_voice. Safe to call from
+ * any thread.
+ */
+uint32_t aad_ms_since_voice(void);
+
+/**
  * @brief Reconcile the microphone against the current VAD threshold and mute state.
  *
  * Manual standby (threshold 32769) parks capture — nothing acoustic can start a

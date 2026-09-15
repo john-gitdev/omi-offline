@@ -1120,6 +1120,13 @@ staged at the re-trigger, then nothing at all until a button tap force-drained i
    true: pre-roll trimmed off a burst BEFORE submission is invisible to every downstream counter, so it
    is counted as DIAG_WRITE_BLOCKED_PREROLL_TRIMMED. Pre-roll that the encoder ring cannot
    take is counted by `codec_receive_pcm()` as `DIAG_CODEC_DROP`.
+   *(oo-3.1.4: `TX_RING_FULL` then turned out to fire on every pre-roll burst, for a reason unrelated
+   to this incident — the pusher shared the codec thread's priority with no time slicing, so the codec
+   encoded the 40-frame pre-roll plus the live frames arriving while it caught up (~75-80 in all) before a
+   single frame was drained, and everything past the 32-slot ring was dropped: 43 or 48 frames per speech
+   onset, the lost ~0.9 s straddling the start of speech, spliced out. Do not read it as "40 into 32 = 8";
+   the running totals say otherwise. Fixed by running the pusher one priority above the codec; see
+   `diag_log.h` reason 0 and `transport_start()`.)*
 
 ### Residuals — read before "improving" this
 

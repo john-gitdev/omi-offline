@@ -22,6 +22,15 @@ import 'errors.dart';
 /// the case where a caller must not conclude it has seen everything.
 typedef StorageListing = ({List<StorageFile> files, bool complete});
 
+/// What the device is force-recording right now, from its recording-state
+/// characteristic (0x19B10083, oo-3.1.4). Auto mode's own VAD capture is not
+/// reported — it comes and goes with the room.
+enum DeviceRecordingKind { none, manual, priority }
+
+/// [since] is when the device first saw the state: null while [kind] is none, and
+/// null when the device had no time of day then (it had not been synced).
+typedef DeviceRecordingState = ({DeviceRecordingKind kind, DateTime? since});
+
 class DeviceConnectionFactory {
   static DeviceConnection? create(BtDevice device, {bool requiresBond = true}) {
     DeviceTransport transport = NativeBleTransport(device.id, requiresBond: requiresBond);
@@ -110,6 +119,27 @@ abstract class DeviceConnection {
     if (await isConnected()) return performGetMuteListener(onMuteChange: onMuteChange);
     return null;
   }
+
+  /// Null if disconnected or the read failed. Firmware older than oo-3.1.4 has no
+  /// such characteristic, so gate on [OmiFeatures.recordingState] before asking.
+  Future<DeviceRecordingState?> getRecordingState() async {
+    if (await isConnected()) return performGetRecordingState();
+    return null;
+  }
+
+  Future<DeviceRecordingState?> performGetRecordingState() async => null;
+
+  Future<StreamSubscription<List<int>>?> getRecordingStateListener({
+    required void Function(DeviceRecordingState state) onChange,
+  }) async {
+    if (await isConnected()) return performGetRecordingStateListener(onChange: onChange);
+    return null;
+  }
+
+  Future<StreamSubscription<List<int>>?> performGetRecordingStateListener({
+    required void Function(DeviceRecordingState state) onChange,
+  }) async =>
+      null;
 
   Future<DeviceCrashLog?> getDiagnostics() async {
     if (await isConnected()) return performGetDiagnostics();

@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import 'package:omi/services/devices/device_crash_log.dart';
+
 /// One 16-byte diagnostic event drained from the firmware's on-device event ring
 /// (BLE 0x19B10063). The firmware records these for the health events that the
 /// aggregate drop counters (0x19B10062) only total — giving per-event timing and
@@ -141,6 +143,10 @@ class DiagLogRecord {
         return 'mic_state';
       case 19:
         return 'imu_power_state';
+      case 20:
+        return 'link_wedge_reboot';
+      case 21:
+        return 'boot';
       default:
         return 'code_$code';
     }
@@ -369,6 +375,28 @@ class DiagLogRecord {
           ];
           final rcNote = refused.isEmpty ? '' : ' [driver refused: ${refused.join(' + ')}]';
           return 'IMU: $gyroPart, $accelPart$rcNote';
+        }
+      case 20:
+        {
+          // Written by the boot AFTER the one that rebooted itself (oo-3.1.4, firmware
+          // transport.c "Lost-disconnect recovery"), from a flash record — so its
+          // uptime is this boot's, not the moment of the wedge. arg1 includes the time
+          // spent waiting for silence, since the reboot never interrupts a recording.
+          // arg0 107 (ENOTCONN) says the controller had already let the link go and
+          // only the host's disconnect callback was missing.
+          final err = arg0 == 0 ? 'request accepted' : 'request failed -$arg0${arg0 == 107 ? ' (ENOTCONN)' : ''}';
+          return 'Rebooted itself: a BLE disconnect was never reported ($err), '
+              'rebooted ${(arg1 / 1000).round()} s after asking';
+        }
+      case 21:
+        {
+          // First record of every boot (oo-3.1.4). The ring survives restarts, so this
+          // is the line between one boot's records and the next — and uptimes before
+          // it run on an earlier boot's clock.
+          // arg0 describes the RING: 0 is also a ring that failed its checks while the
+          // rest of retained RAM (mute) survived, so do not claim the RAM was empty.
+          final kept = arg0 == 1 ? "previous boot's events kept" : 'earlier events not kept';
+          return 'Boot — ${DeviceCrashLog.describeResetCause(arg1)}; $kept';
         }
       default:
         return 'Event code=$code backend=$backend arg0=$arg0 arg1=$arg1';
