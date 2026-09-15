@@ -2642,6 +2642,63 @@ void main() {
       expect(allRecordings().containsKey('recording_$trueStartMs'), isTrue, reason: 're-filed by the next pass');
       expect(allRecordings().containsKey('recording_$wrappedStartMs'), isFalse);
     });
+
+    test('a hand-set date on a recording being uploaded is applied when the upload ends', () async {
+      final unknown = writeRecording(
+        dateFolder: '1970-01-01',
+        basename: 'unknown_7200000',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      final picked = DateTime(2026, 7, 1, 9, 0);
+      final target = 'recording_${picked.millisecondsSinceEpoch}';
+
+      RecordingsManager.noteUploadStarted(unknown);
+      await RecordingsManager.promoteSessionToDate(Conversation.fromFile(unknown), picked, include: (c) => c.isUnknown);
+      expect(allRecordings().containsKey('unknown_7200000'), isTrue, reason: 'not renamed mid-upload');
+
+      RecordingsManager.noteUploadFinished(unknown); // the upload ends
+      for (var i = 0; i < 200 && !allRecordings().containsKey(target); i++) {
+        await Future.delayed(const Duration(milliseconds: 10));
+      }
+      expect(allRecordings().containsKey(target), isTrue,
+          reason: 'the date the user set, applied as soon as it could be');
+      expect(SharedPreferencesUtil().pendingRefiles, isEmpty);
+    });
+
+    test('a re-file still waiting when the app dies is applied by the next clock pass', () async {
+      final unknown = writeRecording(
+        dateFolder: '1970-01-01',
+        basename: 'unknown_7200000',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      final picked = DateTime(2026, 7, 1, 9, 0);
+
+      RecordingsManager.noteUploadStarted(unknown);
+      await RecordingsManager.promoteSessionToDate(Conversation.fromFile(unknown), picked, include: (c) => c.isUnknown);
+      RecordingsManager.forgetUploadsInFlightForTest(); // the process died mid-upload
+
+      await RecordingsManager.applyClockAnchors();
+
+      expect(allRecordings().containsKey('recording_${picked.millisecondsSinceEpoch}'), isTrue);
+      expect(SharedPreferencesUtil().pendingRefiles, isEmpty);
+    });
+
+    // Target-free checks and renames are separated by awaits, so two moves running at
+    // once could both find a slot free and one rename onto the other.
+    test('two moves started together run one at a time, so neither renames onto the other', () async {
+      final a = writeRecording(dateFolder: '1970-01-01', basename: 'unknown_1000', sessionId: 7, startUptimeSec: 100);
+      final b = writeRecording(dateFolder: '1970-01-02', basename: 'unknown_2000', sessionId: 8, startUptimeSec: 100);
+      final t = DateTime(2026, 7, 1, 9, 0);
+
+      await Future.wait([
+        RecordingsManager.promoteSessionToDate(Conversation.fromFile(a), t, include: (c) => c.isUnknown),
+        RecordingsManager.promoteSessionToDate(Conversation.fromFile(b), t, include: (c) => c.isUnknown),
+      ]);
+
+      expect(allRecordings().length, 2, reason: 'one moved, the other refused — nothing overwritten');
+    });
   });
 
   // ---------------------------------------------------------------------------
