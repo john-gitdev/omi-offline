@@ -430,6 +430,7 @@ DiagEventCategory diagEventCategory(DiagLogRecord r) {
     case 13: // adv_start_fail
     case 14: // adv_watchdog_rescue
     case 15: // adv_stop_fail
+    case 20: // link_wedge_reboot
       return DiagEventCategory.ble;
     case 16: // vad_level
     case 17: // mic_power_cycle
@@ -437,6 +438,20 @@ DiagEventCategory diagEventCategory(DiagLogRecord r) {
     default:
       return DiagEventCategory.other;
   }
+}
+
+/// The records in [records] (drain order, oldest first) that belong to an earlier boot
+/// than the current one: everything ahead of the last `boot` record (code 21,
+/// oo-3.1.4 on). The device ring survives restarts, so one drain can span boots.
+///
+/// By list position, not seq: seq restarts at 1 when the retained RAM did not survive
+/// (a battery that ran flat, a flash from older firmware), so a seq comparison would
+/// claim an older batch for the current boot. Empty on older firmware, which never
+/// writes the record — its behaviour is unchanged. An identity set, because two
+/// records can carry equal fields.
+Set<DiagLogRecord> diagRecordsFromEarlierBoots(List<DiagLogRecord> records) {
+  final lastBoot = records.lastIndexWhere((r) => r.code == 21);
+  return Set<DiagLogRecord>.identity()..addAll(lastBoot > 0 ? records.take(lastBoot) : const <DiagLogRecord>[]);
 }
 
 /// Severity of a single event. Several codes are only a fault in one of their arg
@@ -453,7 +468,12 @@ DiagLevel diagEventLevel(DiagLogRecord r) {
     case 15: // adv_stop_fail
       return DiagLevel.bad;
     case 14: // adv_watchdog_rescue
+    // link_wedge_reboot — a recovery, like the rescue above: the device was off the air
+    // until it rebooted, but it got itself back without a power cycle.
+    case 20:
       return DiagLevel.warn;
+    case 21: // boot — graded on its reset cause: RESET_WATCHDOG | RESET_CPU_LOCKUP is a crash
+      return (r.arg1 & 0x110) != 0 ? DiagLevel.bad : DiagLevel.info;
     // write_blocked — graded on arg0, because the record names different stages. Reasons
     // 0 (tx ring full), 2 (VAD backlog full, oo-3.1.1 and earlier) and 3 (pre-roll
     // trimmed, oo-3.1.3 on) are all captured audio already discarded, which is the worst
