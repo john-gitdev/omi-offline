@@ -828,9 +828,37 @@ void storage_write(void)
             uint32_t expected_ts  = read_request_expected_ts;
 
             int res = setup_file_transfer(file_index, request_off, has_ts, expected_ts);
+
+            /* Superseded while it was being set up: a newer CMD_READ_FILE arrived during
+             * setup_file_transfer(). The app only sends one after giving up on this one
+             * (its 30 s start window expired, possibly on a slow SD open) — and it may
+             * have moved on to a DIFFERENT file, since a stall that exhausts its retries
+             * advances to the next file without a STOP. ACKing and streaming this one now
+             * would land its bytes in that newer request's download: if they were at least
+             * the other file's size, the app would mark it complete and delete it from the
+             * card, keeping the wrong audio under its name. Drop it unacknowledged; the
+             * newer request is set up on the next pass. setup_file_transfer() also clears
+             * stop_started, so a STOP cannot be relied on to cancel this for us. */
+            if (atomic_get(&read_request_pending)) {
+                atomic_clear(&remaining_length);
+                LOG_WRN("CMD_READ_FILE ts=%u superseded during setup, dropped unacknowledged", expected_ts);
+                put_current_connection(conn);
+                continue;
+            }
+
             uint8_t result = (res < 0) ? FILE_NOT_FOUND : 0;
             if (conn) {
-                uint8_t ack[2] = {PACKET_ACK, result};
+                /* [ACK][result][ts:4 LE] since oo-3.1.4: the timestamp the request asked
+                 * for (0 from an app that sent none), so the app can tell this read's ACK
+                 * from a late one meant for an earlier read — the ACK was otherwise the
+                 * same two bytes for every read. Older apps read only bytes 0-1. Every
+                 * other ACK stays two bytes. */
+                uint8_t ack[6] = {PACKET_ACK,
+                                  result,
+                                  (uint8_t) expected_ts,
+                                  (uint8_t) (expected_ts >> 8),
+                                  (uint8_t) (expected_ts >> 16),
+                                  (uint8_t) (expected_ts >> 24)};
                 STORAGE_NOTIFY(conn, ack, sizeof(ack));
             }
             if (res >= 0) {
