@@ -2560,6 +2560,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // Newest first, capped — the device ring holds 128 but a drain concatenates batches.
     final display = filtered.toList().reversed.take(200).toList();
     final worst = diagWorst(records.map(diagEventLevel));
+    // Their uptimes run on an earlier boot's clock, which the anchor below cannot map.
+    final earlierBoot = diagRecordsFromEarlierBoots(records);
 
     final meta = StringBuffer('${records.length} held');
     if (dropped > 0) meta.write(' · $dropped dropped');
@@ -2630,8 +2632,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 // retaining the last anchor across the switch being off: an anchor from
                 // before a reboot maps the new boot's uptimes to confidently wrong wall
                 // clocks, and a wrong timestamp in a diagnostics tool is worse than an
-                // absent one.
-                final wall = stats != null && stats.currentUptimeMs >= r.uptimeMs
+                // absent one. The same reasoning withholds it from a record of an
+                // earlier boot (earlierBoot, above): the anchor describes this boot only.
+                final wall = stats != null && !earlierBoot.contains(r) && stats.currentUptimeMs >= r.uptimeMs
                     ? stats.readAt.subtract(Duration(milliseconds: stats.currentUptimeMs - r.uptimeMs))
                     : null;
                 return DiagEventRow(record: r, uptimeLabel: '@${_formatDuration(r.uptimeMs)}', wallClock: wall);
