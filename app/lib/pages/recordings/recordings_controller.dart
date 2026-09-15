@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:omi/gen/pigeon_communicator.g.dart';
 import 'package:omi/utils/logger.dart';
@@ -143,8 +144,42 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   String? _pendingSnackMessage;
   String? consumePendingSnack() {
     final msg = _pendingSnackMessage;
-    _pendingSnackMessage = null;
-    return msg;
+    if (msg != null) {
+      _pendingSnackMessage = null;
+      return msg;
+    }
+    // A late merge is reported here, once, rather than as anything in the list itself.
+    final notices = _prefs.lateMergeNotices;
+    if (notices.isEmpty) return null;
+    _prefs.lateMergeNotices = const [];
+    return lateMergeMessage(notices, use24Hour: _prefs.use24HourTime);
+  }
+
+  /// The one-time message for recordings the stitcher joined onto earlier audio after
+  /// they had been finished. Entries are "<absorbedStartMs>:<mergedStartMs>" (see
+  /// SharedPreferencesUtil.lateMergeNotices); malformed ones are skipped.
+  @visibleForTesting
+  static String? lateMergeMessage(List<String> notices, {required bool use24Hour}) {
+    final pairs = <(DateTime, DateTime)>[];
+    for (final n in notices) {
+      final parts = n.split(':');
+      if (parts.length != 2) continue;
+      final absorbed = int.tryParse(parts[0]);
+      final merged = int.tryParse(parts[1]);
+      if (absorbed == null || merged == null) continue;
+      pairs.add((DateTime.fromMillisecondsSinceEpoch(absorbed), DateTime.fromMillisecondsSinceEpoch(merged)));
+    }
+    if (pairs.isEmpty) return null;
+    if (pairs.length > 1) {
+      return 'Audio that arrived late was added to ${pairs.length} of your recordings. '
+          'Each is now listed from its earlier start time.';
+    }
+    final (absorbed, merged) = pairs.single;
+    String time(DateTime t) => DateFormat(use24Hour ? 'HH:mm' : 'h:mm a').format(t);
+    String day(DateTime t) => DateFormat('EEE d MMM').format(t);
+    final otherDay = DateUtils.isSameDay(absorbed, merged) ? '' : ' on ${day(merged)}';
+    return 'Audio that arrived late was added to your ${time(absorbed)} recording from ${day(absorbed)} — '
+        'it now starts at ${time(merged)}$otherDay.';
   }
 
   Timer? _pollTimer;
@@ -1545,11 +1580,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     // "nothing to process" early-return reaches here still holding it.
     _releaseWakelock();
 
-    // Re-file anything the Omi mis-dated, now that this run's recordings exist on disk
-    // and this connect's clock anchor has been captured. Here rather than beside
-    // processAll because the "nothing to process" early-return also reaches this point:
-    // an anchor taken on a connect that had no new audio to fetch still answers for
-    // recordings an earlier run already wrote under a wrong clock.
+    // Re-file anything the Omi mis-dated. processAll already did, for a run that had
+    // audio; this covers the "nothing to process" early-return, which also reaches this
+    // point: an anchor taken on a connect that had no new audio to fetch still answers
+    // for recordings an earlier run already wrote under a wrong clock.
     //
     // Cheap when there is nothing to do — no anchors, or no session disagreeing with
     // one, costs a directory scan and no writes — and it must never take the pipeline
