@@ -5,9 +5,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/models/integration_upload_types.dart';
-import 'package:omi/models/recordings/recordings_models.dart';
 import 'package:omi/pages/recordings/integration_upload_manager.dart';
 import 'package:omi/pages/recordings/passthrough_integration.dart';
+import 'package:omi/services/recordings_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// A fully controllable PassthroughIntegration for driving the manager without
@@ -746,6 +746,23 @@ void main() {
 
       expect(a.uploadCalls.map((c) => c.uploadKey), ['k1', 'k3'],
           reason: 'k2 is skipped, and k3 still runs — the lane was not failed-fast');
+    });
+
+    test('an upload in flight is registered, so a re-file leaves its recording alone', () async {
+      final a = FakeIntegration('A');
+      final c = conv('k1');
+      bool? seenDuring;
+      a.onUpload = (x) async {
+        seenDuring = RecordingsManager.isUploading(x.file);
+        a.deliver(x);
+      };
+      final m = makeManager([a]);
+
+      await m.uploadConversation(c);
+      await settle(m);
+
+      expect(seenDuring, isTrue);
+      expect(RecordingsManager.isUploading(c.file), isFalse, reason: 'released when it ends');
     });
   });
 
