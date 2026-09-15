@@ -615,6 +615,12 @@ class SharedPreferencesUtil {
   String get clockCorrectionLedger => getString('clockCorrectionLedger');
   set clockCorrectionLedger(String v) => saveString('clockCorrectionLedger', v);
 
+  /// Re-files RecordingsManager.promoteSessionToDate had to put off because an upload
+  /// was reading the recording, as JSON {path: {"offsetMs": int, "clockCorrected": bool}}.
+  /// Applied when that upload ends; persisted so a date set by hand survives an app kill.
+  String get pendingRefiles => getString('pendingRefiles');
+  set pendingRefiles(String v) => saveString('pendingRefiles', v);
+
   /// Recordings the stitcher folded into an earlier draft after they had already been
   /// finished — out-of-order audio, or an interrupted run — each as
   /// "<absorbedStartMs>:<mergedStartMs>". The recordings page shows them once, as a
