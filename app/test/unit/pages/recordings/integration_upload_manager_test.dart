@@ -122,6 +122,7 @@ void main() {
     List<PassthroughIntegration> integrations, {
     List<Batch> Function()? batchesProvider,
     bool Function()? isPipelineIdle,
+    bool Function()? isProcessing,
   }) {
     return IntegrationUploadManager(
       integrations: integrations,
@@ -129,6 +130,7 @@ void main() {
       batchesProvider: batchesProvider ?? () => const [],
       isDisposed: () => false,
       isPipelineIdle: isPipelineIdle ?? () => true,
+      isProcessing: isProcessing ?? () => false,
       notifyUi: () {},
       acquireWake: (_) {},
       releaseWake: (_) {},
@@ -648,6 +650,43 @@ void main() {
       await settle(m);
 
       expect(omi.hasDelivered(conv('a1')), false, reason: 'in-flight auto upload is cancelled by auto-only cancel');
+    });
+
+    test('the auto sweep is held while audio is processing, then runs once it has finished', () async {
+      // A run moves each finished recording into place as soon as its bin is decoded
+      // but stitches drafts only at its end. A sweep in between could upload a
+      // recording the same run is about to fold into its draft and delete.
+      var processing = true;
+      final omi = FakeIntegration('Omi Cloud', autoUpload: true)..enabledByDefault = true;
+      final m = makeManager(
+        [omi],
+        batchesProvider: () => [autoBatch('a1', dir: tempDir)],
+        isProcessing: () => processing,
+      );
+
+      m.tryAutoUploadAll();
+      expect(m.uploadingFiles, isEmpty, reason: 'nothing may be enqueued mid-run');
+      await settle(m);
+      expect(omi.uploadCalls, isEmpty);
+
+      processing = false;
+      expect(m.takeDeferredSweep(), true, reason: 'the held sweep must be reported so the controller re-runs it');
+      expect(m.takeDeferredSweep(), false, reason: 'reported once, not on every poll');
+
+      m.tryAutoUploadAll();
+      await settle(m);
+      expect(omi.uploadCalls.map((c) => c.uploadKey), ['a1']);
+    });
+
+    test('a sweep that ran leaves nothing held', () async {
+      final omi = FakeIntegration('Omi Cloud', autoUpload: true)..enabledByDefault = true;
+      final m = makeManager([omi], batchesProvider: () => [autoBatch('a1', dir: tempDir)]);
+
+      m.tryAutoUploadAll();
+      await settle(m);
+
+      expect(omi.uploadCalls.map((c) => c.uploadKey), ['a1']);
+      expect(m.takeDeferredSweep(), false);
     });
   });
 
