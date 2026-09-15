@@ -260,10 +260,11 @@ static atomic_t sd_dev_pm_supported = ATOMIC_INIT(1);
  * ~6 KB even through a format. The 4 KB reclaimed vs the old 16 KB was handed to
  * the codec thread, which ran at ~17.5/18.6 KB (94%). */
 #if defined(CONFIG_OMI_DIAG_LOG)
-/* The diagnostic event ring's RAM (DIAG_LOG_RING_BYTES = 2 KB) is carved out of this
- * stack when the feature is compiled in, keeping total RAM identical to production
- * (10240 stack + 2048 ring == the 12288 stack prod uses). The sd_worker high-water is
- * ~3 KB, so 10 KB leaves comfortable headroom. */
+/* The diagnostic event ring's 2 KB (DIAG_LOG_RING_BYTES) is carved out of this stack
+ * when the feature is compiled in. The ring itself moved to the retained-RAM partition
+ * in oo-3.1.4 (retained.h), which the Partition Manager takes off the top of RAM; this
+ * carve-out now pays for that instead of for .bss. The sd_worker high-water is ~3 KB,
+ * so 10 KB leaves comfortable headroom. */
 #define SD_WORKER_STACK_SIZE (12288 - DIAG_LOG_RING_BYTES)
 #else
 #define SD_WORKER_STACK_SIZE 12288
