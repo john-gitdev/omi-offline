@@ -140,6 +140,9 @@ static volatile bool vad_is_recording = false;
 static bool vad_sleeping = false;
 static uint16_t vad_voice_streak = 0;
 static int64_t vad_last_voice_ms = 0;
+/* 32-bit mirror of vad_last_voice_ms for readers on other threads (aad_ms_since_voice):
+ * an int64_t read off the mic thread can tear on this core. */
+static atomic_t vad_last_voice_ms32 = ATOMIC_INIT(0);
 static int64_t vad_next_status_ms = 0;
 
 /* Peak-hold window for DIAG_VAD_LEVEL. Only ever touched from aad_process_audio()
@@ -655,6 +658,7 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
         int64_t now_wake = k_uptime_get();
         vad_voice_streak = 0;
         vad_last_voice_ms = now_wake;
+        atomic_set(&vad_last_voice_ms32, (atomic_val_t) (uint32_t) now_wake);
         if (now_wake >= force_wake_until_ms) {
             vad_is_recording = false;
             /* Every site that ends a recording clears the pre-roll with it, so the
@@ -690,6 +694,7 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
 
     if (has_voice) {
         vad_last_voice_ms = now;
+        atomic_set(&vad_last_voice_ms32, (atomic_val_t) (uint32_t) now);
         if (!vad_is_recording) {
             vad_voice_streak++;
             if (vad_voice_streak >= CONFIG_OMI_VAD_DEBOUNCE_FRAMES) {
@@ -1013,11 +1018,27 @@ void aad_set_threshold(uint16_t threshold)
     /* Last, after every marker write above: the gate takes mic_state_lock, which
      * must never be held across SD I/O. */
     aad_apply_mic_gate();
+
+    /* Every recording start and stop — button, BLE write, the priority cap, a mode
+     * switch — goes through this function, which is what makes it the one place to
+     * report the recording state. Schedule-only (it runs on the BT RX thread for an app
+     * write); the work item decides whether anything actually changed. */
+    transport_note_recording_state();
 }
 
 uint16_t aad_get_threshold(void)
 {
     return vad_threshold;
+}
+
+uint32_t aad_ms_since_voice(void)
+{
+    /* The 32-bit mirror, not vad_last_voice_ms itself: that is an int64_t written on
+     * the mic thread, and reading it from the system workqueue on a 32-bit core can
+     * tear across the two words. A torn read here could report a long silence in the
+     * middle of speech, and this value decides whether a reboot is allowed. Unsigned
+     * subtraction handles the 49-day wrap. */
+    return k_uptime_get_32() - (uint32_t) atomic_get(&vad_last_voice_ms32);
 }
 
 bool aad_is_recording(void)
