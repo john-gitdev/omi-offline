@@ -529,17 +529,18 @@ At **uptime > 30 days**, show a banner with a **Reboot now** button.
 - A device in normal use never sees it. A DFU reboots, a flat cell reboots, the watchdog
   reboots — this branch alone shipped `oo-2.9.0` → `oo-2.10.0` inside a week. The banner is for
   the device that quietly avoids all of those, which is the only device the wrap can reach.
-- Side benefit: a reboot also clears accumulated soft state — the volatile diag ring, the
-  runtime capture gate, every since-boot counter — and emits a fresh `DIAG_BOND_STATE` boot
-  record. A device up for 30 days is exactly one whose since-boot counters have stopped being
+- Side benefit: a reboot also clears accumulated soft state — the runtime capture gate, every
+  since-boot counter — and emits a fresh `DIAG_BOND_STATE` boot record. (Not the diag ring any
+  more: since oo-3.1.4 it lives in retained RAM and survives, with a `DIAG_BOOT` record at the seam.) A device up for 30 days is exactly one whose since-boot counters have stopped being
   informative.
 
 #### What the banner must say
 
 Rebooting is not free, and the prompt should not pretend otherwise:
 
-- **Every since-boot counter resets**, and the diagnostic event ring is volatile RAM — a reboot
-  discards it. If someone is mid-investigation, that is the wrong moment. Offer "Not now".
+- **Every since-boot counter resets.** If someone is mid-investigation, that is the wrong moment.
+  Offer "Not now". (The diagnostic event ring no longer resets — retained RAM since oo-3.1.4 — and
+  neither does a mute.)
 - **Do not offer it mid-recording.** In manual mode a reboot ends the current recording (the
   persisted threshold means it resumes recording after boot, which is arguably worse — it comes
   back recording without the user asking at that moment). Gate the button on not-currently-
