@@ -393,7 +393,9 @@ class DiagLogRecord {
           // First record of every boot (oo-3.1.4). The ring survives restarts, so this
           // is the line between one boot's records and the next — and uptimes before
           // it run on an earlier boot's clock.
-          final kept = arg0 == 1 ? "previous boot's events kept" : 'no earlier events (retained RAM was empty)';
+          // arg0 describes the RING: 0 is also a ring that failed its checks while the
+          // rest of retained RAM (mute) survived, so do not claim the RAM was empty.
+          final kept = arg0 == 1 ? "previous boot's events kept" : 'earlier events not kept';
           return 'Boot — ${DeviceCrashLog.describeResetCause(arg1)}; $kept';
         }
       default:
