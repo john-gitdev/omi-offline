@@ -65,6 +65,44 @@ class MutedBanner extends StatelessWidget {
   }
 }
 
+/// Shown while the connected device is holding a Priority Recording open (auto
+/// mode's button-started force-capture), read live from the device's
+/// recording-state characteristic rather than inferred from markers, which only
+/// arrive with the next sync. Same shape as [MutedBanner] — the two cannot show
+/// together, since the device refuses a mute during a Priority Recording and a
+/// Priority Recording while muted.
+class PriorityRecordingBanner extends StatelessWidget {
+  final bool active;
+  final DateTime? since;
+  const PriorityRecordingBanner({super.key, required this.active, this.since});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!active) return const SizedBox.shrink();
+    final s = since;
+    final text = s != null
+        ? 'Priority Recording since ${DateFormat(SharedPreferencesUtil().use24HourTime ? 'HH:mm' : 'h:mm a').format(s.toLocal())}'
+        : 'Priority Recording in progress';
+    return Container(
+      width: double.infinity,
+      color: Colors.red.shade900,
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+      child: Row(
+        children: [
+          const FaIcon(FontAwesomeIcons.solidCircleDot, color: Colors.white, size: 20),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// Shown when the most recent VAD-wanted processing run fell back to firmware
 /// AAD because Silero failed to load. In AAD mode every frame counts as speech,
 /// so silence-splitting happens device-side only — a silent fallback can spray
