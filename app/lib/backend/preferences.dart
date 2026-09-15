@@ -563,6 +563,14 @@ class SharedPreferencesUtil {
   String get clockCorrectionLedger => getString('clockCorrectionLedger');
   set clockCorrectionLedger(String v) => saveString('clockCorrectionLedger', v);
 
+  /// Recordings the stitcher folded into an earlier draft after they had already been
+  /// finished — out-of-order audio, or an interrupted run — each as
+  /// "<absorbedStartMs>:<mergedStartMs>". The recordings page shows them once, as a
+  /// single message, and clears them. A pref rather than controller state because the
+  /// stitch usually runs in a background sync with no page to show anything on.
+  List<String> get lateMergeNotices => getStringList('lateMergeNotices');
+  set lateMergeNotices(List<String> v) => saveStringList('lateMergeNotices', v);
+
   // Firebase user UID and email — stored in plain SharedPreferences (non-sensitive identifiers).
   String get omiAuthUid => getString('omiAuthUid');
   set omiAuthUid(String v) => saveString('omiAuthUid', v);
