@@ -82,8 +82,16 @@ static K_MUTEX_DEFINE(mute_apply_lock);
 bool mute_apply(bool on)
 {
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
-    uint16_t thr = aad_get_threshold();
-    bool in_manual = (thr == 32769 || thr == 65535);
+    /* Runtime OR persisted. The runtime value alone is wrong for the first seconds of a
+     * boot: it holds the compile-time default (250, an auto value) until aad_start()
+     * loads the persisted one, and aad_start() runs after transport_start() and
+     * button_init() — so a mute in that window landed on a manual-mode device, where
+     * every later mute write is ignored and nothing could undo it until a reboot. The
+     * persisted value is loaded by app_settings_init(), before either input exists.
+     * Runtime 65535 still covers an auto-mode Priority Recording, which is not persisted. */
+    const uint16_t thr = aad_get_threshold();
+    const uint16_t resting = app_settings_get_vad_threshold();
+    bool in_manual = (thr == 32769 || thr == 65535 || resting == 32769 || resting == 65535);
 #else
     bool in_manual = false;
 #endif
@@ -196,21 +204,35 @@ void mute_restore_at_boot(uint32_t since_utc_s)
 #endif
     k_mutex_lock(&mute_apply_lock, K_FOREVER);
     k_mutex_lock(&mic_state_lock, K_FOREVER);
+    /* Re-checked under both locks. BLE and the button are live before this runs
+     * (transport_start() and button_init() come first in main), so a mute can already
+     * have been applied — with its own marker and its own retained copy. Applying it
+     * again would write a second mute-on marker, which the app reads as a nested mute. */
+    if (is_muted) {
+        k_mutex_unlock(&mic_state_lock);
+        k_mutex_unlock(&mute_apply_lock);
+        return;
+    }
     is_muted = true;
     /* Same as engaging mute: force the LED on so the solid red shows even from stealth,
      * and remember the boot preference (seeded in main() already) for the unmute. */
     led_state_before_mute = is_led_enabled;
     is_led_enabled = true;
-    /* Keep the ORIGINAL time so the app still reads "Muted since" when the user muted,
-     * not when the device restarted. 0 = engaged before a time sync; use now. */
-    mute_since_utc_s = since_utc_s ? since_utc_s : get_utc_time();
+    /* The ORIGINAL time, so the app still reads "Muted since" when the user muted, not
+     * when the device restarted. Kept as-is when it is 0 (muted before a time sync): the
+     * app shows a timeless "muted" for that, which is still true, whereas stamping the
+     * boot time here would invent one — and store it, so every later boot repeated it. */
+    mute_since_utc_s = since_utc_s;
     mute_since_uptime_ms = (uint32_t) k_uptime_get();
-    retained_mute_store(true, mute_since_utc_s);
+    retained_mute_store(true, since_utc_s);
     /* No mic call: the mic has not started yet. main()'s "muted before the mic
      * started" reconciliation pauses it right after mic_start(), and aad_start()'s gate
      * keeps it parked, since mic_should_run() is false while is_muted. */
     k_mutex_unlock(&mic_state_lock);
     LOG_INF("Boot: mute restored");
+    /* A phone that connected and subscribed before this was told "unmuted" (the CCC push
+     * answers with the live state). Correct it now, exactly as mute_apply() does. */
+    mute_state_notify();
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     /* A new session starts here, and the app treats a new session as the end of any
      * mute (vad_audio_processor.dart) — which was true before this existed. This marker
