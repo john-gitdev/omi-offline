@@ -26,6 +26,7 @@ file(GLOB core_sources
     src/lib/core/codec.c
     src/lib/core/transport.c
     src/lib/core/button.c
+    src/lib/core/retained.c
 )
 
 if(CONFIG_OMI_ENABLE_MONITOR)
