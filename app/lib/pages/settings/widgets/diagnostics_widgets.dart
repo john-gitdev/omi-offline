@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:omi/services/devices/device_crash_log.dart';
 import 'package:omi/services/devices/diag_log_record.dart';
 
 /// Severity scale for every reading on the Diagnostics card.
@@ -435,6 +436,10 @@ DiagEventCategory diagEventCategory(DiagLogRecord r) {
     case 16: // vad_level
     case 17: // mic_power_cycle
       return DiagEventCategory.mic;
+    // boot: a boundary between boots, not any subsystem's event. Named so the bucket is a
+    // decision rather than the unknown-code default below; the bucket is the same one.
+    case 21:
+      return DiagEventCategory.other;
     default:
       return DiagEventCategory.other;
   }
@@ -473,7 +478,7 @@ DiagLevel diagEventLevel(DiagLogRecord r) {
     case 20:
       return DiagLevel.warn;
     case 21: // boot — graded on its reset cause: RESET_WATCHDOG | RESET_CPU_LOCKUP is a crash
-      return (r.arg1 & 0x110) != 0 ? DiagLevel.bad : DiagLevel.info;
+      return DeviceCrashLog.isCrashCause(r.arg1) ? DiagLevel.bad : DiagLevel.info;
     // write_blocked — graded on arg0, because the record names different stages. Reasons
     // 0 (tx ring full), 2 (VAD backlog full, oo-3.1.1 and earlier) and 3 (pre-roll
     // trimmed, oo-3.1.3 on) are all captured audio already discarded, which is the worst
