@@ -14,7 +14,11 @@ class DeviceCrashLog {
   // RESET_WATCHDOG = 0x10, RESET_CPU_LOCKUP = 0x100
   bool get isCrash => resetCause & 0x110 != 0;
 
-  String get causeLabel {
+  String get causeLabel => describeResetCause(resetCause);
+
+  /// Zephyr hwinfo reset-cause bits, as text. Shared with the event log's `boot`
+  /// record (diag_log_record.dart), which carries the same bitfield.
+  static String describeResetCause(int resetCause) {
     if (resetCause == 0) return 'unknown';
     final parts = <String>[];
     if (resetCause & 0x001 != 0) parts.add('pin reset');
