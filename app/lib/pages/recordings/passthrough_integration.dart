@@ -78,10 +78,9 @@ abstract class PassthroughIntegration {
     return false;
   }
 
-  static String getBinPath(Conversation c) {
-    final ts = c.file.path.split('/').last.split('_').last.split('.').first;
-    return '${c.file.parent.path}/recording_fs320_$ts.bin';
-  }
+  /// One definition with the writer that renames it (RecordingsManager.omiBinPathFor):
+  /// Omi's upload state is keyed by this path, so reader and writer must agree exactly.
+  static String getBinPath(Conversation c) => RecordingsManager.omiBinPathFor(c.file);
 }
 
 class HeyPocketPassthroughIntegration implements PassthroughIntegration {

@@ -523,6 +523,58 @@ class SharedPreferencesUtil {
     await remove('omiBusyStreak_$binPath');
   }
 
+  /// Carries every piece of Omi Cloud upload state kept under [from] — an Omi upload
+  /// file's path — over to [to], for a recording renamed on disk (see
+  /// RecordingsManager.promoteSessionToDate). All of it is keyed by that path, so left
+  /// behind, a renamed recording reads as never uploaded and auto-upload queues it again.
+  ///
+  /// Merges rather than overwrites, so a delivered mark under either path survives:
+  /// dropping one would re-send audio the server already has, and keeping a stale one
+  /// costs nothing. Where both paths hold a chunk total, job id or counter, [from]'s wins
+  /// — it is the state of the recording being moved.
+  Future<void> moveOmiUploadState(String from, String to) async {
+    if (from == to) return;
+
+    // Plain sets: the delivered list, and the delivered chunks ('<path>#<i>').
+    Future<void> moveSet(String key, bool Function(String) owned, String Function(String) renamed) async {
+      final current = getStringList(key);
+      if (!current.any(owned)) return;
+      await saveStringList(key, {for (final e in current) owned(e) ? renamed(e) : e}.toList());
+    }
+
+    await moveSet('omiSyncedFiles', (e) => e == from, (_) => to);
+    await moveSet('omiSyncedSegments', (e) => e.startsWith('$from#'), (e) => '$to#${e.substring(from.length + 1)}');
+
+    // '<id>\t<value>' lists: chunk totals ('<path>\t<n>') and job ids ('<path>#<i>\t<job>').
+    Future<void> moveTabbed(String key, String fromPrefix, String toPrefix) async {
+      final current = getStringList(key);
+      final moved = [
+        for (final e in current)
+          if (e.startsWith(fromPrefix)) '$toPrefix${e.substring(fromPrefix.length)}'
+      ];
+      if (moved.isEmpty) return;
+      String id(String e) => e.split('\t').first;
+      final movedIds = moved.map(id).toSet();
+      await saveStringList(key, [
+        for (final e in current)
+          if (!e.startsWith(fromPrefix) && !movedIds.contains(id(e))) e,
+        ...moved,
+      ]);
+    }
+
+    await moveTabbed('omiSegmentTotals', '$from\t', '$to\t');
+    await moveTabbed('omiSegmentJobs', '$from#', '$to#');
+
+    // Per-path counters. Omi's retry key is the upload file's path, so the retry budget
+    // and last-failure time live here too.
+    for (final k in ['omiBackoffUntil_', 'omiBusyStreak_', 'autoUploadRetry_', 'autoUploadFailAt_']) {
+      final v = getInt('$k$from', defaultValue: 0);
+      if (v == 0) continue;
+      await saveInt('$k$to', v);
+      await remove('$k$from');
+    }
+  }
+
   /// Last-seen "firmware identity" for a device — its DIS firmware revision plus
   /// capability bitfield. Changing it is the signal that the device's GATT layout
   /// may have moved, so Android's cached attribute database has to be dropped
@@ -562,6 +614,20 @@ class SharedPreferencesUtil {
   /// exist nowhere else.
   String get clockCorrectionLedger => getString('clockCorrectionLedger');
   set clockCorrectionLedger(String v) => saveString('clockCorrectionLedger', v);
+
+  /// Re-files RecordingsManager.promoteSessionToDate had to put off because an upload
+  /// was reading the recording, as JSON {path: {"offsetMs": int, "clockCorrected": bool}}.
+  /// Applied when that upload ends; persisted so a date set by hand survives an app kill.
+  String get pendingRefiles => getString('pendingRefiles');
+  set pendingRefiles(String v) => saveString('pendingRefiles', v);
+
+  /// Recordings the stitcher folded into an earlier draft after they had already been
+  /// finished — out-of-order audio, or an interrupted run — each as
+  /// "<absorbedStartMs>:<mergedStartMs>". The recordings page shows them once, as a
+  /// single message, and clears them. A pref rather than controller state because the
+  /// stitch usually runs in a background sync with no page to show anything on.
+  List<String> get lateMergeNotices => getStringList('lateMergeNotices');
+  set lateMergeNotices(List<String> v) => saveStringList('lateMergeNotices', v);
 
   // Firebase user UID and email — stored in plain SharedPreferences (non-sensitive identifiers).
   String get omiAuthUid => getString('omiAuthUid');

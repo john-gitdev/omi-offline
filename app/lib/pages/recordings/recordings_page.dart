@@ -982,7 +982,7 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
               if (mounted) {
                 ScaffoldMessenger.of(
                   context,
-                ).showSnackBar(SnackBar(content: Text(snack)));
+                ).showSnackBar(SnackBar(content: Text(snack), duration: Duration(seconds: snack.length > 80 ? 8 : 4)));
               }
             });
           }

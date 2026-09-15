@@ -68,6 +68,13 @@ void main() {
     test('true for session_ prefix (pre-time-sync)', () {
       expect(conv(file: fileOfBytes('session_abc.wav', 10)).isUnknown, isTrue);
     });
+
+    // The cases above join with '/', which both separators' split reads the same way.
+    // This is the input `split('/')` alone got wrong: a path with no '/' in it at all.
+    test('reads the name after a backslash separator too', () {
+      expect(conv(file: File(r'C:\docs\recordings\1970-01-01\unknown_7200000.wav')).isUnknown, isTrue);
+      expect(conv(file: File(r'C:\docs\recordings\2026-08-01\recording_1782120000000.wav')).isUnknown, isFalse);
+    });
   });
 
   group('Conversation.fileSizeBytes', () {

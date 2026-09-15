@@ -78,7 +78,9 @@ class Conversation {
 
   /// True when this recording was saved with an unknown timestamp (device had no RTC sync).
   bool get isUnknown {
-    final name = file.path.split('/').last;
+    // Either separator: a path listed on Windows (where the unit tests run) mixes them,
+    // and `split('/')` alone would call every unknown_ recording known there.
+    final name = file.path.split(RegExp(r'[/\\]')).last;
     return name.startsWith('unknown_') || name.startsWith('session_');
   }
 
