@@ -53,6 +53,9 @@ class RecordingsManager {
   /// See [recordingsUnsettled].
   static int _refileDepth = 0;
 
+  /// Completes when the last queued [promoteSessionToDate] has finished. See there.
+  static Future<void> _promoteQueue = Future.value();
+
   /// True while recordings on disk may still be renamed, merged or deleted: a
   /// [processAll] run, or a clock-anchor pass re-filing outside one (the no-audio branch
   /// of [processAllCompletedSessions], the controller's `_finishPipelineRun`). The
@@ -79,12 +82,73 @@ class RecordingsManager {
     final n = (_uploadsInFlight[k] ?? 0) - 1;
     if (n > 0) {
       _uploadsInFlight[k] = n;
-    } else {
-      _uploadsInFlight.remove(k);
+      return;
     }
+    _uploadsInFlight.remove(k);
+    // The last upload reading it is done: apply a re-file that had to wait for it.
+    if (_readPendingRefiles().containsKey(k)) unawaited(_applyDeferredRefile(k));
   }
 
   static bool isUploading(File audio) => _uploadsInFlight.containsKey(_inFlightKey(audio));
+
+  /// A process restart, for tests: nothing is uploading any more, and nothing is applied.
+  @visibleForTesting
+  static void forgetUploadsInFlightForTest() => _uploadsInFlight.clear();
+
+  // Re-files [promoteSessionToDate] had to put off because an upload was reading the
+  // recording, by path: the offset its move would have used, and whether it was a clock
+  // correction. Persisted (pref `pendingRefiles`) so a date set by hand is not lost if
+  // the app is killed before the upload ends. Applied when the last upload reading the
+  // recording finishes ([noteUploadFinished]) and at the start of every clock pass
+  // ([applyClockAnchors]), which is what catches one left over from a killed app.
+
+  static Map<String, dynamic> _readPendingRefiles() {
+    final raw = SharedPreferencesUtil().pendingRefiles;
+    if (raw.isEmpty) return {};
+    try {
+      return Map<String, dynamic>.from(jsonDecode(raw) as Map);
+    } catch (_) {
+      return {};
+    }
+  }
+
+  static void _writePendingRefiles(Map<String, dynamic> pending) =>
+      SharedPreferencesUtil().pendingRefiles = pending.isEmpty ? '' : jsonEncode(pending);
+
+  static void _deferRefile(File audio, int offsetMs, bool markClockCorrected) {
+    final pending = _readPendingRefiles();
+    // The latest wins: a date set again before the upload ends replaces the first.
+    pending[_inFlightKey(audio)] = {'offsetMs': offsetMs, 'clockCorrected': markClockCorrected};
+    _writePendingRefiles(pending);
+  }
+
+  static Future<void> _applyDeferredRefiles() async {
+    for (final key in _readPendingRefiles().keys.toList()) {
+      if (_uploadsInFlight.containsKey(key)) continue; // still waiting for its upload
+      await _applyDeferredRefile(key);
+    }
+  }
+
+  static Future<void> _applyDeferredRefile(String key) async {
+    final pending = _readPendingRefiles();
+    final entry = pending.remove(key);
+    if (entry is! Map) return;
+    // Taken before the move: if another upload has started on it meanwhile,
+    // promoteSessionToDate simply defers it again.
+    _writePendingRefiles(pending);
+    try {
+      final file = File(key);
+      if (!await file.exists()) return; // deleted, or folded into another recording, since
+      final conv = Conversation.fromFile(file);
+      final uptime = conv.startUptime;
+      final offsetMs = entry['offsetMs'];
+      if (uptime == null || uptime <= 0 || offsetMs is! int) return;
+      await promoteSessionToDate(conv, DateTime.fromMillisecondsSinceEpoch(uptime * 1000 + offsetMs),
+          markClockCorrected: entry['clockCorrected'] == true, include: (c) => _inFlightKey(c.file) == key);
+    } catch (e) {
+      Logger.error('RecordingsManager: deferred re-file of ${key.split('/').last} failed: $e');
+    }
+  }
 
   /// Finished (non-draft) audio already on disk when the current [processAll] began,
   /// so the stitch pass can tell a recording the user could have seen from one this
@@ -2946,6 +3010,9 @@ class RecordingsManager {
     // moves would queue the second under names it is about to lose.
     _refileDepth++;
     try {
+      // Re-files that waited for an upload but never got applied — the app was killed
+      // before the upload ended. Every sync runs this pass, so none waits past one.
+      await _applyDeferredRefiles();
       return await _applyClockAnchorsHeld();
     } finally {
       _refileDepth--;
@@ -3120,9 +3187,19 @@ class RecordingsManager {
     // Held for the whole move, for every caller: an auto upload that dequeued between
     // the in-flight check below and the rename would read a path about to change.
     _refileDepth++;
+    // One move at a time. Its "is the target free?" checks and the renames they guard are
+    // separated by awaits, so two moves interleaving could both find a target free and one
+    // rename onto the other — the audio loss the claim guard below exists to prevent.
+    // Callers do overlap: a scheduled and a tapped sync's clock passes, the date picker,
+    // and a re-file that waited for an upload to end, which fires whenever one does.
+    final previous = _promoteQueue;
+    final done = Completer<void>();
+    _promoteQueue = done.future;
     try {
+      await previous;
       await _promoteSessionToDateHeld(base, newStartTime, markClockCorrected: markClockCorrected, include: include);
     } finally {
+      done.complete();
       _refileDepth--;
     }
   }
@@ -3201,11 +3278,12 @@ class RecordingsManager {
       // An upload is reading this recording right now. Omi's upload records its progress
       // under the file's current path as it goes, so renaming mid-upload lands the final
       // "delivered" mark on a path no recording has any more, and the renamed recording
-      // is sent again. Left where it is: the clock pass runs every sync and re-files it
-      // once the upload is done (a date set by hand has to be set again).
+      // is sent again. Deferred, not dropped: applied the moment the last upload reading
+      // it ends ([_deferRefile]) — a date set by hand included.
       if (isUploading(conv.file)) {
+        _deferRefile(conv.file, rtcOffsetMs, markClockCorrected);
         Logger.debug('RecordingsManager: ${conv.file.path.split('/').last} is being uploaded — '
-            'left under its current name for now.');
+            're-filing it once the upload ends.');
         continue;
       }
       // No usable uptime means the offset cannot place this recording — the same thing
