@@ -1015,7 +1015,7 @@ class OmiBleManager private constructor(private val application: Application) {
 
         // Register session BEFORE enqueuing CMD_READ_FILE so the start-ACK (0x03 0x00)
         // is never missed if the write callback and the notification race.
-        val session = StorageDownloadSession(addr, offset, outputPath, callback)
+        val session = StorageDownloadSession(addr, offset, outputPath, timerStart, callback)
         activeDownloads[addr] = session
         // Registered, so applyConnectionPriority now reads "transferring". Raised before
         // CMD_READ_FILE is enqueued rather than on the first packet: the whole point is
@@ -1067,6 +1067,8 @@ class OmiBleManager private constructor(private val application: Application) {
         private val address: String,
         startOffset: Long,
         outputPath: String,
+        // The file timestamp this read asked for; oo-3.1.4+ echoes it in the start ACK.
+        private val expectedTs: Long,
         private val callback: (Result<Unit>) -> Unit
     ) {
         private var expectedOffset = startOffset
@@ -1144,6 +1146,24 @@ class OmiBleManager private constructor(private val application: Application) {
                     // Ignored until this read is issued — see readIssued. That covers an error
                     // ACK too: before the command exists, no ACK can be about it.
                     if (!readIssued) return
+                    // oo-3.1.4+ echoes the requested timestamp: [0x03][result][ts:4 LE]. A
+                    // mismatch is a late ACK for an EARLIER read — the firmware finishing a
+                    // slow setup after this app gave up on it and moved on, perhaps to another
+                    // file. Accepted, that file's whole stream would land in this download,
+                    // and a stream at least this file's size passes the completeness check,
+                    // which marks it synced and deletes the real one from the card. 0 (from
+                    // firmware or a request without a timestamp) cannot be correlated, so it
+                    // is taken as before; a two-byte ACK is older firmware.
+                    if (value.size >= 6 && expectedTs != 0L) {
+                        val echoed = (value[2].toLong() and 0xFF) or
+                            ((value[3].toLong() and 0xFF) shl 8) or
+                            ((value[4].toLong() and 0xFF) shl 16) or
+                            ((value[5].toLong() and 0xFF) shl 24)
+                        if (echoed != 0L && echoed != (expectedTs and 0xFFFFFFFFL)) {
+                            Log.w(TAG, "ACK for ts=$echoed while reading ts=$expectedTs — a late ACK from an earlier read; ignored")
+                            return
+                        }
+                    }
                     if (value.size >= 2) {
                         val code = value[1].toInt() and 0xFF
                         if (code == 0) hasReceivedStartAck = true
