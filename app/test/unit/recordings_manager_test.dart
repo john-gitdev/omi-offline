@@ -2699,6 +2699,51 @@ void main() {
 
       expect(allRecordings().length, 2, reason: 'one moved, the other refused — nothing overwritten');
     });
+
+    Directory targetDateDir() => Directory(
+        p.join(tempDir.path, 'recordings', RecordingsManager.fmtDate(DateTime.fromMillisecondsSinceEpoch(trueStartMs))))
+      ..createSync(recursive: true);
+
+    // The Omi Cloud upload file is named by the recording, so it is part of the slot.
+    test('a re-file is refused when a different Omi upload file already holds the target name', () async {
+      setAnchor();
+      final audio = writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      final ownBin = RecordingsManager.omiBinPathFor(audio);
+      File(ownBin).writeAsBytesSync([1, 2, 3]);
+      await SharedPreferencesUtil().markOmiSynced(ownBin);
+      final other = File(p.join(targetDateDir().path, 'recording_fs320_$trueStartMs.bin'))..writeAsBytesSync([9, 9]);
+
+      await RecordingsManager.applyClockAnchors();
+
+      expect(allRecordings().containsKey('recording_$wrappedStartMs'), isTrue,
+          reason: 'moved, it would be tied to an upload file that is not its audio');
+      expect(File(ownBin).readAsBytesSync(), [1, 2, 3], reason: 'its own upload file stays with it');
+      expect(other.readAsBytesSync(), [9, 9], reason: 'and the other is never overwritten');
+      expect(SharedPreferencesUtil().isOmiSynced(ownBin), isTrue);
+    });
+
+    test('a target upload file with none of its own to move does not block the re-file', () async {
+      setAnchor();
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      // Most likely its own, orphaned under this name by an older build's correction.
+      final waiting = File(p.join(targetDateDir().path, 'recording_fs320_$trueStartMs.bin'))..writeAsBytesSync([4, 5]);
+
+      await RecordingsManager.applyClockAnchors();
+
+      expect(allRecordings().containsKey('recording_$trueStartMs'), isTrue,
+          reason: 'the undo/reunion case is not blocked');
+      expect(waiting.readAsBytesSync(), [4, 5]);
+    });
   });
 
   // ---------------------------------------------------------------------------
