@@ -540,7 +540,7 @@ Rebooting is not free, and the prompt should not pretend otherwise:
 
 - **Every since-boot counter resets.** If someone is mid-investigation, that is the wrong moment.
   Offer "Not now". (The diagnostic event ring no longer resets — retained RAM since oo-3.1.4 — and
-  neither does a mute.)
+  neither does a mute, outside manual mode, which ignores mute and does not restore one.)
 - **Do not offer it mid-recording.** In manual mode a reboot ends the current recording (the
   persisted threshold means it resumes recording after boot, which is arguably worse — it comes
   back recording without the user asking at that moment). Gate the button on not-currently-
