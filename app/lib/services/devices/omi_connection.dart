@@ -88,6 +88,11 @@ class OmiDeviceConnection extends DeviceConnection {
   static const String muteServiceUuid = '19b10070-e8f2-537e-4f6c-d104768a1214';
   static const String muteCharacteristicUuid = '19b10071-e8f2-537e-4f6c-d104768a1214';
 
+  // 9-byte recording state (Read / Notify), inside the LED service (oo-3.1.4, gated
+  // on OmiFeatures.recordingState): [state:1][since_utc_s:4 LE][since_uptime_ms:4 LE].
+  // state 0 = none, 1 = manual recording, 2 = Priority Recording.
+  static const String recordingStateCharacteristicUuid = '19b10083-e8f2-537e-4f6c-d104768a1214';
+
   // Protects against stale packets from previous calls
   int _listFilesGeneration = 0;
 
@@ -98,6 +103,7 @@ class OmiDeviceConnection extends DeviceConnection {
 
   StreamSubscription<List<int>>? _chargingSubscription;
   StreamSubscription<List<int>>? _muteSubscription;
+  StreamSubscription<List<int>>? _recordingStateSubscription;
   StreamSubscription<List<int>>? _dropStatsSubscription;
 
   // Cached audio codec to avoid redundant BLE reads
@@ -571,12 +577,59 @@ class OmiDeviceConnection extends DeviceConnection {
     }
   }
 
+  /// Parse the 9-byte recording-state payload: [state:1][since_utc_s:4 LE][since_uptime_ms:4 LE].
+  /// Null for a short payload. A state byte this app does not know (a newer
+  /// firmware's) reads as none rather than as a guess. `since` from the RTC
+  /// seconds when valid, exactly as for mute.
+  static DeviceRecordingState? _parseRecordingState(List<int> data) {
+    if (data.length < 9) return null;
+    var kind = DeviceRecordingKind.none;
+    if (data[0] == 1) kind = DeviceRecordingKind.manual;
+    if (data[0] == 2) kind = DeviceRecordingKind.priority;
+    final sinceUtcS = data.getUint32LittleEndian(1);
+    DateTime? since;
+    if (kind != DeviceRecordingKind.none && sinceUtcS > 946684800) {
+      since = DateTime.fromMillisecondsSinceEpoch(sinceUtcS * 1000, isUtc: true);
+    }
+    return (kind: kind, since: since);
+  }
+
+  @override
+  Future<DeviceRecordingState?> performGetRecordingState() async {
+    try {
+      final data = await transport.readCharacteristic(ledServiceUuid, recordingStateCharacteristicUuid);
+      return _parseRecordingState(data);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<StreamSubscription<List<int>>?> performGetRecordingStateListener({
+    required void Function(DeviceRecordingState state) onChange,
+  }) async {
+    try {
+      final stream = await transport.getCharacteristicStream(ledServiceUuid, recordingStateCharacteristicUuid);
+      await _recordingStateSubscription?.cancel();
+      _recordingStateSubscription = stream.listen((v) {
+        final s = _parseRecordingState(v);
+        if (s != null) onChange(s);
+      });
+      return _recordingStateSubscription;
+    } catch (e) {
+      Logger.debug('OmiDeviceConnection: Error subscribing to recording state: $e');
+      return null;
+    }
+  }
+
   @override
   Future<void> disconnect({bool isManual = true}) async {
     await _chargingSubscription?.cancel();
     _chargingSubscription = null;
     await _muteSubscription?.cancel();
     _muteSubscription = null;
+    await _recordingStateSubscription?.cancel();
+    _recordingStateSubscription = null;
     // Do NOT cancel the drop-stats sub here: cancelling suppresses onDone, which is
     // how the diagnostics page learns the stream closed and re-subscribes. Just drop
     // our reference — super.disconnect() closes the stream, firing onDone/onClosed.
