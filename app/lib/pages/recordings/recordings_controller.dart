@@ -41,6 +41,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     batchesProvider: () => _batches,
     isDisposed: () => _isDisposed,
     isPipelineIdle: () => _spState == SyncProcessState.idle,
+    isProcessing: () => RecordingsManager.isProcessingAny,
     notifyUi: notifyListeners,
     acquireWake: _acquireWake,
     releaseWake: _releaseWake,
@@ -690,6 +691,16 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         _throttledUpdate(force: true);
         _loadBatches();
       }
+    }
+
+    // An auto-upload sweep that was held back while audio was processing (see
+    // IntegrationUploadManager.tryAutoUploadAll). Re-run it once nothing is in
+    // flight — through _loadBatches rather than the sweep alone, because the run may
+    // have stitched away a recording the held sweep's batch list still names. Not
+    // during successUi either: a foreground run's dismissSuccess reload sweeps after
+    // the clock-anchor pass, and this must not pre-empt it.
+    if (!isPipelineBusy && _spState != SyncProcessState.successUi && _uploads.takeDeferredSweep()) {
+      unawaited(_loadBatches());
     }
 
     _pollHeyPocket();
