@@ -891,6 +891,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             break;
 
           case 0x02:
+            // Same gate as DATA, and as the native path (OmiBleManager.kt): the firmware
+            // ACKs a read before streaming, so an EOT ahead of the ACK is an earlier
+            // transfer's tail and must not complete this one with nothing written.
+            if (!hasReceivedStartAck) return;
             isStreamLocked = true;
             eotReceived = true;
             if (!isProcessing) {
