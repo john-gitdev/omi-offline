@@ -911,6 +911,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
           case 0x03:
             if (value.length < 2) return;
+            // oo-3.1.4+ echoes the requested timestamp ([0x03][result][ts:4 LE]); one that
+            // names another file is a late ACK for an earlier read and must not open this
+            // download to that file's stream. Same rule as OmiBleManager's native path.
+            if (value.length >= 6 && timerStart != 0) {
+              final echoed = value[2] | (value[3] << 8) | (value[4] << 16) | (value[5] << 24);
+              if (echoed != 0 && echoed != timerStart) return;
+            }
             if (value[1] == 0x00) {
               hasReceivedStartAck = true;
             } else {
