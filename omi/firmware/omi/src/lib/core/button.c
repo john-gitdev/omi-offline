@@ -15,6 +15,7 @@
 #include "imu.h"
 #include "led.h"
 #include "mic.h"
+#include "retained.h"
 #include "rtc.h"
 #include "transport.h"
 #include "wdog_facade.h"
@@ -153,10 +154,16 @@ bool mute_apply(bool on)
          * place. Recursive lock, so nesting is fine. */
         aad_apply_mic_gate();
     }
+    /* Kept across a reboot, a crash and a power-off, so a muted device does not come
+     * back recording (mute_restore_at_boot). Under mic_state_lock with the state it
+     * describes; the retained write is plain RAM, no I/O. */
+    retained_mute_store(on, mute_since_utc_s);
     k_mutex_unlock(&mic_state_lock);
     LOG_INF("Mute toggled: %s", on ? "ON" : "OFF");
-    // Push the live state first (fast, non-blocking) before the marker write,
-    // which may briefly block on a saturated SD queue.
+    // Push the live state first (no SD I/O) before the marker write, which may briefly
+    // block on a saturated SD queue. Not strictly non-blocking: on the BT RX thread (a
+    // mute written by the app) the notify can wait for an ATT buffer while a transfer
+    // fills the pool — bounded, since the stack frees queued buffers when a link drops.
     mute_state_notify();
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     // Mute can be toggled while VAD has paused SD writes (e.g. during a silence
@@ -171,6 +178,47 @@ bool mute_apply(bool on)
 #endif
     k_mutex_unlock(&mute_apply_lock);
     return true;
+}
+
+void mute_restore_at_boot(uint32_t since_utc_s)
+{
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    /* The PERSISTED threshold, not aad_get_threshold(): main() calls this before
+     * aad_start() has loaded it, so the runtime value is still the compile-time
+     * default. Manual mode ignores mute (mute_apply), and a device switched to manual
+     * while muted must not come back muted in a mode that offers no way to unmute. */
+    const uint16_t resting = app_settings_get_vad_threshold();
+    if (resting == 32769 || resting == 65535) {
+        LOG_INF("Boot: saved mute not restored — manual mode ignores mute");
+        retained_mute_store(false, 0);
+        return;
+    }
+#endif
+    k_mutex_lock(&mute_apply_lock, K_FOREVER);
+    k_mutex_lock(&mic_state_lock, K_FOREVER);
+    is_muted = true;
+    /* Same as engaging mute: force the LED on so the solid red shows even from stealth,
+     * and remember the boot preference (seeded in main() already) for the unmute. */
+    led_state_before_mute = is_led_enabled;
+    is_led_enabled = true;
+    /* Keep the ORIGINAL time so the app still reads "Muted since" when the user muted,
+     * not when the device restarted. 0 = engaged before a time sync; use now. */
+    mute_since_utc_s = since_utc_s ? since_utc_s : get_utc_time();
+    mute_since_uptime_ms = (uint32_t) k_uptime_get();
+    retained_mute_store(true, mute_since_utc_s);
+    /* No mic call: the mic has not started yet. main()'s "muted before the mic
+     * started" reconciliation pauses it right after mic_start(), and aad_start()'s gate
+     * keeps it parked, since mic_should_run() is false while is_muted. */
+    k_mutex_unlock(&mic_state_lock);
+    LOG_INF("Boot: mute restored");
+#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+    /* A new session starts here, and the app treats a new session as the end of any
+     * mute (vad_audio_processor.dart) — which was true before this existed. This marker
+     * re-opens it, so the app shows the gap as muted rather than as missing audio. */
+    sd_write_pause(false);
+    write_mute_on_marker_to_storage();
+#endif
+    k_mutex_unlock(&mute_apply_lock);
 }
 
 void mute_get_state(uint8_t *muted, uint32_t *since_utc_s, uint32_t *since_uptime_ms)
