@@ -767,9 +767,10 @@ bool app_settings_take_wedge_reboot(bool *muted,
     *mute_since_utc_s = wedge_reboot.mute_since_utc_s;
     *err_magnitude = wedge_reboot.err_magnitude;
     *waited_ms = wedge_reboot.waited_ms;
-    /* Consumed once. A failed clear leaves it pending, so the next boot reports the
-     * same reboot again and restores mute again — both idempotent, and the right way
-     * round for a record whose job includes keeping a mute. */
+    /* Consumed once. A failed clear leaves it pending, so later boots report the same
+     * reboot again. That cannot turn into a stale mute: main() uses this mute only when
+     * retained RAM did not survive, and otherwise trusts the retained copy, which tracks
+     * every change the user made since. */
     wedge_reboot.pending = 0;
     int err = settings_save_one("omi/wedge_rb", &wedge_reboot, sizeof(wedge_reboot));
     if (err) {
