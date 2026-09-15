@@ -11,8 +11,12 @@ class DeviceCrashLog {
     required this.uptimeSeconds,
   });
 
-  // RESET_WATCHDOG = 0x10, RESET_CPU_LOCKUP = 0x100
-  bool get isCrash => resetCause & 0x110 != 0;
+  bool get isCrash => isCrashCause(resetCause);
+
+  /// RESET_WATCHDOG (0x10) or RESET_CPU_LOCKUP (0x100): the firmware died rather than
+  /// being restarted. Shared with the event log's `boot` record so the crash card and the
+  /// log cannot disagree about what counts as a crash.
+  static bool isCrashCause(int resetCause) => (resetCause & 0x110) != 0;
 
   String get causeLabel => describeResetCause(resetCause);
 
