@@ -16,6 +16,7 @@
 #include <zephyr/random/random.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/sys/atomic.h>
+#include <zephyr/sys/reboot.h>
 #include <zephyr/sys/ring_buffer.h>
 
 /* mic.h is still needed after on_mic_audio()'s removal (oo-3.1.3): settings_mic_gain_
@@ -34,6 +35,7 @@
 #include "config.h"
 #include "features.h"
 #include "haptic.h"
+#include "imu.h"
 #include "lib/battery/battery.h"
 #ifdef CONFIG_OMI_ENABLE_MONITOR
 #include "monitor.h"
@@ -1093,13 +1095,25 @@ static struct bt_gatt_service mute_service = BT_GATT_SERVICE(mute_service_attr);
 //   still toggles the session's state without changing what the device returns
 //   to on reboot, and a read that tracked the gesture would make the app's
 //   write-then-verify disagree with what it just stored.
+// Characteristic C: 19B10083-E8F2-537E-4F6C-D104768A1214 (Read / Notify), oo-3.1.4
+//   9 bytes LE, the same shape as mute (0x19B10071):
+//     [uint8 state][uint32 since_utc_s][uint32 since_uptime_ms]
+//   state: 0 = no forced recording, 1 = manual recording, 2 = Priority Recording
+//     (auto mode's button-started force-capture). Auto mode's own VAD capture is not
+//     reported — it comes and goes with the room.
+//   since_*: when the device first saw the current state (0 while state is 0) — at
+//     most RECORDING_STATE_SETTLE_MS after the actual start, or, for a manual
+//     recording carried across a reboot, when this boot first looked. utc_s is 0 if
+//     the device had no time then; uptime_ms lets the app derive it after a sync.
+//   Notified on every change and pushed on subscribe, so the app can show a live
+//   banner without polling. Not a Settings characteristic, for the reason below.
 // Deliberately its OWN service rather than more Settings characteristics:
 // Settings is registered early (third, behind only button and haptic), so growing
 // it renumbers every service after it — features, time sync, battery, storage,
 // diagnostics, mute, led — and forces bonded peers to re-pair. Registered last
 // (after mute), this leaves every existing handle untouched — which is also why
-// characteristic B could be added here for free, while adding it to Settings
-// could not.
+// characteristics B and C could be added here for free, while adding them to
+// Settings could not. Append only: C sits after B, so B's handles did not move.
 static struct bt_uuid_128 led_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10080, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 led_connected_characteristic_uuid =
@@ -1197,6 +1211,96 @@ led_boot_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, voi
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &enabled, sizeof(enabled));
 }
 
+static struct bt_uuid_128 recording_state_characteristic_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10083, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+
+enum {
+    RECORDING_STATE_NONE = 0,
+    RECORDING_STATE_MANUAL = 1,
+    RECORDING_STATE_PRIORITY = 2,
+};
+
+/* One start or stop writes two values (the runtime threshold, and for manual mode the
+ * persisted one); waiting this long lets the work item observe it once, settled. */
+#define RECORDING_STATE_SETTLE_MS 100
+/* A notify from the system workqueue does not wait for a buffer (Zephyr allocates with
+ * K_NO_WAIT there), so one sent during a file transfer can fail -ENOMEM. Retry. */
+#define RECORDING_STATE_RETRY_MS 1000
+
+/* Last state observed, and when it was entered. Under rec_state_lock: the read handler
+ * (BT RX thread) and the work item (system workqueue) both advance it. */
+static K_MUTEX_DEFINE(rec_state_lock);
+static uint8_t rec_state_seen = RECORDING_STATE_NONE;
+static uint32_t rec_state_since_utc_s;
+static uint32_t rec_state_since_uptime_ms;
+/* What subscribers were last told. 0xFF = nothing, or must be re-sent. */
+#define REC_STATE_NOT_NOTIFIED 0xFF
+static atomic_t rec_state_notified = ATOMIC_INIT(REC_STATE_NOT_NOTIFIED);
+
+static uint8_t recording_state_derive(void)
+{
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    if (aad_get_threshold() != 65535) {
+        return RECORDING_STATE_NONE;
+    }
+    /* Runtime 65535 is held by both kinds; the PERSISTED threshold tells them apart,
+     * exactly as record_start() decides the mode. Independent of the order the two are
+     * written in: a manual start sets the runtime value first, but the persisted value
+     * is 32769 (manual standby) until the save lands, which reads as manual too. */
+    const uint16_t resting = app_settings_get_vad_threshold();
+    return (resting == 32769 || resting == 65535) ? RECORDING_STATE_MANUAL : RECORDING_STATE_PRIORITY;
+#else
+    return RECORDING_STATE_NONE;
+#endif
+}
+
+/* Observe the state (stamping since_* on a change) and pack the 9-byte payload. */
+static uint8_t recording_state_pack(uint8_t *payload)
+{
+    k_mutex_lock(&rec_state_lock, K_FOREVER);
+    const uint8_t now = recording_state_derive();
+    if (now != rec_state_seen) {
+        rec_state_seen = now;
+        if (now == RECORDING_STATE_NONE) {
+            rec_state_since_utc_s = 0;
+            rec_state_since_uptime_ms = 0;
+        } else {
+            rec_state_since_utc_s = get_utc_time();
+            rec_state_since_uptime_ms = k_uptime_get_32();
+        }
+    }
+    payload[0] = now;
+    pack_u32_le(payload + 1, rec_state_since_utc_s);
+    pack_u32_le(payload + 5, rec_state_since_uptime_ms);
+    k_mutex_unlock(&rec_state_lock);
+    return now;
+}
+
+static ssize_t recording_state_read_handler(struct bt_conn *conn,
+                                            const struct bt_gatt_attr *attr,
+                                            void *buf,
+                                            uint16_t len,
+                                            uint16_t offset)
+{
+    uint8_t payload[9];
+    recording_state_pack(payload);
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
+}
+
+static void recording_state_work_handler(struct k_work *work);
+K_WORK_DELAYABLE_DEFINE(recording_state_work, recording_state_work_handler);
+
+static void recording_state_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+    ARG_UNUSED(attr);
+    /* Push the current state on subscribe, as mute does — but through the work item,
+     * which owns the notify and its retry. Schedule-only, as this is the RX thread. */
+    if (value == BT_GATT_CCC_NOTIFY) {
+        atomic_set(&rec_state_notified, REC_STATE_NOT_NOTIFIED);
+        k_work_reschedule(&recording_state_work, K_NO_WAIT);
+    }
+}
+
 static struct bt_gatt_attr led_service_attr[] = {
     BT_GATT_PRIMARY_SERVICE(&led_service_uuid),
     BT_GATT_CHARACTERISTIC(&led_connected_characteristic_uuid.uuid,
@@ -1211,9 +1315,43 @@ static struct bt_gatt_attr led_service_attr[] = {
                            led_boot_read_handler,
                            led_boot_write_handler,
                            NULL),
+    BT_GATT_CHARACTERISTIC(&recording_state_characteristic_uuid.uuid,
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+                           BT_GATT_PERM_READ_ENCRYPT,
+                           recording_state_read_handler,
+                           NULL,
+                           NULL),
+    BT_GATT_CCC(recording_state_ccc_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
 };
 
 static struct bt_gatt_service led_service = BT_GATT_SERVICE(led_service_attr);
+
+/* [0] service, [1]/[2] 0081, [3]/[4] 0082, [5]/[6] 0083, [7] its CCC. */
+#define RECORDING_STATE_VALUE_ATTR 6
+BUILD_ASSERT(ARRAY_SIZE(led_service_attr) == 8, "recording-state notify indexes led_service_attr by position");
+
+static void recording_state_work_handler(struct k_work *work)
+{
+    uint8_t payload[9];
+    /* Packed even while disconnected: observing the change is what stamps since_*, so a
+     * phone that connects mid-recording still reads when it started. */
+    const uint8_t state = recording_state_pack(payload);
+    if (!atomic_get(&is_connected) || (atomic_val_t) state == atomic_get(&rec_state_notified)) {
+        return;
+    }
+    int err = bt_gatt_notify(NULL, &led_service_attr[RECORDING_STATE_VALUE_ATTR], payload, sizeof(payload));
+    if (err == 0) {
+        atomic_set(&rec_state_notified, state);
+    } else if (err == -ENOMEM) {
+        k_work_reschedule(k_work_delayable_from_work(work), K_MSEC(RECORDING_STATE_RETRY_MS));
+    }
+    /* Anything else (-ENOTCONN: nobody subscribed) is left for the subscribe push. */
+}
+
+void transport_note_recording_state(void)
+{
+    k_work_reschedule(&recording_state_work, K_MSEC(RECORDING_STATE_SETTLE_MS));
+}
 
 void mute_state_notify(void)
 {
@@ -1440,6 +1578,8 @@ features_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, voi
     features |= OMI_FEATURE_VAD_THRESHOLD;
     // The LED service (0x19B10080 / 0x19B10081) is always registered.
     features |= OMI_FEATURE_LED_SERVICE;
+    // So is the recording-state characteristic inside it (0x19B10083, oo-3.1.4).
+    features |= OMI_FEATURE_RECORDING_STATE;
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
     // Priority Recording (and thus its configurable safety cap) exists only on AAD builds.
     features |= OMI_FEATURE_PRIORITY_RECORD_CAP;
@@ -1797,6 +1937,123 @@ static void refresh_conn_param_mode(void)
     put_current_connection(conn);
 }
 
+/* ── Lost-disconnect recovery (oo-3.1.4, BLE_Research.md Wedge 10) ─────────────
+ *
+ * Every recovery path in this file keys on is_connected, and only
+ * _transport_disconnected clears it. If the stack never delivers that callback for a
+ * link we asked it to drop, the device stays "connected" to nothing for good: the
+ * advertising watchdog stands down (it is gated on is_connected), the idle timer is not
+ * re-armed, the LED shows solid blue, and no phone can find it. Seen once, on
+ * 2026-09-13: up 21 h 40 m with no crash, cleared only by a power cycle. Why the
+ * callback went missing is not known — the diag ring that would have said was plain RAM
+ * and died with the power cycle, which is why it lives in retained RAM now.
+ *
+ * So after asking for a disconnect, wait for the answer. A link we asked to drop is
+ * gone within one supervision timeout — at most 32 s by the spec — whether or not the
+ * phone acknowledges, so LINK_DISCONNECT_REPORT_MS leaves a margin over the worst case.
+ * A callback still missing after that is not coming. Recovery is a reboot. Nothing
+ * narrower is available: what is wrong is the stack's own state, and
+ * bt_disable()/bt_enable() would have to trust it.
+ *
+ * A reboot costs a few seconds of capture, so it waits for silence
+ * (link_recovery_permitted): never during a manual or Priority Recording, never while
+ * the VAD holds a recording open, and not until the room has been quiet for
+ * LINK_RECOVERY_QUIET_MS. Until then the device records to the card exactly as before;
+ * only the radio waits. Mute survives the reboot (retained RAM, plus the flash record
+ * written here), so does the IMU clock bridge, and the next boot reports
+ * DIAG_LINK_WEDGE_REBOOT.
+ *
+ * The flag is set and cleared under conn_mutex, the lock that hands the connection
+ * over, and that is what keeps the ordinary path from ever rebooting. The idle timer
+ * sets it in the same critical section that takes current_connection, before
+ * bt_conn_disconnect() is even called; _transport_disconnected clears it in the
+ * section that releases current_connection. Either the callback got there first — then
+ * there was no connection to take and nothing is owed — or it comes after, and clears a
+ * flag that is already set. A set can never land after its clear.
+ *
+ * Residual: the silence check is made once, just before the reboot sequence starts. A
+ * Priority Recording started in the second or so the SD unmount takes is cut short
+ * (a manual one resumes, being persisted). */
+#define LINK_DISCONNECT_REPORT_MS 60000
+#define LINK_RECOVERY_RECHECK_MS 10000
+#define LINK_RECOVERY_QUIET_MS 30000
+/* How long a file transfer may deliver nothing before it stops exempting the link from
+ * the idle timer. write_to_gatt() marks activity per delivered packet, so a transfer
+ * that is really moving never gets near this; twice the app's 60 s stall watchdog, which
+ * would have recycled a genuinely stuck link from its own side long before. */
+#define TRANSFER_STALL_MS 120000
+BUILD_ASSERT(TRANSFER_STALL_MS >= IDLE_DISCONNECT_TIMEOUT_MS,
+             "a stalled transfer must fall through to the idle rule, which re-checks the same clock");
+
+static atomic_t disconnect_owed = ATOMIC_INIT(0);
+static atomic_t disconnect_owed_err = ATOMIC_INIT(0); /* errno magnitude from bt_conn_disconnect() */
+static atomic_t disconnect_owed_since_ms = ATOMIC_INIT(0);
+
+/* Silence: nothing is being recorded, and nothing has been heard for a while. The mic
+ * is parked in manual standby and while muted, so both count as silent, as they should
+ * — neither is capturing, and mute is restored after the reboot. */
+static bool link_recovery_permitted(void)
+{
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    if (aad_get_threshold() == 65535) {
+        return false; /* a manual recording or a Priority Recording */
+    }
+    if (aad_is_recording()) {
+        return false; /* the VAD holds an auto recording open */
+    }
+    if (aad_ms_since_voice() < LINK_RECOVERY_QUIET_MS) {
+        return false;
+    }
+#endif
+    return true;
+}
+
+static void wedge_reboot_work_handler(struct k_work *work)
+{
+    if (!atomic_get(&disconnect_owed)) {
+        return;
+    }
+    const uint32_t waited_ms = k_uptime_get_32() - (uint32_t) atomic_get(&disconnect_owed_since_ms);
+    if (waited_ms < LINK_DISCONNECT_REPORT_MS) {
+        /* Scheduled by an earlier owe that was then paid and replaced by a newer one. */
+        k_work_reschedule(k_work_delayable_from_work(work), K_MSEC(LINK_DISCONNECT_REPORT_MS - waited_ms));
+        return;
+    }
+    if (!link_recovery_permitted()) {
+        k_work_reschedule(k_work_delayable_from_work(work), K_MSEC(LINK_RECOVERY_RECHECK_MS));
+        return;
+    }
+
+    const uint16_t err_magnitude = (uint16_t) atomic_get(&disconnect_owed_err);
+    LOG_ERR("BLE disconnect requested %u ms ago was never reported (err -%u) — rebooting to recover the radio",
+            waited_ms,
+            err_magnitude);
+
+    uint8_t muted = 0;
+    uint32_t mute_since_utc_s = 0;
+    uint32_t mute_since_uptime_ms = 0;
+    mute_get_state(&muted, &mute_since_utc_s, &mute_since_uptime_ms);
+    int err = app_settings_save_wedge_reboot(muted != 0, mute_since_utc_s, err_magnitude, waited_ms);
+    if (err) {
+        /* Reboot anyway: staying off the air is the worse outcome, and mute still rides
+         * retained RAM. Only the next boot's report is lost. */
+        LOG_ERR("Wedge-reboot record not saved (%d)", err);
+    }
+#ifdef CONFIG_LSM6DSL
+    /* Same as CMD_REBOOT and a power-off: save the IMU clock bridge so the next boot
+     * recovers the time before any phone reconnects. */
+    lsm6dsl_time_prepare_for_system_off();
+#endif
+#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+    /* Flush and unmount, so the reboot cannot tear a block. */
+    if (is_sd_on()) {
+        app_sd_off();
+    }
+#endif
+    sys_reboot(SYS_REBOOT_COLD);
+}
+K_WORK_DELAYABLE_DEFINE(wedge_reboot_work, wedge_reboot_work_handler);
+
 static void idle_disconnect_work_handler(struct k_work *work)
 {
     if (!atomic_get(&is_connected)) {
@@ -1809,19 +2066,33 @@ static void idle_disconnect_work_handler(struct k_work *work)
     refresh_conn_param_mode();
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
-    /* An in-progress storage transfer is liveness on its own. A slow consumer —
-     * notably iOS, where the file read runs packet-by-packet in Dart rather than
-     * natively as on Android — can back-pressure the firmware TX so that no
-     * notification (hence no transport_mark_activity() from write_to_gatt) happens
-     * for >15 s, even though the link is healthy and actively draining a file. The
-     * app's foreground keep-alive is also deliberately skipped during a transfer
-     * (it would race the read stream). Without this guard the link idle-drops
-     * mid-transfer (REMOTE_USER_TERM_CONN) and the resumed transfer drops again,
-     * looping. Defer the idle check while a transfer is active; the BLE supervision
-     * timeout still backstops a genuinely dead link. */
+    /* An in-progress storage transfer is liveness on its own. The app's foreground
+     * keep-alive is deliberately skipped during a transfer (it would race the read
+     * stream), so without this guard a transfer longer than the idle window would be
+     * dropped mid-file (REMOTE_USER_TERM_CONN) and the resumed transfer dropped again,
+     * looping.
+     *
+     * Bounded since oo-3.1.4. Unbounded, it was a way to never disconnect at all: a
+     * transfer whose notify is stuck behind a link the stack has lost keeps
+     * storage_transfer_active() true forever (remaining_length never reaches 0), so the
+     * idle timer deferred forever and the lost-disconnect recovery above never got a
+     * disconnect to watch. write_to_gatt() now marks activity per delivered packet — it
+     * used to mark once per call, and one call streams a whole file — so "nothing
+     * delivered for TRANSFER_STALL_MS" is a real stall, not a slow consumer.
+     *
+     * And the bound lapses only in silence (link_recovery_permitted). A stalled
+     * transfer is the likeliest place for the stack itself to be stuck, and
+     * bt_conn_disconnect() is a synchronous HCI command whose timeout is a BT_ASSERT —
+     * a halt, then a watchdog reset — which the silence rule could not stop once the
+     * call was made. While recording, the exemption stays unbounded, exactly as before. */
     if (storage_transfer_active()) {
-        k_work_schedule(k_work_delayable_from_work(work), K_MSEC(IDLE_DISCONNECT_POLL_MS));
-        return;
+        const uint32_t undelivered_ms = k_uptime_get_32() - (uint32_t) atomic_get(&last_activity_ms);
+        if (undelivered_ms < TRANSFER_STALL_MS || !link_recovery_permitted()) {
+            k_work_schedule(k_work_delayable_from_work(work), K_MSEC(IDLE_DISCONNECT_POLL_MS));
+            return;
+        }
+        /* Falls through: idle_ms below reads the same clock, so it is past the timeout. */
+        LOG_WRN("Transfer active but nothing delivered for %u ms — treating the link as idle", undelivered_ms);
     }
 
     /* Same liveness exemption for a DFU image upload. DFU traffic rides the SMP
@@ -1891,6 +2162,12 @@ static void idle_disconnect_work_handler(struct k_work *work)
     if (idle_ms_locked >= IDLE_DISCONNECT_TIMEOUT_MS) {
         conn_to_release = current_connection;
         current_connection = NULL;
+        if (conn_to_release != NULL) {
+            /* Owed from this moment — inside the section _transport_disconnected clears
+             * it in. See "Lost-disconnect recovery" for why that placement matters. */
+            atomic_set(&disconnect_owed_since_ms, (atomic_val_t) k_uptime_get_32());
+            atomic_set(&disconnect_owed, 1);
+        }
     }
     k_mutex_unlock(&conn_mutex);
 
@@ -1901,10 +2178,19 @@ static void idle_disconnect_work_handler(struct k_work *work)
     }
 
     LOG_INF("Idle for %u ms, disconnecting to save power", idle_ms);
-    bt_conn_disconnect(conn_to_release, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    int disc_err = bt_conn_disconnect(conn_to_release, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    if (disc_err) {
+        /* -ENOTCONN here means the host already thinks the link is down, yet the
+         * callback that would have taken current_connection never ran. */
+        LOG_WRN("bt_conn_disconnect failed (err %d)", disc_err);
+    }
+    atomic_set(&disconnect_owed_err, (atomic_val_t) (disc_err < 0 ? -disc_err : disc_err));
     bt_conn_unref(conn_to_release);
-    /* _transport_disconnected fires next; it restarts advertising and the
-     * work item stays cancelled until the next connect. */
+    /* _transport_disconnected fires next; it restarts advertising, pays the owed
+     * disconnect, and the work item stays cancelled until the next connect. If it never
+     * fires, this is the backstop. Harmless when it already has: the handler finds
+     * nothing owed. */
+    k_work_reschedule(&wedge_reboot_work, K_MSEC(LINK_DISCONNECT_REPORT_MS));
 }
 K_WORK_DELAYABLE_DEFINE(idle_disconnect_work, idle_disconnect_work_handler);
 
@@ -2347,11 +2633,19 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
     LOG_INF("Transport disconnected (reason 0x%02x)", err);
 
     k_mutex_lock(&conn_mutex, K_FOREVER);
+    /* Any disconnect the idle timer asked for has now been reported. Cleared in the
+     * section that releases current_connection, the counterpart of the one the idle
+     * timer sets it in, so a set can never land after this clear ("Lost-disconnect
+     * recovery"). */
+    atomic_set(&disconnect_owed, 0);
     if (current_connection != NULL) {
         bt_conn_unref(current_connection);
         current_connection = NULL;
     }
     k_mutex_unlock(&conn_mutex);
+    k_work_cancel_delayable(&wedge_reboot_work);
+    /* The next link starts from "told nothing": its subscribe push sends the state. */
+    atomic_set(&rec_state_notified, REC_STATE_NOT_NOTIFIED);
 
     /* Advertising must come back, or the device is invisible until someone reboots it:
      * slow mode sets BT_LE_ADV_OPT_ONE_TIME, and Zephyr does not auto-restart that.
@@ -2594,10 +2888,14 @@ static bool write_to_tx_queue(uint8_t *data, size_t size)
          * submission — which no downstream counter can see, precisely because it is never
          * submitted — is counted as DIAG_WRITE_BLOCKED_PREROLL_TRIMMED.
          *
-         * The ring only stays full if pusher() has stopped draining it, and the failure
-         * is self-sustaining: bailing here also skips the k_sem_give below, so a pusher
-         * waiting on tx_queue_sem is never woken again. Hence a diag record rather than a
-         * counter — the 0x0062 payload is full at 100 B, and WHEN the stall began is the
+         * Until oo-3.1.4 this fired on every VAD pre-roll burst: the pusher shared the
+         * codec thread's priority, so the codec encoded its whole backlog before the
+         * pusher drained a single frame, and a burst longer than the ring's 32 slots lost
+         * its tail here. The pusher now runs one priority above the codec (see
+         * transport_start) and takes each frame as it is queued. What can still fill the
+         * ring is a pusher that is itself blocked — write_to_storage() waiting on a full
+         * SD queue — for longer than 32 frames (640 ms). Hence a diag record rather than a
+         * counter — the 0x0062 payload is full at 100 B, and WHEN it happened is the
          * diagnosis anyway. Rate-limited to 1/s; arg1 carries the running total so the
          * lost detail is only the timing of repeats, which the first record already
          * establishes. Statics are fine unlocked: this runs solely on the codec thread. */
@@ -2985,7 +3283,11 @@ int transport_off()
     k_mutex_lock(&conn_mutex, K_FOREVER);
     conn_to_release = current_connection;
     current_connection = NULL;
+    /* Powering off: a lost-disconnect reboot must not fire in the middle of it and turn
+     * the power-off into a restart. bt_disable() below ends the question anyway. */
+    atomic_set(&disconnect_owed, 0);
     k_mutex_unlock(&conn_mutex);
+    k_work_cancel_delayable(&wedge_reboot_work);
 
     if (conn_to_release != NULL) {
         bt_conn_disconnect(conn_to_release, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
@@ -3256,6 +3558,15 @@ int transport_start()
         return -1;
     }
 
+    /* Priority 6: one step ABOVE the codec thread (7) that feeds it, since oo-3.1.4. At
+     * equal priority with no time slicing the codec encoded its whole backlog before
+     * the pusher ran once — and a VAD pre-roll burst is a 40-frame backlog — so every
+     * frame past the ring's 32 slots died in write_to_tx_queue()
+     * (DIAG_WRITE_BLOCKED_TX_RING_FULL; see diag_log.h). One step above, each
+     * k_sem_give() there readies the pusher, which preempts the codec and takes the
+     * frame at once. Still below the mic and AAD threads (5): the pusher must never
+     * delay capture. ring_buf needs no lock for this: one producer (the codec thread),
+     * one consumer (this thread). */
     struct k_thread *thread = k_thread_create(&pusher_thread,
                                               pusher_stack,
                                               K_THREAD_STACK_SIZEOF(pusher_stack),
@@ -3263,7 +3574,7 @@ int transport_start()
                                               NULL,
                                               NULL,
                                               NULL,
-                                              K_PRIO_PREEMPT(7),
+                                              K_PRIO_PREEMPT(6),
                                               0,
                                               K_NO_WAIT);
     if (thread == NULL) {
