@@ -1197,6 +1197,10 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                   isMuted: deviceProvider.isMuted,
                   since: deviceProvider.muteSince,
                 ),
+                PriorityRecordingBanner(
+                  active: deviceProvider.isPriorityRecording,
+                  since: deviceProvider.recordingSince,
+                ),
                 SyncProcessCard(
                   data: SyncCardData(
                     state: controller.spState,
