@@ -224,6 +224,46 @@ void main() {
       expect(diagEventCategory(rec(code: 4)), DiagEventCategory.markers);
       expect(diagEventCategory(rec(code: 13)), DiagEventCategory.ble);
       expect(diagEventCategory(rec(code: 16)), DiagEventCategory.mic);
+      expect(diagEventCategory(rec(code: 20)), DiagEventCategory.ble);
+    });
+
+    test('a wedge reboot is a recovery warning; a boot is graded on its reset cause', () {
+      expect(diagEventLevel(rec(code: 20, arg0: 107, arg1: 60000)), DiagLevel.warn);
+      // boot: arg1 = hwinfo reset cause. Watchdog (0x10) or CPU lockup (0x100) is a crash.
+      expect(diagEventLevel(rec(code: 21, arg0: 1, arg1: 0x002)), DiagLevel.info);
+      expect(diagEventLevel(rec(code: 21, arg0: 1, arg1: 0x010)), DiagLevel.bad);
+      expect(diagEventLevel(rec(code: 21, arg0: 0, arg1: 0x100)), DiagLevel.bad);
+    });
+  });
+
+  group('diagRecordsFromEarlierBoots', () {
+    test('everything ahead of the last boot record, by position', () {
+      final a = rec(code: 7, seq: 10);
+      final boot1 = rec(code: 21, seq: 11);
+      final b = rec(code: 9, seq: 12);
+      final boot2 = rec(code: 21, seq: 13);
+      final c = rec(code: 7, seq: 14);
+      final earlier = diagRecordsFromEarlierBoots([a, boot1, b, boot2, c]);
+      expect(earlier, containsAll([a, boot1, b]));
+      expect(earlier.contains(boot2), isFalse, reason: 'the current boot starts at its own record');
+      expect(earlier.contains(c), isFalse);
+    });
+
+    test('a seq that restarted after lost retained RAM still reads as the new boot', () {
+      // The ring did not survive, so the new boot counts from 1 while the app still
+      // holds the old batch: position, not seq, is what separates them.
+      final old = rec(code: 7, seq: 500);
+      final boot = rec(code: 21, seq: 1);
+      final fresh = rec(code: 7, seq: 2);
+      final earlier = diagRecordsFromEarlierBoots([old, boot, fresh]);
+      expect(earlier.contains(old), isTrue);
+      expect(earlier.contains(fresh), isFalse);
+    });
+
+    test('nothing is earlier without a boot record (older firmware), or when it leads', () {
+      expect(diagRecordsFromEarlierBoots([rec(code: 7), rec(code: 9)]), isEmpty);
+      expect(diagRecordsFromEarlierBoots([rec(code: 21), rec(code: 9)]), isEmpty);
+      expect(diagRecordsFromEarlierBoots(const []), isEmpty);
     });
 
     test('diagWorst reports the worst member, and ok when empty', () {
