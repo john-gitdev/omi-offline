@@ -360,7 +360,7 @@ int main(void)
 
     /* Validate retained RAM (mute + the diagnostic event ring) before anything reads or
      * writes it. A slice that does not carry this firmware's signature is reset. */
-    (void) retained_init();
+    const bool retained_kept = retained_init();
 
     /* Adopt the previous boot's diagnostic event ring if it survived, otherwise start
      * it empty — before any thread could enqueue (no-op when CONFIG_OMI_DIAG_LOG is
@@ -418,23 +418,6 @@ int main(void)
      * is closed until the app connects. */
     diag_log_event_forced(DIAG_BOOT, 0, diag_kept ? 1 : 0, boot_cause);
 
-    /* Did the last boot reboot itself to recover a link wedge (transport.c, "Lost-
-     * disconnect recovery")? Reported from its flash record, so the evidence does not
-     * depend on the retained ring, and its mute is restored below even if retained RAM
-     * did not survive. */
-    bool wedge_muted = false;
-    uint32_t wedge_mute_since = 0;
-    {
-        uint16_t err_magnitude = 0;
-        uint32_t waited_ms = 0;
-        if (app_settings_take_wedge_reboot(&wedge_muted, &wedge_mute_since, &err_magnitude, &waited_ms)) {
-            LOG_WRN("[BOOT] Previous boot rebooted itself: BLE disconnect never reported (err -%u, %u ms)",
-                    err_magnitude,
-                    waited_ms);
-            diag_log_event_forced(DIAG_LINK_WEDGE_REBOOT, 0, err_magnitude, waited_ms);
-        }
-    }
-
     app_sd_init();
     init_rtc();
 
@@ -477,14 +460,35 @@ int main(void)
 
     boot_warming_sequence();
 
+    /* Did the last boot reboot itself to recover a link wedge (transport.c, "Lost-
+     * disconnect recovery")? Reported from its flash record, so the evidence does not
+     * depend on the retained ring. Consumed here, directly before the mute restore that
+     * is its other use, so the record is not cleared seconds before anything acts on it. */
+    bool wedge_muted = false;
+    uint32_t wedge_mute_since = 0;
+    {
+        uint16_t err_magnitude = 0;
+        uint32_t waited_ms = 0;
+        if (app_settings_take_wedge_reboot(&wedge_muted, &wedge_mute_since, &err_magnitude, &waited_ms)) {
+            LOG_WRN("[BOOT] Previous boot rebooted itself: BLE disconnect never reported (err %d, %u ms)",
+                    -(int) err_magnitude,
+                    waited_ms);
+            diag_log_event_forced(DIAG_LINK_WEDGE_REBOOT, 0, err_magnitude, waited_ms);
+        }
+    }
+
     /* Put back a mute that was on when the device last went down — before the mic
-     * starts, and after the SD card is ready so the mute-on marker reaches it. The
-     * retained copy covers a reboot, a crash and a power-off; the wedge record covers
-     * the firmware's own reboot even if retained RAM did not survive. */
+     * starts, and after the SD card is ready so the mute-on marker reaches it.
+     *
+     * Retained RAM is the record whenever it survived: it tracked every mute change up
+     * to the moment the device went down, a reboot, a crash or a power-off. The wedge
+     * record is only the backstop for when it did not, so a stale one — a clear that
+     * failed to persist, re-reported on every later boot — can never override a mute the
+     * user has changed since. */
     {
         uint32_t mute_since = 0;
         bool muted = retained_mute_get(&mute_since);
-        if (!muted && wedge_muted) {
+        if (!retained_kept && wedge_muted) {
             muted = true;
             mute_since = wedge_mute_since;
         }
