@@ -48,6 +48,53 @@ class RecordingsManager {
   static bool _isProcessingAny = false;
   static bool get isProcessingAny => _isProcessingAny;
 
+  /// Finished (non-draft) audio already on disk when the current [processAll] began,
+  /// so the stitch pass can tell a recording the user could have seen from one this
+  /// run just produced. Null outside a run. See [_noteLateMerge].
+  Set<String>? _finishedBeforeRun;
+
+  /// Every finalized (non-draft) audio file under `recordings/`, by path — built the
+  /// same way the stitch pass lists them, so the paths compare equal.
+  static Future<Set<String>> _listFinishedAudio(String docsPath) async {
+    final out = <String>{};
+    final root = Directory('$docsPath/recordings');
+    if (!await root.exists()) return out;
+    await for (final folder in root.list()) {
+      if (folder is! Directory) continue;
+      await for (final f in folder.list()) {
+        if (f is! File) continue;
+        final path = f.path;
+        if ((path.endsWith('.m4a') || path.endsWith('.wav')) && !path.contains('_draft.') && !path.contains('.tmp')) {
+          out.add(path);
+        }
+      }
+    }
+    return out;
+  }
+
+  /// Records, for a one-time message on the recordings page, that the recording that
+  /// started at [absorbedStartMs] — already finished before this run — was folded into
+  /// the draft starting at [mergedStartMs]. A pref because the stitch usually runs in a
+  /// background sync with no page to show it on. Bounded: the page clears it on
+  /// display, so only a long stretch without opening the app accumulates entries.
+  static void _noteLateMerge({required int absorbedStartMs, required int mergedStartMs}) {
+    if (absorbedStartMs <= 0 || mergedStartMs <= 0) return;
+    final prefs = SharedPreferencesUtil();
+    final next = [...prefs.lateMergeNotices, '$absorbedStartMs:$mergedStartMs'];
+    prefs.lateMergeNotices = next.length > 20 ? next.sublist(next.length - 20) : next;
+    Logger.debug('RecordingsManager: late merge — recording_$absorbedStartMs was finished before this run '
+        'and is now part of recording_$mergedStartMs.');
+  }
+
+  /// [applyClockAnchors] for the processing paths, which it must never take down.
+  static Future<void> _applyClockAnchorsLogged() async {
+    try {
+      await applyClockAnchors();
+    } catch (e) {
+      Logger.error('RecordingsManager: clock-anchor pass failed ($e) — timestamps left as the Omi filed them.');
+    }
+  }
+
   /// Global progress of the current processing task (0.0 to 1.0).
   static final ValueNotifier<double> processingProgress = ValueNotifier(0.0);
 
@@ -566,6 +613,7 @@ class RecordingsManager {
 
     try {
       final directory = await getApplicationDocumentsDirectory();
+      _finishedBeforeRun = await _listFinishedAudio(directory.path);
 
       // Disk space guard — bail before processing if free space is critically low.
       final allRawFiles = activeBatches.expand((b) => b.rawSegments).toList();
@@ -1046,8 +1094,16 @@ class RecordingsManager {
         isTranscoding.value = false;
       }
 
+      // Re-file anything the Omi mis-dated while this run still counts as processing,
+      // so the auto-upload sweep — held until processing ends — only ever sees final
+      // names. Here, not only in the foreground pipeline's _finishPipelineRun, because
+      // a scheduled sync never reaches that: a wrong date stayed wrong until the user
+      // next tapped Sync, and anything uploaded meanwhile went out under it.
+      await _applyClockAnchorsLogged();
+
       onProgress(1.0, Duration.zero);
     } finally {
+      _finishedBeforeRun = null;
       _isProcessingAny = false;
       _activeIsolate = null;
       _activeIsolateControlPort = null;
@@ -1436,9 +1492,19 @@ class RecordingsManager {
   @visibleForTesting
   Future<void> markDraftHardEndedForTest(String docsPath, int markerMs) => _markDraftHardEnded(docsPath, markerMs);
 
+  /// Mirrors [processAll]'s bracket around the stitch: snapshot the finished recordings
+  /// on disk, let [duringRun] stand in for the decode (anything it writes was created
+  /// by "this run"), then stitch.
   @visibleForTesting
-  Future<void> stitchDraftRecordingsForTest({bool finalizeAll = false}) =>
-      _stitchDraftRecordings(finalizeAll: finalizeAll);
+  Future<void> stitchDraftRecordingsForTest({bool finalizeAll = false, Future<void> Function()? duringRun}) async {
+    _finishedBeforeRun = await _listFinishedAudio((await getApplicationDocumentsDirectory()).path);
+    try {
+      await duringRun?.call();
+      await _stitchDraftRecordings(finalizeAll: finalizeAll);
+    } finally {
+      _finishedBeforeRun = null;
+    }
+  }
 
   /// Appends the audio from a [DiscardRecord] (ghost) into the [draftFile],
   /// preceded by [gapMs] of silence.
@@ -1825,6 +1891,16 @@ class RecordingsManager {
     await nextFile.delete();
     final nextMeta = File(nextFile.path.replaceAll(RegExp(r'\.wav$'), '.meta'));
     if (await nextMeta.exists()) await nextMeta.delete();
+
+    // A recording that was already finished before this run — one the user could have
+    // seen, played or uploaded — was just folded into an earlier draft and is gone from
+    // the list. Only out-of-order audio (an older bin fetched after newer ones were
+    // processed) or an interrupted run does that; the everyday cross-sync join absorbs
+    // a recording this same run created, before anything could upload it. Say so once.
+    if (_finishedBeforeRun?.contains(nextFile.path) ?? false) {
+      _noteLateMerge(
+          absorbedStartMs: _extractTimestamp(nextFile.path), mergedStartMs: _extractTimestamp(draftFile.path));
+    }
 
     return true;
   }
@@ -2371,7 +2447,14 @@ class RecordingsManager {
             );
           }).toList();
     final activeBatches = processableBatches.where((b) => b.rawSegments.isNotEmpty).toList();
-    if (activeBatches.isEmpty) return;
+    if (activeBatches.isEmpty) {
+      // Nothing new to decode, but this connect may have brought the anchor that places
+      // recordings an earlier run filed before any anchor existed — the case where the
+      // first connect's diagnostics read lost the race to its own sync. processAll runs
+      // the same pass for a run that has audio.
+      await _applyClockAnchorsLogged();
+      return;
+    }
     try {
       await manager.processAll(activeBatches, (_, __) {}, backgroundMode: true);
     } catch (e) {
@@ -2693,10 +2776,15 @@ class RecordingsManager {
   /// The gap between "a bit of drift" and "the counter wrapped" is four orders of
   /// magnitude, so no tuned threshold decides this.
   ///
-  /// Whole sessions move together, because a session has exactly one offset: if its
-  /// clock was wrong, every recording in it is wrong by the same amount. A session with
-  /// no anchor — one that had already ended before the phone ever saw it — is left
-  /// alone, since the gap between two boots is unmeasurable once both counters reset.
+  /// Only the recordings the anchor proves wrong (or that never had a time) move — not
+  /// the whole session. A session has one TRUE offset, but a boot the Omi guessed wrong
+  /// holds two claimed ones: everything before the phone first reached it carries the
+  /// guess, everything after carries the phone's time. Re-filing every recording with
+  /// the session id renamed the correct ones too (by up to a second, since uptimes are
+  /// whole seconds), stamped them 0x20, and handed undo an offset that was never theirs
+  /// — so undo moved them onto the Omi's wrong date. A session with no anchor — one
+  /// that had already ended before the phone ever saw it — is left alone, since the
+  /// gap between two boots is unmeasurable once both counters reset.
   ///
   /// Idempotent by construction. Once moved, a session's recordings agree with their
   /// anchor, so the next pass reads `alreadyCorrect` and does nothing; and a user who
@@ -2738,7 +2826,7 @@ class RecordingsManager {
       final anchor = anchors.forSession(entry.key)!;
       final convs = entry.value;
 
-      var needsMove = false;
+      final toMove = <Conversation>[];
       for (final c in convs) {
         final verdict = clockVerdict(
           anchor: anchor,
@@ -2747,24 +2835,21 @@ class RecordingsManager {
           claimedStartMs: c.startTime.millisecondsSinceEpoch,
           isUnknown: c.isUnknown,
         );
-        if (verdict == ClockVerdict.correctWrong || verdict == ClockVerdict.fileUnknown) {
-          needsMove = true;
-          break;
-        }
+        if (verdict == ClockVerdict.correctWrong || verdict == ClockVerdict.fileUnknown) toMove.add(c);
       }
-      if (!needsMove) continue;
+      if (toMove.isEmpty) continue;
 
-      // The base only supplies the offset, and every recording in the session yields
-      // the same one, so any with a usable uptime will do. The earliest is chosen so
-      // the folder-migration step inside promoteSessionToDate keys off the session's
-      // first recording rather than an arbitrary later one.
-      Conversation? base;
-      for (final c in convs) {
-        final up = c.startUptime;
-        if (up == null || up <= 0) continue;
-        if (base == null || up < base.startUptime!) base = c;
+      // The base supplies the offset the moved recordings carried (for the ledger) and
+      // converts the anchor into promoteSessionToDate's terms. Drawn from the recordings
+      // being moved, never the whole session: its correct recordings carry a different
+      // offset, and undo must restore the one these had. Both verdicts above require a
+      // usable uptime, so every candidate has one; the earliest is chosen so the
+      // folder-migration step keys off the first of them.
+      var base = toMove.first;
+      for (final c in toMove) {
+        if (c.startUptime! < base.startUptime!) base = c;
       }
-      if (base == null) continue;
+      final movePaths = {for (final c in toMove) c.file.path};
 
       final newStartMs = anchor.startMsFor(base.startUptime!);
       // Captured BEFORE the move, because the move is what destroys it: the offset lives
@@ -2776,12 +2861,13 @@ class RecordingsManager {
           base,
           DateTime.fromMillisecondsSinceEpoch(newStartMs),
           markClockCorrected: true,
+          include: (c) => movePaths.contains(c.file.path),
         );
         ledger = ledger.recordCorrection(entry.key, originalOffsetMs);
         prefs.clockCorrectionLedger = ledger.encode();
         moved++;
-        Logger.debug('RecordingsManager: clock anchor re-filed session ${entry.key} '
-            '(${convs.length} recording(s)) to ${DateTime.fromMillisecondsSinceEpoch(newStartMs)}');
+        Logger.debug('RecordingsManager: clock anchor re-filed ${toMove.length} of ${convs.length} recording(s) '
+            'in session ${entry.key}, from ${DateTime.fromMillisecondsSinceEpoch(newStartMs)}');
       } catch (e) {
         Logger.error('RecordingsManager: clock-anchor re-file failed for session ${entry.key}: $e');
       }
@@ -2821,7 +2907,13 @@ class RecordingsManager {
       notifyRecordingsChanged();
       return;
     }
-    await promoteSessionToDate(conv, DateTime.fromMillisecondsSinceEpoch((uptime * 1000) + originalOffsetMs));
+    // Only what the correction moved. The rest of the session was never re-filed, and
+    // the ledger's offset is not theirs: applying it would move correctly-dated
+    // recordings onto the Omi's wrong date. A session corrected by an older build that
+    // re-filed whole sessions carries 0x20 on its correct recordings too, and nothing
+    // left on disk tells those apart — their original names are gone.
+    await promoteSessionToDate(conv, DateTime.fromMillisecondsSinceEpoch((uptime * 1000) + originalOffsetMs),
+        include: (c) => c.clockCorrected);
     await _clearClockCorrectedForSession(sessionId);
     notifyRecordingsChanged();
   }
@@ -2849,16 +2941,19 @@ class RecordingsManager {
     }
   }
 
-  /// Batch-updates the starting timestamp for an entire hardware session.
+  /// Batch-updates the starting timestamp for a hardware session's recordings.
   ///
-  /// This renames and moves all processed recordings, .meta sidecars, .bin raw syncs,
-  /// and .edl markers belonging to the same sessionId.
+  /// This renames and moves the processed recordings, .meta sidecars, .bin raw syncs,
+  /// and .edl markers belonging to the same sessionId — every one of them, or only
+  /// those [include] accepts. Every caller passes [include], because a session's
+  /// recordings need not share an offset: a boot the Omi guessed wrong is wrong only
+  /// until the phone first reaches it. The offset itself is derived from [base].
   /// [markClockCorrected] stamps flag byte [3] bit 0x20 on every `.meta` this moves,
   /// marking the recording as re-filed by the phone rather than timestamped by the Omi.
   /// Only [applyClockAnchors] passes it — the manual date picker leaves the bit alone,
   /// because a date the user chose by hand has nothing to revert *to*.
   static Future<void> promoteSessionToDate(Conversation base, DateTime newStartTime,
-      {bool markClockCorrected = false}) async {
+      {bool markClockCorrected = false, bool Function(Conversation c)? include}) async {
     final sessionId = base.sessionId;
     final startUptime = base.startUptime;
     if (startUptime == null || startUptime == 0) {
@@ -2888,12 +2983,10 @@ class RecordingsManager {
 
         for (final file in audioFiles) {
           final conv = Conversation.fromFile(file);
-          if (conv.sessionId == sessionId && sessionId != null) {
-            sessionConversations.add(conv);
-          } else if (file.path == base.file.path) {
-            // Fallback for single-file promotion if sessionId is missing
-            sessionConversations.add(conv);
-          }
+          final inSession = (conv.sessionId == sessionId && sessionId != null) ||
+              // Fallback for single-file promotion if sessionId is missing
+              file.path == base.file.path;
+          if (inSession && (include == null || include(conv))) sessionConversations.add(conv);
         }
       }
     }
