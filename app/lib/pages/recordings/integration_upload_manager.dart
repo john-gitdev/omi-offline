@@ -92,14 +92,16 @@ class IntegrationUploadManager {
   final bool Function() _isDisposed;
   final bool Function() _isPipelineIdle;
 
-  /// True while audio is being processed (`RecordingsManager.isProcessingAny`).
-  /// Deliberately not [_isPipelineIdle]: that is the controller's screen state, and
-  /// during a scheduled sync it still reads idle for the first seconds of processing
-  /// — exactly the window [tryAutoUploadAll] must not sweep in.
+  /// True while recordings on disk may still be renamed, merged or deleted
+  /// (`RecordingsManager.recordingsUnsettled`: a processing run, or a clock-anchor pass
+  /// outside one). Deliberately not [_isPipelineIdle]: that is the controller's screen
+  /// state, and during a scheduled sync it still reads idle for the first seconds of
+  /// processing — exactly the window [tryAutoUploadAll] must not sweep in.
   final bool Function() _isProcessing;
 
-  /// Set when [tryAutoUploadAll] was held back by [_isProcessing]; consumed by
-  /// [takeDeferredSweep].
+  /// Set when auto work was held back by [_isProcessing] — a sweep in
+  /// [tryAutoUploadAll] or a queued job in [_pumpLane] — and cleared only by a sweep
+  /// that actually runs. See [deferredSweepReady].
   bool _autoSweepDeferred = false;
   final void Function() _notifyUi;
   final void Function(String reason) _acquireWake;
@@ -214,6 +216,17 @@ class IntegrationUploadManager {
     try {
       while (!_isDisposed() && !lane.isEmpty) {
         if (lane.cancelRequested) break; // user disabled this integration / its auto-upload
+        // Auto work waits out processing exactly as the sweep that queued it does. A job
+        // queued before a run began could otherwise start mid-run, on a recording the
+        // stitch is about to fold into an earlier draft or the clock pass is about to
+        // re-file — sending the Omi's wrong date, or failing on the path the rename just
+        // emptied. Parked, not dropped: the controller's re-run of the held sweep pumps
+        // the lane again once recordings settle, and the dequeue check below skips any
+        // job whose recording has moved by then. Manual jobs drain first and never wait.
+        if (lane.manual.isEmpty && _isProcessing()) {
+          _autoSweepDeferred = true;
+          break;
+        }
         // Wifi gate before committing to a job. Fail closed: if we can't confirm
         // wifi, park rather than upload over cellular. The connectivity listener
         // re-pumps on the next change.
@@ -233,6 +246,10 @@ class IntegrationUploadManager {
 
         // Re-validate at dequeue — state drifts between enqueue and run.
         if (!job.force && integration.hasDelivered(conversation)) continue; // delivered by another path
+        // Its source is gone since it was queued — renamed, folded into an earlier draft,
+        // or deleted. Not a failure: uploading would throw, spend a retry and purge the
+        // lane, and the next sweep queues the recording under whatever it is now.
+        if (!integration.isAvailableFor(conversation)) continue;
         if (!job.manual && integration.isBackingOff(conversation)) continue; // auto honors backoff; manual overrides
 
         lane.current = job;
@@ -404,26 +421,25 @@ class IntegrationUploadManager {
     return '$name — $delivered/$laneTotal queued';
   }
 
-  /// True once if [tryAutoUploadAll] was held back by processing since the last
-  /// sweep that ran, and clears it — so a caller polling this re-runs the sweep
-  /// exactly once rather than on every poll.
-  bool takeDeferredSweep() {
-    final deferred = _autoSweepDeferred;
-    _autoSweepDeferred = false;
-    return deferred;
-  }
+  /// True when auto work was held back since the last sweep that ran and the hold has
+  /// lifted — the controller's cue to re-run the sweep. Asking does not clear it; only a
+  /// sweep that actually runs does, so a re-run whose batch reload fails is retried
+  /// rather than lost.
+  bool get deferredSweepReady => _autoSweepDeferred && !_isProcessing();
 
   /// Producer for the auto-upload sweep: enqueues every auto-eligible recording
   /// (respecting the auto-upload toggle, time cutoff, delivery, server backoff,
   /// and the retry budget), then kicks the single sequential worker. No longer
-  /// uploads directly — the worker is the sole consumer. Held while audio is
-  /// being processed; see [takeDeferredSweep].
+  /// uploads directly — the worker is the sole consumer. Held while recordings are
+  /// unsettled; see [deferredSweepReady].
   void tryAutoUploadAll() {
     // Never while audio is being processed. A run moves each finished recording
     // into place as soon as its bin is decoded, but stitches drafts only at its end,
     // so a sweep in between can upload a recording the same run is about to fold
     // into the draft before it and delete — and the merged recording then uploads
-    // again. Held, not dropped: the controller re-runs it once processing ends.
+    // again. Nor while the clock pass re-files outside a run: the sweep would queue
+    // names about to change. Held, not dropped: the controller re-runs it once
+    // recordings settle.
     if (_isProcessing()) {
       _autoSweepDeferred = true;
       return;
