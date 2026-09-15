@@ -122,6 +122,46 @@ class RecordingsManager {
     if (changed) prefs.lateMergeNotices = next;
   }
 
+  /// The Omi Cloud upload file for the recording [audio]: `recording_fs320_<ts>.bin`
+  /// beside it, written at processing time while Omi sync is enabled. Omi's upload state
+  /// is keyed by this path, so it has one definition — `PassthroughIntegration.getBinPath`
+  /// reads through it and [promoteSessionToDate] writes through it. Separators are
+  /// normalised to '/', so a path built by hand and one read back from a directory
+  /// listing agree even where the platform lists with '\' (Android never does).
+  static String omiBinPathFor(File audio) {
+    final path = audio.path.replaceAll('\\', '/');
+    final ts = path.split('/').last.split('_').last.split('.').first;
+    return '${path.substring(0, path.lastIndexOf('/'))}/recording_fs320_$ts.bin';
+  }
+
+  /// Moves [from]'s Omi Cloud upload file and its upload state to follow the recording
+  /// now at [to]. Both are found by the recording's name, so left behind the file is
+  /// orphaned — the renamed recording can no longer be sent to Omi Cloud — and the
+  /// state says it was never sent, so auto-upload queues it, fails on the missing file
+  /// and gives up after three tries. Never throws: the audio has already moved, and the
+  /// rest of [promoteSessionToDate]'s pass must not be abandoned over this.
+  static Future<void> _moveOmiUpload(File from, File to) async {
+    final fromBin = omiBinPathFor(from);
+    final toBin = omiBinPathFor(to);
+    try {
+      final bin = File(fromBin);
+      if (await bin.exists()) {
+        if (await File(toBin).exists()) {
+          // Never overwrite a file this pass did not put there.
+          Logger.error('RecordingsManager: not moving ${fromBin.split('/').last} onto '
+              '${toBin.split('/').last} — that name is already on disk. Left where it is.');
+        } else {
+          await bin.rename(toBin);
+        }
+      }
+      // Whether or not the file moved: a delivered mark describes the recording's audio,
+      // and dropping it would send that audio again.
+      await SharedPreferencesUtil().moveOmiUploadState(fromBin, toBin);
+    } catch (e) {
+      Logger.error('RecordingsManager: moving the Omi upload file for ${from.path} failed: $e');
+    }
+  }
+
   /// [applyClockAnchors] for the processing paths, which it must never take down.
   static Future<void> _applyClockAnchorsLogged() async {
     try {
@@ -3139,6 +3179,7 @@ class RecordingsManager {
       if (await metaFile.exists()) await metaFile.rename(newMetaPath);
       await conv.file.rename(newAudioPath);
       renamedStarts[_extractTimestamp(conv.file.path)] = newConvStartMs;
+      await _moveOmiUpload(conv.file, File(newAudioPath));
       if (markClockCorrected) await _stampClockCorrected(File(newMetaPath));
 
       // Handle legacy .bin sidecar if present
