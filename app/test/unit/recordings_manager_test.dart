@@ -1763,6 +1763,7 @@ void main() {
       bool hardStart = false,
       bool hardEnd = false,
       bool? recordedManual,
+      bool forceSynced = false,
     }) async {
       final dateDir = Directory(p.join(tempDir.path, 'recordings', coverageDateOf(startMs)))
         ..createSync(recursive: true);
@@ -1777,6 +1778,7 @@ void main() {
       meta[416] = 0; // keyLen
       // [3] bit0 isSilero, bit1 hardStart, bit2 hardEnd, bit3 modeKnown, bit4 manual
       final mode = recordedManual == null ? 0x00 : (0x08 | (recordedManual ? 0x10 : 0x00));
+      meta[418] = forceSynced ? 0x01 : 0x00; // [1] forceSynced — the bolt
       meta[420] = (hardStart ? 0x02 : 0x00) | (hardEnd ? 0x04 : 0x00) | mode;
       File(p.join(dateDir.path, 'recording_$startMs$suffix.meta')).writeAsBytesSync(meta);
       return wav;
@@ -1829,6 +1831,44 @@ void main() {
       expect(SharedPreferencesUtil().lateMergeNotices, isEmpty);
     });
 
+    // A late merge only adds audio in front of a recording the user already saw
+    // finished, and must not reopen it. With nothing after it, the merged recording used
+    // to drop back to "Conversation in progress" until the next conversation.
+    test('a draft that absorbs a recording finished before this run is finished with it', () async {
+      final draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true);
+      await writeStitchable(startMs: nextStart, durationMs: nextMs);
+
+      await RecordingsManager().stitchDraftRecordingsForTest();
+
+      expect(draft.existsSync(), isFalse, reason: 'not left in progress');
+      final finalized = File(draft.path.replaceAll('_draft.wav', '.wav'));
+      expect(finalized.existsSync(), isTrue, reason: 'listed, at the earlier start the message names');
+      final meta = File(finalized.path.replaceAll('.wav', '.meta')).readAsBytesSync();
+      expect(ByteData.sublistView(meta).getUint32(4, Endian.little), draftMs + nextMs);
+    });
+
+    test('a recording after the absorbed one stays its own, as the user saw it', () async {
+      final draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true);
+      await writeStitchable(startMs: nextStart, durationMs: nextMs);
+      final after = await writeStitchable(startMs: nextStart + nextMs, durationMs: 2000);
+
+      await RecordingsManager().stitchDraftRecordingsForTest();
+
+      expect(after.existsSync(), isTrue, reason: 'the absorbed recording ended before it, and that end stands');
+      expect(after.lengthSync(), 44 + 2000 * 32);
+      expect(File(draft.path.replaceAll('_draft.wav', '.wav')).existsSync(), isTrue);
+    });
+
+    test('the bolt of a Force-Synced recording carries onto the merged one', () async {
+      final draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true);
+      await writeStitchable(startMs: nextStart, durationMs: nextMs, forceSynced: true);
+
+      await RecordingsManager().stitchDraftRecordingsForTest();
+
+      final meta = File(draft.path.replaceAll('_draft.wav', '.meta')).readAsBytesSync();
+      expect(meta[418] & 0x01, 0x01, reason: 'its end is still the one Force Sync chose');
+    });
+
     // The mode stamp is written ONCE, by VadAudioProcessor._saveMetadata, and then
     // has to survive every later rewrite of the .meta it shares a byte with. Both
     // rewrites are read-modify-write and both were checked by inspection; these pin
@@ -1868,9 +1908,12 @@ void main() {
 
     test('an ordinary next recording at the same zero gap is still stitched (control)', () async {
       final draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true);
-      final next = await writeStitchable(startMs: nextStart, durationMs: nextMs);
+      late File next;
 
-      await RecordingsManager().stitchDraftRecordingsForTest();
+      // Created by this run — the everyday cross-sync join, which leaves the draft open.
+      await RecordingsManager().stitchDraftRecordingsForTest(
+        duringRun: () async => next = await writeStitchable(startMs: nextStart, durationMs: nextMs),
+      );
 
       expect(next.existsSync(), isFalse, reason: 'consumed into the draft');
       expect(draft.existsSync(), isTrue, reason: 'still open — stitched, not finalized');
