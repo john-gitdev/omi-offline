@@ -36,6 +36,13 @@ typedef enum {
      * on older firmware, where the indicator is always on and the master gate
      * is off after every reboot. */
     OMI_FEATURE_LED_SERVICE = (1 << 13),
+    /* The recording-state characteristic (0x19B10083, LED service) exists: read +
+     * notify of whether a manual or Priority Recording is running right now, and
+     * since when. Lets the app show a live "Priority Recording" banner instead of
+     * inferring it from inline markers, which only reach the phone once the bin
+     * holding them has rotated (up to 10 min late) and can be lost. AAD builds only —
+     * both recording kinds are AAD thresholds. */
+    OMI_FEATURE_RECORDING_STATE = (1 << 14),
 } omi_feature_t;
 
 #endif // FEATURES_H
