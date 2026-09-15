@@ -14,6 +14,7 @@ import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/services/wals.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/utils/mutex.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/debug_log_manager.dart';
@@ -2008,14 +2009,18 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // Peak thread stack usage vs the configured stack sizes (firmware constants,
     // oo-2.7.2+: codec_stack=23096). Gauges, shown raw.
     //
-    // sd_worker is 12288 in production but (12288 - DIAG_LOG_RING_BYTES) = 10240 on a
-    // CONFIG_OMI_DIAG_LOG build, which carves the diag-event ring out of that stack.
-    // That macro is also the only thing that sets OmiFeatures.diagLog, so
-    // diagLogSupported is an exact proxy for which size is compiled in. Hardcoding the
-    // production 12288 understated the fill on every dev build and — worse — put the
-    // 85% warn line at 10445 B, above the entire 10240 B stack, so it could not fire.
-    // Keep in sync with the firmware or the fill fraction is wrong.
-    final int sdWorkerStackSize = devProvider.diagLogSupported ? 12288 - 2048 : 12288;
+    // sd_worker is 12288 in every oo-3.1.4+ build. Before that, a CONFIG_OMI_DIAG_LOG
+    // build carved the 2 KB diag-event ring out of it, leaving 10240; the ring now lives
+    // in retained RAM. So the older size applies only to a diag-log build (diagLog bit)
+    // that predates the recording-state bit — both shipped in oo-3.1.4, and that bit is
+    // set unconditionally, so the pair is exact. Getting it wrong is not cosmetic: 12288
+    // on an old dev build understates the fill and puts the 85% warn line above the whole
+    // 10240 B stack, where it can never fire; 10240 on a new one overstates it.
+    // Keep in sync with sd_card.c or the fill fraction is wrong.
+    final features = devProvider.deviceFeatures;
+    final bool preRetainedDiagBuild = devProvider.diagLogSupported &&
+        !(features != null && OmiFeatures.hasFeature(features, OmiFeatures.recordingState));
+    final int sdWorkerStackSize = preRetainedDiagBuild ? 12288 - 2048 : 12288;
     const int codecStackSize = 23096;
     String stackLabel(int used, int size) =>
         used == 0 ? '—' : '${(used / 1024).toStringAsFixed(1)} / ${(size / 1024).toStringAsFixed(1)} KB';
