@@ -47,6 +47,22 @@ class SyncNotification {
     return muteSince != null ? 'Muted since ${DateFormat('h:mm a').format(muteSince!.toLocal())}' : 'Omi is Muted';
   }
 
+  /// Mirrored from DeviceProvider, like [isMuted]: a Priority Recording the
+  /// connected device is holding open (live, from its recording-state
+  /// characteristic). Cleared on disconnect with the rest of the live state.
+  static bool priorityRecording = false;
+  static DateTime? priorityRecordingSince;
+
+  /// "Priority Recording since 3:42 PM" / "Priority Recording in progress", or null.
+  /// Never competes with [_mutedTitle]: the device refuses one while the other holds.
+  static String? _priorityTitle() {
+    if (!priorityRecording) return null;
+    final s = priorityRecordingSince;
+    return s != null
+        ? 'Priority Recording since ${DateFormat('h:mm a').format(s.toLocal())}'
+        : 'Priority Recording in progress';
+  }
+
   /// Keep the foreground service alive with no device connected so the idle
   /// "Next sync / Last Sync" notification persists across BLE disconnect and app
   /// background. true while auto-sync is on and a device is bound; false in
@@ -98,8 +114,9 @@ class SyncNotification {
   /// [isConnected] is NOT rendered — it gates the battery clause below, which is the
   /// only reason it is still a parameter.
   static Future<void> idle({bool? isConnected}) async {
-    // Muted takes over the resting line: "Muted since 3:42 PM" / "Next sync at 4:15 PM".
-    final muted = _mutedTitle();
+    // Muted — or a live Priority Recording — takes over the resting line:
+    // "Muted since 3:42 PM" / "Next sync at 4:15 PM".
+    final muted = _mutedTitle() ?? _priorityTitle();
     if (muted != null) {
       final nextMuted = nextSyncTime;
       final body = nextMuted != null ? 'Next sync at ${DateFormat('h:mm a').format(nextMuted)}' : 'Auto-sync off';
