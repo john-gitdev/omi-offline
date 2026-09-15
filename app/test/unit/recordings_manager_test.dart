@@ -1834,11 +1834,14 @@ void main() {
     // A late merge only adds audio in front of a recording the user already saw
     // finished, and must not reopen it. With nothing after it, the merged recording used
     // to drop back to "Conversation in progress" until the next conversation.
-    test('a draft that absorbs a recording finished before this run is finished with it', () async {
-      final draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true);
+    test('late audio joined onto a recording finished before this run is finished with it', () async {
       await writeStitchable(startMs: nextStart, durationMs: nextMs);
+      late File draft;
 
-      await RecordingsManager().stitchDraftRecordingsForTest();
+      // The draft is the late audio: this run wrote it.
+      await RecordingsManager().stitchDraftRecordingsForTest(
+        duringRun: () async => draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true),
+      );
 
       expect(draft.existsSync(), isFalse, reason: 'not left in progress');
       final finalized = File(draft.path.replaceAll('_draft.wav', '.wav'));
@@ -1848,11 +1851,13 @@ void main() {
     });
 
     test('a recording after the absorbed one stays its own, as the user saw it', () async {
-      final draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true);
       await writeStitchable(startMs: nextStart, durationMs: nextMs);
       final after = await writeStitchable(startMs: nextStart + nextMs, durationMs: 2000);
+      late File draft;
 
-      await RecordingsManager().stitchDraftRecordingsForTest();
+      await RecordingsManager().stitchDraftRecordingsForTest(
+        duringRun: () async => draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true),
+      );
 
       expect(after.existsSync(), isTrue, reason: 'the absorbed recording ended before it, and that end stands');
       expect(after.lengthSync(), 44 + 2000 * 32);
@@ -1860,13 +1865,28 @@ void main() {
     });
 
     test('the bolt of a Force-Synced recording carries onto the merged one', () async {
-      final draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true);
       await writeStitchable(startMs: nextStart, durationMs: nextMs, forceSynced: true);
+      late File draft;
 
-      await RecordingsManager().stitchDraftRecordingsForTest();
+      await RecordingsManager().stitchDraftRecordingsForTest(
+        duringRun: () async => draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true),
+      );
 
       final meta = File(draft.path.replaceAll('_draft.wav', '.meta')).readAsBytesSync();
       expect(meta[418] & 0x01, 0x01, reason: 'its end is still the one Force Sync chose');
+    });
+
+    // A draft already on disk meets a finished recording only when the previous run
+    // died between moving its recordings and stitching them. That run would have kept
+    // joining, so the resumed one must too.
+    test('a draft that was already on disk keeps joining, as the interrupted run would have', () async {
+      final draft = await writeStitchable(startMs: draftStart, durationMs: draftMs, isDraft: true);
+      final next = await writeStitchable(startMs: nextStart, durationMs: nextMs);
+
+      await RecordingsManager().stitchDraftRecordingsForTest();
+
+      expect(next.existsSync(), isFalse, reason: 'joined');
+      expect(draft.existsSync(), isTrue, reason: 'and left open, exactly as before the late-merge close existed');
     });
 
     // The mode stamp is written ONCE, by VadAudioProcessor._saveMetadata, and then
@@ -2496,6 +2516,28 @@ void main() {
       expect(recs.length, 2);
     });
 
+    test('a hand-set date holds recordingsUnsettled while it renames', () async {
+      final unknown = writeRecording(
+        dateFolder: '1970-01-01',
+        basename: 'unknown_7200000',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      final seen = <bool>[];
+      void listener() => seen.add(RecordingsManager.recordingsUnsettled);
+      RecordingsManager.recordingsChangeNotifier.addListener(listener);
+      try {
+        await RecordingsManager.promoteSessionToDate(Conversation.fromFile(unknown), DateTime(2026, 7, 1, 9),
+            include: (c) => c.isUnknown);
+      } finally {
+        RecordingsManager.recordingsChangeNotifier.removeListener(listener);
+      }
+
+      expect(seen, isNotEmpty);
+      expect(seen, everyElement(isTrue), reason: 'no auto upload may start between the in-flight check and the rename');
+      expect(RecordingsManager.recordingsUnsettled, isFalse, reason: 'released once the move is over');
+    });
+
     // The run's clock pass comes after its stitch, so the recording a late-merge notice
     // names can be re-filed before anyone sees the message.
     test('a pending late-merge notice follows the recording it names when that is re-filed', () async {
@@ -2575,6 +2617,30 @@ void main() {
       await prefs.moveOmiUploadState('/r/a.bin', '/r/b.bin'); // nothing recorded under a
 
       expect(prefs.isOmiSynced('/r/b.bin'), isTrue, reason: 'losing it would re-send the audio');
+    });
+
+    // Omi's upload records its progress under the file's path as it goes, so a rename
+    // mid-upload would land the final "delivered" mark on a dead path.
+    test('a recording being uploaded is not re-filed until the upload is done', () async {
+      setAnchor();
+      final audio = writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+
+      RecordingsManager.noteUploadStarted(audio);
+      try {
+        await RecordingsManager.applyClockAnchors();
+        expect(allRecordings().containsKey('recording_$wrappedStartMs'), isTrue, reason: 'left under its name');
+      } finally {
+        RecordingsManager.noteUploadFinished(audio);
+      }
+
+      await RecordingsManager.applyClockAnchors();
+      expect(allRecordings().containsKey('recording_$trueStartMs'), isTrue, reason: 're-filed by the next pass');
+      expect(allRecordings().containsKey('recording_$wrappedStartMs'), isFalse);
     });
   });
 
