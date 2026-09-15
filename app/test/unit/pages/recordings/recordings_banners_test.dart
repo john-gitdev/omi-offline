@@ -12,4 +12,14 @@ void main() {
     await tester.pumpWidget(const MaterialApp(home: Scaffold(body: VadFallbackBanner(active: true))));
     expect(find.textContaining('Voice detection unavailable'), findsOneWidget);
   });
+
+  testWidgets('PriorityRecordingBanner is empty when no Priority Recording is live', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: Scaffold(body: PriorityRecordingBanner(active: false))));
+    expect(find.textContaining('Priority Recording'), findsNothing);
+  });
+
+  testWidgets('PriorityRecordingBanner shows while one is live, timeless when the start is unknown', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: Scaffold(body: PriorityRecordingBanner(active: true))));
+    expect(find.text('Priority Recording in progress'), findsOneWidget);
+  });
 }
