@@ -12,15 +12,15 @@
  *
  * Design constraints:
  *   - Zero filesystem interference (lives entirely in RAM, never touches the SD FS).
- *   - Survives a reboot, a crash and a power-off (oo-3.1.4). The ring lives in the
+ *   - Survives a reboot, a crash and a power-off into System OFF (oo-3.1.4) — not a
+ *     battery that runs flat, which takes the RAM with it. The ring lives in the
  *     retained-RAM partition (retained.h), not in .bss. Before that it was wiped by the
  *     one recovery a user can perform on a wedged device — a power cycle — so the
  *     2026-09-13 wedge left no device-side trace at all (BLE_Research.md, Wedge 10).
  *     A DIAG_BOOT record is written at every boot so a reader can tell which records
  *     belong to an earlier boot: their uptime_ms is on THAT boot's clock.
- *   - RAM: the ring's bytes are still reclaimed from SD_WORKER_STACK_SIZE (see
- *     DIAG_LOG_RING_BYTES use in sd_card.c); that carve-out now funds the retained
- *     partition instead of .bss.
+ *   - RAM: the ring's 2 KB sit in the retained partition, which every build reserves
+ *     (pm_static.yml), so the ring itself adds nothing to .bss.
  *   - Compiled out entirely in production (CONFIG_OMI_DIAG_LOG) — zero .bss, zero code.
  *   - Runtime-gated by a dev-tools toggle (default OFF, not persisted): a disabled log
  *     costs a single predictable branch per call site.
@@ -149,10 +149,12 @@ typedef enum {
                                        * restarts, so records older than the newest DIAG_BOOT carry
                                        * an EARLIER boot's uptime and must not be mapped onto the
                                        * current boot's clock.
-                                       *   arg0 = 1 if the previous boot's records were kept, 0 if
-                                       *          the retained RAM held nothing valid (first boot
-                                       *          after a flash of older firmware, or the battery
-                                       *          ran out)
+                                       *   arg0 = 1 if the previous boot's ring was adopted, 0 if
+                                       *          not: retained RAM held no valid ring (first boot
+                                       *          after a flash of older firmware, a flat battery),
+                                       *          or the ring failed diag_log_init()'s checks. It
+                                       *          describes the RING, not the whole retained slice —
+                                       *          mute can survive while arg0 is 0.
                                        *   arg1 = hwinfo reset-cause bits for this boot */
 } diag_event_code_t;
 
@@ -260,8 +262,6 @@ typedef struct __packed {
 
 #define DIAG_LOG_RECORD_SIZE 16
 #define DIAG_LOG_RING_DEPTH 128
-/* Bytes reclaimed from SD_WORKER_STACK_SIZE when the feature is compiled in. */
-#define DIAG_LOG_RING_BYTES (DIAG_LOG_RING_DEPTH * DIAG_LOG_RECORD_SIZE)
 
 /* 0x19B10063 drain header prepended to the record stream (little-endian):
  *   [u8  record_size = 16][u8 reserved][u16 record_count]
