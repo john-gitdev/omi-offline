@@ -244,15 +244,18 @@ class RecordingsManager {
       final bin = File(fromBin);
       if (await bin.exists()) {
         if (await File(toBin).exists()) {
-          // Never overwrite a file this pass did not put there.
+          // promoteSessionToDate refuses this slot before renaming anything, so only a
+          // file that appeared since gets here. Never overwrite it, and leave the upload
+          // state with the file it describes: moved without it, the renamed recording
+          // would be tied to a file that is not its audio.
           Logger.error('RecordingsManager: not moving ${fromBin.split('/').last} onto '
               '${toBin.split('/').last} — that name is already on disk. Left where it is.');
-        } else {
-          await bin.rename(toBin);
+          return;
         }
+        await bin.rename(toBin);
       }
-      // Whether or not the file moved: a delivered mark describes the recording's audio,
-      // and dropping it would send that audio again.
+      // Moved also when there was no file of ours to move: a delivered mark describes the
+      // recording's audio, and dropping it would send that audio again.
       await SharedPreferencesUtil().moveOmiUploadState(fromBin, toBin);
     } catch (e) {
       Logger.error('RecordingsManager: moving the Omi upload file for ${from.path} failed: $e');
@@ -3329,12 +3332,29 @@ class RecordingsManager {
       final audioInTheWay = claimedBy == null && newAudioPath != conv.file.path && await File(newAudioPath).exists();
       final metaInTheWay =
           claimedBy == null && !audioInTheWay && newMetaPath != '$basePath.meta' && await File(newMetaPath).exists();
-      if (claimedBy != null || audioInTheWay || metaInTheWay) {
+      // The Omi Cloud upload file is named by the recording too, so it is part of the
+      // slot. If this recording has one and a different one already sits at the target,
+      // moving the audio would tie the renamed recording to a file that is not its audio
+      // — Omi Cloud would be sent the wrong recording — and orphan its own. A target
+      // upload file with none of ours to move does not block: it is most likely this
+      // recording's own, orphaned under its original name by a build that did not move
+      // upload files with a rename, and an undo is exactly what reunites them.
+      final fromBin = omiBinPathFor(conv.file);
+      final toBin = omiBinPathFor(File(newAudioPath));
+      final binInTheWay = claimedBy == null &&
+          !audioInTheWay &&
+          !metaInTheWay &&
+          toBin != fromBin &&
+          await File(fromBin).exists() &&
+          await File(toBin).exists();
+      if (claimedBy != null || audioInTheWay || metaInTheWay || binInTheWay) {
         final blocker = claimedBy != null
             ? 'this pass is already moving $claimedBy onto that name — the two share a startUptime'
             : audioInTheWay
                 ? 'recording_$newConvStartMs.$extension is already on disk'
-                : 'recording_$newConvStartMs.meta is already on disk (a different extension holds the slot)';
+                : metaInTheWay
+                    ? 'recording_$newConvStartMs.meta is already on disk (a different extension holds the slot)'
+                    : 'recording_fs320_$newConvStartMs.bin is already on disk (an Omi upload file with no recording)';
         Logger.error('RecordingsManager: refusing to re-file ${conv.file.path.split('/').last} onto '
             'recording_$newConvStartMs (startUptime=$convUptime) — $blocker. '
             'Left under its original timestamp.');
