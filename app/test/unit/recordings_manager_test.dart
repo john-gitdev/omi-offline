@@ -2494,6 +2494,45 @@ void main() {
       expect(seen, everyElement(isTrue), reason: 'still held when the pass announces the rename');
       expect(RecordingsManager.recordingsUnsettled, isFalse, reason: 'released once the pass is over');
     });
+
+    // Omi's upload state is keyed by the upload file's path, which is the recording's name.
+    test('the Omi Cloud upload file and its upload state move with a re-filed recording', () async {
+      setAnchor();
+      final audio = writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      final oldBin = RecordingsManager.omiBinPathFor(audio);
+      File(oldBin).writeAsBytesSync([1, 2, 3]);
+      final prefs = SharedPreferencesUtil();
+      await prefs.markOmiSynced(oldBin);
+      await prefs.markOmiSegmentSynced('$oldBin#0');
+      await prefs.setOmiSegmentTotal(oldBin, 1);
+      await prefs.incrementAutoUploadRetry(oldBin);
+
+      expect(await RecordingsManager.applyClockAnchors(), 1);
+
+      final newBin = RecordingsManager.omiBinPathFor(allRecordings()['recording_$trueStartMs']!.file);
+      expect(newBin, isNot(oldBin));
+      expect(File(newBin).readAsBytesSync(), [1, 2, 3], reason: 'the upload file follows the recording');
+      expect(File(oldBin).existsSync(), isFalse, reason: 'nothing orphaned under the old name');
+      expect(prefs.isOmiSynced(newBin), isTrue, reason: 'already sent — must not be sent again');
+      expect(prefs.isOmiSynced(oldBin), isFalse);
+      expect(prefs.isOmiSegmentSynced('$newBin#0'), isTrue);
+      expect(prefs.getOmiSegmentTotal(newBin), 1);
+      expect(prefs.getAutoUploadRetries(newBin), 1, reason: 'the retry budget is the recording\'s, not reset');
+      expect(prefs.getAutoUploadRetries(oldBin), 0);
+    });
+
+    test('moving Omi upload state keeps a delivered mark already under the new path', () async {
+      final prefs = SharedPreferencesUtil();
+      await prefs.markOmiSynced('/r/b.bin'); // e.g. an older build left the recording's own file here
+      await prefs.moveOmiUploadState('/r/a.bin', '/r/b.bin'); // nothing recorded under a
+
+      expect(prefs.isOmiSynced('/r/b.bin'), isTrue, reason: 'losing it would re-send the audio');
+    });
   });
 
   // ---------------------------------------------------------------------------
