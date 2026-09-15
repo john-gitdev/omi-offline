@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
+import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/omi_connection.dart';
 import 'package:omi/services/devices/transports/device_transport.dart';
 
@@ -246,6 +247,56 @@ void main() {
     test('performGetDiagnostics returns null on a short (<8 byte) payload', () async {
       transport.reads[OmiDeviceConnection.diagnosticsCharacteristicUuid] = le32(0x10); // only 4 bytes
       expect(await connection.performGetDiagnostics(), isNull);
+    });
+
+    test('performGetRecordingState parses a Priority Recording with its start time', () async {
+      transport.reads[OmiDeviceConnection.recordingStateCharacteristicUuid] = concat([
+        [2],
+        le32(1788000000),
+        le32(5000),
+      ]);
+      final s = await connection.performGetRecordingState();
+      expect(s, isNotNull);
+      expect(s!.kind, DeviceRecordingKind.priority);
+      expect(s.since, DateTime.fromMillisecondsSinceEpoch(1788000000 * 1000, isUtc: true));
+    });
+
+    test('performGetRecordingState: manual, none, and a state byte this app does not know', () async {
+      Future<DeviceRecordingState?> read(int state, int sinceUtcS) {
+        transport.reads[OmiDeviceConnection.recordingStateCharacteristicUuid] = concat([
+          [state],
+          le32(sinceUtcS),
+          le32(0),
+        ]);
+        return connection.performGetRecordingState();
+      }
+
+      expect((await read(1, 1788000000))!.kind, DeviceRecordingKind.manual);
+      // none never carries a start, whatever the bytes say.
+      final none = (await read(0, 1788000000))!;
+      expect(none.kind, DeviceRecordingKind.none);
+      expect(none.since, isNull);
+      // A newer firmware's state reads as none rather than as a guess.
+      expect((await read(7, 1788000000))!.kind, DeviceRecordingKind.none);
+    });
+
+    test('performGetRecordingState: a start from before the device had the time is timeless', () async {
+      transport.reads[OmiDeviceConnection.recordingStateCharacteristicUuid] = concat([
+        [2],
+        le32(1234), // uptime-scale, i.e. the RTC was unset
+        le32(1234000),
+      ]);
+      final s = (await connection.performGetRecordingState())!;
+      expect(s.kind, DeviceRecordingKind.priority);
+      expect(s.since, isNull);
+    });
+
+    test('performGetRecordingState returns null on a short payload or an unsupported char', () async {
+      transport.reads[OmiDeviceConnection.recordingStateCharacteristicUuid] = [2, 0, 0, 0];
+      expect(await connection.performGetRecordingState(), isNull);
+      transport.reads.remove(OmiDeviceConnection.recordingStateCharacteristicUuid);
+      transport.throwReads.add(OmiDeviceConnection.recordingStateCharacteristicUuid);
+      expect(await connection.performGetRecordingState(), isNull);
     });
 
     test('performGetDiagnostics returns null when the char is unsupported', () async {
