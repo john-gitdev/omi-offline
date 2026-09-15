@@ -1180,6 +1180,16 @@ class OmiBleManager private constructor(private val application: Application) {
                     }
                 }
                 0x02 -> { // EOT — transfer complete
+                    // Only after this transfer's start ACK, exactly as DATA is gated above.
+                    // The firmware ACKs a CMD_READ_FILE before it streams a byte, so an EOT
+                    // arriving first cannot be this transfer's: it is the tail of an earlier
+                    // one (a transfer abandoned on a timeout, whose firmware side ran on).
+                    // Accepted, it completed THIS download successfully with nothing
+                    // written, and the file was then treated as fully synced.
+                    if (!hasReceivedStartAck) {
+                        Log.w(TAG, "EOT before start ACK — stale, from an earlier transfer; ignored")
+                        return
+                    }
                     activeDownloads.remove(address)
                     // Flush, then finish through complete() like every other exit. This
                     // branch used to inline its own teardown — same CAS, same callback —
