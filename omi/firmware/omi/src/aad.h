@@ -79,8 +79,10 @@ bool aad_is_recording(void);
 /**
  * @brief Milliseconds since the VAD last saw voice (or since boot, if never).
  *
- * "Voice" is the gate's own has_voice test, so it includes the always-record threshold
- * and a marker's force-wake window. Safe to call from any thread.
+ * "Voice" is every site that stamps vad_last_voice_ms: the gate's has_voice test (so the
+ * always-record threshold and a marker's force-wake window count), and a hardware WAKE
+ * being consumed — even when the frames after it then fail has_voice. Safe to call from
+ * any thread.
  */
 uint32_t aad_ms_since_voice(void);
 
