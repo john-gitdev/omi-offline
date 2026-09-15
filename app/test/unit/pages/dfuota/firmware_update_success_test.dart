@@ -273,6 +273,12 @@ void main() {
       expect(find.text('Done'), findsNothing, reason: 'there is nothing to be done yet');
       expect(find.text('Waiting for your Omi...'), findsOneWidget);
       expect(find.text('Pair manually instead'), findsOneWidget, reason: 'a disabled primary with no escape is a trap');
+      // The section Column is crossAxisAlignment.start; the link has to be centered on
+      // its own, under the full-width primary, not pinned to the left edge.
+      expect(
+        tester.getCenter(find.text('Pair manually instead')).dx,
+        moreOrLessEquals(tester.getCenter(find.text('Firmware updated!')).dx),
+      );
     });
 
     testWidgets('names the pairing request once the device has been heard', (tester) async {
