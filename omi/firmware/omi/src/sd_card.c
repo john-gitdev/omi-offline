@@ -259,16 +259,12 @@ static atomic_t sd_dev_pm_supported = ATOMIC_INIT(1);
  * after shrinking sd_ring_format()'s zeroing buffer (4 KB→512 B), its peak stays
  * ~6 KB even through a format. The 4 KB reclaimed vs the old 16 KB was handed to
  * the codec thread, which ran at ~17.5/18.6 KB (94%). */
-#if defined(CONFIG_OMI_DIAG_LOG)
-/* The diagnostic event ring's 2 KB (DIAG_LOG_RING_BYTES) is carved out of this stack
- * when the feature is compiled in. The ring itself moved to the retained-RAM partition
- * in oo-3.1.4 (retained.h), which the Partition Manager takes off the top of RAM; this
- * carve-out now pays for that instead of for .bss. The sd_worker high-water is ~3 KB,
- * so 10 KB leaves comfortable headroom. */
-#define SD_WORKER_STACK_SIZE (12288 - DIAG_LOG_RING_BYTES)
-#else
+/* The same in every build. Dev builds (CONFIG_OMI_DIAG_LOG) used to give 2 KB of this to
+ * the diagnostic event ring, keeping their RAM equal to production; since oo-3.1.4 the
+ * ring lives in the retained-RAM partition, which every build reserves, so the carve-out
+ * had nothing left to pay for. Measured high-water 2292 B (0x0062 sd_worker_stack_used,
+ * a 26.6 h field log, 2026-09-15). */
 #define SD_WORKER_STACK_SIZE 12288
-#endif
 #define SD_WORKER_PRIORITY 7
 K_THREAD_STACK_DEFINE(sd_worker_stack, SD_WORKER_STACK_SIZE);
 static struct k_thread sd_worker_thread_data;
