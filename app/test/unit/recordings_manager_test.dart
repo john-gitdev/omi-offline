@@ -2452,6 +2452,48 @@ void main() {
       expect(recs.containsKey('recording_$trueStartMs'), isTrue, reason: 'the timestamped one is left alone');
       expect(recs.length, 2);
     });
+
+    // The run's clock pass comes after its stitch, so the recording a late-merge notice
+    // names can be re-filed before anyone sees the message.
+    test('a pending late-merge notice follows the recording it names when that is re-filed', () async {
+      setAnchor();
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      SharedPreferencesUtil().lateMergeNotices = ['1000:$wrappedStartMs', '2000:3000'];
+
+      expect(await RecordingsManager.applyClockAnchors(), 1);
+
+      expect(SharedPreferencesUtil().lateMergeNotices, ['1000:$trueStartMs', '2000:3000'],
+          reason: 'the message must give the start the list shows; other notices are untouched');
+    });
+
+    test('a pass holds recordingsUnsettled while it re-files, so auto uploads wait for it', () async {
+      setAnchor();
+      writeRecording(
+        dateFolder: '2026-08-01',
+        basename: 'recording_$wrappedStartMs',
+        sessionId: anchorSessionId,
+        startUptimeSec: recUptimeSec,
+      );
+      // The rename's own notification is what sets a sweep off on the recordings page.
+      final seen = <bool>[];
+      void listener() => seen.add(RecordingsManager.recordingsUnsettled);
+      RecordingsManager.recordingsChangeNotifier.addListener(listener);
+      try {
+        expect(RecordingsManager.recordingsUnsettled, isFalse);
+        expect(await RecordingsManager.applyClockAnchors(), 1);
+      } finally {
+        RecordingsManager.recordingsChangeNotifier.removeListener(listener);
+      }
+
+      expect(seen, isNotEmpty);
+      expect(seen, everyElement(isTrue), reason: 'still held when the pass announces the rename');
+      expect(RecordingsManager.recordingsUnsettled, isFalse, reason: 'released once the pass is over');
+    });
   });
 
   // ---------------------------------------------------------------------------
