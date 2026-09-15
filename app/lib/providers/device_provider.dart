@@ -553,7 +553,9 @@ class DeviceProvider extends ChangeNotifier
     // Mirror into the OS notification's resting line.
     SyncNotification.isMuted = muted;
     SyncNotification.muteSince = since;
-    unawaited(SyncNotification.idle(isConnected: true));
+    // Never over a sync or processing run's live progress; that run settles the line
+    // when it ends, and the resting line it settles to reads these fields.
+    if (!_syncOwnsNotification) unawaited(SyncNotification.idle(isConnected: true));
     notifyListeners();
   }
 
@@ -584,7 +586,9 @@ class DeviceProvider extends ChangeNotifier
     final priority = state.kind == DeviceRecordingKind.priority;
     SyncNotification.priorityRecording = priority;
     SyncNotification.priorityRecordingSince = priority ? state.since : null;
-    unawaited(SyncNotification.idle(isConnected: true));
+    // Same rule as mute: a Priority Recording started mid-sync must not replace the
+    // sync's progress line; the run's own settle picks these fields up when it ends.
+    if (!_syncOwnsNotification) unawaited(SyncNotification.idle(isConnected: true));
     notifyListeners();
   }
 
@@ -2015,6 +2019,7 @@ class DeviceProvider extends ChangeNotifier
     WidgetsBinding.instance.removeObserver(this);
     _bleBatteryLevelListener?.cancel();
     _bleMuteListener?.cancel();
+    _bleRecordingStateListener?.cancel();
     _reconnectionTimer?.cancel();
     _reconnectDelayTimer?.cancel();
     _resumeReconnectDebounce?.cancel();
@@ -2058,6 +2063,7 @@ class DeviceProvider extends ChangeNotifier
     storageFullPercentage = -1;
     storageStats = null;
     isCharging = false;
+    final hadLiveLine = isMuted || isPriorityRecording;
     await _bleMuteListener?.cancel();
     _bleMuteListener = null;
     if (isMuted) {
@@ -2074,6 +2080,13 @@ class DeviceProvider extends ChangeNotifier
     recordingSince = null;
     SyncNotification.priorityRecording = false;
     SyncNotification.priorityRecordingSince = null;
+    // Take the resting line back to plain text. In the background updateConnectingStatus()
+    // below already refreshes it; in the foreground nothing would until the next sync,
+    // leaving "Muted since…" / "Priority Recording since…" about a device the app can no
+    // longer see. isConnected: false — the battery clause must not assert a live reading.
+    if (hadLiveLine && _isAppInForeground && !_syncOwnsNotification) {
+      unawaited(SyncNotification.idle(isConnected: false));
+    }
     notifyListeners();
     await setConnectedDevice(null);
     setIsConnected(false);
