@@ -912,6 +912,10 @@ int aad_start(void)
      * standby comes up in it and must come up with the mic parked. main() has
      * already run mic_start() and reconciled is_muted by this point. */
     aad_apply_mic_gate();
+    /* A manual recording carried across the reboot resumes HERE, not through
+     * aad_set_threshold(), so report it: transport_start() ran first, and a phone that
+     * subscribed in between was told "none" and would otherwise stay told. */
+    transport_note_recording_state();
     /* And arm the idle-advertising backstop for the boot case. */
     aad_note_link_idle();
 
