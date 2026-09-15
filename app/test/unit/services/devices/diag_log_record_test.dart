@@ -117,7 +117,7 @@ void main() {
       expect(rec(1, 0x002).description, contains('software reset'));
       expect(rec(1, 0x002).description, contains("previous boot's events kept"));
       expect(rec(0, 0x008).description, contains('power-on reset'));
-      expect(rec(0, 0x008).description, contains('retained RAM was empty'));
+      expect(rec(0, 0x008).description, contains('earlier events not kept'));
       expect(rec(1, 0x010).description, contains('watchdog timeout'));
     });
 
