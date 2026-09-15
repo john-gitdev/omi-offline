@@ -21,10 +21,7 @@
 /* ------------------------------------------------------------------ */
 
 /* The ring and its bookkeeping live in retained RAM (struct retained_diag), so they
- * survive a reboot, a crash and a power-off. The ring's DIAG_LOG_RING_BYTES are still
- * reclaimed from the SD worker thread's stack (sd_card.c shrinks SD_WORKER_STACK_SIZE
- * by the same amount when this feature is compiled in); that carve-out now pays for
- * the retained partition rather than for .bss. */
+ * survive a reboot, a crash and a power-off into System OFF — not a flat battery. */
 #define D (retained_diag())
 
 /* diag_log.c's own marker that the ring in retained RAM was initialised by this code.
