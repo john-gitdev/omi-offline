@@ -93,6 +93,32 @@ void main() {
       expect(rec(15).label, 'adv_stop_fail');
       expect(rec(16).label, 'vad_level');
       expect(rec(17).label, 'mic_power_cycle');
+      expect(rec(20).label, 'link_wedge_reboot');
+      expect(rec(21).label, 'boot');
+    });
+
+    test('link_wedge_reboot decodes the disconnect result and the wait', () {
+      DiagLogRecord rec(int arg0, int arg1) =>
+          DiagLogRecord(seq: 1, uptimeMs: 0, code: 20, backend: 0, arg0: arg0, arg1: arg1);
+
+      expect(rec(0, 95000).description, contains('request accepted'));
+      expect(rec(0, 95000).description, contains('95 s after asking'));
+      // 107 = ENOTCONN: the controller had already dropped the link, only the callback
+      // was missing — the one errno worth naming.
+      expect(rec(107, 60000).description, contains('request failed -107 (ENOTCONN)'));
+      expect(rec(5, 60000).description, contains('request failed -5'));
+      expect(rec(5, 60000).description, isNot(contains('ENOTCONN')));
+    });
+
+    test('boot decodes the reset cause and whether the earlier events survived', () {
+      DiagLogRecord rec(int kept, int cause) =>
+          DiagLogRecord(seq: 1, uptimeMs: 0, code: 21, backend: 0, arg0: kept, arg1: cause);
+
+      expect(rec(1, 0x002).description, contains('software reset'));
+      expect(rec(1, 0x002).description, contains("previous boot's events kept"));
+      expect(rec(0, 0x008).description, contains('power-on reset'));
+      expect(rec(0, 0x008).description, contains('retained RAM was empty'));
+      expect(rec(1, 0x010).description, contains('watchdog timeout'));
     });
 
     test('vad_level unpacks peak, floor and threshold from the packed arg1', () {
