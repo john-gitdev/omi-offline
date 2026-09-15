@@ -48,8 +48,9 @@ class RecordingsManager {
   static bool _isProcessingAny = false;
   static bool get isProcessingAny => _isProcessingAny;
 
-  /// [applyClockAnchors] passes in flight — a counter, because a scheduled sync's pass
-  /// and a tapped sync's can overlap. See [recordingsUnsettled].
+  /// [applyClockAnchors] passes and [promoteSessionToDate] calls in flight — a counter,
+  /// because the two nest and a scheduled sync's pass and a tapped sync's can overlap.
+  /// See [recordingsUnsettled].
   static int _refileDepth = 0;
 
   /// True while recordings on disk may still be renamed, merged or deleted: a
@@ -61,28 +62,60 @@ class RecordingsManager {
   /// throw, and a re-file pass is neither.
   static bool get recordingsUnsettled => _isProcessingAny || _refileDepth > 0;
 
+  /// Recordings an upload is reading right now, by path, counted — HeyPocket and Omi can
+  /// upload the same recording at once. Maintained by IntegrationUploadManager around
+  /// each upload; [promoteSessionToDate] will not rename one of these (see there).
+  static final Map<String, int> _uploadsInFlight = {};
+
+  static String _inFlightKey(File audio) => audio.path.replaceAll('\\', '/');
+
+  static void noteUploadStarted(File audio) {
+    final k = _inFlightKey(audio);
+    _uploadsInFlight[k] = (_uploadsInFlight[k] ?? 0) + 1;
+  }
+
+  static void noteUploadFinished(File audio) {
+    final k = _inFlightKey(audio);
+    final n = (_uploadsInFlight[k] ?? 0) - 1;
+    if (n > 0) {
+      _uploadsInFlight[k] = n;
+    } else {
+      _uploadsInFlight.remove(k);
+    }
+  }
+
+  static bool isUploading(File audio) => _uploadsInFlight.containsKey(_inFlightKey(audio));
+
   /// Finished (non-draft) audio already on disk when the current [processAll] began,
   /// so the stitch pass can tell a recording the user could have seen from one this
   /// run just produced. Null outside a run. See [_noteLateMerge].
   Set<String>? _finishedBeforeRun;
 
-  /// Every finalized (non-draft) audio file under `recordings/`, by path — built the
-  /// same way the stitch pass lists them, so the paths compare equal.
-  static Future<Set<String>> _listFinishedAudio(String docsPath) async {
-    final out = <String>{};
+  /// `_draft` audio already on disk when the current [processAll] began, so a draft NOT
+  /// in it is known to have been written by this run. Null outside a run. See the
+  /// late-merge close in [_stitchDraftRecordings].
+  Set<String>? _draftsBeforeRun;
+
+  /// Sets [_finishedBeforeRun] and [_draftsBeforeRun] from every audio file under
+  /// `recordings/` — listed the same way the stitch pass lists them, so the paths
+  /// compare equal.
+  Future<void> _snapshotBeforeRun(String docsPath) async {
+    final finished = <String>{};
+    final drafts = <String>{};
     final root = Directory('$docsPath/recordings');
-    if (!await root.exists()) return out;
-    await for (final folder in root.list()) {
-      if (folder is! Directory) continue;
-      await for (final f in folder.list()) {
-        if (f is! File) continue;
-        final path = f.path;
-        if ((path.endsWith('.m4a') || path.endsWith('.wav')) && !path.contains('_draft.') && !path.contains('.tmp')) {
-          out.add(path);
+    if (await root.exists()) {
+      await for (final folder in root.list()) {
+        if (folder is! Directory) continue;
+        await for (final f in folder.list()) {
+          if (f is! File) continue;
+          final path = f.path;
+          if (!(path.endsWith('.m4a') || path.endsWith('.wav')) || path.contains('.tmp')) continue;
+          (path.contains('_draft.') ? drafts : finished).add(path);
         }
       }
     }
-    return out;
+    _finishedBeforeRun = finished;
+    _draftsBeforeRun = drafts;
   }
 
   /// Records, for a one-time message on the recordings page, that the recording that
@@ -689,7 +722,7 @@ class RecordingsManager {
 
     try {
       final directory = await getApplicationDocumentsDirectory();
-      _finishedBeforeRun = await _listFinishedAudio(directory.path);
+      await _snapshotBeforeRun(directory.path);
 
       // Disk space guard — bail before processing if free space is critically low.
       final allRawFiles = activeBatches.expand((b) => b.rawSegments).toList();
@@ -1185,6 +1218,7 @@ class RecordingsManager {
       // run's own error.
       await _applyClockAnchorsLogged();
       _finishedBeforeRun = null;
+      _draftsBeforeRun = null;
       _isProcessingAny = false;
       _activeIsolate = null;
       _activeIsolateControlPort = null;
@@ -1456,6 +1490,8 @@ class RecordingsManager {
             // run — one the user saw closed — and its bolt. Read now: the stitch deletes
             // it and its .meta.
             final absorbedWasFinished = _finishedBeforeRun?.contains(audioToStitch.path) ?? false;
+            // And whether this run wrote the draft, i.e. it is the late audio itself.
+            final draftIsNew = !(_draftsBeforeRun?.contains(draftFile.path) ?? true);
             final absorbedMeta = File(audioToStitch.path.replaceAll(RegExp(r'\.(m4a|wav)$'), '.meta'));
             final absorbedForceSynced = absorbedWasFinished &&
                 await absorbedMeta.exists() &&
@@ -1476,9 +1512,13 @@ class RecordingsManager {
               // promoted now, bolt included. Left open with nothing after it, it dropped
               // out of the list into "Conversation in progress" until the next recording
               // arrived, while the late-merge message named a start the list did not
-              // show. Recordings this run created are not covered — joining those is the
-              // everyday cross-sync join, which can fold several in turn.
-              if (absorbedWasFinished) {
+              // show. Only when this run wrote the draft — the late audio itself. A draft
+              // already on disk before the run meets a finished recording only when the
+              // previous run died between moving its recordings and stitching them; that
+              // run would have kept joining (in manual mode the join also folds in pieces
+              // the processor split at a gap), so the resumed one does too. Recordings
+              // this run created are the everyday cross-sync join and are untouched.
+              if (absorbedWasFinished && draftIsNew) {
                 Logger.debug('RecordingsManager: Finalizing draft $draftTs — it absorbed '
                     '${audioToStitch.path.split('/').last}, which was already finished.');
                 finalizeAttempted.add(draftFile.path);
@@ -1608,12 +1648,13 @@ class RecordingsManager {
   /// by "this run"), then stitch.
   @visibleForTesting
   Future<void> stitchDraftRecordingsForTest({bool finalizeAll = false, Future<void> Function()? duringRun}) async {
-    _finishedBeforeRun = await _listFinishedAudio((await getApplicationDocumentsDirectory()).path);
+    await _snapshotBeforeRun((await getApplicationDocumentsDirectory()).path);
     try {
       await duringRun?.call();
       await _stitchDraftRecordings(finalizeAll: finalizeAll);
     } finally {
       _finishedBeforeRun = null;
+      _draftsBeforeRun = null;
     }
   }
 
@@ -3076,6 +3117,18 @@ class RecordingsManager {
   /// because a date the user chose by hand has nothing to revert *to*.
   static Future<void> promoteSessionToDate(Conversation base, DateTime newStartTime,
       {bool markClockCorrected = false, bool Function(Conversation c)? include}) async {
+    // Held for the whole move, for every caller: an auto upload that dequeued between
+    // the in-flight check below and the rename would read a path about to change.
+    _refileDepth++;
+    try {
+      await _promoteSessionToDateHeld(base, newStartTime, markClockCorrected: markClockCorrected, include: include);
+    } finally {
+      _refileDepth--;
+    }
+  }
+
+  static Future<void> _promoteSessionToDateHeld(Conversation base, DateTime newStartTime,
+      {required bool markClockCorrected, bool Function(Conversation c)? include}) async {
     final sessionId = base.sessionId;
     final startUptime = base.startUptime;
     if (startUptime == null || startUptime == 0) {
@@ -3145,6 +3198,16 @@ class RecordingsManager {
     // [_remapLateMergeNotices].
     final renamedStarts = <int, int>{};
     for (final conv in sessionConversations) {
+      // An upload is reading this recording right now. Omi's upload records its progress
+      // under the file's current path as it goes, so renaming mid-upload lands the final
+      // "delivered" mark on a path no recording has any more, and the renamed recording
+      // is sent again. Left where it is: the clock pass runs every sync and re-files it
+      // once the upload is done (a date set by hand has to be set again).
+      if (isUploading(conv.file)) {
+        Logger.debug('RecordingsManager: ${conv.file.path.split('/').last} is being uploaded — '
+            'left under its current name for now.');
+        continue;
+      }
       // No usable uptime means the offset cannot place this recording — the same thing
       // `clockVerdict` calls `unplaceable` and refuses to act on. It used to fall back
       // to reading the recording's epoch SECONDS as if they were an uptime, which lands
