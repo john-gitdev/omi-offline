@@ -14,6 +14,7 @@
 #include <zephyr/sys/reboot.h>
 
 #include "button.h"
+#include "imu.h"
 #include "sd_card.h"
 #include "settings.h"
 #include "transport.h"
@@ -64,7 +65,12 @@ static uint32_t current_read_offset = 0;
 #define HEARTBEAT 50
 
 /* Retry storage_notify up to N times on -ENOMEM, yielding between attempts.
- * Caps retries so a permanently-stuck BLE TX queue doesn't spin forever. */
+ *
+ * Do not read this as flow control for a full TX queue: it is not one. On this thread
+ * (and the BT RX thread) Zephyr allocates notification PDUs with K_FOREVER — only the
+ * system workqueue gets K_NO_WAIT (conn.c bt_conn_create_pdu_timeout) — so a full ATT
+ * pool makes the call WAIT, not return -ENOMEM. What still returns -ENOMEM is a payload
+ * that no ATT channel's MTU can fit, which a retry cannot fix; the cap just bounds it. */
 #define NOTIFY_RETRY_MAX 50
 #define STORAGE_NOTIFY(conn, buf, len)                                      \
     do {                                                                    \
@@ -767,7 +773,10 @@ static void write_to_gatt(struct bt_conn *conn)
             put_current_connection(valid_conn);
 
             if (err == -ENOMEM) {
-                /* TX buffers full — yield and wait for next connection event */
+                /* Not "TX buffers full": a full ATT pool blocks inside storage_notify()
+                 * on this thread (see NOTIFY_RETRY_MAX) — that wait IS the flow control.
+                 * -ENOMEM here is an MTU mismatch; kept as a yield-and-retry because it
+                 * is harmless, not because it paces anything. */
                 k_yield();
                 continue;
             }
@@ -783,6 +792,13 @@ static void write_to_gatt(struct bt_conn *conn)
             sync_speed_add_bytes(chunk);
             current_read_offset += chunk;
             atomic_sub(&remaining_length, chunk);
+            /* Per delivered packet, not once per call: one call streams a whole file, so
+             * the mark at the top of this function could be minutes old on a healthy
+             * transfer. The idle timer's stalled-transfer bound (transport.c,
+             * TRANSFER_STALL_MS) reads this as "the link is still carrying data", and a
+             * notify only returns once the stack had a buffer for it — i.e. once the
+             * link has been acknowledging packets. One atomic store per packet. */
+            transport_mark_activity();
         }
     }
 }
@@ -991,6 +1007,13 @@ void storage_write(void)
                 STORAGE_NOTIFY(conn, ack, sizeof(ack));
             }
             LOG_INF("CMD_REBOOT: rebooting now");
+#ifdef CONFIG_LSM6DSL
+            /* Save the IMU clock bridge first, exactly as a power-off does, so the next
+             * boot recovers the time before a phone reconnects. Without it the boot
+             * adjust spends the bridge saved at the LAST power-off, which the IMU
+             * counter has run on from ever since. */
+            lsm6dsl_time_prepare_for_system_off();
+#endif
             if (is_sd_on()) {
                 app_sd_off();
             }
