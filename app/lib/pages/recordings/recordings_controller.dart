@@ -42,7 +42,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     batchesProvider: () => _batches,
     isDisposed: () => _isDisposed,
     isPipelineIdle: () => _spState == SyncProcessState.idle,
-    isProcessing: () => RecordingsManager.isProcessingAny,
+    isProcessing: () => RecordingsManager.recordingsUnsettled,
     notifyUi: notifyListeners,
     acquireWake: _acquireWake,
     releaseWake: _releaseWake,
@@ -149,6 +149,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       return msg;
     }
     // A late merge is reported here, once, rather than as anything in the list itself.
+    // Not while recordings are unsettled: a run's clock pass comes after its stitch and
+    // can re-file the recording a notice names, and the notice is brought up to date
+    // only once that rename has happened (RecordingsManager._remapLateMergeNotices).
+    if (RecordingsManager.recordingsUnsettled) return null;
     final notices = _prefs.lateMergeNotices;
     if (notices.isEmpty) return null;
     _prefs.lateMergeNotices = const [];
@@ -183,6 +187,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   Timer? _pollTimer;
+
+  /// When _poll last re-ran a held auto-upload sweep; spaces out retries of one whose
+  /// reload failed. See _poll.
+  DateTime _deferredSweepAttemptAt = DateTime.fromMillisecondsSinceEpoch(0);
+  static const _deferredSweepRetryInterval = Duration(seconds: 10);
   bool _isUserTriggered = false;
   Completer<void>? _pipelineCompleter;
 
@@ -728,13 +737,24 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       }
     }
 
-    // An auto-upload sweep that was held back while audio was processing (see
-    // IntegrationUploadManager.tryAutoUploadAll). Re-run it once nothing is in
-    // flight — through _loadBatches rather than the sweep alone, because the run may
-    // have stitched away a recording the held sweep's batch list still names. Not
-    // during successUi either: a foreground run's dismissSuccess reload sweeps after
-    // the clock-anchor pass, and this must not pre-empt it.
-    if (!isPipelineBusy && _spState != SyncProcessState.successUi && _uploads.takeDeferredSweep()) {
+    // An auto-upload sweep, or queued auto work, held back while recordings were
+    // unsettled (see IntegrationUploadManager.tryAutoUploadAll). Re-run it once they
+    // have settled — through _loadBatches rather than the sweep alone, because the run
+    // may have stitched away a recording the held sweep's batch list still names.
+    //   - Not while a reload is running: the processing-completion branch above has
+    //     just started one, and its sweep is the re-run. A second would scan the disk
+    //     and enforce retention concurrently with it.
+    //   - Not during successUi: a foreground run's dismissSuccess reload sweeps after
+    //     the clock-anchor pass, and this must not pre-empt it.
+    //   - The hold clears only when a sweep actually runs, so a reload that fails is
+    //     tried again — but spaced out, since one that fails every time would
+    //     otherwise reload the page twice a second.
+    if (_uploads.deferredSweepReady &&
+        !_isLoading &&
+        !isPipelineBusy &&
+        _spState != SyncProcessState.successUi &&
+        now.difference(_deferredSweepAttemptAt) >= _deferredSweepRetryInterval) {
+      _deferredSweepAttemptAt = now;
       unawaited(_loadBatches());
     }
 
