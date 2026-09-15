@@ -48,6 +48,19 @@ class RecordingsManager {
   static bool _isProcessingAny = false;
   static bool get isProcessingAny => _isProcessingAny;
 
+  /// [applyClockAnchors] passes in flight — a counter, because a scheduled sync's pass
+  /// and a tapped sync's can overlap. See [recordingsUnsettled].
+  static int _refileDepth = 0;
+
+  /// True while recordings on disk may still be renamed, merged or deleted: a
+  /// [processAll] run, or a clock-anchor pass re-filing outside one (the no-audio branch
+  /// of [processAllCompletedSessions], the controller's `_finishPipelineRun`). The
+  /// auto-upload sweep and queued auto uploads wait on it, and the late-merge message is
+  /// not shown under it. Deliberately not folded into [isProcessingAny]: that one drives
+  /// the recordings page into its processing state and makes a concurrent [processAll]
+  /// throw, and a re-file pass is neither.
+  static bool get recordingsUnsettled => _isProcessingAny || _refileDepth > 0;
+
   /// Finished (non-draft) audio already on disk when the current [processAll] began,
   /// so the stitch pass can tell a recording the user could have seen from one this
   /// run just produced. Null outside a run. See [_noteLateMerge].
@@ -84,6 +97,29 @@ class RecordingsManager {
     prefs.lateMergeNotices = next.length > 20 ? next.sublist(next.length - 20) : next;
     Logger.debug('RecordingsManager: late merge — recording_$absorbedStartMs was finished before this run '
         'and is now part of recording_$mergedStartMs.');
+  }
+
+  /// Keeps [SharedPreferencesUtil.lateMergeNotices] naming the recording the list will
+  /// show. A notice gives the merged recording by its start, and a re-file changes that
+  /// start — in the same run (the clock pass runs after the stitch) or a later one — so
+  /// without this the message names a time no recording has. The absorbed half is left
+  /// alone: that recording is gone, and its old time is the one the user last saw.
+  static void _remapLateMergeNotices(Map<int, int> renamedStarts) {
+    final prefs = SharedPreferencesUtil();
+    var changed = false;
+    final next = <String>[];
+    for (final n in prefs.lateMergeNotices) {
+      final parts = n.split(':');
+      final merged = parts.length == 2 ? int.tryParse(parts[1]) : null;
+      final moved = merged == null ? null : renamedStarts[merged];
+      if (moved == null) {
+        next.add(n);
+      } else {
+        next.add('${parts[0]}:$moved');
+        changed = true;
+      }
+    }
+    if (changed) prefs.lateMergeNotices = next;
   }
 
   /// [applyClockAnchors] for the processing paths, which it must never take down.
@@ -1094,15 +1130,20 @@ class RecordingsManager {
         isTranscoding.value = false;
       }
 
+      onProgress(1.0, Duration.zero);
+    } finally {
       // Re-file anything the Omi mis-dated while this run still counts as processing,
       // so the auto-upload sweep — held until processing ends — only ever sees final
       // names. Here, not only in the foreground pipeline's _finishPipelineRun, because
       // a scheduled sync never reaches that: a wrong date stayed wrong until the user
       // next tapped Sync, and anything uploaded meanwhile went out under it.
+      //
+      // In the finally, so every exit that got this far runs it. The disk-space bail
+      // decodes nothing, but this connect's anchor still answers for recordings earlier
+      // runs filed, and a scheduled sync has no other pass; a failed decode leaves
+      // whatever it finished on disk. Logged, never thrown, so it cannot replace the
+      // run's own error.
       await _applyClockAnchorsLogged();
-
-      onProgress(1.0, Duration.zero);
-    } finally {
       _finishedBeforeRun = null;
       _isProcessingAny = false;
       _activeIsolate = null;
@@ -1629,7 +1670,7 @@ class RecordingsManager {
     }
   }
 
-  int _extractTimestamp(String path) {
+  static int _extractTimestamp(String path) {
     final name = path.split('/').last;
     final nameNoExt = name.split('.').first;
     final parts = nameNoExt.split('_');
@@ -2790,6 +2831,17 @@ class RecordingsManager {
   /// anchor, so the next pass reads `alreadyCorrect` and does nothing; and a user who
   /// reverts drops the anchor, so nothing re-applies it.
   static Future<int> applyClockAnchors() async {
+    // Held for the whole pass, not per rename: a sweep that lists between two sessions'
+    // moves would queue the second under names it is about to lose.
+    _refileDepth++;
+    try {
+      return await _applyClockAnchorsHeld();
+    } finally {
+      _refileDepth--;
+    }
+  }
+
+  static Future<int> _applyClockAnchorsHeld() async {
     final prefs = SharedPreferencesUtil();
     final anchors = DeviceClockAnchorSet.decode(prefs.deviceClockAnchors);
     if (anchors.isEmpty) return 0;
@@ -3019,6 +3071,9 @@ class RecordingsManager {
     // one re-filed onto a name that costs another recording.
     // target name -> the recording that claimed it, so a refusal can say which one.
     final claimedTargets = <String, String>{};
+    // Old start -> new start of every recording actually renamed, for
+    // [_remapLateMergeNotices].
+    final renamedStarts = <int, int>{};
     for (final conv in sessionConversations) {
       // No usable uptime means the offset cannot place this recording — the same thing
       // `clockVerdict` calls `unplaceable` and refuses to act on. It used to fall back
@@ -3083,6 +3138,7 @@ class RecordingsManager {
 
       if (await metaFile.exists()) await metaFile.rename(newMetaPath);
       await conv.file.rename(newAudioPath);
+      renamedStarts[_extractTimestamp(conv.file.path)] = newConvStartMs;
       if (markClockCorrected) await _stampClockCorrected(File(newMetaPath));
 
       // Handle legacy .bin sidecar if present
@@ -3123,6 +3179,8 @@ class RecordingsManager {
         }
       }
     }
+
+    if (renamedStarts.isNotEmpty) _remapLateMergeNotices(renamedStarts);
 
     // 4. Handle raw_segments folder migration
     final rawSegmentsDir = Directory('${directory.path}/raw_segments');
