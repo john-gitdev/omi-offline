@@ -1452,6 +1452,14 @@ class RecordingsManager {
             } else {
               Logger.debug('RecordingsManager: Converting draft $draftTs — $draftExt cannot be stitched, finalizing');
             }
+            // Whether the recording about to be absorbed was already finished before this
+            // run — one the user saw closed — and its bolt. Read now: the stitch deletes
+            // it and its .meta.
+            final absorbedWasFinished = _finishedBeforeRun?.contains(audioToStitch.path) ?? false;
+            final absorbedMeta = File(audioToStitch.path.replaceAll(RegExp(r'\.(m4a|wav)$'), '.meta'));
+            final absorbedForceSynced = absorbedWasFinished &&
+                await absorbedMeta.exists() &&
+                _metaForceSynced(await absorbedMeta.readAsBytes());
             final finalSuccess = await _performStitch(draftFile, audioToStitch, gapMs);
             if (finalSuccess) {
               // The folded ghosts' audio now lives in this conversation — retire
@@ -1461,6 +1469,20 @@ class RecordingsManager {
               // so its ghosts stay recoverable.
               if (draftExt == 'wav' && intermediateEvents.isNotEmpty) {
                 await retireFoldedGhosts(intermediateEvents.map((e) => e.discard!).toList());
+              }
+              // A late merge adds audio in front of a recording that had already been
+              // finished; it never reopens it. That recording ended for a reason — silence
+              // after it, a cap, a Force Sync — so the merged one ends there too, and is
+              // promoted now, bolt included. Left open with nothing after it, it dropped
+              // out of the list into "Conversation in progress" until the next recording
+              // arrived, while the late-merge message named a start the list did not
+              // show. Recordings this run created are not covered — joining those is the
+              // everyday cross-sync join, which can fold several in turn.
+              if (absorbedWasFinished) {
+                Logger.debug('RecordingsManager: Finalizing draft $draftTs — it absorbed '
+                    '${audioToStitch.path.split('/').last}, which was already finished.');
+                finalizeAttempted.add(draftFile.path);
+                await _finalizeDraft(draftFile, isForceSynced: absorbedForceSynced);
               }
               scanNeeded = true;
               break;
@@ -1508,6 +1530,14 @@ class RecordingsManager {
   /// stop, so the successor is in the bin a sync cannot fetch yet).
   @visibleForTesting
   static bool metaMarksHardEnd(Uint8List metaBytes) => _metaFlagBit(metaBytes, 0x04);
+
+  /// Reads the `forceSynced` flag (byte [1] of the flag block, bit 0x01): the bolt, a
+  /// recording Force Sync / Force Process closed because nothing followed it.
+  static bool _metaForceSynced(Uint8List metaBytes) {
+    if (metaBytes.length < 417) return false;
+    final flagOffset = 417 + metaBytes[416];
+    return metaBytes.length > flagOffset + 1 && (metaBytes[flagOffset + 1] & 0x01) != 0;
+  }
 
   static bool _metaFlagBit(Uint8List metaBytes, int mask) {
     if (metaBytes.length < 417) return false;
