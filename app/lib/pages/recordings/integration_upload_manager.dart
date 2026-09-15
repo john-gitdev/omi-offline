@@ -62,6 +62,7 @@ class IntegrationUploadManager {
     required List<Batch> Function() batchesProvider,
     required bool Function() isDisposed,
     required bool Function() isPipelineIdle,
+    required bool Function() isProcessing,
     required void Function() notifyUi,
     required void Function(String reason) acquireWake,
     required void Function(String reason) releaseWake,
@@ -75,6 +76,7 @@ class IntegrationUploadManager {
         _batchesProvider = batchesProvider,
         _isDisposed = isDisposed,
         _isPipelineIdle = isPipelineIdle,
+        _isProcessing = isProcessing,
         _notifyUi = notifyUi,
         _acquireWake = acquireWake,
         _releaseWake = releaseWake,
@@ -89,6 +91,16 @@ class IntegrationUploadManager {
   final List<Batch> Function() _batchesProvider;
   final bool Function() _isDisposed;
   final bool Function() _isPipelineIdle;
+
+  /// True while audio is being processed (`RecordingsManager.isProcessingAny`).
+  /// Deliberately not [_isPipelineIdle]: that is the controller's screen state, and
+  /// during a scheduled sync it still reads idle for the first seconds of processing
+  /// — exactly the window [tryAutoUploadAll] must not sweep in.
+  final bool Function() _isProcessing;
+
+  /// Set when [tryAutoUploadAll] was held back by [_isProcessing]; consumed by
+  /// [takeDeferredSweep].
+  bool _autoSweepDeferred = false;
   final void Function() _notifyUi;
   final void Function(String reason) _acquireWake;
   final void Function(String reason) _releaseWake;
@@ -392,11 +404,31 @@ class IntegrationUploadManager {
     return '$name — $delivered/$laneTotal queued';
   }
 
+  /// True once if [tryAutoUploadAll] was held back by processing since the last
+  /// sweep that ran, and clears it — so a caller polling this re-runs the sweep
+  /// exactly once rather than on every poll.
+  bool takeDeferredSweep() {
+    final deferred = _autoSweepDeferred;
+    _autoSweepDeferred = false;
+    return deferred;
+  }
+
   /// Producer for the auto-upload sweep: enqueues every auto-eligible recording
   /// (respecting the auto-upload toggle, time cutoff, delivery, server backoff,
   /// and the retry budget), then kicks the single sequential worker. No longer
-  /// uploads directly — the worker is the sole consumer.
+  /// uploads directly — the worker is the sole consumer. Held while audio is
+  /// being processed; see [takeDeferredSweep].
   void tryAutoUploadAll() {
+    // Never while audio is being processed. A run moves each finished recording
+    // into place as soon as its bin is decoded, but stitches drafts only at its end,
+    // so a sweep in between can upload a recording the same run is about to fold
+    // into the draft before it and delete — and the merged recording then uploads
+    // again. Held, not dropped: the controller re-runs it once processing ends.
+    if (_isProcessing()) {
+      _autoSweepDeferred = true;
+      return;
+    }
+    _autoSweepDeferred = false;
     final minDuration = _prefs.filterMinDurationSeconds;
 
     for (final batch in _batchesProvider().reversed) {
