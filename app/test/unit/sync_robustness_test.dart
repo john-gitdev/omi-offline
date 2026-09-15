@@ -192,6 +192,22 @@ class MockDeviceConnection implements DeviceConnection {
       null;
 
   @override
+  Future<DeviceRecordingState?> getRecordingState() async => null;
+
+  @override
+  Future<DeviceRecordingState?> performGetRecordingState() async => null;
+
+  @override
+  Future<StreamSubscription<List<int>>?> getRecordingStateListener(
+          {required void Function(DeviceRecordingState state) onChange}) async =>
+      null;
+
+  @override
+  Future<StreamSubscription<List<int>>?> performGetRecordingStateListener(
+          {required void Function(DeviceRecordingState state) onChange}) async =>
+      null;
+
+  @override
   Future<bool> syncTime() async => true;
 
   @override
