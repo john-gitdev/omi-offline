@@ -2,10 +2,10 @@ import 'dart:async';
 
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/models/integration_upload_types.dart';
-import 'package:omi/models/recordings/recordings_models.dart';
 import 'package:omi/pages/recordings/passthrough_integration.dart';
 import 'package:omi/services/heypocket_service.dart';
 import 'package:omi/services/omi_api_client.dart';
+import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/other/time_utils.dart';
 
@@ -254,6 +254,9 @@ class IntegrationUploadManager {
 
         lane.current = job;
         _syncingKeys.add(job.key);
+        // So a re-file leaves this recording alone until the upload is done — Omi's
+        // progress is recorded under the path it started with (promoteSessionToDate).
+        RecordingsManager.noteUploadStarted(conversation.file);
         _refreshUploadHold(); // hold the wakelock while this upload is in flight
         // Persist an up-front failure marker so an app-kill mid-upload reads
         // "failed" rather than reverting to "pending". Cleared by upload() on success.
@@ -323,6 +326,7 @@ class IntegrationUploadManager {
         } finally {
           lane.current = null;
           _syncingKeys.remove(job.key);
+          RecordingsManager.noteUploadFinished(conversation.file);
           // A single-job cancel targeted this job; clear it so the next job in the
           // queue isn't affected. (A whole-lane cancelRequested is reset only once
           // the worker exits, in the outer finally.)
