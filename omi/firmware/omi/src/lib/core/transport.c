@@ -1959,9 +1959,12 @@ static void refresh_conn_param_mode(void)
  * (link_recovery_permitted): never during a manual or Priority Recording, never while
  * the VAD holds a recording open, and not until the room has been quiet for
  * LINK_RECOVERY_QUIET_MS. Until then the device records to the card exactly as before;
- * only the radio waits. Mute survives the reboot (retained RAM, plus the flash record
- * written here), so does the IMU clock bridge, and the next boot reports
- * DIAG_LINK_WEDGE_REBOOT.
+ * only the radio waits. The wait has no cap, deliberately: a device that never falls
+ * quiet stays off the air and keeps recording rather than rebooting into speech, and the
+ * first 30 s of quiet ends it. Do not add a "reboot anyway after N minutes" override —
+ * never cutting a recording is the requirement, not a tuning choice. Mute survives the
+ * reboot (retained RAM, plus the flash record written here), so does the IMU clock
+ * bridge, and the next boot reports DIAG_LINK_WEDGE_REBOOT.
  *
  * The flag is set and cleared under conn_mutex, the lock that hands the connection
  * over, and that is what keeps the ordinary path from ever rebooting. The idle timer
@@ -1973,7 +1976,10 @@ static void refresh_conn_param_mode(void)
  *
  * Residual: the silence check is made once, just before the reboot sequence starts. A
  * Priority Recording started in the second or so the SD unmount takes is cut short
- * (a manual one resumes, being persisted). */
+ * (a manual one resumes, being persisted). The same window covers a disconnect callback
+ * that finally arrives mid-sequence: k_work_cancel_delayable() does not wait for a
+ * running handler, so that reboot still happens — in silence, the cost the design
+ * already accepts, and only after the callback was missing for a minute or more. */
 #define LINK_DISCONNECT_REPORT_MS 60000
 #define LINK_RECOVERY_RECHECK_MS 10000
 #define LINK_RECOVERY_QUIET_MS 30000
