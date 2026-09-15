@@ -212,7 +212,8 @@ void app_settings_get_conn_fail(uint32_t *count, uint8_t *last_adv_slow, uint32_
  * @brief Record that the firmware is about to reboot itself to recover a link wedge.
  *
  * One-shot, consumed by @ref app_settings_take_wedge_reboot on the next boot, which
- * reports it (DIAG_LINK_WEDGE_REBOOT) and restores mute from it. See transport.c
+ * reports it (DIAG_LINK_WEDGE_REBOOT) and, if retained RAM did not survive, restores
+ * mute from it. See transport.c
  * "Lost-disconnect recovery".
  *
  * @param muted            whether the device was muted when it rebooted
