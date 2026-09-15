@@ -11,6 +11,7 @@ import 'package:omi/services/bridges/ble_bridge.dart';
 import 'package:omi/services/device_clock_anchor.dart';
 import 'package:omi/services/devices/device_drop_stats.dart';
 import 'package:omi/services/devices.dart';
+import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/device_crash_log.dart';
 import 'package:omi/services/devices/diag_log_record.dart';
 import 'package:omi/services/devices/errors.dart';
@@ -63,6 +64,13 @@ class DeviceProvider extends ChangeNotifier
   bool isMuted = false;
   DateTime? muteSince;
   StreamSubscription<List<int>>? _bleMuteListener;
+  // Live from the device's recording-state characteristic (oo-3.1.4 firmware), read on
+  // connect and notified on change; cleared on disconnect like mute. Drives the
+  // Priority Recording banner and notification line.
+  DeviceRecordingKind recordingKind = DeviceRecordingKind.none;
+  DateTime? recordingSince;
+  StreamSubscription<List<int>>? _bleRecordingStateListener;
+  bool get isPriorityRecording => recordingKind == DeviceRecordingKind.priority;
   int storageFullPercentage = -1;
   StorageFileStats? storageStats;
   int _lastNotifiedBatteryLevel = -1;
@@ -545,6 +553,37 @@ class DeviceProvider extends ChangeNotifier
     // Mirror into the OS notification's resting line.
     SyncNotification.isMuted = muted;
     SyncNotification.muteSince = since;
+    unawaited(SyncNotification.idle(isConnected: true));
+    notifyListeners();
+  }
+
+  /// Read the device's recording state and subscribe to its changes. Gated on the
+  /// capability bit — firmware before oo-3.1.4 has no such characteristic — so it
+  /// runs after [_cacheDeviceSettings], which is what learns the bits, and before
+  /// the sync kickoff, while the link is still idle (an unserialized read racing a
+  /// transfer drops the link on Android).
+  Future<void> _initRecordingState(String deviceId) async {
+    final oldListener = _bleRecordingStateListener;
+    _bleRecordingStateListener = null;
+    await oldListener?.cancel();
+    final features = deviceFeatures;
+    if (features == null || !OmiFeatures.hasFeature(features, OmiFeatures.recordingState)) return;
+    final conn = await ServiceManager.instance().device.ensureConnection(deviceId);
+    if (conn == null) return;
+    // Subscribe first, then read: a change landing between the two is then caught by
+    // one or the other. The other order can miss it until the next change.
+    _bleRecordingStateListener = await conn.getRecordingStateListener(onChange: _applyRecordingState);
+    final state = await conn.getRecordingState();
+    if (state != null) _applyRecordingState(state);
+  }
+
+  void _applyRecordingState(DeviceRecordingState state) {
+    if (recordingKind == state.kind && recordingSince == state.since) return;
+    recordingKind = state.kind;
+    recordingSince = state.since;
+    final priority = state.kind == DeviceRecordingKind.priority;
+    SyncNotification.priorityRecording = priority;
+    SyncNotification.priorityRecordingSince = priority ? state.since : null;
     unawaited(SyncNotification.idle(isConnected: true));
     notifyListeners();
   }
@@ -2027,6 +2066,14 @@ class DeviceProvider extends ChangeNotifier
       SyncNotification.isMuted = false;
       SyncNotification.muteSince = null;
     }
+    // Same as mute: live state, known only while connected. The app reads it again on
+    // the next connect, which is the moment it is shown.
+    await _bleRecordingStateListener?.cancel();
+    _bleRecordingStateListener = null;
+    recordingKind = DeviceRecordingKind.none;
+    recordingSince = null;
+    SyncNotification.priorityRecording = false;
+    SyncNotification.priorityRecordingSince = null;
     notifyListeners();
     await setConnectedDevice(null);
     setIsConnected(false);
@@ -2441,6 +2488,7 @@ class DeviceProvider extends ChangeNotifier
     // coin-flip. Failures leave their field null (UNREAD) and each page falls back
     // to reading for itself.
     await _cacheDeviceSettings(device.id);
+    await _initRecordingState(device.id);
 
     // The mode was just adopted from the device above, so push the matching
     // per-mode button config (and run the one-time migration) now that
