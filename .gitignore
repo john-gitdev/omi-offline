@@ -95,8 +95,16 @@ app/.metadata
 builds-snapshot.md
 *-snapshot.md
 
-# Built APKs
-/releases/
+# Built artifacts. The APKs are 300 MB+ — far past GitHub's 100 MB file limit —
+# so they ship as release assets, never as tracked files.
+/releases/*
+
+# ...except the current firmware DFU bundle (~430 KB). It is the one artifact that
+# cannot be rebuilt reliably: ccbuild.sh resolves "the newest NCS" rather than a
+# pinned version, and says so itself (ccbuild.sh:122 — "An NCS or toolchain update
+# changes the firmware"). Built with NCS v2.9.0. Keep exactly one bundle tracked:
+# bump this line on each firmware release and git rm the one it replaces.
+!/releases/oo314.zip
 
 # Exported Omi bin archives and shared debug logs — real recorded audio and
 # device logs pulled off a phone for analysis. Never commit these.
