@@ -1,0 +1,11 @@
+# Consumer hardware design package — verbatim vendor artifacts, verified
+# byte-for-byte against omi/hardware/consumer/checksums.sha256. Any EOL
+# normalization silently rewrites their bytes and breaks that check: it already
+# corrupted omi-bom.csv, case-b.step and omi-device-charger-assembly.step on the
+# original import (CRLF stripped, ~262 KB gone from the assembly STEP alone).
+# Mark them binary so no checkout or commit can touch them again.
+omi/hardware/consumer/**/*.step -text
+omi/hardware/consumer/**/*.csv  -text
+omi/hardware/consumer/**/*.zip  -text
+omi/hardware/consumer/**/*.pdf  -text
+omi/hardware/consumer/**/*.xlsx -text
