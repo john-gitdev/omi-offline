@@ -70,6 +70,13 @@ app/android/.kotlin/
 *.zip
 *.wav
 
+# ...except the consumer hardware manufacturing package. The Gerbers, Altium
+# sources and CNC finish spec ship as .zip and are design SOURCE, not build
+# output — the blanket *.zip above silently dropped all eight on import, leaving
+# electrical/ with schematic PDFs and nothing orderable. They verify against
+# omi/hardware/consumer/checksums.sha256.
+!omi/hardware/consumer/**/*.zip
+
 # Local-only — not tracked
 /version.txt
 /REFACTORING_INSTRUCTIONS.md
