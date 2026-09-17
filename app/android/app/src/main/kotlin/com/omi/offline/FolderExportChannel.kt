@@ -16,7 +16,9 @@ import java.util.concurrent.Executors
 
 /**
  * The `com.omi.offline/folderExport` channel: copies finished recordings into a folder the
- * user picked with the system folder picker, and renames or deletes those copies later.
+ * user picked with the system folder picker, and renames those copies when the app corrects a
+ * recording's date. It never deletes a finished copy: once saved, a copy is the user's. The
+ * only files it deletes are its own unfinished partials.
  *
  * Storage Access Framework rather than a path, because since Android 11 an app cannot write
  * into shared storage by path at all, and a path cannot name a folder on an SD card. The
@@ -82,7 +84,6 @@ class FolderExportChannel(private val context: Context, messenger: BinaryMesseng
                         File(call.argument<String>("sourcePath")!!),
                         call.argument<String>("name")!!,
                         call.argument<String>("mimeType")!!,
-                        call.argument<String>("replaceUri")?.let { Uri.parse(it) },
                     ).toString()
                 }
                 "rename" -> run(result) {
@@ -91,10 +92,6 @@ class FolderExportChannel(private val context: Context, messenger: BinaryMesseng
                         Uri.parse(call.argument<String>("docUri")!!),
                         call.argument<String>("name")!!,
                     ).toString()
-                }
-                "delete" -> run(result) {
-                    delete(Uri.parse(call.argument<String>("treeUri")!!), Uri.parse(call.argument<String>("docUri")!!))
-                    null
                 }
                 else -> result.notImplemented()
             }
@@ -243,7 +240,7 @@ class FolderExportChannel(private val context: Context, messenger: BinaryMesseng
         throw IOException("No free name for $desired")
     }
 
-    private fun copyInto(tree: Uri, source: File, name: String, mimeType: String, replace: Uri?): Uri {
+    private fun copyInto(tree: Uri, source: File, name: String, mimeType: String): Uri {
         requireAccess(tree)
         if (!source.exists()) throw Failure("SOURCE_GONE", "The recording is no longer on the phone")
         val root = rootOf(tree)
@@ -267,9 +264,6 @@ class FolderExportChannel(private val context: Context, messenger: BinaryMesseng
         try {
             val out = resolver.openOutputStream(target, "w") ?: throw IOException("Could not write into the folder")
             out.use { stream -> source.inputStream().use { it.copyTo(stream, 256 * 1024) } }
-            // Replacing an earlier copy of the same recording: removed only once the new one
-            // is complete, and before the rename, so the new copy can take its name.
-            if (replace != null) deleteQuietly(replace)
             if (!renameable) return target
             return DocumentsContract.renameDocument(resolver, target, uniqueName(tree, name, except = target)) ?: target
         } catch (e: Exception) {
@@ -285,13 +279,7 @@ class FolderExportChannel(private val context: Context, messenger: BinaryMesseng
         return DocumentsContract.renameDocument(resolver, doc, uniqueName(tree, name, except = doc)) ?: doc
     }
 
-    /** Succeeds when the copy is gone afterwards, including when it already was. */
-    private fun delete(tree: Uri, doc: Uri) {
-        requireAccess(tree)
-        if (!exists(doc)) return
-        DocumentsContract.deleteDocument(resolver, doc)
-    }
-
+    /** Only ever for the channel's own partial files — never a finished copy. */
     private fun deleteQuietly(doc: Uri) {
         try {
             DocumentsContract.deleteDocument(resolver, doc)
