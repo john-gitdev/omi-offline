@@ -1053,7 +1053,7 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                   onPressed: () => Navigator.of(context)
                       .push(
                     MaterialPageRoute(
-                      builder: (_) => const OfflineAudioSettingsPage(flashManualMode: true),
+                      builder: (_) => const OfflineAudioSettingsPage(),
                     ),
                   )
                       .then((_) {
@@ -1178,8 +1178,7 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                 VadFallbackBanner(active: _prefs.lastVadFallbackActive),
                 // Only ever raised for an Omi this app has not configured — a
                 // replacement, or one whose settings were reset. Review opens
-                // Recording Settings with the mode box flashing, the same nudge the
-                // manual-mode tag uses.
+                // Recording Settings, the same page the manual-mode tag opens.
                 RecordingModeMismatchBanner(
                   active: deviceProvider.recordingModeMismatch,
                   manual: _prefs.manualMode,
@@ -1187,7 +1186,7 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                     deviceProvider.dismissRecordingModeMismatch();
                     Navigator.of(context).push(
                       MaterialPageRoute(
-                        builder: (_) => const OfflineAudioSettingsPage(flashManualMode: true),
+                        builder: (_) => const OfflineAudioSettingsPage(),
                       ),
                     );
                   },
