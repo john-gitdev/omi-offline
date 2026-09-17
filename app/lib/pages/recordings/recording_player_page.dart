@@ -341,6 +341,7 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
               );
               if (confirm == true) {
                 await _player.stop();
+                widget.controller.forgetFolderCopiesOf([widget.conversation]);
                 await RecordingsManager.deleteConversation(widget.conversation);
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(

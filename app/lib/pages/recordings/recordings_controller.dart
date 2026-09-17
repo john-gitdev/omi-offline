@@ -1930,8 +1930,18 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final keys = batch.finalizedRecordings.map((c) => c.uploadKey).whereType<String>().toSet();
     await _prefs.removeUploadedFromHeypocket(keys);
     await _prefs.removeOmiSynced(_binPathsForConversations(batch.finalizedRecordings));
+    forgetFolderCopiesOf(batch.finalizedRecordings);
     await _manager.deleteDay(batch);
     await _loadBatches();
+  }
+
+  /// Drops deleted recordings from Save to Folder's ledger, as the two lines above each
+  /// call do for HeyPocket and Omi. The copies in the folder are left alone — once saved,
+  /// they are the user's, whatever happens to the recording.
+  void forgetFolderCopiesOf(List<Conversation> conversations) {
+    for (final i in _integrations.whereType<FolderExportIntegration>()) {
+      i.forgetCopiesOf(conversations);
+    }
   }
 
   Future<void> deleteConversation(Conversation conversation) async {
@@ -1951,6 +1961,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final keys = conversations.map((c) => c.uploadKey).whereType<String>().toSet();
     await _prefs.removeUploadedFromHeypocket(keys);
     await _prefs.removeOmiSynced(_binPathsForConversations(conversations));
+    forgetFolderCopiesOf(conversations);
     final touchedSessionIds = conversations.map((c) => c.sessionId).whereType<int>().toSet();
     await RecordingsManager.deleteConversations(conversations);
     if (reload) await _loadBatches();
@@ -2007,6 +2018,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (toDelete.isNotEmpty) {
       Logger.debug('Retention: deleting ${toDelete.length} recordings older than $days days');
       await _prefs.removeOmiSynced(_binPathsForConversations(toDelete));
+      forgetFolderCopiesOf(toDelete);
       await RecordingsManager.deleteConversations(toDelete);
       return true;
     }
@@ -2236,6 +2248,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   void cancelOmiUploads({bool autoOnly = false}) => _uploads.cancelOmiUploads(autoOnly: autoOnly);
 
   void cancelHeyPocketUploads({bool autoOnly = false}) => _uploads.cancelHeyPocketUploads(autoOnly: autoOnly);
+
+  void cancelFolderExports({bool autoOnly = false}) => _uploads.cancelFolderExports(autoOnly: autoOnly);
 
   /// Active uploads (in-flight + queued) for [integrationName] — see
   /// [IntegrationUploadManager.activeUploadCountFor].

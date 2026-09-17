@@ -2090,6 +2090,286 @@ void main() {
     });
   });
 
+  // In M4A mode the processor used to encode every finished recording straight to .m4a,
+  // while drafts stayed WAV — and the stitch can only join WAV to WAV. So a conversation
+  // that ran across a sync, whose continuation finished inside the next run, came back as
+  // two recordings split at the sync. Finished recordings are now saved as WAV stamped
+  // m4aPending (0x40) and converted after the stitch.
+  group('M4A mode: stitch first, convert after', () {
+    final t0 = DateTime.utc(2026, 9, 16, 9, 40).millisecondsSinceEpoch;
+
+    // The native AAC encoder, faked: an .m4a is 'M4A' followed by the PCM it was fed,
+    // written under its final name at finish — as native does even for a session that
+    // failed part-way, which is what makes a leftover .m4a untrustworthy.
+    late Map<String, String> outputs;
+    late Map<String, BytesBuilder> fed;
+    int? failAfterBytes;
+
+    setUp(() {
+      outputs = {};
+      fed = {};
+      failAfterBytes = null;
+      SharedPreferencesUtil().audioSaveFormat = 'm4a';
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('com.omi.offline/aacEncoder'),
+        (call) async {
+          final args = call.arguments as Map;
+          switch (call.method) {
+            case 'startEncoder':
+              final id = 's${outputs.length}';
+              outputs[id] = args['outputPath'] as String;
+              fed[id] = BytesBuilder();
+              return id;
+            case 'encodeBuffer':
+              final sink = fed[args['sessionId']]!;
+              if (failAfterBytes != null && sink.length >= failAfterBytes!) {
+                throw PlatformException(code: 'ENCODE_CHUNK_ERROR');
+              }
+              sink.add(args['pcmBytes'] as Uint8List);
+              return null;
+            case 'finishEncoder':
+              final id = args['sessionId'] as String;
+              File(outputs[id]!).writeAsBytesSync([...'M4A'.codeUnits, ...fed[id]!.toBytes()]);
+              return null;
+          }
+          return null;
+        },
+      );
+    });
+
+    tearDown(() => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(const MethodChannel('com.omi.offline/aacEncoder'), null));
+
+    /// A recording as the processor leaves it: 16 kHz mono PCM behind a 44-byte header, and
+    /// a `.meta` with [key] and the m4aPending bit when [pending].
+    File writeRecording(int startMs, int durationMs,
+        {bool isDraft = false, bool pending = false, String ext = 'wav', String key = ''}) {
+      final dateDir = Directory(p.join(tempDir.path, 'recordings', coverageDateOf(startMs)))
+        ..createSync(recursive: true);
+      final suffix = isDraft ? '_draft' : '';
+      final audio = File(p.join(dateDir.path, 'recording_$startMs$suffix.$ext'))
+        ..writeAsBytesSync(Uint8List(44 + durationMs * 32));
+      final keyBytes = key.codeUnits;
+      final meta = Uint8List(417 + keyBytes.length + 4);
+      ByteData.sublistView(meta)
+        ..setUint32(0, durationMs * 16, Endian.little)
+        ..setUint32(4, durationMs, Endian.little);
+      meta[416] = keyBytes.length;
+      meta.setRange(417, 417 + keyBytes.length, keyBytes);
+      meta[417 + keyBytes.length + 3] = pending ? 0x40 : 0x00;
+      File(p.join(dateDir.path, 'recording_$startMs$suffix.meta')).writeAsBytesSync(meta);
+      return audio;
+    }
+
+    File m4aOf(File wav) => File(wav.path.replaceAll(RegExp(r'(_draft)?\.wav$'), '.m4a'));
+    Uint8List metaOf(File audio) =>
+        File(audio.path.replaceAll(RegExp(r'(_draft)?\.(wav|m4a)$'), '.meta')).readAsBytesSync();
+
+    test('a conversation that ran across a sync comes back as one recording, then becomes M4A', () async {
+      final draft = writeRecording(t0, 5000, isDraft: true); // what the last sync left open
+      late File continuation;
+      late File later;
+
+      await RecordingsManager().stitchDraftRecordingsForTest(duringRun: () async {
+        continuation = writeRecording(t0 + 5000, 3000, pending: true); // finished inside this run
+        later = writeRecording(t0 + 8000 + 600000, 2000, pending: true); // a separate conversation
+      });
+
+      final joined = m4aOf(draft);
+      expect(joined.existsSync(), isTrue, reason: 'the draft took in its continuation and was closed');
+      expect(ByteData.sublistView(metaOf(joined)).getUint32(4, Endian.little), 8000);
+      expect(continuation.existsSync(), isFalse);
+      expect(m4aOf(continuation).existsSync(), isFalse, reason: 'not split off as a recording of its own');
+      expect(later.existsSync(), isFalse);
+      expect(m4aOf(later).existsSync(), isTrue, reason: 'a finished recording is converted after the stitch');
+    });
+
+    // The user's case: the 9:40 bin arrives after 9:50–10:05 was already finished as .m4a.
+    test('late audio before a recording already converted by an earlier run stays its own', () async {
+      final earlier = writeRecording(t0 + 600000, 900000, ext: 'm4a');
+      final earlierBytes = earlier.readAsBytesSync();
+      late File late;
+
+      await RecordingsManager().stitchDraftRecordingsForTest(
+        duringRun: () async => late = writeRecording(t0, 600000, isDraft: true),
+      );
+
+      expect(m4aOf(late).existsSync(), isTrue, reason: 'finished on its own, as M4A');
+      expect(earlier.readAsBytesSync(), earlierBytes, reason: 'an .m4a cannot be joined; it is untouched');
+    });
+
+    test('conversion moves the markers, keeps the upload key and clears the bit', () async {
+      const key = 'AABBCC_recording_1.m4a';
+      final wav = writeRecording(t0, 2000, pending: true, key: key);
+      final edl = File(p.join(wav.parent.path, 'marker_${t0 + 500}.edl'))
+        ..writeAsStringSync(jsonEncode({'markerTimestampMs': t0 + 500, 'segmentFilename': p.basename(wav.path)}));
+
+      await RecordingsManager().stitchDraftRecordingsForTest();
+
+      final m4a = m4aOf(wav);
+      expect(wav.existsSync(), isFalse);
+      expect(m4a.readAsBytesSync().length, 3 + 2000 * 32, reason: 'the whole PCM payload was encoded');
+      expect((jsonDecode(edl.readAsStringSync()) as Map)['segmentFilename'], p.basename(m4a.path));
+      final meta = metaOf(m4a);
+      expect(String.fromCharCodes(meta, 417, 417 + meta[416]), key);
+      expect(RecordingsManager.metaM4aPending(meta), isFalse);
+    });
+
+    test('a recording an upload is reading stays WAV until a run after the upload', () async {
+      final wav = writeRecording(t0, 2000, pending: true);
+      RecordingsManager.noteUploadStarted(wav);
+      try {
+        await RecordingsManager().stitchDraftRecordingsForTest();
+        expect(wav.existsSync(), isTrue);
+        expect(m4aOf(wav).existsSync(), isFalse);
+      } finally {
+        RecordingsManager.noteUploadFinished(wav);
+      }
+
+      await RecordingsManager().stitchDraftRecordingsForTest();
+      expect(m4aOf(wav).existsSync(), isTrue);
+    });
+
+    test('a failed conversion keeps the WAV and its bit, and leaves no partial .m4a', () async {
+      final wav = writeRecording(t0, 2000, pending: true);
+      failAfterBytes = 8192;
+
+      await RecordingsManager().stitchDraftRecordingsForTest();
+
+      expect(wav.existsSync(), isTrue);
+      expect(RecordingsManager.metaM4aPending(metaOf(wav)), isTrue, reason: 'tried again next run');
+      expect(m4aOf(wav).existsSync(), isFalse, reason: 'a truncated .m4a would pass for a finished one');
+    });
+
+    test('an .m4a left beside a pending WAV by a killed run is encoded again, not trusted', () async {
+      final wav = writeRecording(t0, 2000, pending: true);
+      m4aOf(wav).writeAsStringSync('TRUNCATED');
+
+      await RecordingsManager().stitchDraftRecordingsForTest();
+
+      expect(wav.existsSync(), isFalse);
+      expect(m4aOf(wav).readAsBytesSync().length, 3 + 2000 * 32);
+    });
+
+    test('a pending WAV with no samples stays WAV and loses its mark, so it is not retried forever', () async {
+      final wav = writeRecording(t0, 0, pending: true);
+
+      await RecordingsManager().stitchDraftRecordingsForTest();
+
+      expect(wav.existsSync(), isTrue);
+      expect(m4aOf(wav).existsSync(), isFalse);
+      expect(RecordingsManager.metaM4aPending(metaOf(wav)), isFalse);
+    });
+
+    test('a WAV without the bit — made before the user switched to M4A — is left alone', () async {
+      final wav = writeRecording(t0, 2000);
+      await RecordingsManager().stitchDraftRecordingsForTest();
+      expect(wav.existsSync(), isTrue);
+      expect(m4aOf(wav).existsSync(), isFalse);
+    });
+
+    test('in WAV mode nothing is converted, and the bit waits', () async {
+      SharedPreferencesUtil().audioSaveFormat = 'wav';
+      final wav = writeRecording(t0, 2000, pending: true);
+      await RecordingsManager().stitchDraftRecordingsForTest();
+      expect(wav.existsSync(), isTrue);
+      expect(RecordingsManager.metaM4aPending(metaOf(wav)), isTrue);
+    });
+
+    group('end to end, through a real run', () {
+      const binTs = 1789551600; // epoch SECONDS — the folder name is the timerStart
+
+      /// A bin of [frames] frames closed by a 0xFFFFFFFC stop, and the batch that carries it.
+      Future<Batch> stoppedBin() async {
+        SharedPreferencesUtil().vadEnabled = false; // manual: AAD, no Silero
+        final builder = BytesBuilder();
+        builder.add((ByteData(36)
+              ..setUint32(0, 0xFFFFFFFB, Endian.little)
+              ..setUint32(4, 28, Endian.little)
+              ..setUint64(8, binTs * 1000, Endian.little)
+              ..setUint32(28, 1, Endian.little))
+            .buffer
+            .asUint8List());
+        for (var i = 0; i < 50; i++) {
+          builder.add((ByteData(4)..setUint32(0, 4, Endian.little)).buffer.asUint8List());
+          builder.add(List.filled(4, 0));
+        }
+        builder.add((ByteData(20)
+              ..setUint32(0, 0xFFFFFFFC, Endian.little)
+              ..setUint64(4, binTs * 1000 + 1000, Endian.little)
+              ..setUint32(16, 1, Endian.little))
+            .buffer
+            .asUint8List());
+        await Directory('${tempDir.path}/raw_segments/$binTs').create(recursive: true);
+        final bin = File('${tempDir.path}/raw_segments/$binTs/${binTs}_1.bin')..writeAsBytesSync(builder.toBytes());
+        return Batch(
+          dateString: coverageDateOf(binTs * 1000),
+          date: DateTime.fromMillisecondsSinceEpoch(binTs * 1000),
+          rawSegments: [bin],
+          draftRecordings: const [],
+          finalizedRecordings: const [],
+          markerTimestamps: const [],
+          discards: const [],
+        );
+      }
+
+      List<String> audioOnDisk() => Directory(p.join(tempDir.path, 'recordings'))
+          .listSync(recursive: true)
+          .whereType<File>()
+          .map((f) => p.basename(f.path))
+          .where((n) => n.endsWith('.wav') || n.endsWith('.m4a'))
+          .toList();
+
+      List<File> metasOnDisk() => Directory(p.join(tempDir.path, 'recordings'))
+          .listSync(recursive: true)
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.meta'))
+          .toList();
+
+      // Host tests have no Opus decoder, so the run's recording has no samples and stays
+      // WAV (see the empty-recording test above). The bit is read twice: as the recording
+      // lands, before Phase 3 — the processor stamped it — and after the run — the run's own
+      // conversion pass reached it. Either read alone is also what an unstamped recording
+      // would show.
+      test('a recording finished in the run is stamped, and the run\'s conversion pass reaches it', () async {
+        final stampedOnArrival = <bool>[];
+
+        await RecordingsManager().processAll([await stoppedBin()], (_, __) {}, onRecordingFinalized: () {
+          for (final meta in metasOnDisk()) {
+            stampedOnArrival.add(RecordingsManager.metaM4aPending(meta.readAsBytesSync()));
+          }
+        });
+
+        expect(stampedOnArrival, [true], reason: 'one recording, stamped by the processor');
+        expect(metasOnDisk(), hasLength(1), reason: 'the run should have produced one recording: ${audioOnDisk()}');
+        expect(RecordingsManager.metaM4aPending(metasOnDisk().single.readAsBytesSync()), isFalse);
+      });
+
+      test('the continuation of an open draft joins it, and the one recording is .m4a', () async {
+        final draft = writeRecording(binTs * 1000 - 300000, 300000, isDraft: true); // ends as the bin starts
+
+        await RecordingsManager().processAll([await stoppedBin()], (_, __) {});
+
+        expect(audioOnDisk(), [p.basename(m4aOf(draft).path)], reason: 'one recording, not split at the sync');
+      });
+    });
+
+    test('a draft whose conversion fails at close is marked, so a later run converts it', () async {
+      final draft = writeRecording(t0, 2000, isDraft: true);
+      writeRecording(t0 + 2000 + 600000, 1000); // closes the draft by the gap
+      failAfterBytes = 0;
+
+      await RecordingsManager().stitchDraftRecordingsForTest();
+      final kept = File(draft.path.replaceAll('_draft.wav', '.wav'));
+      expect(kept.existsSync(), isTrue);
+      expect(RecordingsManager.metaM4aPending(metaOf(kept)), isTrue);
+
+      failAfterBytes = null;
+      await RecordingsManager().stitchDraftRecordingsForTest();
+      expect(m4aOf(kept).existsSync(), isTrue);
+    });
+  });
+
   // ---------------------------------------------------------------------------
   // Clock-anchor correction, end to end.
   //

@@ -229,8 +229,9 @@ class IntegrationUploadManager {
         }
         // Wifi gate before committing to a job. Fail closed: if we can't confirm
         // wifi, park rather than upload over cellular. The connectivity listener
-        // re-pumps on the next change.
-        if (_prefs.uploadOnWifiOnly) {
+        // re-pumps on the next change. A lane that never leaves the phone is exempt.
+        final next = lane.manual.isNotEmpty ? lane.manual.first : lane.auto.first;
+        if (_prefs.uploadOnWifiOnly && next.integration.requiresNetwork) {
           try {
             if (!await _checkOnWifi()) break; // parked
           } catch (e) {
@@ -409,13 +410,15 @@ class IntegrationUploadManager {
   String _laneNotificationLine(String name, _UploadLane lane) {
     final delivered = lane.done;
     final laneTotal = lane.done + lane.failed + (lane.current != null ? 1 : 0) + lane.manual.length + lane.auto.length;
+    final local = !(_integrationNamed(name)?.requiresNetwork ?? true);
     if (lane.isPausedBusy) {
-      return '$name — server busy, retry ${fmtHourMin(lane.busyUntil!)} ($delivered/$laneTotal)';
+      final why = local ? 'folder unavailable' : 'server busy';
+      return '$name — $why, retry ${fmtHourMin(lane.busyUntil!)} ($delivered/$laneTotal)';
     }
     if (lane.current != null) {
       final prog = lane.current!.integration.segmentProgress(lane.current!.conversation);
       final chunk = prog != null ? ' (chunk ${prog.$1 + 1}/${prog.$2})' : '';
-      return '$name — uploading $delivered/$laneTotal$chunk';
+      return '$name — ${local ? 'saving' : 'uploading'} $delivered/$laneTotal$chunk';
     }
     if (lane.isEmpty) {
       return lane.failed > 0
@@ -451,6 +454,15 @@ class IntegrationUploadManager {
     _autoSweepDeferred = false;
     final minDuration = _prefs.filterMinDurationSeconds;
 
+    // Held by the same gate as the sweep, so it only ever sees settled names. Its own
+    // lock orders it against the lane's uploads.
+    final finished = [for (final batch in _batchesProvider()) ...batch.finalizedRecordings];
+    for (final integration in _integrations) {
+      unawaited(integration.reconcile(finished).catchError((Object e) {
+        Logger.error('reconcile(${integration.name}) failed: $e');
+      }));
+    }
+
     for (final batch in _batchesProvider().reversed) {
       final sortedConversations = [...batch.finalizedRecordings]..sort((a, b) => a.startTime.compareTo(b.startTime));
       for (final conversation in sortedConversations) {
@@ -477,6 +489,16 @@ class IntegrationUploadManager {
   void cancelOmiUploads({bool autoOnly = false}) => _cancelUploadsFor('Omi Cloud', autoOnly: autoOnly);
 
   void cancelHeyPocketUploads({bool autoOnly = false}) => _cancelUploadsFor('HeyPocket', autoOnly: autoOnly);
+
+  void cancelFolderExports({bool autoOnly = false}) =>
+      _cancelUploadsFor(FolderExportIntegration.integrationName, autoOnly: autoOnly);
+
+  PassthroughIntegration? _integrationNamed(String name) {
+    for (final i in _integrations) {
+      if (i.name == name) return i;
+    }
+    return null;
+  }
 
   /// Cancels uploads for [integrationName]: drops queued jobs and signals the
   /// in-flight upload (if any) to abort at its next safe checkpoint. Called when
@@ -589,30 +611,37 @@ class IntegrationUploadManager {
 
     // Validate wifi up-front so a manual tap gets instant feedback rather than a
     // job that silently parks. Once enqueued, async upload failures surface via
-    // the reactive row state, not a returned failure.
-    if (_prefs.uploadOnWifiOnly) {
-      if (!await _checkOnWifi()) {
-        throw Exception('WiFi required for upload — connect to WiFi or disable "Upload on Wifi Only" in App Settings');
-      }
-    }
+    // the reactive row state, not a returned failure. Only integrations that go over
+    // the network are held back; Save to Folder goes ahead either way.
+    const wifiMessage = 'WiFi required for upload — connect to WiFi or disable "Upload on Wifi Only" in App Settings';
+    bool? onWifi;
 
     // Manual upload bypasses the auto-upload time cutoff (isEnabled): an explicit
     // tap should upload even recordings made before auto-upload was switched on.
     // A missing source (e.g. Omi's pruned .bin) is filtered by isAvailableFor.
     var enqueued = 0;
+    final wifiBlocked = <UploadFailure>[];
     for (final integration in _integrations) {
       if (!integration.isAvailableFor(conversation)) continue;
       if (!force && integration.hasDelivered(conversation)) continue;
+      if (_prefs.uploadOnWifiOnly && integration.requiresNetwork) {
+        onWifi ??= await _checkOnWifi();
+        if (!onWifi) {
+          wifiBlocked.add(UploadFailure(integration.name, Exception(wifiMessage)));
+          continue;
+        }
+      }
       _enqueueUpload(integration, conversation, force: force, manual: true);
       enqueued++;
     }
 
     if (enqueued == 0) {
+      if (wifiBlocked.isNotEmpty) throw Exception(wifiMessage);
       return [UploadFailure('Integrations', Exception('No integrations enabled for upload'))];
     }
     pumpAllLanes();
     _notifyUi();
-    return [];
+    return wifiBlocked;
   }
 
   /// Passed to [PassthroughIntegration.upload] so each delivered chunk repaints
@@ -642,6 +671,7 @@ class IntegrationUploadManager {
         failedAt: failedAt,
         deliveredSegments: progress?.$1,
         totalSegments: progress?.$2,
+        local: !i.requiresNetwork,
       ));
     }
     return result;
@@ -721,7 +751,7 @@ class IntegrationUploadManager {
     // Validate wifi up-front so a manual tap gets instant feedback; once enqueued,
     // an async failure surfaces via the reactive row state. (Already in flight or
     // queued is a no-op — _enqueueUpload dedups.)
-    if (_prefs.uploadOnWifiOnly) {
+    if (_prefs.uploadOnWifiOnly && integration.requiresNetwork) {
       try {
         if (!await _checkOnWifi()) {
           return [

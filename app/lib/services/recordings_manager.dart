@@ -845,7 +845,9 @@ class RecordingsManager {
             return aIsMeta.compareTo(bIsMeta);
           });
         for (final entity in entities) {
-          final fileName = entity.path.split('/').last;
+          // basename, not split('/'): a listing on Windows (where the unit tests run) ends in
+          // a backslash-separated name, and the whole path would be taken for the file name.
+          final fileName = p.basename(entity.path);
           final nameNoExt = fileName.split('.').first;
           final parts = nameNoExt.split('_');
 
@@ -882,16 +884,10 @@ class RecordingsManager {
           }
 
           await entity.rename(dest);
-          if (fileName.endsWith('.m4a')) {
-            final legacyWav = File(
-              '${liveDir.path}/${fileName.replaceAll('.m4a', '')}.wav',
-            );
-            try {
-              await legacyWav.delete();
-            } on FileSystemException catch (_) {}
-            onRecordingFinalized?.call();
-            notifyRecordingsChanged();
-          } else if (fileName.endsWith('.wav')) {
+          // Always WAV now, in either save format: M4A conversion happens after the stitch
+          // pass (_convertPendingToM4a), so there is no older .wav of the same recording to
+          // clear out when an .m4a lands here, as there once was.
+          if (isAudio) {
             onRecordingFinalized?.call();
             notifyRecordingsChanged();
           }
@@ -1261,11 +1257,13 @@ class RecordingsManager {
       }
 
       // Phase 3: Post-Sync Stitch Pass
-      // After processing is complete, look for drafts and stitch them if within threshold.
+      // After processing is complete, look for drafts and stitch them if within threshold,
+      // then convert what is left to M4A — in that order, since only WAV can be stitched.
       final isM4a = SharedPreferencesUtil().audioSaveFormat == 'm4a';
       if (isM4a) isTranscoding.value = true;
       try {
         await _stitchDraftRecordings(finalizeAll: finalizeDrafts);
+        await _convertPendingToM4a();
       } finally {
         isTranscoding.value = false;
       }
@@ -1638,6 +1636,11 @@ class RecordingsManager {
   @visibleForTesting
   static bool metaMarksHardEnd(Uint8List metaBytes) => _metaFlagBit(metaBytes, 0x04);
 
+  /// Reads the `m4aPending` bit (0x40): a finished recording saved as WAV in M4A mode, still
+  /// to be converted by [_convertPendingToM4a].
+  @visibleForTesting
+  static bool metaM4aPending(Uint8List metaBytes) => _metaFlagBit(metaBytes, 0x40);
+
   /// Reads the `forceSynced` flag (byte [1] of the flag block, bit 0x01): the bolt, a
   /// recording Force Sync / Force Process closed because nothing followed it.
   static bool _metaForceSynced(Uint8List metaBytes) {
@@ -1712,13 +1715,14 @@ class RecordingsManager {
 
   /// Mirrors [processAll]'s bracket around the stitch: snapshot the finished recordings
   /// on disk, let [duringRun] stand in for the decode (anything it writes was created
-  /// by "this run"), then stitch.
+  /// by "this run"), then stitch and convert to M4A.
   @visibleForTesting
   Future<void> stitchDraftRecordingsForTest({bool finalizeAll = false, Future<void> Function()? duringRun}) async {
     await _snapshotBeforeRun((await getApplicationDocumentsDirectory()).path);
     try {
       await duringRun?.call();
       await _stitchDraftRecordings(finalizeAll: finalizeAll);
+      await _convertPendingToM4a();
     } finally {
       _finishedBeforeRun = null;
       _draftsBeforeRun = null;
@@ -1920,6 +1924,11 @@ class RecordingsManager {
           } else {
             outBytes[flagOffset + 1] = isForceSynced ? 1 : 0;
             // capEnded byte preserved as-is at flagOffset + 2.
+            // Wanted as M4A but the encoder failed: mark it so a later run's
+            // _convertPendingToM4a tries again, instead of it staying WAV for good.
+            if (targetExt == 'm4a' && !transcoded && outBytes.length > flagOffset + 3) {
+              outBytes[flagOffset + 3] |= 0x40;
+            }
           }
         }
 
@@ -1997,26 +2006,30 @@ class RecordingsManager {
     }
   }
 
+  /// Encodes [wavFile] to [m4aPath]. True only when the whole file was encoded; on false,
+  /// nothing is left at [m4aPath].
   Future<bool> _transcodeWavToM4a(File wavFile, String m4aPath) async {
     String? sessionId;
+    RandomAccessFile? raf;
     try {
-      final bytes = await wavFile.readAsBytes();
-      if (bytes.length < 44) return false;
-
-      final data = ByteData.sublistView(bytes);
-      final sampleRate = data.getUint32(24, Endian.little);
-      // View past the 44-byte WAV header instead of deep-copying the entire PCM payload
-      // (can be many MB for long recordings). `bytes` is read-only after readAsBytes().
-      final pcmBytes = Uint8List.sublistView(bytes, 44);
+      // Read in chunks rather than whole: every finished recording passes through here in
+      // M4A mode, and a long one is hundreds of MB of PCM.
+      raf = await wavFile.open();
+      if (await raf.length() < 44) return false;
+      final header = await raf.read(44);
+      final sampleRate = ByteData.sublistView(header).getUint32(24, Endian.little);
 
       sessionId = await AacEncoder.startEncoder(sampleRate, m4aPath);
+      // The chunk size the processor always fed the encoder, which caps an input buffer.
       const chunkSize = 4096;
-      for (int i = 0; i < pcmBytes.length; i += chunkSize) {
-        final end = (i + chunkSize > pcmBytes.length) ? pcmBytes.length : i + chunkSize;
-        // View, not copy: encodeBuffer marshals synchronously over the MethodChannel.
-        await AacEncoder.encodeBuffer(sessionId, Uint8List.sublistView(pcmBytes, i, end));
+      while (true) {
+        final chunk = await raf.read(chunkSize);
+        if (chunk.isEmpty) break;
+        await AacEncoder.encodeBuffer(sessionId, chunk);
       }
-      await AacEncoder.finishEncoder(sessionId);
+      final finishing = sessionId;
+      sessionId = null;
+      await AacEncoder.finishEncoder(finishing);
       return true;
     } catch (e) {
       Logger.error('RecordingsManager: Transcoding failed: $e');
@@ -2025,7 +2038,92 @@ class RecordingsManager {
           await AacEncoder.finishEncoder(sessionId);
         } catch (_) {}
       }
+      // Finishing a session that failed part-way still writes a valid file of whatever it
+      // had encoded, under the final name. Left there it reads as a finished conversion.
+      try {
+        final partial = File(m4aPath);
+        if (await partial.exists()) await partial.delete();
+      } catch (_) {}
       return false;
+    } finally {
+      await raf?.close();
+    }
+  }
+
+  static Future<void> _clearM4aPending(File metaFile) async {
+    final bytes = await metaFile.readAsBytes();
+    if (bytes.length >= 417 && bytes.length > 417 + bytes[416] + 3) {
+      bytes[417 + bytes[416] + 3] &= ~0x40;
+      await metaFile.writeAsBytes(bytes, flush: true);
+    }
+  }
+
+  /// Converts the recordings saved as WAV in M4A mode — `.meta` bit 0x40, stamped by
+  /// VadAudioProcessor on every finished recording — once the stitch pass is done. The
+  /// processor no longer encodes .m4a itself because the stitch can only join WAV to WAV:
+  /// a continuation encoded straight to .m4a could never be joined onto the draft its
+  /// conversation started in, so a conversation that ran across a sync came back as two.
+  ///
+  /// Driven by the bit, not by "written this run", so a run killed before this pass leaves
+  /// nothing stuck as WAV; the next run converts it. Left for a later run: a recording an
+  /// upload is reading, and one whose conversion fails (the bit stays). In WAV mode nothing
+  /// is converted and the bit waits, in case the user switches back.
+  ///
+  /// Ordered for a kill at any point. An .m4a found beside a pending WAV is never trusted —
+  /// finishing a failed encoder session writes a truncated but valid one — so it is encoded
+  /// again. Then markers move to the .m4a, then the WAV goes, and the bit is cleared last,
+  /// where losing it costs nothing. The upload key is left alone: the processor wrote it for
+  /// the .m4a already, so anything delivered under it stays delivered.
+  Future<void> _convertPendingToM4a() async {
+    if (SharedPreferencesUtil().audioSaveFormat != 'm4a') return;
+    final directory = await getApplicationDocumentsDirectory();
+    final recordingsDir = Directory('${directory.path}/recordings');
+    if (!await recordingsDir.exists()) return;
+    final folders = (await recordingsDir.list().toList()).whereType<Directory>();
+    for (final folder in folders) {
+      final wavs = (await folder.list().toList()).whereType<File>().where((f) {
+        final p = f.path;
+        return p.endsWith('.wav') && !p.contains('_draft.') && !p.contains('.tmp');
+      }).toList();
+      for (final wav in wavs) {
+        final base = wav.path.substring(0, wav.path.length - '.wav'.length);
+        final metaFile = File('$base.meta');
+        try {
+          if (!await metaFile.exists() || !metaM4aPending(await metaFile.readAsBytes())) continue;
+          if (isUploading(wav)) continue;
+          if (await wav.length() <= 44) {
+            // No samples — every frame was undecodable. AAC cannot make a file of nothing, so
+            // the attempt would fail and repeat on every run. It stays the WAV it is.
+            await _clearM4aPending(metaFile);
+            continue;
+          }
+          final m4a = File('$base.m4a');
+          if (await m4a.exists()) await m4a.delete();
+          if (!await _transcodeWavToM4a(wav, m4a.path)) {
+            Logger.error('RecordingsManager: ${p.basename(wav.path)} stays WAV for now — conversion failed, '
+                'retried next run.');
+            continue;
+          }
+          final oldName = p.basename(wav.path);
+          final newName = p.basename(m4a.path);
+          for (final edl in (await folder.list().toList()).whereType<File>().where((f) => f.path.endsWith('.edl'))) {
+            try {
+              final json = jsonDecode(await edl.readAsString()) as Map<String, dynamic>;
+              if (json['segmentFilename'] != oldName) continue;
+              json['segmentFilename'] = newName;
+              await _writeJsonAtomic(edl, json);
+            } catch (e) {
+              Logger.error('RecordingsManager: could not point marker ${edl.path} at $newName: $e');
+            }
+          }
+          await wav.delete();
+          await _clearM4aPending(metaFile);
+          notifyRecordingsChanged();
+          Logger.debug('RecordingsManager: converted $oldName → $newName');
+        } catch (e) {
+          Logger.error('RecordingsManager: converting ${wav.path} to M4A failed: $e');
+        }
+      }
     }
   }
 

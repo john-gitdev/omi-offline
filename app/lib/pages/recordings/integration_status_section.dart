@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:omi/pages/recordings/passthrough_integration.dart';
 import 'package:omi/pages/recordings/recordings_controller.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/utils/other/time_utils.dart';
@@ -20,7 +21,7 @@ class IntegrationStatusList extends StatelessWidget {
   /// only thing queued/uploading for that integration, just cancel it; if a queue
   /// is backed up behind it, ask whether to cancel only this recording or the
   /// whole queue.
-  Future<void> _handleCancel(BuildContext context, String integrationName) async {
+  Future<void> _handleCancel(BuildContext context, String integrationName, {bool local = false}) async {
     final count = controller.activeUploadCountFor(integrationName);
     if (count <= 1) {
       controller.cancelUpload(conversation, integrationName);
@@ -29,13 +30,14 @@ class IntegrationStatusList extends StatelessWidget {
 
     // Tap outside or press back to dismiss (returns null) — no explicit dismiss
     // button; the two actions are the only deliberate choices.
+    final what = local ? 'save' : 'upload';
     final choice = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: Colors.grey.shade900,
-        title: const Text('Cancel upload', style: TextStyle(color: Colors.white, fontSize: 20)),
+        title: Text('Cancel $what', style: const TextStyle(color: Colors.white, fontSize: 20)),
         content: Text(
-          '$count uploads are in progress or queued for $integrationName. '
+          '$count ${what}s are in progress or queued for $integrationName. '
           'Cancel just this recording, or the entire queue?',
           style: const TextStyle(color: Colors.white, fontSize: 16),
         ),
@@ -80,7 +82,10 @@ class IntegrationStatusList extends StatelessWidget {
       builder: (context, _) {
         final statuses = controller.integrationStatuses(conversation);
         if (statuses.isEmpty) return const SizedBox.shrink();
-        final anyActionable = statuses.any((s) => s.isActionable);
+        final actionable = statuses.where((s) => s.isActionable).toList();
+        final anyActionable = actionable.isNotEmpty;
+        // "Save" only when everything left to do stays on the phone.
+        final allActionableLocal = anyActionable && actionable.every((s) => s.local);
         return Container(
           decoration: BoxDecoration(
             color: const Color(0xFF1C1C1E),
@@ -104,7 +109,7 @@ class IntegrationStatusList extends StatelessWidget {
                     onUpload: () => _runAction(context, () => controller.uploadOne(conversation, s.name)),
                     onReupload: () =>
                         _runAction(context, () => controller.uploadOne(conversation, s.name, force: true)),
-                    onCancel: () => _handleCancel(context, s.name),
+                    onCancel: () => _handleCancel(context, s.name, local: s.local),
                   )),
               if (anyActionable)
                 Padding(
@@ -118,8 +123,8 @@ class IntegrationStatusList extends StatelessWidget {
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                         padding: const EdgeInsets.symmetric(vertical: 12),
                       ),
-                      child: const Text('Upload all pending',
-                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                      child: Text(allActionableLocal ? 'Save all pending' : 'Upload all pending',
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                     ),
                   ),
                 ),
@@ -160,8 +165,9 @@ class _IntegrationRow extends StatelessWidget {
   /// per the user's 24-hour / AM-PM preference. Plain "Last Upload Failed" when
   /// no timestamp is available.
   String _failedLabel(DateTime? at) {
-    if (at == null) return 'Last Upload Failed';
-    return 'Last Upload Failed at: ${fmtHourMin(at)}';
+    final what = status.local ? 'Save' : 'Upload';
+    if (at == null) return 'Last $what Failed';
+    return 'Last $what Failed at: ${fmtHourMin(at)}';
   }
 
   /// Why an integration can't take this recording — integration-specific so the
@@ -171,6 +177,7 @@ class _IntegrationRow extends StatelessWidget {
       case 'Omi Cloud':
         return 'Recorded before Omi sync was enabled';
       case 'HeyPocket':
+      case FolderExportIntegration.integrationName:
         return 'Audio file is no longer available';
       default:
         return 'Not available for this recording';
@@ -191,17 +198,34 @@ class _IntegrationRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final local = status.local;
     final (Color color, String label, IconData icon) = switch (status.state) {
-      IntegrationUploadState.delivered => (Colors.green, 'Uploaded', Icons.cloud_done),
-      IntegrationUploadState.uploading => (Colors.deepPurpleAccent, 'Uploading…$_chunkSuffix', Icons.cloud_upload),
+      IntegrationUploadState.delivered => (
+          Colors.green,
+          local ? 'Saved' : 'Uploaded',
+          local ? Icons.folder : Icons.cloud_done
+        ),
+      IntegrationUploadState.uploading => (
+          Colors.deepPurpleAccent,
+          '${local ? 'Saving' : 'Uploading'}…$_chunkSuffix',
+          local ? Icons.drive_folder_upload : Icons.cloud_upload
+        ),
       IntegrationUploadState.failed => (
           Colors.redAccent,
           '${_failedLabel(status.failedAt)}$_chunkSuffix',
           Icons.error_outline
         ),
-      IntegrationUploadState.pending => (Colors.amber, 'Ready to Upload$_chunkSuffix', Icons.cloud_upload),
+      IntegrationUploadState.pending => (
+          Colors.amber,
+          '${local ? 'Ready to Save' : 'Ready to Upload'}$_chunkSuffix',
+          local ? Icons.drive_folder_upload : Icons.cloud_upload
+        ),
       IntegrationUploadState.queued => (Colors.amber, 'Queued$_chunkSuffix', Icons.schedule),
-      IntegrationUploadState.unavailable => (Colors.grey.shade600, 'Not available', Icons.cloud_off),
+      IntegrationUploadState.unavailable => (
+          Colors.grey.shade600,
+          'Not available',
+          local ? Icons.folder_off : Icons.cloud_off
+        ),
     };
 
     Widget trailing;
@@ -234,7 +258,7 @@ class _IntegrationRow extends StatelessWidget {
       case IntegrationUploadState.delivered:
         trailing = TextButton(
           onPressed: onReupload,
-          child: Text('Re-upload', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
+          child: Text(local ? 'Save again' : 'Re-upload', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
         );
         break;
       case IntegrationUploadState.failed:
@@ -247,8 +271,8 @@ class _IntegrationRow extends StatelessWidget {
       case IntegrationUploadState.pending:
         trailing = TextButton(
           onPressed: onUpload,
-          child: const Text('Upload',
-              style: TextStyle(color: Colors.deepPurpleAccent, fontSize: 13, fontWeight: FontWeight.w600)),
+          child: Text(local ? 'Save' : 'Upload',
+              style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 13, fontWeight: FontWeight.w600)),
         );
         break;
       case IntegrationUploadState.queued:

@@ -120,19 +120,36 @@ class AacEncoderChannel(messenger: BinaryMessenger) {
     private fun encodeChunk(sessionId: String, pcmData: ByteArray) {
         val session = sessions[sessionId] ?: throw IllegalStateException("No encoder session for id $sessionId")
 
-        // Queue input
-        val inputIndex = session.codec.dequeueInputBuffer(10000L)
-        if (inputIndex >= 0) {
+        // Queue all of it. This used to take one input buffer with a 10 ms wait and, if none
+        // was free, drop the chunk without a word — a silent gap in the recording. That was
+        // rare while the processor fed the encoder at the pace it decoded Opus; M4A is now
+        // made by reading a finished WAV back (RecordingsManager._convertPendingToM4a), which
+        // feeds it as fast as the file reads. So wait for room, draining output to make it,
+        // and split a chunk that is larger than one input buffer.
+        var offset = 0
+        var waits = 0
+        while (pcmData.size - offset >= 2) { // a stray odd byte is not a sample
+            val inputIndex = session.codec.dequeueInputBuffer(10000L)
+            if (inputIndex < 0) {
+                drainOutput(session, drainToEnd = false)
+                if (++waits > 500) throw IllegalStateException("AAC encoder took no input for 5 s")
+                continue
+            }
+            waits = 0
             val buffer = session.codec.getInputBuffer(inputIndex)!!
             buffer.clear()
-            buffer.put(pcmData)
+            // Whole 16-bit samples only.
+            val n = minOf(buffer.remaining(), pcmData.size - offset) and 1.inv()
+            if (n <= 0) throw IllegalStateException("AAC encoder input buffer holds no whole sample")
+            buffer.put(pcmData, offset, n)
             val pts = (session.totalSamplesQueued * 1_000_000L) / session.sampleRate
-            session.codec.queueInputBuffer(inputIndex, 0, pcmData.size, pts, 0)
-            session.totalSamplesQueued += pcmData.size / 2 // 16-bit samples
-        }
+            session.codec.queueInputBuffer(inputIndex, 0, n, pts, 0)
+            session.totalSamplesQueued += n / 2 // 16-bit samples
+            offset += n
 
-        // Drain available output
-        drainOutput(session, drainToEnd = false)
+            // Drain available output
+            drainOutput(session, drainToEnd = false)
+        }
     }
 
     private fun finishEncoder(sessionId: String) {
@@ -141,9 +158,19 @@ class AacEncoderChannel(messenger: BinaryMessenger) {
         try {
             // Signal end of stream
             val pts = (session.totalSamplesQueued * 1_000_000L) / session.sampleRate
-            val inputIndex = session.codec.dequeueInputBuffer(10000L)
-            if (inputIndex >= 0) {
-                session.codec.queueInputBuffer(inputIndex, 0, 0, pts, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+            // Wait for room to queue end-of-stream, as encodeChunk waits for room for audio.
+            // Skipped when every input buffer was still busy — likelier now that conversion
+            // feeds the encoder as fast as a file reads — the encoder was never told the
+            // stream had ended, never reported EOS, and the whole encode was thrown away below.
+            var waits = 0
+            while (true) {
+                val inputIndex = session.codec.dequeueInputBuffer(10000L)
+                if (inputIndex >= 0) {
+                    session.codec.queueInputBuffer(inputIndex, 0, 0, pts, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                    break
+                }
+                drainOutput(session, drainToEnd = false)
+                if (++waits > 500) throw IllegalStateException("AAC encoder took no end-of-stream for 5 s")
             }
 
             // Drain until EOS

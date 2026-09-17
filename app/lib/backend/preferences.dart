@@ -646,6 +646,36 @@ class SharedPreferencesUtil {
   int get omiSpeechProfileCheckedAtMs => getInt('omiSpeechProfileCheckedAtMs', defaultValue: 0);
   set omiSpeechProfileCheckedAtMs(int v) => saveInt('omiSpeechProfileCheckedAtMs', v);
 
+  //--------------------------- Save to Folder Integration ---------------------//
+  // Plain prefs, not secure storage: a folder's content URI and name are not secrets.
+
+  /// The `content://` tree URI of the folder recordings are copied into; empty when none
+  /// has been chosen. Access to it is persisted natively (FolderExportChannel.kt).
+  String get folderExportTreeUri => getString('folderExportTreeUri');
+  set folderExportTreeUri(String v) => saveString('folderExportTreeUri', v);
+
+  /// The chosen folder's name, for display.
+  String get folderExportLabel => getString('folderExportLabel');
+  set folderExportLabel(String v) => saveString('folderExportLabel', v);
+
+  bool get folderExportEnabled => getBool('folderExportEnabled', defaultValue: false);
+  set folderExportEnabled(bool v) => saveBool('folderExportEnabled', v);
+
+  // Whether finished recordings are copied automatically. Requires folderExportEnabled.
+  bool get folderExportAutoUpload => getBool('folderExportAutoUpload', defaultValue: false);
+  set folderExportAutoUpload(bool v) {
+    saveBool('folderExportAutoUpload', v);
+    if (v) folderExportAutoUploadAt = DateTime.now().millisecondsSinceEpoch;
+  }
+
+  // Epoch ms when Auto-Save was last switched on; 0 = never, and auto-save fails closed.
+  int get folderExportAutoUploadAt => getInt('folderExportAutoUploadAt', defaultValue: 0);
+  set folderExportAutoUploadAt(int v) => saveInt('folderExportAutoUploadAt', v);
+
+  /// JSON: upload key -> the copy made of that recording. Owned by FolderExportIntegration.
+  String get folderExportLedger => getString('folderExportLedger');
+  set folderExportLedger(String v) => saveString('folderExportLedger', v);
+
   //--------------------------- HeyPocket Integration ---------------------//
 
   String get heypocketApiKey => _heypocketApiKey;
@@ -753,9 +783,11 @@ class SharedPreferencesUtil {
     }
   }
 
-  Future<void> clearAllAutoUploadRetries() async {
+  /// Clears every integration's retry state, or with [keyPrefix] only the retry keys that
+  /// start with it (e.g. `folder_`, Save to Folder's).
+  Future<void> clearAllAutoUploadRetries({String keyPrefix = ''}) async {
     final keys = (_preferences?.getKeys() ?? {})
-        .where((k) => k.startsWith('autoUploadRetry_') || k.startsWith('autoUploadFailAt_'))
+        .where((k) => k.startsWith('autoUploadRetry_$keyPrefix') || k.startsWith('autoUploadFailAt_$keyPrefix'))
         .toList();
     for (final key in keys) {
       await _preferences?.remove(key);

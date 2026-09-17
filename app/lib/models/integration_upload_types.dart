@@ -41,7 +41,12 @@ class IntegrationStatus {
   final int? deliveredSegments;
   final int? totalSegments;
 
-  const IntegrationStatus(this.name, this.state, {this.failedAt, this.deliveredSegments, this.totalSegments});
+  /// The integration keeps its copy on the phone (Save to Folder), so the row says
+  /// "Saved"/"Save" rather than "Uploaded"/"Upload".
+  final bool local;
+
+  const IntegrationStatus(this.name, this.state,
+      {this.failedAt, this.deliveredSegments, this.totalSegments, this.local = false});
 
   bool get isActionable => state == IntegrationUploadState.pending || state == IntegrationUploadState.failed;
 }
