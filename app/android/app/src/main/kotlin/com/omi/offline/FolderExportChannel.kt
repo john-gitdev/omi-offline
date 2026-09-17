@@ -78,27 +78,36 @@ class FolderExportChannel(private val context: Context, messenger: BinaryMesseng
                     null
                 }
                 "hasAccess" -> run(result) { hasAccess(Uri.parse(call.argument<String>("treeUri")!!)) }
-                "copyInto" -> run(result) {
-                    copyInto(
-                        Uri.parse(call.argument<String>("treeUri")!!),
-                        File(call.argument<String>("sourcePath")!!),
-                        call.argument<String>("name")!!,
-                        call.argument<String>("mimeType")!!,
-                    ).toString()
+                "copyInto" -> {
+                    val tree = Uri.parse(call.argument<String>("treeUri")!!)
+                    run(result, tree) {
+                        copyInto(
+                            tree,
+                            File(call.argument<String>("sourcePath")!!),
+                            call.argument<String>("name")!!,
+                            call.argument<String>("mimeType")!!,
+                        ).toString()
+                    }
                 }
-                "rename" -> run(result) {
-                    rename(
-                        Uri.parse(call.argument<String>("treeUri")!!),
-                        Uri.parse(call.argument<String>("docUri")!!),
-                        call.argument<String>("name")!!,
-                    ).toString()
+                "rename" -> {
+                    val tree = Uri.parse(call.argument<String>("treeUri")!!)
+                    run(result, tree) {
+                        rename(tree, Uri.parse(call.argument<String>("docUri")!!), call.argument<String>("name")!!)
+                            .toString()
+                    }
                 }
                 else -> result.notImplemented()
             }
         }
     }
 
-    private fun run(result: MethodChannel.Result, body: () -> Any?) {
+    /**
+     * Runs [body] off the main thread. With [tree], an unexpected failure is checked against
+     * the folder first: one that vanished part-way — deleted, or its SD card pulled after the
+     * access check at the start — is reported as NO_ACCESS, so Dart pauses the lane and
+     * retries when it is back rather than spending the recording's retries on it.
+     */
+    private fun run(result: MethodChannel.Result, tree: Uri? = null, body: () -> Any?) {
         executor.execute {
             try {
                 val value = body()
@@ -107,7 +116,8 @@ class FolderExportChannel(private val context: Context, messenger: BinaryMesseng
                 main.post { result.error(f.code, f.message, null) }
             } catch (e: Exception) {
                 Log.w(TAG, "folder operation failed: $e")
-                main.post { result.error("IO", e.toString(), null) }
+                val reachable = tree == null || runCatching { hasAccess(tree) }.getOrDefault(false)
+                main.post { result.error(if (reachable) "IO" else "NO_ACCESS", e.toString(), null) }
             }
         }
     }
@@ -265,7 +275,11 @@ class FolderExportChannel(private val context: Context, messenger: BinaryMesseng
             val out = resolver.openOutputStream(target, "w") ?: throw IOException("Could not write into the folder")
             out.use { stream -> source.inputStream().use { it.copyTo(stream, 256 * 1024) } }
             if (!renameable) return target
-            return DocumentsContract.renameDocument(resolver, target, uniqueName(tree, name, except = target)) ?: target
+            // Null is the documented failure (a provider error the platform did not rethrow),
+            // not "same document". Returned as-is, the hidden partial would be recorded as the
+            // saved copy — and the next copy's partial cleanup would delete it.
+            return DocumentsContract.renameDocument(resolver, target, uniqueName(tree, name, except = target))
+                ?: throw IOException("The folder refused to rename the finished copy")
         } catch (e: Exception) {
             deleteQuietly(target)
             throw e
@@ -276,7 +290,11 @@ class FolderExportChannel(private val context: Context, messenger: BinaryMesseng
         requireAccess(tree)
         if (!exists(doc)) throw Failure("GONE", "The copy is no longer in the folder")
         if (displayName(doc)?.equals(name, ignoreCase = true) == true) return doc
-        return DocumentsContract.renameDocument(resolver, doc, uniqueName(tree, name, except = doc)) ?: doc
+        // Null is a failed rename; returning the old document would record it as done and the
+        // copy would keep its old name for good. Thrown, Dart keeps the ledger as it was and
+        // the next sweep tries again.
+        return DocumentsContract.renameDocument(resolver, doc, uniqueName(tree, name, except = doc))
+            ?: throw IOException("The folder refused to rename the copy")
     }
 
     /** Only ever for the channel's own partial files — never a finished copy. */
