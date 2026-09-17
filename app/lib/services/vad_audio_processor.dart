@@ -6,7 +6,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
 import 'package:opus_dart/opus_dart.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:omi/services/audio/aac_encoder.dart';
 import 'package:omi/services/frame_ref.dart';
 import 'package:omi/services/vad_batch_runner_channel.dart';
 import 'package:omi/services/vad/vad_types.dart';
@@ -2663,174 +2662,14 @@ class VadAudioProcessor {
       return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix, capEnded: capEnded);
     }
 
-    // Always use WAV for drafts if M4A is requested, as M4A doesn't support easy stitching.
-    // The RecordingsManager will convert the finalized WAV to M4A during the promotion phase.
-    if (_audioSaveFormat == 'wav' || (isDraft && _audioSaveFormat == 'm4a')) {
-      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix, capEnded: capEnded);
-    }
-
-    final m4aPath = '${dateFolder.path}/${prefix}_$timestamp$suffix.m4a';
-
-    const waveformBuckets = 200;
-    const windowSize = 800;
-    final dynamicPeaks = <double>[];
-    double currentWindowMax = 0.0;
-    int currentWindowSamples = 0;
-
-    const batchFrames = 15;
-    final batchBuffer = BytesBuilder(copy: false);
-    int totalSamples = 0;
-    int batchFrameCount = 0;
-
-    String? sessionId;
-    bool hasEncodedAnyFrames = false;
-
-    try {
-      sessionId = await AacEncoder.startEncoder(sampleRate, m4aPath);
-    } on Exception catch (e) {
-      Logger.error('VadAudioProcessor: AAC startEncoder failed, falling back to WAV: $e');
-      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
-    }
-
-    Future<void> flushBatch() async {
-      if (batchFrameCount == 0) return;
-      final chunk = batchBuffer.takeBytes();
-
-      // Split large chunks into smaller segments (e.g. 4KB) for the native encoder.
-      // Silence gaps can produce massive buffers that exceed hardware MediaCodec capacity.
-      const maxNativeChunkSize = 4096;
-      for (int i = 0; i < chunk.length; i += maxNativeChunkSize) {
-        final end = (i + maxNativeChunkSize > chunk.length) ? chunk.length : i + maxNativeChunkSize;
-        // View, not copy: encodeBuffer marshals the bytes synchronously over the MethodChannel,
-        // and `chunk` (from takeBytes()) is never mutated, so a shared-buffer view is safe here.
-        await AacEncoder.encodeBuffer(sessionId!, Uint8List.sublistView(chunk, i, end));
-      }
-
-      hasEncodedAnyFrames = true;
-      batchFrameCount = 0;
-    }
-
-    int totalFrameRefs = 0;
-    int skippedReadFail = 0;
-    int skippedDecodeNull = 0;
-    int skippedDecodeEmpty = 0;
-
-    try {
-      String? currentFilePath;
-      Uint8List? currentFileBytes;
-
-      for (var i = 0; i < refs.length; i++) {
-        _onLiveness?.call();
-        final item = refs[i];
-
-        if (item is Duration) {
-          final ms = item.inMilliseconds;
-          final silenceSamples = (ms * sampleRate) ~/ 1000;
-          final silenceBytes = Uint8List(silenceSamples * 2); // 16-bit mono
-
-          batchBuffer.add(silenceBytes);
-          totalSamples += silenceSamples;
-
-          // Waveform for silence — O(buckets) not O(samples).
-          final totalNow = currentWindowSamples + silenceSamples;
-          dynamicPeaks.addAll(List.filled(totalNow ~/ windowSize, 0.0));
-          currentWindowSamples = totalNow % windowSize;
-          batchFrameCount += (ms / frameDurationMs).ceil();
-          if (batchFrameCount >= batchFrames) await flushBatch();
-          continue;
-        }
-
-        final ref = item as FrameRef;
-        totalFrameRefs++;
-        // Yield every 500 frames instead of 50 — readAsBytes() already yields on
-        // file transitions; the finer cadence is pure overhead in a dedicated isolate.
-        if (i % 500 == 0) await Future.delayed(Duration.zero);
-
-        if (ref.segmentFile.path != currentFilePath) {
-          currentFileBytes = await ref.segmentFile.readAsBytes();
-          currentFilePath = ref.segmentFile.path;
-        }
-
-        if (currentFileBytes == null) {
-          skippedReadFail++;
-          continue;
-        }
-
-        final frameDataOffset = ref.byteOffset + 4;
-        final opusBytes = Uint8List.sublistView(currentFileBytes, frameDataOffset, frameDataOffset + ref.frameLength);
-
-        Int16List? pcmData;
-        try {
-          pcmData = _decoder?.decode(input: opusBytes);
-        } catch (_) {}
-
-        if (pcmData == null) {
-          skippedDecodeNull++;
-          continue;
-        }
-        if (pcmData.isEmpty) {
-          skippedDecodeEmpty++;
-          continue;
-        }
-
-        for (int s = 0; s < pcmData.length; s++) {
-          final amplitude = pcmData[s].abs() / 32768.0;
-          if (amplitude > currentWindowMax) currentWindowMax = amplitude;
-          currentWindowSamples++;
-          if (currentWindowSamples >= windowSize) {
-            dynamicPeaks.add(currentWindowMax);
-            currentWindowMax = 0.0;
-            currentWindowSamples = 0;
-          }
-        }
-        totalSamples += pcmData.length;
-
-        batchBuffer.add(pcmData.buffer.asUint8List(pcmData.offsetInBytes, pcmData.lengthInBytes));
-        batchFrameCount++;
-
-        if (batchFrameCount >= batchFrames) {
-          await flushBatch(); // encodeBuffer's MethodChannel round-trip already yields
-        }
-      }
-
-      await flushBatch();
-
-      if (currentWindowSamples > 0) {
-        dynamicPeaks.add(currentWindowMax);
-      }
-
-      if (!hasEncodedAnyFrames) {
-        Logger.debug('VadAudioProcessor: No frames encoded — discarding empty segment.');
-        final emptyFile = File(m4aPath);
-        if (await emptyFile.exists()) await emptyFile.delete();
-        return null;
-      }
-
-      await AacEncoder.finishEncoder(sessionId);
-    } on Exception catch (e) {
-      Logger.error('VadAudioProcessor: AAC encoding failed, falling back to WAV: $e');
-      final corruptFile = File('${dateFolder.path}/${prefix}_$timestamp$suffix.m4a');
-      try {
-        if (await corruptFile.exists()) await corruptFile.delete();
-      } catch (_) {}
-      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix, capEnded: capEnded);
-    }
-
-    await _saveMetadata(refs, dateFolderPath, timestamp, totalSamples, dynamicPeaks, waveformBuckets,
-        prefix: prefix, extension: 'm4a', suffix: suffix, capEnded: capEnded, isSilero: _session != null);
-
-    final totalSkipped = skippedReadFail + skippedDecodeNull + skippedDecodeEmpty;
-    if (totalFrameRefs > 0 && totalSkipped * 20 > totalFrameRefs) {
-      Logger.error('VadAudioProcessor: $m4aPath dropped $totalSkipped/$totalFrameRefs frames '
-          '(${(100 * totalSkipped / totalFrameRefs).toStringAsFixed(1)}%): '
-          'readFail=$skippedReadFail decodeNull=$skippedDecodeNull decodeEmpty=$skippedDecodeEmpty — '
-          'wallClock=${_currentChunkDurationMs}ms encoded=${(totalSamples * 1000) ~/ sampleRate}ms');
-    }
-
-    Logger.debug(
-        'VadAudioProcessor: Saved recording (${refs.length} frames, ${((totalSamples * 1000) ~/ sampleRate)}ms) '
-        'starting at $_recordingStartTime to $m4aPath');
-    return m4aPath;
+    // Always WAV, whatever the save format. In M4A mode a finished recording is stamped
+    // m4aPending and converted by RecordingsManager once the run's stitch pass is done —
+    // the stitch can only join WAV to WAV, and a recording encoded straight to .m4a here
+    // could never be joined onto the draft its conversation started in, so a conversation
+    // that ran across a sync came back as two recordings. A draft is not stamped:
+    // _finalizeDraft converts it when it is closed.
+    return await _saveWav(refs, dateFolderPath, timestamp,
+        prefix: prefix, suffix: suffix, capEnded: capEnded, m4aPending: _audioSaveFormat == 'm4a' && !isDraft);
   }
 
   Future<void> _saveMetadata(List<Object> refs, String dateFolderPath, int timestamp, int totalSamples,
@@ -2839,6 +2678,7 @@ class VadAudioProcessor {
       required String extension,
       String suffix = '',
       bool capEnded = false,
+      bool m4aPending = false,
       required bool isSilero}) async {
     final finalAmplitudes = List<double>.filled(waveformBuckets, 0.0);
     if (dynamicPeaks.isNotEmpty) {
@@ -2880,7 +2720,10 @@ class VadAudioProcessor {
       final deviceId = rawId.replaceAll(':', '').toUpperCase();
       if (deviceId.length >= 6) {
         final mac6 = deviceId.substring(0, 6);
-        final uploadKey = '${mac6}_recording_$timestamp$suffix.$extension';
+        // A recording awaiting M4A conversion is keyed as the .m4a it will become. The
+        // conversion leaves the key alone, so an upload made before it and the delivered
+        // mark that upload left still name the same recording afterwards.
+        final uploadKey = '${mac6}_recording_$timestamp$suffix.${m4aPending ? 'm4a' : extension}';
         final keyBytes = uploadKey.codeUnits;
         final truncatedKey = keyBytes.length > 255 ? keyBytes.sublist(0, 255) : keyBytes;
         metaOut.add(truncatedKey.length);
@@ -2895,7 +2738,8 @@ class VadAudioProcessor {
     //   [0] passthrough (set later by integrations layer, 0 on initial write)
     //   [1] forceSynced (set later by _finalizeDraft for manual-finalize cases, 0 on initial write)
     //   [2] capEnded    (set HERE — true iff VAD ended this recording at the max-duration cap)
-    //   [3] bit0 isSilero, bit1 hardStart, bit2 hardEnd, bit3 modeKnown, bit4 manual (all set HERE)
+    //   [3] bit0 isSilero, bit1 hardStart, bit2 hardEnd, bit3 modeKnown, bit4 manual, bit6 m4aPending
+    //       (all set HERE; bit5 clockCorrected is RecordingsManager's)
     // pruneConsumedBins reads byte [2] to decide whether bins extending past rec_end may be
     // safely deleted (silence-ended) or must be preserved (cap-ended).
     //
@@ -2924,7 +2768,14 @@ class VadAudioProcessor {
     final hardStart = _hardStartPending;
     _hardStartPending = false;
     final mode = _manual == null ? 0 : (0x08 | (_manual! ? 0x10 : 0));
-    metaOut.add((isSilero ? 0x01 : 0) | (hardStart ? 0x02 : 0) | (_endsAtHardBoundary ? 0x04 : 0) | mode);
+    // 0x40 m4aPending: saved as WAV in M4A mode, still to be converted once the run's
+    // stitch pass is done (RecordingsManager.metaM4aPending). A free high bit, like the
+    // mode pair, for the same reason.
+    metaOut.add((isSilero ? 0x01 : 0) |
+        (hardStart ? 0x02 : 0) |
+        (_endsAtHardBoundary ? 0x04 : 0) |
+        mode |
+        (m4aPending ? 0x40 : 0));
 
     // Append relative bins used for this recording (binary length + JSON).
     // Use relBinPath() so a ref whose path doesn't contain a literal
@@ -2950,7 +2801,7 @@ class VadAudioProcessor {
   }
 
   Future<String?> _saveWav(List<Object> refs, String dateFolderPath, int timestamp,
-      {String prefix = 'recording', String suffix = '', bool capEnded = false}) async {
+      {String prefix = 'recording', String suffix = '', bool capEnded = false, bool m4aPending = false}) async {
     final wavPath = '$dateFolderPath/${prefix}_$timestamp$suffix.wav';
 
     const waveformBuckets = 200;
@@ -3075,7 +2926,12 @@ class VadAudioProcessor {
       if (currentWindowSamples > 0) dynamicPeaks.add(currentWindowMax);
 
       await _saveMetadata(refs, dateFolderPath, timestamp, totalSamples, dynamicPeaks, waveformBuckets,
-          prefix: prefix, extension: 'wav', suffix: suffix, capEnded: capEnded, isSilero: _session != null);
+          prefix: prefix,
+          extension: 'wav',
+          suffix: suffix,
+          capEnded: capEnded,
+          m4aPending: m4aPending,
+          isSilero: _session != null);
 
       await wavFile.rename(wavPath);
 
