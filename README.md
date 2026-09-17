@@ -2,7 +2,7 @@
 
 A personal fork of the [Omi](https://github.com/BasedHardware/omi) wearable project, rebuilt entirely around local, private audio capture and processing. No cloud dependencies, no internet requirement — audio stays on your device until you choose to export it.
 
-**Current versions:** App `0.37.0` · Firmware `oo-3.1.4`
+**Current versions:** App `0.37.3` · Firmware `oo-3.1.4`
 
 ---
 
@@ -10,14 +10,14 @@ A personal fork of the [Omi](https://github.com/BasedHardware/omi) wearable proj
 
 <table>
 <tr>
-<td align="center" width="33%"><img src="screenshots/Conversation%20Page.jpg" width="260"><br><sub>Conversation Page</sub></td>
-<td align="center" width="33%"><img src="screenshots/Recording%20Modes.jpg" width="260"><br><sub>Recording Modes</sub></td>
-<td align="center" width="33%"><img src="screenshots/VAD%20Option.jpg" width="260"><br><sub>VAD Option</sub></td>
+<td align="center" width="33%"><img src="screenshots/Homescreen.jpg" width="260"><br><sub>Conversations</sub></td>
+<td align="center" width="33%"><img src="screenshots/Recording%20Settings.jpg" width="260"><br><sub>Recording Settings</sub></td>
+<td align="center" width="33%"><img src="screenshots/App%20Settings.jpg" width="260"><br><sub>App Settings</sub></td>
 </tr>
 <tr>
 <td align="center" width="33%"><img src="screenshots/Device%20Settings.jpg" width="260"><br><sub>Device Settings</sub></td>
+<td align="center" width="33%"><img src="screenshots/Button%20Configuration.jpg" width="260"><br><sub>Button Configuration</sub></td>
 <td align="center" width="33%"><img src="screenshots/Integrations.jpg" width="260"><br><sub>Integrations</sub></td>
-<td width="33%"></td>
 </tr>
 </table>
 
