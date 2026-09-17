@@ -301,7 +301,7 @@ class FolderExportChannel(private val context: Context, messenger: BinaryMesseng
             ?: throw IOException("The folder refused to rename the copy")
     }
 
-    /** Only ever for the channel's own partial files — never a finished copy. */
+    /** Only ever for the channel's own unfinished writes — never a finished copy. */
     private fun deleteQuietly(doc: Uri) {
         try {
             DocumentsContract.deleteDocument(resolver, doc)
