@@ -13,7 +13,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 /// A folder in memory: document uri -> name. Behaves the way FolderExportChannel.kt
 /// reports: NO_ACCESS when [access] is off, SOURCE_GONE for a missing source, GONE when
-/// renaming a document that is not there, and a rename changing the uri.
+/// renaming a document that is not there, and a rename changing the uri. There is no
+/// delete: the integration has no way to remove a copy, by design.
 class FakeFolder implements FolderExportBackend {
   final Map<String, String> files = {};
   final List<String> calls = [];
@@ -22,6 +23,9 @@ class FakeFolder implements FolderExportBackend {
 
   /// When set, a copy waits on it after checking its source, as a long copy would.
   Completer<void>? copyGate;
+
+  /// When set, a rename waits on it before answering.
+  Completer<void>? renameGate;
 
   FolderExportException _noAccess() => const FolderExportException(FolderExportError.noAccess, 'no access');
 
@@ -35,14 +39,13 @@ class FakeFolder implements FolderExportBackend {
   Future<bool> hasAccess(String treeUri) async => access;
 
   @override
-  Future<String> copyInto(String treeUri, String sourcePath, String name, String mimeType, {String? replaceUri}) async {
+  Future<String> copyInto(String treeUri, String sourcePath, String name, String mimeType) async {
     calls.add('copy $name');
     if (!access) throw _noAccess();
     if (!File(sourcePath).existsSync()) {
       throw const FolderExportException(FolderExportError.sourceGone, 'source gone');
     }
     if (copyGate != null) await copyGate!.future;
-    if (replaceUri != null) files.remove(replaceUri);
     final uri = 'doc${_next++}';
     files[uri] = name;
     return uri;
@@ -51,19 +54,13 @@ class FakeFolder implements FolderExportBackend {
   @override
   Future<String> rename(String treeUri, String docUri, String name) async {
     calls.add('rename $name');
+    if (renameGate != null) await renameGate!.future;
     if (!access) throw _noAccess();
     if (!files.containsKey(docUri)) throw const FolderExportException(FolderExportError.gone, 'gone');
     files.remove(docUri);
     final uri = 'doc${_next++}';
     files[uri] = name;
     return uri;
-  }
-
-  @override
-  Future<void> delete(String treeUri, String docUri) async {
-    calls.add('delete ${files[docUri]}');
-    if (!access) throw _noAccess();
-    files.remove(docUri);
   }
 }
 
@@ -120,14 +117,16 @@ void main() {
       expect(folderExport.hasDelivered(c), true);
     });
 
-    test('saving again replaces the earlier copy instead of adding a second', () async {
+    test('saving again adds a copy beside the first, and a re-file renames only the newest', () async {
       final c = recording('k1', DateTime(2026, 9, 16, 14, 32, 5));
       final folderExport = integration();
 
       await folderExport.upload(c);
       await folderExport.upload(c);
+      expect(folder.files, hasLength(2), reason: 'the first copy is the user\'s; it is not replaced');
 
-      expect(folder.files.values, ['2026-09-16 14.32.05.wav']);
+      await folderExport.reconcile([refiled(c, DateTime(2026, 9, 16, 9, 41, 7))]);
+      expect(folder.files.values, unorderedEquals(['2026-09-16 14.32.05.wav', '2026-09-16 09.41.07.wav']));
     });
 
     test('a copy in a folder since replaced does not count', () async {
@@ -261,66 +260,46 @@ void main() {
   });
 
   group('deletes', () {
-    test('deleting a recording deletes its copy', () async {
+    test('deleting a recording leaves its copy; the app only forgets it', () async {
       final c = recording('k1', DateTime(2026, 9, 16, 14, 32, 5));
       final folderExport = integration();
       await folderExport.upload(c);
 
       c.file.deleteSync();
-      await folderExport.deleteCopiesOf([c]);
+      folderExport.forgetCopiesOf([c]);
 
-      expect(folder.files, isEmpty);
+      expect(folder.files.values, ['2026-09-16 14.32.05.wav']);
       expect(folderExport.hasDelivered(c), false);
-      expect(prefs.folderExportPendingDeletes, isEmpty);
+      expect(prefs.folderExportLedger, isEmpty);
     });
 
-    test('a recording deleted while its copy is being written loses the copy once it lands', () async {
-      final c = recording('k1', DateTime(2026, 9, 16, 14, 32, 5));
+    test('forgetting one recording keeps the rest', () async {
+      final a = recording('k1', DateTime(2026, 9, 16, 14, 32, 5));
+      final b = recording('k2', DateTime(2026, 9, 16, 15, 0, 0));
       final folderExport = integration();
-      folder.copyGate = Completer<void>();
+      await folderExport.upload(a);
+      await folderExport.upload(b);
 
-      final copying = folderExport.upload(c);
-      await Future.delayed(Duration.zero); // the copy is past its source check, writing
-      c.file.deleteSync();
-      final deleting = folderExport.deleteCopiesOf([c]);
-      folder.copyGate!.complete();
-      await Future.wait([copying, deleting]);
+      folderExport.forgetCopiesOf([a]);
 
-      expect(folder.files, isEmpty, reason: 'the copy finished after the delete, and still went');
-      expect(prefs.folderExportPendingDeletes, isEmpty);
+      expect(folderExport.hasDelivered(a), false);
+      expect(folderExport.hasDelivered(b), true);
     });
 
-    test('a delete the folder refuses is kept and done by a later sweep', () async {
-      final c = recording('k1', DateTime(2026, 9, 16, 14, 32, 5));
+    test('a rename in flight when its recording is deleted does not bring it back', () async {
+      final c = recording('k1', DateTime(2026, 9, 15, 3, 0, 0));
       final folderExport = integration();
       await folderExport.upload(c);
+      final moved = refiled(c, DateTime(2026, 9, 16, 9, 41, 7));
+      folder.renameGate = Completer<void>();
 
-      folder.access = false;
-      c.file.deleteSync();
-      await folderExport.deleteCopiesOf([c]);
-      expect(folder.files, isNotEmpty);
-      expect(prefs.folderExportPendingDeletes, ['k1']);
+      final renaming = folderExport.reconcile([moved]);
+      await Future.delayed(Duration.zero); // waiting on the folder
+      folderExport.forgetCopiesOf([moved]);
+      folder.renameGate!.complete();
+      await renaming;
 
-      folder.access = true;
-      await folderExport.reconcile(const []);
-      expect(folder.files, isEmpty);
-      expect(prefs.folderExportPendingDeletes, isEmpty);
-    });
-
-    test('deleting a recording that was never copied leaves nothing behind', () async {
-      final c = recording('k1', DateTime(2026, 9, 16, 14, 32, 5));
-      await integration().deleteCopiesOf([c]);
-
-      expect(folder.calls, isEmpty);
-      expect(prefs.folderExportPendingDeletes, isEmpty);
-    });
-
-    test('with no folder chosen, a delete does nothing', () async {
-      prefs.folderExportTreeUri = '';
-      final c = recording('k1', DateTime(2026, 9, 16, 14, 32, 5));
-      await integration().deleteCopiesOf([c]);
-
-      expect(prefs.folderExportPendingDeletes, isEmpty);
+      expect(prefs.folderExportLedger, isEmpty);
     });
 
     test('removing the folder gives access back and forgets every copy, deleting none', () async {
