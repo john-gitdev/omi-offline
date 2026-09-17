@@ -11,20 +11,13 @@ import 'package:omi/utils/logger.dart';
 import 'package:provider/provider.dart';
 
 class OfflineAudioSettingsPage extends StatefulWidget {
-  final bool flashManualMode;
-
-  const OfflineAudioSettingsPage({
-    super.key,
-    this.flashManualMode = false,
-  });
+  const OfflineAudioSettingsPage({super.key});
 
   @override
   State<OfflineAudioSettingsPage> createState() => _OfflineAudioSettingsPageState();
 }
 
-class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> with SingleTickerProviderStateMixin {
-  late AnimationController _flashController;
-  late Animation<double> _flashAnimation;
+class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late bool _manualMode;
   late bool _vadEnabled;
 
@@ -48,30 +41,9 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
   @override
   void initState() {
     super.initState();
-    _flashController = AnimationController(vsync: this, duration: const Duration(milliseconds: 1600));
-    _flashAnimation = TweenSequence<double>([
-      TweenSequenceItem(tween: Tween(begin: 0.0, end: 1.0).chain(CurveTween(curve: Curves.easeIn)), weight: 1),
-      TweenSequenceItem(tween: Tween(begin: 1.0, end: 0.0).chain(CurveTween(curve: Curves.easeOut)), weight: 1),
-      TweenSequenceItem(tween: Tween(begin: 0.0, end: 1.0).chain(CurveTween(curve: Curves.easeIn)), weight: 1),
-      TweenSequenceItem(tween: Tween(begin: 1.0, end: 0.0).chain(CurveTween(curve: Curves.easeOut)), weight: 1),
-    ]).animate(_flashController);
-    if (widget.flashManualMode) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        Future.delayed(const Duration(milliseconds: 350), () {
-          if (mounted) _flashController.forward();
-        });
-      });
-    }
-
     _manualMode = SharedPreferencesUtil().manualMode;
     _loadModeFields(_manualMode);
     if (Platform.isAndroid) _checkBatteryOptimization();
-  }
-
-  @override
-  void dispose() {
-    _flashController.dispose();
-    super.dispose();
   }
 
   /// Loads the page's editable fields for [manual].
@@ -282,32 +254,17 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                     const SizedBox(height: 20),
                   ],
                   // Automatic Mode toggle — requires device connection to change
-                  AnimatedBuilder(
-                    animation: _flashAnimation,
-                    builder: (context, child) {
-                      final t = _flashAnimation.value;
-                      final autoMode = !_manualMode;
-                      final baseBorder = autoMode
-                          ? Colors.deepPurpleAccent.withValues(alpha: 0.4)
-                          : Colors.white.withValues(alpha: 0.05);
-                      return Container(
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: autoMode ? const Color(0xFF2C1F4A) : const Color(0xFF1C1C1E),
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: Color.lerp(baseBorder, Colors.deepPurpleAccent, t)!),
-                          boxShadow: t > 0
-                              ? [
-                                  BoxShadow(
-                                      color: Colors.deepPurpleAccent.withValues(alpha: 0.35 * t),
-                                      blurRadius: 14 * t,
-                                      spreadRadius: 1 * t)
-                                ]
-                              : null,
-                        ),
-                        child: child,
-                      );
-                    },
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: _manualMode ? const Color(0xFF1C1C1E) : const Color(0xFF2C1F4A),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: _manualMode
+                            ? Colors.white.withValues(alpha: 0.05)
+                            : Colors.deepPurpleAccent.withValues(alpha: 0.4),
+                      ),
+                    ),
                     child: SwitchListTile(
                       contentPadding: EdgeInsets.zero,
                       title: const Text('Automatic Recording Mode',
