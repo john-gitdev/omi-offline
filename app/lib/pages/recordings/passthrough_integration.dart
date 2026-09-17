@@ -385,8 +385,10 @@ class _FolderCopy {
 }
 
 /// Save to Folder: copies each finished recording's audio into a folder the user picked,
-/// named for when it was recorded — `2026-09-16 14.32.05.m4a`. Nothing leaves the phone,
-/// so "Upload on Wifi Only" does not apply.
+/// named for when it was recorded — `2026-09-16 14.32.05.m4a`. The extension is the
+/// recording file's own when it is copied, so one still awaiting its M4A conversion is
+/// copied as `.wav`, and stays `.wav` through any later rename. The app sends nothing over
+/// the network, so "Upload on Wifi Only" does not apply.
 ///
 /// Once copied, a copy belongs to the folder:
 /// - **Nothing the app deletes deletes it** — not the user deleting the recording, not
@@ -484,11 +486,12 @@ class FolderExportIntegration implements PassthroughIntegration {
   }
 
   /// `2026-09-16 14.32.05.m4a`, in local time. Dots, not colons: SD cards, and most
-  /// computers the folder is later copied to, reject a colon in a name.
-  static String exportNameFor(Conversation c) {
+  /// computers the folder is later copied to, reject a colon in a name. [ext] defaults to the
+  /// recording file's own.
+  static String exportNameFor(Conversation c, {String? ext}) {
     final t = c.startTime.toLocal();
     String two(int v) => v.toString().padLeft(2, '0');
-    final ext = c.file.path.split('.').last;
+    ext ??= c.file.path.split('.').last;
     return '${t.year}-${two(t.month)}-${two(t.day)} ${two(t.hour)}.${two(t.minute)}.${two(t.second)}.$ext';
   }
 
@@ -588,7 +591,9 @@ class FolderExportIntegration implements PassthroughIntegration {
         if (key == null || copy == null || copy.gone) continue;
         final startMs = c.startTime.millisecondsSinceEpoch;
         if (copy.startMs == startMs) continue;
-        final name = exportNameFor(c);
+        // The copy's own extension, not the recording's: a copy made before its recording was
+        // converted to M4A still holds WAV audio.
+        final name = exportNameFor(c, ext: copy.name.split('.').last);
         _FolderCopy renamed;
         try {
           renamed = _FolderCopy(uri: await _backend.rename(tree, copy.uri, name), name: name, startMs: startMs);
