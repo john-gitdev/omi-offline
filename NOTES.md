@@ -1881,6 +1881,23 @@ Residuals:
 
 ---
 
+## App: M4A mode split conversations at a sync (fixed 2026-09-16)
+
+**What happened.** Drafts were always WAV so the stitch pass could join them, but in M4A mode `VadAudioProcessor._saveRecordingCore` encoded every *finished* recording straight to `.m4a`. When a conversation ran across a sync and its continuation finished inside the next run, the stitch met a WAV draft followed by an `.m4a`, `_performStitch` refused the mismatched extensions, and the draft was closed on its own: two recordings, split at the sync. WAV mode never had it. Found while answering a question about late bins (the late-bin case — audio arriving before a recording an *earlier* run already converted — still, correctly, becomes a recording of its own).
+
+**Fix.** The processor writes only WAV. A finished recording in M4A mode carries `.meta` bit `m4aPending` (0x40) and an upload key already ending `.m4a`; `RecordingsManager._convertPendingToM4a` runs at the end of Phase 3, after `_stitchDraftRecordings`. See CLAUDE.md, storage layout, for the invariants. Tested with a faked encoder, including two runs through the real `processAll`; mutation-checked (stitch/convert order swapped, stamp removed, key extension, trusting a leftover `.m4a`, keeping a partial, converting mid-upload, markers not moved, failed draft close unmarked, empty recording retried).
+
+**Also fixed, because this change leans on it harder.** `AacEncoderChannel.encodeChunk` took one input buffer with a 10 ms wait and silently dropped the chunk when none was free. The processor used to feed it at Opus-decode pace; conversion now feeds it from a file read. It now waits (draining output) and splits oversized chunks. Found by reading, never observed; not device-verified.
+
+Residuals:
+- **Disk, transiently.** A run's finished audio sits as WAV (≈115 MB per hour of audio, against ≈14 MB as AAC) until Phase 3. A long backlog on a nearly full phone could fail a WAV save mid-run. The tempting fix — convert as soon as a recording lands unless it directly follows a draft — is wrong: manual mode splits on any gap and the stitch folds every following piece into the draft in turn, so anything after a pre-existing draft can be absorbed. A correct progressive version converts only what the stitch provably cannot reach (everything in a run that had no draft before it, or that lies past a hard boundary after the draft).
+- A run killed before Phase 3 leaves its recordings as WAV until the next run that has audio to process; the no-audio branch of `processAllCompletedSessions` deliberately does not convert, because it runs outside the upload hold. An auto upload in that window sends the WAV; the delivered mark survives the later conversion.
+- A recording open in the player when Phase 3 converts it has its WAV replaced underneath it (as a clock-correction rename already could).
+- M4A mode now behaves exactly like WAV mode here, including that a joined draft stays "in progress" until something follows it, and a recovered discard can be absorbed by an open draft before it. Before, M4A users got two finished recordings instead.
+- A recording with no decodable frames used to be discarded in M4A mode (the encoder produced nothing); it is now kept as a zero-length WAV with its mark cleared, as WAV mode always did.
+
+---
+
 ## BLE: "advertising but won't connect" (OPEN — central-side captured 2026-07-08; culprit side still undetermined)
 
 **Status:** the peripheral **is** advertising and the phone **is** seeing those advertisements and sending `CONNECT_IND`. Each resulting link dies ~165 ms later with `0x3e`, before any data-channel packet is exchanged. This rules out hypothesis (A) (slow-adv interval unconnectable) and the "stale OS link holds the single conn slot" theory. It does **not** yet identify which side goes silent — see "What 0x3e does and does not prove". Do **not** change battery-affecting advertising behavior — the adv path is exonerated.
