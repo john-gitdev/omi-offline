@@ -388,14 +388,15 @@ class _FolderCopy {
 /// named for when it was recorded — `2026-09-16 14.32.05.m4a`. Nothing leaves the phone,
 /// so "Upload on Wifi Only" does not apply.
 ///
-/// A copy follows its recording:
-/// - **Re-files.** When the app corrects a recording's start, [reconcile] renames the copy
-///   on the next sweep. Pulled, not pushed: what was copied is keyed by the `.meta` upload
-///   key, which a re-file does not change, so nothing has to hook the rename, and one missed
-///   while the app was killed is picked up the next time.
-/// - **Deletes the user makes** ([deleteCopiesOf], called from the delete actions only).
-///   Retention, passthrough and a stitch also remove audio from the phone, and none of them
-///   touches the folder: a folder that outlives the app's own retention is much of the point.
+/// Once copied, a copy belongs to the folder:
+/// - **Nothing the app deletes deletes it** — not the user deleting the recording, not
+///   retention, passthrough or a stitch. A delete only makes the app forget it
+///   ([forgetCopiesOf]), the way HeyPocket's and Omi's delivered lists drop a deleted
+///   recording.
+/// - **Re-files still rename it.** When the app corrects a recording's start, [reconcile]
+///   renames the copy on the next sweep. Pulled, not pushed: what was copied is keyed by the
+///   `.meta` upload key, which a re-file does not change, so nothing has to hook the rename,
+///   and one missed while the app was killed is picked up the next time.
 ///
 /// Residual: a finished recording a later stitch absorbs keeps its copy, and the merged
 /// recording is copied under its own name, so that audio is in the folder twice — the same
@@ -410,9 +411,9 @@ class FolderExportIntegration implements PassthroughIntegration {
 
   static FolderExportBackend defaultBackend = ChannelFolderExportBackend();
 
-  /// Every folder operation, one at a time, across instances — the controller's and the
-  /// player page's. A delete has to wait for a copy of the same recording that is still
-  /// being written, and a rename must never run against a copy being replaced.
+  /// Every folder operation, one at a time, across instances. A rename must never run
+  /// against a copy being replaced, and a folder change must wait for a copy still being
+  /// written into the old folder, or that copy would be recorded against the new one.
   static Mutex _lock = Mutex();
 
   /// Set when the folder cannot be reached at all. The lane pauses until then, rather than
@@ -420,10 +421,17 @@ class FolderExportIntegration implements PassthroughIntegration {
   static DateTime? _unavailableUntil;
   static const _unavailableRetry = Duration(minutes: 5);
 
+  /// The ledger as last decoded, and the pref string it was decoded from. [hasDelivered] runs
+  /// for every row on every repaint, and the ledger grows with every recording copied.
+  static String? _ledgerRaw;
+  static Map<String, _FolderCopy> _ledgerDecoded = const {};
+
   @visibleForTesting
   static void resetForTest() {
     _lock = Mutex();
     _unavailableUntil = null;
+    _ledgerRaw = null;
+    _ledgerDecoded = const {};
   }
 
   @override
@@ -458,7 +466,7 @@ class FolderExportIntegration implements PassthroughIntegration {
   bool isAvailableFor(Conversation c) => isConfigured && c.uploadKey != null && c.file.existsSync();
 
   @override
-  bool hasDelivered(Conversation c) => c.uploadKey != null && _readLedger().containsKey(c.uploadKey);
+  bool hasDelivered(Conversation c) => c.uploadKey != null && _ledger().containsKey(c.uploadKey);
 
   @override
   bool isFailed(Conversation c) => _prefs.getAutoUploadRetries(getRetryKey(c)) >= 3;
@@ -473,13 +481,6 @@ class FolderExportIntegration implements PassthroughIntegration {
   DateTime? backingOffUntil(Conversation c) {
     final until = _unavailableUntil;
     return until != null && until.isAfter(DateTime.now()) ? until : null;
-  }
-
-  /// Appended to a delete confirmation, so the user knows the folder copies go too.
-  static String deleteNotice(SharedPreferencesUtil prefs) {
-    if (prefs.folderExportTreeUri.isEmpty) return '';
-    final label = prefs.folderExportLabel;
-    return ' Copies saved to ${label.isEmpty ? 'your export folder' : '"$label"'} are deleted too.';
   }
 
   /// `2026-09-16 14.32.05.m4a`, in local time. Dots, not colons: SD cards, and most
@@ -498,25 +499,37 @@ class FolderExportIntegration implements PassthroughIntegration {
         _ => 'application/octet-stream',
       };
 
-  Map<String, _FolderCopy> _readLedger() {
+  /// The ledger, read-only. Decoded again only when the pref has changed.
+  Map<String, _FolderCopy> _ledger() {
     final raw = _prefs.folderExportLedger;
-    if (raw.isEmpty) return {};
-    try {
-      final decoded = jsonDecode(raw) as Map<String, dynamic>;
-      final ledger = <String, _FolderCopy>{};
-      for (final e in decoded.entries) {
-        final copy = _FolderCopy.fromJson(e.value);
-        if (copy != null) ledger[e.key] = copy;
+    if (raw == _ledgerRaw) return _ledgerDecoded;
+    final ledger = <String, _FolderCopy>{};
+    if (raw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw) as Map<String, dynamic>;
+        for (final e in decoded.entries) {
+          final copy = _FolderCopy.fromJson(e.value);
+          if (copy != null) ledger[e.key] = copy;
+        }
+      } catch (e) {
+        Logger.error('Save to Folder: unreadable copy ledger ($e) — treating nothing as copied');
       }
-      return ledger;
-    } catch (e) {
-      Logger.error('Save to Folder: unreadable copy ledger ($e) — treating nothing as copied');
-      return {};
     }
+    _ledgerRaw = raw;
+    _ledgerDecoded = Map.unmodifiable(ledger);
+    return _ledgerDecoded;
   }
 
-  void _writeLedger(Map<String, _FolderCopy> ledger) => _prefs.folderExportLedger =
-      ledger.isEmpty ? '' : jsonEncode({for (final e in ledger.entries) e.key: e.value.toJson()});
+  /// A copy of the ledger to change and write back. Read it after the last await: another
+  /// writer ([forgetCopiesOf]) does not take the lock.
+  Map<String, _FolderCopy> _readLedger() => Map.of(_ledger());
+
+  void _writeLedger(Map<String, _FolderCopy> ledger) {
+    final raw = ledger.isEmpty ? '' : jsonEncode({for (final e in ledger.entries) e.key: e.value.toJson()});
+    _prefs.folderExportLedger = raw;
+    _ledgerRaw = raw;
+    _ledgerDecoded = Map.unmodifiable(ledger);
+  }
 
   @override
   Future<void> upload(Conversation c, {void Function()? onProgress, bool Function()? isCancelled}) async {
@@ -528,12 +541,12 @@ class FolderExportIntegration implements PassthroughIntegration {
       if (isCancelled?.call() ?? false) return; // cancelled while waiting its turn
       final tree = _prefs.folderExportTreeUri;
       if (tree.isEmpty) throw Exception('no folder chosen');
-      final previous = _readLedger()[key];
       final name = exportNameFor(c);
       final String uri;
       try {
-        uri = await _backend.copyInto(tree, c.file.path, name, _mimeTypeFor(c),
-            replaceUri: previous != null && !previous.gone ? previous.uri : null);
+        // "Save again" adds a copy beside the earlier one rather than replacing it: whatever
+        // is already in the folder is the user's. The ledger follows the newest.
+        uri = await _backend.copyInto(tree, c.file.path, name, _mimeTypeFor(c));
       } on FolderExportException catch (e) {
         switch (e.kind) {
           case FolderExportError.noAccess:
@@ -558,8 +571,6 @@ class FolderExportIntegration implements PassthroughIntegration {
       await _prefs.clearAutoUploadRetry(getRetryKey(c));
       onProgress?.call();
     } finally {
-      // A delete of this recording that arrived mid-copy is queued behind this lock, and
-      // finds the copy just recorded.
       _lock.release();
     }
   }
@@ -570,26 +581,30 @@ class FolderExportIntegration implements PassthroughIntegration {
     await _lock.acquire();
     try {
       final tree = _prefs.folderExportTreeUri;
-      await _drainPendingDeletesHeld(tree);
-      final ledger = _readLedger();
+      final snapshot = _ledger();
       for (final c in recordings) {
         final key = c.uploadKey;
-        final copy = key == null ? null : ledger[key];
+        final copy = key == null ? null : snapshot[key];
         if (key == null || copy == null || copy.gone) continue;
         final startMs = c.startTime.millisecondsSinceEpoch;
         if (copy.startMs == startMs) continue;
         final name = exportNameFor(c);
+        _FolderCopy renamed;
         try {
-          final uri = await _backend.rename(tree, copy.uri, name);
-          ledger[key] = _FolderCopy(uri: uri, name: name, startMs: startMs);
+          renamed = _FolderCopy(uri: await _backend.rename(tree, copy.uri, name), name: name, startMs: startMs);
         } on FolderExportException catch (e) {
           if (e.kind == FolderExportError.noAccess) break; // the next sweep tries again
           if (e.kind != FolderExportError.gone) {
             Logger.error('Save to Folder: could not rename ${copy.name} to $name: $e');
             continue;
           }
-          ledger[key] = _FolderCopy(uri: copy.uri, name: name, startMs: startMs, gone: true);
+          renamed = _FolderCopy(uri: copy.uri, name: name, startMs: startMs, gone: true);
         }
+        // Re-read after the await: a delete may have forgotten this recording meanwhile, and
+        // writing the snapshot back would bring it back.
+        final ledger = _readLedger();
+        if (!ledger.containsKey(key)) continue;
+        ledger[key] = renamed;
         _writeLedger(ledger);
       }
     } catch (e) {
@@ -599,63 +614,19 @@ class FolderExportIntegration implements PassthroughIntegration {
     }
   }
 
-  /// Deletes the folder copies of [conversations], which the user has just deleted in the
-  /// app. Call it once they are gone from the phone, so a copy still queued finds nothing to
-  /// copy.
+  /// Forgets the copies of [conversations], which have been deleted from the phone. The
+  /// copies themselves stay in the folder: once saved there, they are the user's. This only
+  /// keeps the ledger from growing with recordings that no longer exist.
   ///
-  /// The recordings are marked before the first await, and the marks are persisted: a copy
-  /// still being written is deleted as soon as it finishes, and a delete the folder refuses
-  /// — an SD card that is not mounted — is retried by every later sweep.
-  Future<void> deleteCopiesOf(Iterable<Conversation> conversations) async {
-    if (_prefs.folderExportTreeUri.isEmpty) return;
-    final keys = conversations.map((c) => c.uploadKey).whereType<String>();
-    if (keys.isEmpty) return;
-    _prefs.folderExportPendingDeletes = {..._prefs.folderExportPendingDeletes, ...keys}.toList();
-    await _drainPendingDeletes();
-  }
-
-  Future<void> _drainPendingDeletes() async {
-    await _lock.acquire();
-    try {
-      await _drainPendingDeletesHeld(_prefs.folderExportTreeUri);
-    } catch (e) {
-      Logger.error('Save to Folder: deleting copies failed: $e');
-    } finally {
-      _lock.release();
-    }
-  }
-
-  /// Holding [_lock], so no copy is mid-write: a marked recording with no copy recorded
-  /// never had one, and its mark can go.
-  Future<void> _drainPendingDeletesHeld(String tree) async {
-    final pending = _prefs.folderExportPendingDeletes;
-    if (pending.isEmpty) return;
+  /// Synchronous and lock-free, so a delete never waits on a long copy. A copy of one of
+  /// these still being written records itself afterwards and stays as a stale entry, which
+  /// costs nothing but its bytes.
+  void forgetCopiesOf(Iterable<Conversation> conversations) {
+    final keys = conversations.map((c) => c.uploadKey).whereType<String>().toSet();
     final ledger = _readLedger();
-    final kept = <String>[];
-    var unreachable = false;
-    for (final key in pending) {
-      final copy = ledger[key];
-      if (copy == null) continue;
-      if (!copy.gone) {
-        if (unreachable) {
-          kept.add(key);
-          continue;
-        }
-        try {
-          await _backend.delete(tree, copy.uri);
-        } on FolderExportException catch (e) {
-          kept.add(key);
-          if (e.kind == FolderExportError.noAccess) unreachable = true;
-          Logger.error('Save to Folder: could not delete ${copy.name} — will retry: $e');
-          continue;
-        }
-      }
-      ledger.remove(key);
-    }
-    _writeLedger(ledger);
-    // Marks added while this ran wait for the next drain.
-    final added = _prefs.folderExportPendingDeletes.where((k) => !pending.contains(k));
-    _prefs.folderExportPendingDeletes = [...kept, ...added];
+    final before = ledger.length;
+    ledger.removeWhere((key, _) => keys.contains(key));
+    if (ledger.length != before) _writeLedger(ledger);
   }
 
   /// Makes [folder] the export folder. A different folder starts fresh: copies already in
@@ -668,7 +639,6 @@ class FolderExportIntegration implements PassthroughIntegration {
       if (old != folder.treeUri) {
         if (old.isNotEmpty) await _releaseQuietly(old);
         _prefs.folderExportLedger = '';
-        _prefs.folderExportPendingDeletes = const [];
         await _prefs.clearAllAutoUploadRetries(keyPrefix: 'folder_');
       }
       _prefs.folderExportTreeUri = folder.treeUri;
@@ -690,7 +660,6 @@ class FolderExportIntegration implements PassthroughIntegration {
       _prefs.folderExportLabel = '';
       _prefs.folderExportEnabled = false;
       _prefs.folderExportLedger = '';
-      _prefs.folderExportPendingDeletes = const [];
       await _prefs.clearAllAutoUploadRetries(keyPrefix: 'folder_');
       _unavailableUntil = null;
     } finally {
