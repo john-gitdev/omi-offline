@@ -45,6 +45,17 @@ class FakeIntegration implements PassthroughIntegration {
   void setAvailable(Conversation c, bool v) => v ? _available.add(c.uploadKey!) : _available.remove(c.uploadKey!);
   void setEnabled(Conversation c) => _enabled.add(c.uploadKey!);
 
+  /// False models Save to Folder: nothing leaves the phone.
+  bool network = true;
+
+  /// The recording lists every reconcile() was handed, in call order.
+  final List<List<Conversation>> reconcileCalls = [];
+
+  @override
+  bool get requiresNetwork => network;
+  @override
+  Future<void> reconcile(List<Conversation> recordings) async => reconcileCalls.add(recordings);
+
   @override
   int get concurrencyLimit => concurrency;
   @override
@@ -123,6 +134,7 @@ void main() {
     List<Batch> Function()? batchesProvider,
     bool Function()? isPipelineIdle,
     bool Function()? isProcessing,
+    Future<bool> Function()? checkOnWifi,
   }) {
     return IntegrationUploadManager(
       integrations: integrations,
@@ -137,10 +149,18 @@ void main() {
       showUploadNotification: (_) {},
       settleNotification: () {},
       setPendingSnack: (_) {},
-      checkOnWifi: () async => true,
+      checkOnWifi: checkOnWifi ?? () async => true,
       convertToPassthrough: (_) async {},
     );
   }
+
+  Batch batchOf(List<Conversation> finished) => Batch(
+        dateString: '2026-01-01',
+        date: DateTime(2026, 1, 1),
+        rawSegments: const [],
+        draftRecordings: const [],
+        finalizedRecordings: finished,
+      );
 
   /// Pumps the event loop until no upload is in flight or queued, or a bounded
   /// number of iterations elapses (so a wedged test fails fast rather than hangs).
@@ -884,6 +904,95 @@ void main() {
       await settle(m);
 
       expect(a.uploadCalls, isEmpty);
+    });
+
+    // Save to Folder renames its copies from here, so it must see every finished recording
+    // — auto-upload on or not — and nothing while recordings are unsettled.
+    test('every integration reconciles against the finished recordings, auto-upload or not', () async {
+      final a = FakeIntegration('A', autoUpload: false);
+      final m = makeManager([a],
+          batchesProvider: () => [
+                batchOf([conv('k1')]),
+                batchOf([conv('k2')])
+              ]);
+
+      m.tryAutoUploadAll();
+
+      expect(a.reconcileCalls, hasLength(1));
+      expect(a.reconcileCalls.single.map((c) => c.uploadKey), unorderedEquals(['k1', 'k2']));
+    });
+
+    test('nothing reconciles while recordings are unsettled', () async {
+      var processing = true;
+      final a = FakeIntegration('A');
+      final m = makeManager([a],
+          batchesProvider: () => [
+                batchOf([conv('k1')])
+              ],
+          isProcessing: () => processing);
+
+      m.tryAutoUploadAll();
+      expect(a.reconcileCalls, isEmpty, reason: 'a re-file may be about to rename these');
+
+      processing = false;
+      m.tryAutoUploadAll();
+      expect(a.reconcileCalls, hasLength(1));
+    });
+  });
+
+  group('upload on wifi only', () {
+    setUp(() => SharedPreferencesUtil().uploadOnWifiOnly = true);
+
+    test('a lane that never leaves the phone drains off wifi; a network lane parks', () async {
+      final local = FakeIntegration('Folder', autoUpload: true)
+        ..enabledByDefault = true
+        ..network = false;
+      final cloud = FakeIntegration('Cloud', autoUpload: true)..enabledByDefault = true;
+      final f = File('${tempDir.path}/recording_950.wav')..writeAsBytesSync(List.filled(2048, 0));
+      final c =
+          Conversation(file: f, startTime: DateTime(2026, 1, 1), duration: const Duration(minutes: 5), uploadKey: 'k1');
+      final m = makeManager([local, cloud],
+          batchesProvider: () => [
+                batchOf([c])
+              ],
+          checkOnWifi: () async => false);
+
+      m.tryAutoUploadAll();
+      for (var i = 0; i < 50 && !local.hasDelivered(c); i++) {
+        await Future.delayed(const Duration(milliseconds: 1));
+      }
+
+      expect(local.hasDelivered(c), true);
+      expect(cloud.uploadCalls, isEmpty, reason: 'parked until wifi returns');
+    });
+
+    test('a manual upload off wifi goes to the folder and reports the network ones', () async {
+      final local = FakeIntegration('Folder')..network = false;
+      final cloud = FakeIntegration('Cloud');
+      final m = makeManager([local, cloud], checkOnWifi: () async => false);
+
+      final failures = await m.uploadConversation(conv('k1'));
+      await settle(m);
+
+      expect(local.hasDelivered(conv('k1')), true);
+      expect(cloud.uploadCalls, isEmpty);
+      expect(failures.map((f) => f.integration), ['Cloud']);
+    });
+
+    test('a manual upload off wifi with only network integrations still throws', () async {
+      final m = makeManager([FakeIntegration('Cloud')], checkOnWifi: () async => false);
+      expect(() => m.uploadConversation(conv('k1')), throwsException);
+    });
+
+    test('a single-integration upload to the folder skips the wifi check', () async {
+      final local = FakeIntegration('Folder')..network = false;
+      final m = makeManager([local], checkOnWifi: () async => false);
+
+      final failures = await m.uploadOne(conv('k1'), 'Folder');
+      await settle(m);
+
+      expect(failures, isEmpty);
+      expect(local.hasDelivered(conv('k1')), true);
     });
   });
 }
