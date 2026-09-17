@@ -81,7 +81,10 @@ class IntegrationStatusList extends StatelessWidget {
       builder: (context, _) {
         final statuses = controller.integrationStatuses(conversation);
         if (statuses.isEmpty) return const SizedBox.shrink();
-        final anyActionable = statuses.any((s) => s.isActionable);
+        final actionable = statuses.where((s) => s.isActionable).toList();
+        final anyActionable = actionable.isNotEmpty;
+        // "Save" only when everything left to do stays on the phone.
+        final allActionableLocal = anyActionable && actionable.every((s) => s.local);
         return Container(
           decoration: BoxDecoration(
             color: const Color(0xFF1C1C1E),
@@ -119,8 +122,8 @@ class IntegrationStatusList extends StatelessWidget {
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                         padding: const EdgeInsets.symmetric(vertical: 12),
                       ),
-                      child: const Text('Upload all pending',
-                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                      child: Text(allActionableLocal ? 'Save all pending' : 'Upload all pending',
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                     ),
                   ),
                 ),
