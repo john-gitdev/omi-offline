@@ -12,6 +12,9 @@ enum FolderExportError {
   /// The copy being renamed is no longer in the folder (the user removed it there).
   gone,
 
+  /// The folder's provider cannot rename files, so a copy cannot follow a re-file.
+  unsupported,
+
   /// No screen to show the folder picker on.
   noUi,
 
@@ -67,6 +70,7 @@ class ChannelFolderExportBackend implements FolderExportBackend {
         'NO_ACCESS' => FolderExportError.noAccess,
         'SOURCE_GONE' => FolderExportError.sourceGone,
         'GONE' => FolderExportError.gone,
+        'UNSUPPORTED' => FolderExportError.unsupported,
         'NO_UI' => FolderExportError.noUi,
         _ => FolderExportError.other,
       };
