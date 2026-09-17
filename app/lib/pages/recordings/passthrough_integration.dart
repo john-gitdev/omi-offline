@@ -594,11 +594,17 @@ class FolderExportIntegration implements PassthroughIntegration {
           renamed = _FolderCopy(uri: await _backend.rename(tree, copy.uri, name), name: name, startMs: startMs);
         } on FolderExportException catch (e) {
           if (e.kind == FolderExportError.noAccess) break; // the next sweep tries again
-          if (e.kind != FolderExportError.gone) {
+          if (e.kind == FolderExportError.unsupported) {
+            // The folder cannot rename at all, so asking again every sweep would only fail
+            // again. The copy keeps its name; the new start is recorded so this is not retried.
+            Logger.debug('Save to Folder: this folder cannot rename files — ${copy.name} keeps its name');
+            renamed = _FolderCopy(uri: copy.uri, name: copy.name, startMs: startMs);
+          } else if (e.kind == FolderExportError.gone) {
+            renamed = _FolderCopy(uri: copy.uri, name: name, startMs: startMs, gone: true);
+          } else {
             Logger.error('Save to Folder: could not rename ${copy.name} to $name: $e');
             continue;
           }
-          renamed = _FolderCopy(uri: copy.uri, name: name, startMs: startMs, gone: true);
         }
         // Re-read after the await: a delete may have forgotten this recording meanwhile, and
         // writing the snapshot back would bring it back.
