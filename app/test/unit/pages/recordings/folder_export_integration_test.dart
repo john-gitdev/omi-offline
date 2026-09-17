@@ -27,6 +27,9 @@ class FakeFolder implements FolderExportBackend {
   /// When set, a rename waits on it before answering.
   Completer<void>? renameGate;
 
+  /// False models a provider without FLAG_SUPPORTS_RENAME.
+  bool canRename = true;
+
   FolderExportException _noAccess() => const FolderExportException(FolderExportError.noAccess, 'no access');
 
   @override
@@ -57,6 +60,7 @@ class FakeFolder implements FolderExportBackend {
     if (renameGate != null) await renameGate!.future;
     if (!access) throw _noAccess();
     if (!files.containsKey(docUri)) throw const FolderExportException(FolderExportError.gone, 'gone');
+    if (!canRename) throw const FolderExportException(FolderExportError.unsupported, 'cannot rename');
     files.remove(docUri);
     final uri = 'doc${_next++}';
     files[uri] = name;
@@ -242,6 +246,26 @@ void main() {
 
       expect(folderExport.hasDelivered(moved), true, reason: 'still delivered, so no sweep copies it again');
       expect(folder.calls.where((call) => call.startsWith('rename')), hasLength(1));
+    });
+
+    test('a folder that cannot rename keeps the old name and is not asked again', () async {
+      final c = recording('k1', DateTime(2026, 9, 15, 3, 0, 0));
+      final folderExport = integration();
+      await folderExport.upload(c);
+      folder.canRename = false;
+
+      final moved = refiled(c, DateTime(2026, 9, 16, 9, 41, 7));
+      await folderExport.reconcile([moved]);
+      await folderExport.reconcile([moved]);
+
+      expect(folder.calls.where((call) => call.startsWith('rename')), hasLength(1),
+          reason: 'it would fail the same way on every sweep');
+      expect(folder.files.values, ['2026-09-15 03.00.00.wav']);
+      expect(folderExport.hasDelivered(moved), true);
+
+      // A later re-file is still tried once, and still not repeated.
+      await folderExport.reconcile([refiled(moved, DateTime(2026, 9, 16, 9, 42, 0))]);
+      expect(folder.calls.where((call) => call.startsWith('rename')), hasLength(2));
     });
 
     test('an unreachable folder leaves the rename for the next sweep', () async {
