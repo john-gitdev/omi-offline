@@ -676,10 +676,6 @@ class SharedPreferencesUtil {
   String get folderExportLedger => getString('folderExportLedger');
   set folderExportLedger(String v) => saveString('folderExportLedger', v);
 
-  /// Upload keys of recordings deleted in the app whose copies are still to be deleted.
-  List<String> get folderExportPendingDeletes => getStringList('folderExportPendingDeletes');
-  set folderExportPendingDeletes(List<String> v) => saveStringList('folderExportPendingDeletes', v);
-
   //--------------------------- HeyPocket Integration ---------------------//
 
   String get heypocketApiKey => _heypocketApiKey;
