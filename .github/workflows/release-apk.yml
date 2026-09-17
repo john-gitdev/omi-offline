@@ -1,0 +1,149 @@
+# Builds the Android APK on GitHub's servers and attaches it to a release.
+#
+#   Push a tag (git tag v0.37.3 && git push origin v0.37.3)
+#       builds that tag and attaches oo0373.apk to its release. A release that does
+#       not exist yet is created as a DRAFT, so nothing is public until you have
+#       added the firmware and the notes and published it yourself.
+#   Actions tab → Release APK → Run workflow, tag left empty
+#       builds the branch you picked and keeps the APK as a workflow artifact
+#       (7 days). Nothing is released. This is the way to check a build.
+#   Run workflow with a tag
+#       builds that tag and attaches (or replaces) the APK on its release.
+#
+# Firmware is not built here: it needs the nRF Connect SDK, so oo<digits>.zip is
+# still built with ./app/build-fw.sh and uploaded by hand.
+#
+# The build itself is ./ccbuild.sh --apk, the same script as a local build, so the
+# naming rule and the flutter invocation live in one place.
+
+name: Release APK
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to attach the APK to (e.g. v0.37.3). Leave empty to build only.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-apk-${{ github.event_name == 'push' && github.ref_name || inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+      # The certificate every published APK is signed with: app/setup/prebuilt/debug.keystore.
+      # Android refuses to install an update signed with a different key, so an APK that fell
+      # back to the runner's own auto-generated debug key must never reach a release.
+      EXPECTED_CERT_SHA256: 6c9fa3e78958a065e58f34d7d7c865a0785a2f0bae4761937d4833e87f4f00f1
+      FLUTTER_VERSION: 3.41.7
+      NDK_VERSION: 28.2.13676358
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # A manual run with a tag builds that tag, not the branch it was started from.
+          ref: ${{ env.TAG != '' && format('refs/tags/{0}', env.TAG) || github.ref }}
+          fetch-depth: 1
+
+      - name: Tag matches the app version
+        if: env.TAG != ''
+        run: |
+          version="$(awk '/^version:/ {print $2; exit}' app/pubspec.yaml)"
+          if [[ "$TAG" != "v$version" ]]; then
+            echo "::error::Tag $TAG does not match app/pubspec.yaml version $version (expected v$version)."
+            exit 1
+          fi
+          echo "Tag $TAG matches app $version"
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Android NDK
+        run: |
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [[ -d "$ANDROID_HOME/ndk/$NDK_VERSION" ]]; then
+            echo "NDK $NDK_VERSION already installed"
+          else
+            # `yes` dies of SIGPIPE when sdkmanager stops reading, and this shell runs with
+            # pipefail, so its exit status must not count.
+            { yes || true; } | "$sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
+            [[ -d "$ANDROID_HOME/ndk/$NDK_VERSION" ]] || { echo "::error::NDK $NDK_VERSION did not install"; exit 1; }
+          fi
+
+      # Local builds sign with ~/.android/debug.keystore, which on the owner's machine is
+      # this same key. A runner's is freshly generated, so the committed one is used
+      # explicitly, the way app/setup.sh does it.
+      - name: Signing key
+        run: cp app/setup/prebuilt/key.properties app/android/key.properties
+
+      - name: Build
+        run: |
+          df -h / | tail -1
+          ./ccbuild.sh --apk --force
+          df -h / | tail -1
+
+      - name: Find the APK
+        id: apk
+        run: |
+          shopt -s nullglob
+          apks=(releases/oo*.apk)
+          if [[ ${#apks[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one APK in releases/, found ${#apks[@]}: ${apks[*]}"
+            exit 1
+          fi
+          echo "path=${apks[0]}" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "${apks[0]}" .apk)" >> "$GITHUB_OUTPUT"
+          ls -l "${apks[0]}"
+
+      - name: Signed with the published key
+        run: |
+          apksigner="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner"
+          certs="$("$apksigner" verify --print-certs "${{ steps.apk.outputs.path }}")"
+          echo "$certs"
+          digests="$(echo "$certs" | awk -F': ' '/certificate SHA-256 digest/ {print $2}')"
+          if [[ "$digests" != "$EXPECTED_CERT_SHA256" ]]; then
+            echo "::error::APK is not signed with the published key alone (got: ${digests//$'\n'/, }). An update signed with any other key will not install over the app."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: ${{ steps.apk.outputs.path }}
+          retention-days: 7
+          compression-level: 0 # an APK is already compressed
+
+      - name: Attach to the release
+        if: env.TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          apk="${{ steps.apk.outputs.path }}"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "$apk" --clobber
+            echo "Attached $(basename "$apk") to release $TAG"
+          else
+            gh release create "$TAG" "$apk" --draft --verify-tag --title "$TAG" \
+              --notes "Draft created by the Release APK workflow. Add the firmware zip and the release notes, then publish."
+            echo "Created draft release $TAG with $(basename "$apk")"
+          fi
