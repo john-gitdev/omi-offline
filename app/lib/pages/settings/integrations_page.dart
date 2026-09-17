@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/pages/recordings/passthrough_integration.dart';
 import 'package:omi/pages/settings/omi_login_webview.dart';
 import 'package:omi/services/heypocket_service.dart';
 import 'package:omi/services/omi_api_client.dart';
@@ -11,7 +12,8 @@ import 'package:omi/services/omi_api_client.dart';
 enum _ConnectionState { idle, checking, connected, error }
 
 class IntegrationsPage extends StatefulWidget {
-  const IntegrationsPage({super.key, this.onCancelOmiUploads, this.onCancelHeyPocketUploads});
+  const IntegrationsPage(
+      {super.key, this.onCancelOmiUploads, this.onCancelHeyPocketUploads, this.onCancelFolderExports});
 
   /// Invoked when the user turns off Omi Cloud's Enabled or Auto-Upload toggle.
   /// [autoOnly] true (Auto-Upload off) cancels only auto uploads, leaving manual
@@ -20,6 +22,10 @@ class IntegrationsPage extends StatefulWidget {
 
   /// HeyPocket counterpart of [onCancelOmiUploads].
   final void Function({bool autoOnly})? onCancelHeyPocketUploads;
+
+  /// Save to Folder counterpart of [onCancelOmiUploads]; also called when the folder is
+  /// changed or removed, since queued copies were headed for the old one.
+  final void Function({bool autoOnly})? onCancelFolderExports;
 
   @override
   State<IntegrationsPage> createState() => _IntegrationsPageState();
@@ -42,9 +48,20 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
   _ConnectionState _omiState = _ConnectionState.idle;
   Timer? _omiDebounce;
 
+  // Save to Folder
+  late final _folderExport = FolderExportIntegration(_prefs);
+  _ConnectionState _folderState = _ConnectionState.idle;
+
   @override
   void initState() {
     super.initState();
+
+    // Init Save to Folder: the grant can be lost outside the app (the folder deleted, an
+    // SD card removed, app data cleared), so check it rather than trusting the pref.
+    if (_prefs.folderExportTreeUri.isNotEmpty) {
+      _folderState = _ConnectionState.checking;
+      _recheckFolderAccess();
+    }
 
     // Init HeyPocket
     final hpKey = _prefs.heypocketApiKey;
@@ -64,6 +81,40 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     }
     _omiRefreshTokenController.addListener(_onOmiChanged);
     _omiFirebaseApiKeyController.addListener(_onOmiChanged);
+  }
+
+  Future<void> _recheckFolderAccess() async {
+    final tree = _prefs.folderExportTreeUri;
+    if (tree.isEmpty) return;
+    final ok = await FolderExportIntegration.defaultBackend.hasAccess(tree).catchError((_) => false);
+    if (!mounted || _prefs.folderExportTreeUri != tree) return;
+    setState(() => _folderState = ok ? _ConnectionState.connected : _ConnectionState.error);
+  }
+
+  Future<void> _chooseFolder() async {
+    final previous = _folderState;
+    setState(() => _folderState = _ConnectionState.checking);
+    try {
+      final picked = await FolderExportIntegration.defaultBackend.pickFolder();
+      if (!mounted) return;
+      if (picked == null) {
+        setState(() => _folderState = previous);
+        return;
+      }
+      if (picked.treeUri != _prefs.folderExportTreeUri) widget.onCancelFolderExports?.call();
+      await _folderExport.useFolder(picked);
+      if (mounted) setState(() => _folderState = _ConnectionState.connected);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _folderState = previous);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not use that folder: $e')));
+    }
+  }
+
+  Future<void> _removeFolder() async {
+    widget.onCancelFolderExports?.call();
+    await _folderExport.removeFolder();
+    if (mounted) setState(() => _folderState = _ConnectionState.idle);
   }
 
   Future<void> _recheckHeyPocketLaunch() async {
@@ -448,6 +499,85 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
               ),
             ],
           ),
+          const SizedBox(height: 16),
+
+          // Save to Folder
+          _buildIntegrationSection(
+            title: 'Save to Folder',
+            subtitle: 'Copy new recordings into this folder as they finish',
+            autoTitle: 'Auto-Save',
+            local: true,
+            state: _folderState,
+            enabled: _prefs.folderExportEnabled,
+            onEnabledChanged: (v) {
+              _prefs.folderExportEnabled = v;
+              if (!v) widget.onCancelFolderExports?.call();
+              setState(() {});
+            },
+            autoUpload: _prefs.folderExportAutoUpload,
+            autoUploadSinceMs: _prefs.folderExportAutoUploadAt,
+            onAutoUploadChanged: (v) {
+              _prefs.folderExportAutoUpload = v;
+              if (!v) widget.onCancelFolderExports?.call(autoOnly: true);
+              setState(() {});
+            },
+            onDelete: _prefs.folderExportTreeUri.isNotEmpty ? _removeFolder : null,
+            fields: [
+              if (_prefs.folderExportTreeUri.isNotEmpty) ...[
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF2C2C2E),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.folder_outlined, color: Colors.grey, size: 18),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _prefs.folderExportLabel.isNotEmpty ? _prefs.folderExportLabel : 'Chosen folder',
+                          style: const TextStyle(color: Colors.white70, fontSize: 13),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (_folderState == _ConnectionState.error)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      'The app can no longer write to this folder — it may have been deleted, or be on an SD card '
+                      'that is not inserted. Choose it again to carry on.',
+                      style: TextStyle(color: Colors.redAccent.shade100, fontSize: 12, height: 1.3),
+                    ),
+                  ),
+                const SizedBox(height: 10),
+              ],
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton(
+                  onPressed: _folderState == _ConnectionState.checking ? null : _chooseFolder,
+                  style: OutlinedButton.styleFrom(
+                    side: BorderSide(color: Colors.grey.shade600),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  child: Text(_prefs.folderExportTreeUri.isEmpty ? 'Choose folder' : 'Change folder',
+                      style: TextStyle(color: Colors.grey.shade300, fontWeight: FontWeight.bold)),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Recordings are copied, named by when they were recorded (e.g. "2026-09-16 14.32.05.m4a"), and '
+                'stay on the phone too. A copy is renamed if the app corrects its recording\'s date, and deleted '
+                'when you delete the recording — not when old recordings are cleared automatically. Android does '
+                'not allow the top of internal storage or Download itself; make a folder inside one.',
+                style: TextStyle(color: Colors.grey.shade500, fontSize: 11, height: 1.3),
+              ),
+            ],
+          ),
         ],
       ),
     );
@@ -465,6 +595,8 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     required List<Widget> fields,
     VoidCallback? onDelete,
     Widget? trailingWidget,
+    String autoTitle = 'Auto-Upload',
+    bool local = false,
   }) {
     final isChecking = state == _ConnectionState.checking;
     final isConnected = state == _ConnectionState.connected;
@@ -516,7 +648,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
           ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
-            title: const Text('Auto-Upload', style: TextStyle(color: Colors.white, fontSize: 14)),
+            title: Text(autoTitle, style: const TextStyle(color: Colors.white, fontSize: 14)),
             subtitle: Text(
               subtitle,
               style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
@@ -535,8 +667,11 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      'Auto-uploading recordings started after ${_formatCutoff(autoUploadSinceMs)}. '
-                      'Earlier recordings aren\'t sent automatically — open one and tap the cloud icon to upload it.',
+                      local
+                          ? 'Auto-saving recordings started after ${_formatCutoff(autoUploadSinceMs)}. '
+                              'Earlier recordings aren\'t copied automatically — open one and tap Save next to Folder.'
+                          : 'Auto-uploading recordings started after ${_formatCutoff(autoUploadSinceMs)}. '
+                              'Earlier recordings aren\'t sent automatically — open one and tap the cloud icon to upload it.',
                       style: TextStyle(color: Colors.grey.shade500, fontSize: 11, height: 1.3),
                     ),
                   ),
