@@ -325,10 +325,8 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
                 builder: (c) => AlertDialog(
                   backgroundColor: Colors.grey.shade900,
                   title: const Text('Delete Conversation', style: TextStyle(color: Colors.white)),
-                  content: Text(
-                      'This will permanently delete this conversation. This cannot be undone.'
-                      '${FolderExportIntegration.deleteNotice(_prefs)}',
-                      style: const TextStyle(color: Colors.white70)),
+                  content: const Text('This will permanently delete this conversation. This cannot be undone.',
+                      style: TextStyle(color: Colors.white70)),
                   actions: [
                     TextButton(
                       onPressed: () => Navigator.of(c).pop(false),
@@ -343,8 +341,8 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
               );
               if (confirm == true) {
                 await _player.stop();
+                widget.controller.forgetFolderCopiesOf([widget.conversation]);
                 await RecordingsManager.deleteConversation(widget.conversation);
-                widget.controller.deleteFolderCopiesOf([widget.conversation]);
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(content: Text('Deleted conversation from ${widget.conversation.timeRangeLabel}')),
