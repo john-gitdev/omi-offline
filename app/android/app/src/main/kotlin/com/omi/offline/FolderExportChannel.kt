@@ -33,7 +33,8 @@ import java.util.concurrent.Executors
  *
  * Error codes Dart acts on: NO_ACCESS (the grant is gone, or the folder itself is — deleted,
  * or on an SD card that is not mounted), SOURCE_GONE (the recording was deleted before the
- * copy began), GONE (the copy being renamed is no longer in the folder). Anything else is IO.
+ * copy began), GONE (the copy being renamed is no longer in the folder), UNSUPPORTED (the
+ * folder's provider cannot rename files). Anything else is IO.
  */
 class FolderExportChannel(private val context: Context, messenger: BinaryMessenger) {
     companion object {
@@ -290,6 +291,9 @@ class FolderExportChannel(private val context: Context, messenger: BinaryMesseng
         requireAccess(tree)
         if (!exists(doc)) throw Failure("GONE", "The copy is no longer in the folder")
         if (displayName(doc)?.equals(name, ignoreCase = true) == true) return doc
+        // A provider that cannot rename (DocumentsProvider's default throws "Rename not
+        // supported") would fail the same way on every sweep. Said as such, Dart stops asking.
+        if (!supportsRename(doc)) throw Failure("UNSUPPORTED", "The folder cannot rename files")
         // Null is a failed rename; returning the old document would record it as done and the
         // copy would keep its old name for good. Thrown, Dart keeps the ledger as it was and
         // the next sweep tries again.
