@@ -1780,7 +1780,7 @@ Levers 1+3 attack *fixed dead-time waits* (safe, bounded downside). Levers 2+4 a
 
 ## App: Adding a New Integration (Generic Architecture)
 
-The app uses a generic `PassthroughIntegration` architecture to handle uploads and synchronization. Adding a new integration requires zero changes to the UI or `RecordingsController`.
+The app uses a generic `PassthroughIntegration` architecture to handle uploads and synchronization. Adding a new integration requires no changes to `RecordingsController` or the per-recording status UI; its settings section on the Integrations page, and the cancel callback `settings_drawer.dart` passes it, are written by hand.
 
 ### 1. Create a Subclass in `passthrough_integration.dart`
 Create a new class that implements `PassthroughIntegration`.
@@ -1812,6 +1812,15 @@ class NewServicePassthroughIntegration implements PassthroughIntegration {
   @override
   bool isFailed(Conversation c) => _prefs.getAutoUploadRetries(c.id) >= 3;
 
+  // True for anything sent over the network; "Upload on Wifi Only" holds only those back.
+  @override
+  bool get requiresNetwork => true;
+
+  // Upkeep of what was already delivered, run by every unheld sweep. A no-op unless the
+  // delivered state has to follow a re-file (Save to Folder renames its copies here).
+  @override
+  Future<void> reconcile(List<Conversation> recordings) async {}
+
   @override
   Future<void> upload(Conversation c) async {
     // Implement the actual upload logic here (e.g. calling NewService.upload(c)).
@@ -1819,6 +1828,8 @@ class NewServicePassthroughIntegration implements PassthroughIntegration {
   }
 }
 ```
+
+(Abbreviated: the interface also has `isAvailableFor`, `segmentProgress`, `isBackingOff`, `backingOffUntil`, `concurrencyLimit` and `getRetryKey`. A retry key must not collide with another integration's — HeyPocket's is the bare upload key.)
 
 ### 2. Register the Integration
 Add your new class to the static `getIntegrations` list in `PassthroughIntegration`:
@@ -1832,11 +1843,34 @@ static List<PassthroughIntegration> getIntegrations(SharedPreferencesUtil prefs)
 ```
 
 ### 3. Benefits of this Architecture
-- **WiFi Control**: Your new integration automatically respects the "Upload on Wifi Only" toggle in App Settings.
+- **WiFi Control**: Your new integration automatically respects the "Upload on Wifi Only" toggle in App Settings, unless `requiresNetwork` is false.
 - **UI Icons**: The `UploadIconButton` in `BatchCard` and `RecordingPlayerPage` will automatically include your integration when calculating sync status (Partial/All/Failed).
 - **Auto-Upload**: The `tryAutoUploadAll` loop in `RecordingsController` will automatically pick up your integration and attempt background syncs.
 - **Passthrough Mode**: If "Delete After Upload" is enabled, your integration will correctly block local file deletion until it confirms delivery via `hasDelivered`.
 - **Validation**: The WiFi toggle will correctly detect that an integration is configured, allowing the user to turn it on.
+
+---
+
+## App: Save to Folder (2026-09-16)
+
+The third integration (`FolderExportIntegration`, `services/folder_export_service.dart`, native `FolderExportChannel.kt`). It copies each finished recording's audio into a folder the user picks, as `2026-09-16 14.32.05.m4a`. Built to the design agreed 2026-09-15: copy (the app keeps its own file), audio only, write-then-rename, exempt from "Upload on Wifi Only", tracked by the `.meta` upload key. Unit-tested against a fake folder with mutation checks; **not device-verified** — nothing here has touched a real Storage Access Framework provider.
+
+**Why SAF and a Kotlin channel.** An app cannot write into shared storage by path on Android 11+, and a path cannot name an SD card folder. `file_picker` 8.3.2's directory picker returns a path and does not persist the grant, so `pickFolder` is ours and calls `takePersistableUriPermission`. The channel is engine-scoped (registered in `MyApp`, like the AAC encoder) because copies are made by background sweeps with no Activity; only the picker needs one.
+
+**The ledger** (`folderExportLedger`, JSON: upload key → `{uri, name, startMs, gone?}`) is the delivered state. `startMs` is what a rename compares, not the name, so a time-zone change never renames the folder. It carries no folder: `useFolder` / `removeFolder` clear it under the same lock every copy holds, so no entry outlives its folder. (A per-entry folder tag was written and removed — mutating it away failed no test, because that lock already makes the race it guarded unreachable.)
+
+**Renames are pulled, not pushed.** `reconcile` runs on every sweep that is not held and renames any copy whose recording's start moved. The tempting alternative — a hook in `promoteSessionToDate` — needs a persisted queue to survive an app kill between the rename and the hook, and a second place that knows a rename happened; the upload key already survives the rename, so a sweep can just look.
+
+**Deletes are pushed, and only user deletes.** `RecordingsController.deleteConversations` / `deleteDay` and the player page call `deleteCopiesOf` *after* the recordings are gone (so a queued copy dequeues to `isAvailableFor == false`). It marks the keys in `folderExportPendingDeletes` synchronously, then drains under the lock, so a copy mid-write is deleted once it lands and a refused delete (SD card out) is retried by later sweeps. Retention, passthrough and stitching also remove audio and deliberately leave the folder alone. **Do not "tidy" this into a reconcile that deletes copies whose key is no longer in the recordings list**: that list is missing retention-deleted recordings, stitched-away ones, and everything at once if a batch load comes back short — it would empty the user's archive.
+
+**An unreachable folder is a backoff, not a failure.** `NO_ACCESS` sets a 5-minute `backingOffUntil`, so the manager's busy path parks the lane with the job re-queued and no retry is spent; otherwise a removed SD card would give up on recordings one sweep at a time. Consequence: a manual Save while the folder is unreachable sits Queued rather than showing Failed; the Integrations page shows the red state and says why.
+
+Residuals:
+- A finished recording that a later stitch absorbs keeps its copy, and the merged recording is copied under its own name — that audio is in the folder twice. Same duplicate the network integrations accept.
+- Copies in a folder the user switched away from stay there, and pending deletes for them are dropped with the switch.
+- The controller's delete hooks are not unit-tested (no test constructs a `RecordingsController`); the integration's delete path is.
+- A recording without a `.meta` falls back to a filename upload key, which a rename changes — its copy would be orphaned and the recording copied again. Legacy-only.
+- Native behaviour assumed, not observed: that a provider accepts a dot-prefixed partial name, and that `renameDocument` returns the new URI. `uniqueName` checks for a clash itself rather than trusting a provider to de-duplicate on rename.
 
 ---
 
