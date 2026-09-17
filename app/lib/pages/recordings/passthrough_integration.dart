@@ -353,13 +353,17 @@ class OmiPassthroughIntegration implements PassthroughIntegration {
   }
 }
 
-/// One copy Save to Folder made, in the current folder: where it went, what it was named,
-/// and the recording start it was named for — which is what
+/// One copy Save to Folder made, in the current folder: where it went, the name it was asked
+/// for, and the recording start it was named for — which is what
 /// [FolderExportIntegration.reconcile] compares, so a time-zone change on its own never
 /// renames anything. No folder is recorded: changing or removing the folder clears the
 /// ledger, under the same lock every copy holds, so no entry outlives its folder.
 class _FolderCopy {
   final String uri;
+
+  /// The name asked for, not necessarily the name in the folder: the channel saves as
+  /// `name (2).ext` when that name is taken ("Save again", or a file of the user's), and only
+  /// the URI comes back. Read for its extension, which that suffix leaves alone, and for logs.
   final String name;
   final int startMs;
 
