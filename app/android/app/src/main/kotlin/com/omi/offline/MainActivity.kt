@@ -66,6 +66,7 @@ class MainActivity : FlutterActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         OmiBleManager.bleHostApi?.onActivityResult(requestCode, resultCode, data)
+        FolderExportChannel.instance?.onActivityResult(requestCode, resultCode, data)
     }
 
     override fun onDestroy() {
