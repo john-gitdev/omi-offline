@@ -43,6 +43,14 @@ builds the APK — an app-only developer has no SDK and still wants one. It is a
 for at `$HOME/ncs`, `/opt/nordic/ncs`, `/opt/ncs`, `/c/ncs`, `/d/ncs`; `NCS_ROOT`
 overrides. All of this runs unchanged on Linux, macOS and Windows (Git Bash).
 
+**On GitHub** (`.github/workflows/release-apk.yml`): pushing a `v*` tag builds that tag's APK with the same
+`./ccbuild.sh --apk` and attaches it to the tag's release, creating the release as a **draft** if it does not
+exist. Run by hand from the Actions tab with no tag, it only builds and keeps the APK as a workflow artifact.
+The job fails if the tag is not `v` + `app/pubspec.yaml`'s version, or if the APK is not signed with the committed
+`app/setup/prebuilt/debug.keystore` — the key every published APK carries, and Android will not install an update
+signed with any other. A runner has no `~/.android/debug.keystore` of its own that matches, so that key is copied
+into place explicitly (as `setup.sh` does). Firmware is not built there; the zip is still uploaded by hand.
+
 The per-version history lives in [CHANGELOG.md](CHANGELOG.md).
 
 ## Architecture
