@@ -358,6 +358,7 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                               builder: (context) => IntegrationsPage(
                                 onCancelOmiUploads: controller.cancelOmiUploads,
                                 onCancelHeyPocketUploads: controller.cancelHeyPocketUploads,
+                                onCancelFolderExports: controller.cancelFolderExports,
                               ),
                             ),
                           );
