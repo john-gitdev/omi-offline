@@ -71,7 +71,8 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Delete short recordings?', style: TextStyle(color: Colors.white)),
         content: Text(
-          'This will permanently delete $count short recording${count == 1 ? '' : 's'} and "ghost" records shorter than ${_formatShortDuration(_filterMinDurationSeconds)}. This cannot be undone.',
+          'This will permanently delete $count short recording${count == 1 ? '' : 's'} and "ghost" records shorter than ${_formatShortDuration(_filterMinDurationSeconds)}. This cannot be undone.'
+          '${FolderExportIntegration.deleteNotice(SharedPreferencesUtil())}',
           style: const TextStyle(color: Colors.white70, fontSize: 14),
         ),
         actions: [
