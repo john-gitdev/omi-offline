@@ -2320,19 +2320,29 @@ void main() {
           .where((n) => n.endsWith('.wav') || n.endsWith('.m4a'))
           .toList();
 
-      // Host tests have no Opus decoder, so the run's recording has no samples and stays
-      // WAV (see the empty-recording test above). Its cleared bit is the evidence that the
-      // processor stamped it and the run's own conversion pass reached it.
-      test('a recording finished in the run is stamped and reaches the conversion pass', () async {
-        await RecordingsManager().processAll([await stoppedBin()], (_, __) {});
+      List<File> metasOnDisk() => Directory(p.join(tempDir.path, 'recordings'))
+          .listSync(recursive: true)
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.meta'))
+          .toList();
 
-        final metas = Directory(p.join(tempDir.path, 'recordings'))
-            .listSync(recursive: true)
-            .whereType<File>()
-            .where((f) => f.path.endsWith('.meta'))
-            .toList();
-        expect(metas, hasLength(1), reason: 'the run should have produced one recording: ${audioOnDisk()}');
-        expect(RecordingsManager.metaM4aPending(metas.single.readAsBytesSync()), isFalse);
+      // Host tests have no Opus decoder, so the run's recording has no samples and stays
+      // WAV (see the empty-recording test above). The bit is read twice: as the recording
+      // lands, before Phase 3 — the processor stamped it — and after the run — the run's own
+      // conversion pass reached it. Either read alone is also what an unstamped recording
+      // would show.
+      test('a recording finished in the run is stamped, and the run\'s conversion pass reaches it', () async {
+        final stampedOnArrival = <bool>[];
+
+        await RecordingsManager().processAll([await stoppedBin()], (_, __) {}, onRecordingFinalized: () {
+          for (final meta in metasOnDisk()) {
+            stampedOnArrival.add(RecordingsManager.metaM4aPending(meta.readAsBytesSync()));
+          }
+        });
+
+        expect(stampedOnArrival, [true], reason: 'one recording, stamped by the processor');
+        expect(metasOnDisk(), hasLength(1), reason: 'the run should have produced one recording: ${audioOnDisk()}');
+        expect(RecordingsManager.metaM4aPending(metasOnDisk().single.readAsBytesSync()), isFalse);
       });
 
       test('the continuation of an open draft joins it, and the one recording is .m4a', () async {
