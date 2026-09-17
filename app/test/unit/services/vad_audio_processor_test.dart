@@ -177,19 +177,20 @@ void main() {
     tempDir.deleteSync(recursive: true);
   });
 
-  test('VadAudioProcessor AAC startEncoder exception fallback to WAV', () async {
-    bool startEncoderCalled = false;
-
+  // The processor used to encode M4A itself and fall back to WAV when the encoder threw.
+  // It no longer encodes at all — every recording is WAV, and M4A is made after the
+  // stitch (RecordingsManager._convertPendingToM4a, whose failure path keeps the WAV) —
+  // so no encoder failure can cost a recording here.
+  test('VadAudioProcessor never calls the AAC encoder, even with M4A selected', () async {
+    final encoderCalls = <String>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
       const MethodChannel('com.omi.offline/aacEncoder'),
       (MethodCall methodCall) async {
-        if (methodCall.method == 'startEncoder') {
-          startEncoderCalled = true;
-          throw PlatformException(code: 'ERROR', message: 'Simulated encoder failure');
-        }
-        return null;
+        encoderCalls.add(methodCall.method);
+        throw PlatformException(code: 'ERROR', message: 'the processor must not be encoding');
       },
     );
+    SharedPreferencesUtil().audioSaveFormat = 'm4a';
 
     final processor = await VadAudioProcessor.create(outputDir: tempDir.path);
     final dummyFile = File('${tempDir.path}/dummy.bin');
@@ -213,62 +214,10 @@ void main() {
 
     final savedPath = await processor.saveRecordingTest(refs, DateTime.now());
 
-    expect(startEncoderCalled, isTrue, reason: 'AAC startEncoder should have been called');
-    expect(savedPath, isNotNull, reason: 'Should return a saved path (fallback)');
-    expect(savedPath!.endsWith('.wav'), isTrue, reason: 'Should fall back to .wav extension');
-
-    final savedFile = File(savedPath);
-    expect(await savedFile.exists(), isTrue, reason: 'The fallback WAV file should exist');
-  });
-
-  test('VadAudioProcessor AAC encodeBuffer/finishEncoder exception fallback to WAV', () async {
-    bool startEncoderCalled = false;
-    bool finishEncoderCalled = false;
-
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
-      const MethodChannel('com.omi.offline/aacEncoder'),
-      (MethodCall methodCall) async {
-        if (methodCall.method == 'startEncoder') {
-          startEncoderCalled = true;
-          return "test-session-id";
-        } else if (methodCall.method == 'finishEncoder') {
-          finishEncoderCalled = true;
-          throw PlatformException(code: 'ERROR', message: 'Simulated encode/finish failure');
-        } else if (methodCall.method == 'encodeBuffer') {
-          // just ignore
-          return null;
-        }
-        return null;
-      },
-    );
-
-    final processor = await VadAudioProcessor.create(outputDir: tempDir.path);
-    final dummyFile = File('${tempDir.path}/dummy.bin');
-
-    final bytes = BytesBuilder();
-    for (int i = 0; i < 5; i++) {
-      final lengthBytes = ByteData(4)..setUint32(0, 50, Endian.little);
-      bytes.add(lengthBytes.buffer.asUint8List());
-      bytes.add(List.filled(50, 0));
-    }
-    await dummyFile.writeAsBytes(bytes.toBytes());
-
-    final refs = <FrameRef>[];
-    for (int i = 0; i < 5; i++) {
-      refs.add(FrameRef(
-        segmentFile: dummyFile,
-        byteOffset: i * 54,
-        frameLength: 50,
-      ));
-    }
-
-    final savedPath = await processor.saveRecordingTest(refs, DateTime.now());
-
-    // Dummy zero bytes cannot be Opus-decoded, so no PCM frames are encoded.
-    // hasEncodedAnyFrames stays false → empty segment is discarded before finishEncoder is called.
-    expect(startEncoderCalled, isTrue, reason: 'AAC startEncoder should have been called');
-    expect(finishEncoderCalled, isFalse, reason: 'finishEncoder is not reached when no frames are encoded');
-    expect(savedPath, isNull, reason: 'Empty segment is discarded, returning null');
+    expect(encoderCalls, isEmpty);
+    expect(savedPath, isNotNull);
+    expect(savedPath!.endsWith('.wav'), isTrue);
+    expect(await File(savedPath).exists(), isTrue);
   });
 
   group('relBinPath (never drops a ref to an empty bin list)', () {
@@ -1124,6 +1073,56 @@ void main() {
       test('the production reader agrees with the byte the processor wrote', () async {
         expect(Conversation.modeFromFlagByte(await stampFor(true, 'mode_rt_manual.bin')), true);
         expect(Conversation.modeFromFlagByte(await stampFor(false, 'mode_rt_auto.bin')), false);
+      });
+
+      // M4A mode used to encode finished recordings straight to .m4a here, which the
+      // stitch cannot join onto a WAV draft. Now everything is WAV; a finished recording in
+      // M4A mode is stamped m4aPending (bit 0x40) and keyed as the .m4a it will become, and
+      // RecordingsManager converts it after the stitch. A draft is converted when it closes.
+      group('M4A mode saves WAV for the stitch (bit 0x40)', () {
+        Future<(String, Uint8List)> saved(String format, {required bool draft, required String name}) async {
+          final settings = ProcessingSettings(
+            vadEnabled: false,
+            speechThreshold: 0.5,
+            silenceDurationToSplitMs: 120000,
+            minDurationMs: 0,
+            minSpeechMs: 0,
+            maxChunkMs: 0x7FFFFFFFFFFFFFFF,
+            deviceId: 'AA:BB:CC:DD:EE:FF',
+            audioSaveFormat: format,
+            omiEnabled: false,
+            priorityRecordCapMinutes: 0,
+          );
+          final proc = VadAudioProcessor.fromSettings(settings: settings, outputDir: tempDir.path);
+          await proc.processSegmentFile(plainBin(name, 20), DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+          final path = await proc.flushRemaining(isDraft: draft);
+          await proc.destroy();
+          expect(path, isNotNull);
+          return (path!, File(path.replaceAll(RegExp(r'\.(wav|m4a)$'), '.meta')).readAsBytesSync());
+        }
+
+        String keyOf(Uint8List meta) => String.fromCharCodes(meta, 417, 417 + meta[416]);
+
+        test('a finished recording is WAV, stamped, and keyed as its .m4a', () async {
+          final (path, meta) = await saved('m4a', draft: false, name: 'm4a_finished.bin');
+          expect(path, endsWith('.wav'));
+          expect(RecordingsManager.metaM4aPending(meta), isTrue);
+          expect(keyOf(meta), endsWith('.m4a'));
+        });
+
+        test('a draft is WAV and unstamped — it is converted when it closes', () async {
+          final (path, meta) = await saved('m4a', draft: true, name: 'm4a_draft.bin');
+          expect(path, endsWith('_draft.wav'));
+          expect(RecordingsManager.metaM4aPending(meta), isFalse);
+          expect(keyOf(meta), endsWith('_draft.wav'));
+        });
+
+        test('WAV mode stamps nothing', () async {
+          final (path, meta) = await saved('wav', draft: false, name: 'wav_finished.bin');
+          expect(path, endsWith('.wav'));
+          expect(RecordingsManager.metaM4aPending(meta), isFalse);
+          expect(keyOf(meta), endsWith('.wav'));
+        });
       });
     });
 
