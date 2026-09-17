@@ -120,7 +120,12 @@ jobs:
           apksigner="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner"
           certs="$("$apksigner" verify --print-certs "${{ steps.apk.outputs.path }}")"
           echo "$certs"
-          digests="$(echo "$certs" | awk -F': ' '/certificate SHA-256 digest/ {print $2}')"
+          # The label before the digest differs by apksigner version ("Signer #1 certificate
+          # SHA-256 digest:" locally, "V2 Signer: certificate SHA-256 digest:" on the runner),
+          # so match the digest itself. One line per signature scheme, hence sort -u: more than
+          # one distinct key left here would mean the APK carries a signer that is not ours.
+          digests="$(printf '%s\n' "$certs" |
+            sed -n 's/.*certificate SHA-256 digest: *\([0-9a-f]\{64\}\).*/\1/p' | sort -u)"
           if [[ "$digests" != "$EXPECTED_CERT_SHA256" ]]; then
             echo "::error::APK is not signed with the published key alone (got: ${digests//$'\n'/, }). An update signed with any other key will not install over the app."
             exit 1
