@@ -21,7 +21,7 @@ class IntegrationStatusList extends StatelessWidget {
   /// only thing queued/uploading for that integration, just cancel it; if a queue
   /// is backed up behind it, ask whether to cancel only this recording or the
   /// whole queue.
-  Future<void> _handleCancel(BuildContext context, String integrationName) async {
+  Future<void> _handleCancel(BuildContext context, String integrationName, {bool local = false}) async {
     final count = controller.activeUploadCountFor(integrationName);
     if (count <= 1) {
       controller.cancelUpload(conversation, integrationName);
@@ -30,13 +30,14 @@ class IntegrationStatusList extends StatelessWidget {
 
     // Tap outside or press back to dismiss (returns null) — no explicit dismiss
     // button; the two actions are the only deliberate choices.
+    final what = local ? 'save' : 'upload';
     final choice = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: Colors.grey.shade900,
-        title: const Text('Cancel upload', style: TextStyle(color: Colors.white, fontSize: 20)),
+        title: Text('Cancel $what', style: const TextStyle(color: Colors.white, fontSize: 20)),
         content: Text(
-          '$count uploads are in progress or queued for $integrationName. '
+          '$count ${what}s are in progress or queued for $integrationName. '
           'Cancel just this recording, or the entire queue?',
           style: const TextStyle(color: Colors.white, fontSize: 16),
         ),
@@ -108,7 +109,7 @@ class IntegrationStatusList extends StatelessWidget {
                     onUpload: () => _runAction(context, () => controller.uploadOne(conversation, s.name)),
                     onReupload: () =>
                         _runAction(context, () => controller.uploadOne(conversation, s.name, force: true)),
-                    onCancel: () => _handleCancel(context, s.name),
+                    onCancel: () => _handleCancel(context, s.name, local: s.local),
                   )),
               if (anyActionable)
                 Padding(
