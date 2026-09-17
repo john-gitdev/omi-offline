@@ -18,6 +18,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 class FakeFolder implements FolderExportBackend {
   final Map<String, String> files = {};
   final List<String> calls = [];
+
+  /// Document uri -> the MIME type it was created with.
+  final Map<String, String> mimeTypes = {};
   bool access = true;
   int _next = 0;
 
@@ -51,6 +54,7 @@ class FakeFolder implements FolderExportBackend {
     if (copyGate != null) await copyGate!.future;
     final uri = 'doc${_next++}';
     files[uri] = name;
+    mimeTypes[uri] = mimeType;
     return uri;
   }
 
@@ -97,15 +101,16 @@ void main() {
   FolderExportIntegration integration() => FolderExportIntegration(prefs, backend: folder);
 
   /// A finished recording on disk. [start] is local time, as the recordings list shows it.
-  Conversation recording(String key, DateTime start, {bool onDisk = true}) {
-    final file = File('${tempDir.path}/recording_${start.millisecondsSinceEpoch}.wav');
+  Conversation recording(String key, DateTime start, {bool onDisk = true, String ext = 'wav'}) {
+    final file = File('${tempDir.path}/recording_${start.millisecondsSinceEpoch}.$ext');
     if (onDisk) file.writeAsBytesSync(List.filled(1024, 1));
     return Conversation(file: file, startTime: start, duration: const Duration(minutes: 3), uploadKey: key);
   }
 
-  /// The same recording after a re-file: same upload key, new start and file name.
-  Conversation refiled(Conversation c, DateTime newStart) {
-    final moved = c.file.renameSync('${tempDir.path}/recording_${newStart.millisecondsSinceEpoch}.wav');
+  /// The same recording after a re-file: same upload key, new start and file name. [ext]
+  /// changes the file's format too, as an M4A conversion between the two would.
+  Conversation refiled(Conversation c, DateTime newStart, {String ext = 'wav'}) {
+    final moved = c.file.renameSync('${tempDir.path}/recording_${newStart.millisecondsSinceEpoch}.$ext');
     return Conversation(file: moved, startTime: newStart, duration: c.duration, uploadKey: c.uploadKey);
   }
 
@@ -119,6 +124,25 @@ void main() {
 
       expect(folder.files.values, ['2026-09-16 14.32.05.wav']);
       expect(folderExport.hasDelivered(c), true);
+    });
+
+    test('an M4A recording is copied as .m4a', () async {
+      final c = recording('k1.m4a', DateTime(2026, 9, 16, 14, 32, 5), ext: 'm4a');
+
+      await integration().upload(c);
+
+      expect(folder.files.values, ['2026-09-16 14.32.05.m4a']);
+      expect(folder.mimeTypes.values, ['audio/mp4']);
+    });
+
+    test('a recording still awaiting its M4A conversion is copied as the WAV it is', () async {
+      // In M4A mode the upload key already ends .m4a while the file on disk is still WAV.
+      final c = recording('recording_1789569125000.m4a', DateTime(2026, 9, 16, 14, 32, 5));
+
+      await integration().upload(c);
+
+      expect(folder.files.values, ['2026-09-16 14.32.05.wav']);
+      expect(folder.mimeTypes.values, ['audio/x-wav']);
     });
 
     test('saving again adds a copy beside the first, and a re-file renames only the newest', () async {
@@ -209,6 +233,18 @@ void main() {
 
       expect(folder.files.values, ['2026-09-16 09.41.07.wav']);
       expect(folderExport.hasDelivered(moved), true);
+    });
+
+    test('a copy renamed after its recording was converted to M4A keeps the format it holds', () async {
+      // Copied while still WAV; the next run converts the recording, then corrects its date.
+      final c = recording('k1.m4a', DateTime(2026, 9, 15, 3, 0, 0));
+      final folderExport = integration();
+      await folderExport.upload(c);
+
+      final moved = refiled(c, DateTime(2026, 9, 16, 9, 41, 7), ext: 'm4a');
+      await folderExport.reconcile([moved]);
+
+      expect(folder.files.values, ['2026-09-16 09.41.07.wav'], reason: 'the copy is still WAV audio');
     });
 
     test('an unchanged recording is never renamed', () async {
