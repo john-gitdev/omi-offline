@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/services/folder_export_service.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/heypocket_service.dart';
 import 'package:omi/services/omi_api_client.dart';
 import 'package:omi/utils/logger.dart';
+import 'package:omi/utils/mutex.dart';
 
 abstract class PassthroughIntegration {
   String get name;
@@ -64,9 +68,19 @@ abstract class PassthroughIntegration {
   /// The unique key used to track retry counts for this integration.
   String getRetryKey(Conversation c);
 
+  /// False for an integration that never leaves the phone. "Upload on Wifi Only" holds
+  /// back only the ones that send something over the network.
+  bool get requiresNetwork;
+
+  /// Brings what this integration has already delivered in line with [recordings] — the
+  /// finished recordings as the auto-upload sweep sees them, i.e. after any re-file. Run
+  /// by every sweep that is not held back, whether or not auto-upload is on. Never throws.
+  Future<void> reconcile(List<Conversation> recordings);
+
   static List<PassthroughIntegration> getIntegrations(SharedPreferencesUtil prefs) => [
         HeyPocketPassthroughIntegration(prefs),
         OmiPassthroughIntegration(prefs),
+        FolderExportIntegration(prefs),
         // Add new integrations here.
       ];
 
@@ -95,6 +109,13 @@ class HeyPocketPassthroughIntegration implements PassthroughIntegration {
 
   @override
   String getRetryKey(Conversation c) => c.uploadKey!;
+
+  @override
+  bool get requiresNetwork => true;
+
+  // Keyed by the .meta upload key, which a re-file does not change: nothing to keep up.
+  @override
+  Future<void> reconcile(List<Conversation> recordings) async {}
 
   @override
   bool isEnabled(Conversation c) {
@@ -166,6 +187,13 @@ class OmiPassthroughIntegration implements PassthroughIntegration {
 
   @override
   String getRetryKey(Conversation c) => PassthroughIntegration.getBinPath(c);
+
+  @override
+  bool get requiresNetwork => true;
+
+  // Its path-keyed state is moved by the re-file itself (promoteSessionToDate).
+  @override
+  Future<void> reconcile(List<Conversation> recordings) async {}
 
   @override
   bool isEnabled(Conversation c) {
@@ -322,5 +350,359 @@ class OmiPassthroughIntegration implements PassthroughIntegration {
     await _prefs.clearOmiSegments(binPath);
     await _prefs.clearAutoUploadRetry(binPath);
     if (lastResult != null) unawaited(OmiApiClient.traceSyncResult(lastResult));
+  }
+}
+
+/// One copy Save to Folder made, in the current folder: where it went, what it was named,
+/// and the recording start it was named for — which is what
+/// [FolderExportIntegration.reconcile] compares, so a time-zone change on its own never
+/// renames anything. No folder is recorded: changing or removing the folder clears the
+/// ledger, under the same lock every copy holds, so no entry outlives its folder.
+class _FolderCopy {
+  final String uri;
+  final String name;
+  final int startMs;
+
+  /// The user removed the copy from the folder. It still counts as delivered, so it is not
+  /// put back; "Save again" makes a new one.
+  final bool gone;
+
+  const _FolderCopy({
+    required this.uri,
+    required this.name,
+    required this.startMs,
+    this.gone = false,
+  });
+
+  Map<String, Object> toJson() => {'uri': uri, 'name': name, 'startMs': startMs, if (gone) 'gone': true};
+
+  static _FolderCopy? fromJson(Object? json) {
+    if (json is! Map) return null;
+    final uri = json['uri'], name = json['name'], startMs = json['startMs'];
+    if (uri is! String || name is! String || startMs is! int) return null;
+    return _FolderCopy(uri: uri, name: name, startMs: startMs, gone: json['gone'] == true);
+  }
+}
+
+/// Save to Folder: copies each finished recording's audio into a folder the user picked,
+/// named for when it was recorded — `2026-09-16 14.32.05.m4a`. Nothing leaves the phone,
+/// so "Upload on Wifi Only" does not apply.
+///
+/// A copy follows its recording:
+/// - **Re-files.** When the app corrects a recording's start, [reconcile] renames the copy
+///   on the next sweep. Pulled, not pushed: what was copied is keyed by the `.meta` upload
+///   key, which a re-file does not change, so nothing has to hook the rename, and one missed
+///   while the app was killed is picked up the next time.
+/// - **Deletes the user makes** ([deleteCopiesOf], called from the delete actions only).
+///   Retention, passthrough and a stitch also remove audio from the phone, and none of them
+///   touches the folder: a folder that outlives the app's own retention is much of the point.
+///
+/// Residual: a finished recording a later stitch absorbs keeps its copy, and the merged
+/// recording is copied under its own name, so that audio is in the folder twice — the same
+/// duplicate the other integrations accept.
+class FolderExportIntegration implements PassthroughIntegration {
+  FolderExportIntegration(this._prefs, {FolderExportBackend? backend}) : _backend = backend ?? defaultBackend;
+
+  final SharedPreferencesUtil _prefs;
+  final FolderExportBackend _backend;
+
+  static const integrationName = 'Folder';
+
+  static FolderExportBackend defaultBackend = ChannelFolderExportBackend();
+
+  /// Every folder operation, one at a time, across instances — the controller's and the
+  /// player page's. A delete has to wait for a copy of the same recording that is still
+  /// being written, and a rename must never run against a copy being replaced.
+  static Mutex _lock = Mutex();
+
+  /// Set when the folder cannot be reached at all. The lane pauses until then, rather than
+  /// spending every recording's retries on something that is not their fault.
+  static DateTime? _unavailableUntil;
+  static const _unavailableRetry = Duration(minutes: 5);
+
+  @visibleForTesting
+  static void resetForTest() {
+    _lock = Mutex();
+    _unavailableUntil = null;
+  }
+
+  @override
+  String get name => integrationName;
+
+  @override
+  int get concurrencyLimit => 1;
+
+  @override
+  bool get requiresNetwork => false;
+
+  // Prefixed: HeyPocket's retry key is the bare upload key.
+  @override
+  String getRetryKey(Conversation c) => 'folder_${c.uploadKey ?? c.file.path}';
+
+  @override
+  bool get isConfigured => _prefs.folderExportEnabled && _prefs.folderExportTreeUri.isNotEmpty;
+
+  @override
+  bool get isAutoUploadEnabled => _prefs.folderExportAutoUpload;
+
+  @override
+  bool isEnabled(Conversation c) {
+    if (!isConfigured || c.uploadKey == null) return false;
+    final enabledAt = _prefs.folderExportAutoUploadAt;
+    // Fail closed when no auto-save time is recorded (see HeyPocket.isEnabled).
+    if (enabledAt <= 0) return false;
+    return !c.startTime.isBefore(DateTime.fromMillisecondsSinceEpoch(enabledAt));
+  }
+
+  @override
+  bool isAvailableFor(Conversation c) => isConfigured && c.uploadKey != null && c.file.existsSync();
+
+  @override
+  bool hasDelivered(Conversation c) => c.uploadKey != null && _readLedger().containsKey(c.uploadKey);
+
+  @override
+  bool isFailed(Conversation c) => _prefs.getAutoUploadRetries(getRetryKey(c)) >= 3;
+
+  @override
+  (int, int)? segmentProgress(Conversation c) => null;
+
+  @override
+  bool isBackingOff(Conversation c) => backingOffUntil(c) != null;
+
+  @override
+  DateTime? backingOffUntil(Conversation c) {
+    final until = _unavailableUntil;
+    return until != null && until.isAfter(DateTime.now()) ? until : null;
+  }
+
+  /// Appended to a delete confirmation, so the user knows the folder copies go too.
+  static String deleteNotice(SharedPreferencesUtil prefs) {
+    if (prefs.folderExportTreeUri.isEmpty) return '';
+    final label = prefs.folderExportLabel;
+    return ' Copies saved to ${label.isEmpty ? 'your export folder' : '"$label"'} are deleted too.';
+  }
+
+  /// `2026-09-16 14.32.05.m4a`, in local time. Dots, not colons: SD cards, and most
+  /// computers the folder is later copied to, reject a colon in a name.
+  static String exportNameFor(Conversation c) {
+    final t = c.startTime.toLocal();
+    String two(int v) => v.toString().padLeft(2, '0');
+    final ext = c.file.path.split('.').last;
+    return '${t.year}-${two(t.month)}-${two(t.day)} ${two(t.hour)}.${two(t.minute)}.${two(t.second)}.$ext';
+  }
+
+  static String _mimeTypeFor(Conversation c) => switch (c.file.path.split('.').last.toLowerCase()) {
+        'm4a' => 'audio/mp4',
+        'wav' => 'audio/x-wav',
+        'ogg' => 'audio/ogg',
+        _ => 'application/octet-stream',
+      };
+
+  Map<String, _FolderCopy> _readLedger() {
+    final raw = _prefs.folderExportLedger;
+    if (raw.isEmpty) return {};
+    try {
+      final decoded = jsonDecode(raw) as Map<String, dynamic>;
+      final ledger = <String, _FolderCopy>{};
+      for (final e in decoded.entries) {
+        final copy = _FolderCopy.fromJson(e.value);
+        if (copy != null) ledger[e.key] = copy;
+      }
+      return ledger;
+    } catch (e) {
+      Logger.error('Save to Folder: unreadable copy ledger ($e) — treating nothing as copied');
+      return {};
+    }
+  }
+
+  void _writeLedger(Map<String, _FolderCopy> ledger) => _prefs.folderExportLedger =
+      ledger.isEmpty ? '' : jsonEncode({for (final e in ledger.entries) e.key: e.value.toJson()});
+
+  @override
+  Future<void> upload(Conversation c, {void Function()? onProgress, bool Function()? isCancelled}) async {
+    if (isCancelled?.call() ?? false) return;
+    final key = c.uploadKey;
+    if (key == null) throw Exception('this recording has no upload key');
+    await _lock.acquire();
+    try {
+      if (isCancelled?.call() ?? false) return; // cancelled while waiting its turn
+      final tree = _prefs.folderExportTreeUri;
+      if (tree.isEmpty) throw Exception('no folder chosen');
+      final previous = _readLedger()[key];
+      final name = exportNameFor(c);
+      final String uri;
+      try {
+        uri = await _backend.copyInto(tree, c.file.path, name, _mimeTypeFor(c),
+            replaceUri: previous != null && !previous.gone ? previous.uri : null);
+      } on FolderExportException catch (e) {
+        switch (e.kind) {
+          case FolderExportError.noAccess:
+            // Neither delivered nor failed: the manager reads the backoff and pauses the
+            // lane, and the recording is tried again once it lifts.
+            _unavailableUntil = DateTime.now().add(_unavailableRetry);
+            await _prefs.clearAutoUploadRetry(getRetryKey(c));
+            Logger.debug('Save to Folder: folder unreachable ($e) — retrying in ${_unavailableRetry.inMinutes}m');
+            return;
+          case FolderExportError.sourceGone:
+            // Deleted, or folded into another recording, since it was queued.
+            await _prefs.clearAutoUploadRetry(getRetryKey(c));
+            return;
+          default:
+            rethrow;
+        }
+      }
+      _unavailableUntil = null;
+      final ledger = _readLedger();
+      ledger[key] = _FolderCopy(uri: uri, name: name, startMs: c.startTime.millisecondsSinceEpoch);
+      _writeLedger(ledger);
+      await _prefs.clearAutoUploadRetry(getRetryKey(c));
+      onProgress?.call();
+    } finally {
+      // A delete of this recording that arrived mid-copy is queued behind this lock, and
+      // finds the copy just recorded.
+      _lock.release();
+    }
+  }
+
+  @override
+  Future<void> reconcile(List<Conversation> recordings) async {
+    if (_prefs.folderExportTreeUri.isEmpty) return;
+    await _lock.acquire();
+    try {
+      final tree = _prefs.folderExportTreeUri;
+      await _drainPendingDeletesHeld(tree);
+      final ledger = _readLedger();
+      for (final c in recordings) {
+        final key = c.uploadKey;
+        final copy = key == null ? null : ledger[key];
+        if (key == null || copy == null || copy.gone) continue;
+        final startMs = c.startTime.millisecondsSinceEpoch;
+        if (copy.startMs == startMs) continue;
+        final name = exportNameFor(c);
+        try {
+          final uri = await _backend.rename(tree, copy.uri, name);
+          ledger[key] = _FolderCopy(uri: uri, name: name, startMs: startMs);
+        } on FolderExportException catch (e) {
+          if (e.kind == FolderExportError.noAccess) break; // the next sweep tries again
+          if (e.kind != FolderExportError.gone) {
+            Logger.error('Save to Folder: could not rename ${copy.name} to $name: $e');
+            continue;
+          }
+          ledger[key] = _FolderCopy(uri: copy.uri, name: name, startMs: startMs, gone: true);
+        }
+        _writeLedger(ledger);
+      }
+    } catch (e) {
+      Logger.error('Save to Folder: reconcile failed: $e');
+    } finally {
+      _lock.release();
+    }
+  }
+
+  /// Deletes the folder copies of [conversations], which the user has just deleted in the
+  /// app. Call it once they are gone from the phone, so a copy still queued finds nothing to
+  /// copy.
+  ///
+  /// The recordings are marked before the first await, and the marks are persisted: a copy
+  /// still being written is deleted as soon as it finishes, and a delete the folder refuses
+  /// — an SD card that is not mounted — is retried by every later sweep.
+  Future<void> deleteCopiesOf(Iterable<Conversation> conversations) async {
+    if (_prefs.folderExportTreeUri.isEmpty) return;
+    final keys = conversations.map((c) => c.uploadKey).whereType<String>();
+    if (keys.isEmpty) return;
+    _prefs.folderExportPendingDeletes = {..._prefs.folderExportPendingDeletes, ...keys}.toList();
+    await _drainPendingDeletes();
+  }
+
+  Future<void> _drainPendingDeletes() async {
+    await _lock.acquire();
+    try {
+      await _drainPendingDeletesHeld(_prefs.folderExportTreeUri);
+    } catch (e) {
+      Logger.error('Save to Folder: deleting copies failed: $e');
+    } finally {
+      _lock.release();
+    }
+  }
+
+  /// Holding [_lock], so no copy is mid-write: a marked recording with no copy recorded
+  /// never had one, and its mark can go.
+  Future<void> _drainPendingDeletesHeld(String tree) async {
+    final pending = _prefs.folderExportPendingDeletes;
+    if (pending.isEmpty) return;
+    final ledger = _readLedger();
+    final kept = <String>[];
+    var unreachable = false;
+    for (final key in pending) {
+      final copy = ledger[key];
+      if (copy == null) continue;
+      if (!copy.gone) {
+        if (unreachable) {
+          kept.add(key);
+          continue;
+        }
+        try {
+          await _backend.delete(tree, copy.uri);
+        } on FolderExportException catch (e) {
+          kept.add(key);
+          if (e.kind == FolderExportError.noAccess) unreachable = true;
+          Logger.error('Save to Folder: could not delete ${copy.name} — will retry: $e');
+          continue;
+        }
+      }
+      ledger.remove(key);
+    }
+    _writeLedger(ledger);
+    // Marks added while this ran wait for the next drain.
+    final added = _prefs.folderExportPendingDeletes.where((k) => !pending.contains(k));
+    _prefs.folderExportPendingDeletes = [...kept, ...added];
+  }
+
+  /// Makes [folder] the export folder. A different folder starts fresh: copies already in
+  /// the old one stay there, untouched, and access to it is given back. Choosing the same
+  /// folder again keeps everything.
+  Future<void> useFolder(PickedFolder folder) async {
+    await _lock.acquire();
+    try {
+      final old = _prefs.folderExportTreeUri;
+      if (old != folder.treeUri) {
+        if (old.isNotEmpty) await _releaseQuietly(old);
+        _prefs.folderExportLedger = '';
+        _prefs.folderExportPendingDeletes = const [];
+        await _prefs.clearAllAutoUploadRetries(keyPrefix: 'folder_');
+      }
+      _prefs.folderExportTreeUri = folder.treeUri;
+      _prefs.folderExportLabel = folder.label;
+      _prefs.folderExportEnabled = true;
+      _unavailableUntil = null;
+    } finally {
+      _lock.release();
+    }
+  }
+
+  /// Forgets the export folder. Copies already in it stay there.
+  Future<void> removeFolder() async {
+    await _lock.acquire();
+    try {
+      final old = _prefs.folderExportTreeUri;
+      if (old.isNotEmpty) await _releaseQuietly(old);
+      _prefs.folderExportTreeUri = '';
+      _prefs.folderExportLabel = '';
+      _prefs.folderExportEnabled = false;
+      _prefs.folderExportLedger = '';
+      _prefs.folderExportPendingDeletes = const [];
+      await _prefs.clearAllAutoUploadRetries(keyPrefix: 'folder_');
+      _unavailableUntil = null;
+    } finally {
+      _lock.release();
+    }
+  }
+
+  Future<void> _releaseQuietly(String treeUri) async {
+    try {
+      await _backend.releaseFolder(treeUri);
+    } catch (e) {
+      Logger.error('Save to Folder: could not release access to the old folder: $e');
+    }
   }
 }
