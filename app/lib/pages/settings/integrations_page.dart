@@ -506,6 +506,9 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
             title: 'Save to Folder',
             subtitle: 'Copy new recordings into this folder as they finish',
             autoTitle: 'Auto-Save',
+            // Passthrough counts it: with delete-after-upload on, local audio is removed only
+            // once every enabled integration, this one included, has the recording.
+            enabledSubtitle: 'Use this folder for saving and passthrough',
             local: true,
             state: _folderState,
             enabled: _prefs.folderExportEnabled,
@@ -596,6 +599,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     VoidCallback? onDelete,
     Widget? trailingWidget,
     String autoTitle = 'Auto-Upload',
+    String enabledSubtitle = 'Use this integration for uploads and passthrough',
     bool local = false,
   }) {
     final isChecking = state == _ConnectionState.checking;
@@ -639,7 +643,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
             contentPadding: EdgeInsets.zero,
             title: const Text('Enabled', style: TextStyle(color: Colors.white, fontSize: 14)),
             subtitle: Text(
-              'Use this integration for uploads and passthrough',
+              enabledSubtitle,
               style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
             ),
             value: enabled,
