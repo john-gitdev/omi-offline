@@ -83,6 +83,10 @@ class MyApp : Application() {
 
             AacEncoderChannel(messenger)
 
+            // Save to Folder copies from the auto-upload sweep, which runs in background
+            // syncs — engine-scoped for the same reason as the encoder.
+            FolderExportChannel(app.applicationContext, messenger)
+
             // Android-only; iOS stays on the per-window fallback.
             //
             // Deliberately never destroyed. It used to be torn down in
