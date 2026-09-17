@@ -158,9 +158,19 @@ class AacEncoderChannel(messenger: BinaryMessenger) {
         try {
             // Signal end of stream
             val pts = (session.totalSamplesQueued * 1_000_000L) / session.sampleRate
-            val inputIndex = session.codec.dequeueInputBuffer(10000L)
-            if (inputIndex >= 0) {
-                session.codec.queueInputBuffer(inputIndex, 0, 0, pts, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+            // Wait for room to queue end-of-stream, as encodeChunk waits for room for audio.
+            // Skipped when every input buffer was still busy — likelier now that conversion
+            // feeds the encoder as fast as a file reads — the encoder was never told the
+            // stream had ended, never reported EOS, and the whole encode was thrown away below.
+            var waits = 0
+            while (true) {
+                val inputIndex = session.codec.dequeueInputBuffer(10000L)
+                if (inputIndex >= 0) {
+                    session.codec.queueInputBuffer(inputIndex, 0, 0, pts, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                    break
+                }
+                drainOutput(session, drainToEnd = false)
+                if (++waits > 500) throw IllegalStateException("AAC encoder took no end-of-stream for 5 s")
             }
 
             // Drain until EOS
