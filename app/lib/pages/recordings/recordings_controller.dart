@@ -1930,18 +1930,17 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final keys = batch.finalizedRecordings.map((c) => c.uploadKey).whereType<String>().toSet();
     await _prefs.removeUploadedFromHeypocket(keys);
     await _prefs.removeOmiSynced(_binPathsForConversations(batch.finalizedRecordings));
+    forgetFolderCopiesOf(batch.finalizedRecordings);
     await _manager.deleteDay(batch);
-    deleteFolderCopiesOf(batch.finalizedRecordings);
     await _loadBatches();
   }
 
-  /// Save to Folder copies go with a recording the user deletes — and only then: this is
-  /// called from the delete actions, never from retention or passthrough. After the
-  /// recordings are gone, so a copy still queued finds nothing to copy. Not awaited: a copy
-  /// being written holds the folder until it finishes, and the delete is persisted first.
-  void deleteFolderCopiesOf(List<Conversation> conversations) {
+  /// Drops deleted recordings from Save to Folder's ledger, as the two lines above each
+  /// call do for HeyPocket and Omi. The copies in the folder are left alone — once saved,
+  /// they are the user's, whatever happens to the recording.
+  void forgetFolderCopiesOf(List<Conversation> conversations) {
     for (final i in _integrations.whereType<FolderExportIntegration>()) {
-      unawaited(i.deleteCopiesOf(conversations));
+      i.forgetCopiesOf(conversations);
     }
   }
 
@@ -1962,9 +1961,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final keys = conversations.map((c) => c.uploadKey).whereType<String>().toSet();
     await _prefs.removeUploadedFromHeypocket(keys);
     await _prefs.removeOmiSynced(_binPathsForConversations(conversations));
+    forgetFolderCopiesOf(conversations);
     final touchedSessionIds = conversations.map((c) => c.sessionId).whereType<int>().toSet();
     await RecordingsManager.deleteConversations(conversations);
-    deleteFolderCopiesOf(conversations);
     if (reload) await _loadBatches();
     // If a session has no remaining finalized/draft recording, its raw bins
     // would silently reprocess on the next sync and resurrect what we just
@@ -2019,6 +2018,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (toDelete.isNotEmpty) {
       Logger.debug('Retention: deleting ${toDelete.length} recordings older than $days days');
       await _prefs.removeOmiSynced(_binPathsForConversations(toDelete));
+      forgetFolderCopiesOf(toDelete);
       await RecordingsManager.deleteConversations(toDelete);
       return true;
     }
