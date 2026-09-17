@@ -1861,14 +1861,21 @@ The third integration (`FolderExportIntegration`, `services/folder_export_servic
 
 **Renames are pulled, not pushed.** `reconcile` runs on every sweep that is not held and renames any copy whose recording's start moved. The tempting alternative — a hook in `promoteSessionToDate` — needs a persisted queue to survive an app kill between the rename and the hook, and a second place that knows a rename happened; the upload key already survives the rename, so a sweep can just look.
 
-**Deletes are pushed, and only user deletes.** `RecordingsController.deleteConversations` / `deleteDay` and the player page call `deleteCopiesOf` *after* the recordings are gone (so a queued copy dequeues to `isAvailableFor == false`). It marks the keys in `folderExportPendingDeletes` synchronously, then drains under the lock, so a copy mid-write is deleted once it lands and a refused delete (SD card out) is retried by later sweeps. Retention, passthrough and stitching also remove audio and deliberately leave the folder alone. **Do not "tidy" this into a reconcile that deletes copies whose key is no longer in the recordings list**: that list is missing retention-deleted recordings, stitched-away ones, and everything at once if a batch load comes back short — it would empty the user's archive.
+**The app never deletes a finished copy.** The user's rule (2026-09-16): once copied, the copy is theirs — "treated as gone". A first version deleted a copy when the user deleted its recording, with a persisted pending-delete queue and retries; it was removed at their request, native `delete` op included. What is left:
+- Deleting a recording (the controller's delete actions, the player page) and retention call `forgetCopiesOf`, beside the HeyPocket/Omi ledger cleanup on the same lines. It drops the ledger entry only, so the ledger does not grow with recordings that no longer exist. Synchronous and lock-free, so a delete never waits on a long copy; a copy of that recording still being written records itself afterwards as a stale entry, which costs only its bytes.
+- `reconcile` re-reads the ledger after each rename's await and skips a key forgotten meanwhile, so a rename cannot bring back a deleted recording's entry.
+- "Save again" adds a copy beside the first rather than replacing it; the ledger follows the newest, so a later re-file renames only that one.
+- The channel's only deletes are its own `.omi-partial-` files.
+
+Do not reintroduce deleting by diffing the ledger against the recordings list either: that list is missing retention-deleted recordings, stitched-away ones, and everything at once if a batch load comes back short.
 
 **An unreachable folder is a backoff, not a failure.** `NO_ACCESS` sets a 5-minute `backingOffUntil`, so the manager's busy path parks the lane with the job re-queued and no retry is spent; otherwise a removed SD card would give up on recordings one sweep at a time. Consequence: a manual Save while the folder is unreachable sits Queued rather than showing Failed; the Integrations page shows the red state and says why.
 
 Residuals:
 - A finished recording that a later stitch absorbs keeps its copy, and the merged recording is copied under its own name — that audio is in the folder twice. Same duplicate the network integrations accept.
-- Copies in a folder the user switched away from stay there, and pending deletes for them are dropped with the switch.
-- The controller's delete hooks are not unit-tested (no test constructs a `RecordingsController`); the integration's delete path is.
+- Copies in a folder the user switched away from stay there.
+- The controller's `forgetFolderCopiesOf` calls are not unit-tested (no test constructs a `RecordingsController`); `forgetCopiesOf` itself is. Missing one only leaves a stale ledger entry.
+- The ledger is decoded once per change and cached (`_ledgerRaw`), because `hasDelivered` runs for every row on every repaint; it is still one JSON string pref rewritten on every copy, so its size tracks the number of recordings kept.
 - A recording without a `.meta` falls back to a filename upload key, which a rename changes — its copy would be orphaned and the recording copied again. Legacy-only.
 - Native behaviour assumed, not observed: that a provider accepts a dot-prefixed partial name, and that `renameDocument` returns the new URI. `uniqueName` checks for a clash itself rather than trusting a provider to de-duplicate on rename.
 
