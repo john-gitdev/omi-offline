@@ -1780,7 +1780,7 @@ Levers 1+3 attack *fixed dead-time waits* (safe, bounded downside). Levers 2+4 a
 
 ## App: Adding a New Integration (Generic Architecture)
 
-The app uses a generic `PassthroughIntegration` architecture to handle uploads and synchronization. Adding a new integration requires no changes to `RecordingsController` or the per-recording status UI; its settings section on the Integrations page, and the cancel callback `settings_drawer.dart` passes it, are written by hand.
+The app uses a generic `PassthroughIntegration` architecture to handle uploads and synchronization. Adding a new integration needs no change to the per-recording status UI. It does need a little by hand: a settings section on the Integrations page, and a cancel method on `IntegrationUploadManager` / `RecordingsController` that `settings_drawer.dart` passes to that page. And an integration that keeps its own delivered ledger must drop entries where the controller already drops HeyPocket's and Omi's — `deleteConversations`, `deleteDay` and `_enforceRetentionPolicy` (plus the player page's delete, which bypasses the controller) — as Save to Folder does with `forgetFolderCopiesOf`, or the ledger grows with recordings that no longer exist.
 
 ### 1. Create a Subclass in `passthrough_integration.dart`
 Create a new class that implements `PassthroughIntegration`.
@@ -1853,7 +1853,7 @@ static List<PassthroughIntegration> getIntegrations(SharedPreferencesUtil prefs)
 
 ## App: Save to Folder (2026-09-16)
 
-The third integration (`FolderExportIntegration`, `services/folder_export_service.dart`, native `FolderExportChannel.kt`). It copies each finished recording's audio into a folder the user picks, as `2026-09-16 14.32.05.m4a`. Built to the design agreed 2026-09-15: copy (the app keeps its own file), audio only, write-then-rename, exempt from "Upload on Wifi Only", tracked by the `.meta` upload key. Unit-tested against a fake folder with mutation checks; **not device-verified** — nothing here has touched a real Storage Access Framework provider.
+The third integration (`FolderExportIntegration`, `services/folder_export_service.dart`, native `FolderExportChannel.kt`). It copies each finished recording's audio into a folder the user picks, named for its start, e.g. `2026-09-16 14.32.05.m4a`. The extension is the recording file's own: auto copies wait for processing, which in M4A mode converts first, so they are normally `.m4a`, but a recording copied while it still awaits conversion (saved by hand during processing, left by a run killed before Phase 3, or skipped by Phase 3 because an upload was reading it) is copied as `.wav` and stays so in the folder. Built to the design agreed 2026-09-15: copy (the app keeps its own file), audio only, write-then-rename (write-in-place on a provider that cannot rename), exempt from "Upload on Wifi Only", tracked by the `.meta` upload key. Unit-tested against a fake folder with mutation checks; **not device-verified** — nothing here has touched a real Storage Access Framework provider.
 
 **Why SAF and a Kotlin channel.** An app cannot write into shared storage by path on Android 11+, and a path cannot name an SD card folder. `file_picker` 8.3.2's directory picker returns a path and does not persist the grant, so `pickFolder` is ours and calls `takePersistableUriPermission`. The channel is engine-scoped (registered in `MyApp`, like the AAC encoder) because copies are made by background sweeps with no Activity; only the picker needs one.
 
