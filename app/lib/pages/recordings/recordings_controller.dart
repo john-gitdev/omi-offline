@@ -1931,7 +1931,18 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     await _prefs.removeUploadedFromHeypocket(keys);
     await _prefs.removeOmiSynced(_binPathsForConversations(batch.finalizedRecordings));
     await _manager.deleteDay(batch);
+    deleteFolderCopiesOf(batch.finalizedRecordings);
     await _loadBatches();
+  }
+
+  /// Save to Folder copies go with a recording the user deletes — and only then: this is
+  /// called from the delete actions, never from retention or passthrough. After the
+  /// recordings are gone, so a copy still queued finds nothing to copy. Not awaited: a copy
+  /// being written holds the folder until it finishes, and the delete is persisted first.
+  void deleteFolderCopiesOf(List<Conversation> conversations) {
+    for (final i in _integrations.whereType<FolderExportIntegration>()) {
+      unawaited(i.deleteCopiesOf(conversations));
+    }
   }
 
   Future<void> deleteConversation(Conversation conversation) async {
@@ -1953,6 +1964,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     await _prefs.removeOmiSynced(_binPathsForConversations(conversations));
     final touchedSessionIds = conversations.map((c) => c.sessionId).whereType<int>().toSet();
     await RecordingsManager.deleteConversations(conversations);
+    deleteFolderCopiesOf(conversations);
     if (reload) await _loadBatches();
     // If a session has no remaining finalized/draft recording, its raw bins
     // would silently reprocess on the next sync and resurrect what we just
@@ -2236,6 +2248,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   void cancelOmiUploads({bool autoOnly = false}) => _uploads.cancelOmiUploads(autoOnly: autoOnly);
 
   void cancelHeyPocketUploads({bool autoOnly = false}) => _uploads.cancelHeyPocketUploads(autoOnly: autoOnly);
+
+  void cancelFolderExports({bool autoOnly = false}) => _uploads.cancelFolderExports(autoOnly: autoOnly);
 
   /// Active uploads (in-flight + queued) for [integrationName] — see
   /// [IntegrationUploadManager.activeUploadCountFor].
