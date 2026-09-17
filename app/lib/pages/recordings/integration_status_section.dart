@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:omi/pages/recordings/passthrough_integration.dart';
 import 'package:omi/pages/recordings/recordings_controller.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/utils/other/time_utils.dart';
@@ -160,8 +161,9 @@ class _IntegrationRow extends StatelessWidget {
   /// per the user's 24-hour / AM-PM preference. Plain "Last Upload Failed" when
   /// no timestamp is available.
   String _failedLabel(DateTime? at) {
-    if (at == null) return 'Last Upload Failed';
-    return 'Last Upload Failed at: ${fmtHourMin(at)}';
+    final what = status.local ? 'Save' : 'Upload';
+    if (at == null) return 'Last $what Failed';
+    return 'Last $what Failed at: ${fmtHourMin(at)}';
   }
 
   /// Why an integration can't take this recording — integration-specific so the
@@ -171,6 +173,7 @@ class _IntegrationRow extends StatelessWidget {
       case 'Omi Cloud':
         return 'Recorded before Omi sync was enabled';
       case 'HeyPocket':
+      case FolderExportIntegration.integrationName:
         return 'Audio file is no longer available';
       default:
         return 'Not available for this recording';
@@ -191,17 +194,34 @@ class _IntegrationRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final local = status.local;
     final (Color color, String label, IconData icon) = switch (status.state) {
-      IntegrationUploadState.delivered => (Colors.green, 'Uploaded', Icons.cloud_done),
-      IntegrationUploadState.uploading => (Colors.deepPurpleAccent, 'Uploading…$_chunkSuffix', Icons.cloud_upload),
+      IntegrationUploadState.delivered => (
+          Colors.green,
+          local ? 'Saved' : 'Uploaded',
+          local ? Icons.folder : Icons.cloud_done
+        ),
+      IntegrationUploadState.uploading => (
+          Colors.deepPurpleAccent,
+          '${local ? 'Saving' : 'Uploading'}…$_chunkSuffix',
+          local ? Icons.drive_folder_upload : Icons.cloud_upload
+        ),
       IntegrationUploadState.failed => (
           Colors.redAccent,
           '${_failedLabel(status.failedAt)}$_chunkSuffix',
           Icons.error_outline
         ),
-      IntegrationUploadState.pending => (Colors.amber, 'Ready to Upload$_chunkSuffix', Icons.cloud_upload),
+      IntegrationUploadState.pending => (
+          Colors.amber,
+          '${local ? 'Ready to Save' : 'Ready to Upload'}$_chunkSuffix',
+          local ? Icons.drive_folder_upload : Icons.cloud_upload
+        ),
       IntegrationUploadState.queued => (Colors.amber, 'Queued$_chunkSuffix', Icons.schedule),
-      IntegrationUploadState.unavailable => (Colors.grey.shade600, 'Not available', Icons.cloud_off),
+      IntegrationUploadState.unavailable => (
+          Colors.grey.shade600,
+          'Not available',
+          local ? Icons.folder_off : Icons.cloud_off
+        ),
     };
 
     Widget trailing;
@@ -234,7 +254,7 @@ class _IntegrationRow extends StatelessWidget {
       case IntegrationUploadState.delivered:
         trailing = TextButton(
           onPressed: onReupload,
-          child: Text('Re-upload', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
+          child: Text(local ? 'Save again' : 'Re-upload', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
         );
         break;
       case IntegrationUploadState.failed:
@@ -247,8 +267,8 @@ class _IntegrationRow extends StatelessWidget {
       case IntegrationUploadState.pending:
         trailing = TextButton(
           onPressed: onUpload,
-          child: const Text('Upload',
-              style: TextStyle(color: Colors.deepPurpleAccent, fontSize: 13, fontWeight: FontWeight.w600)),
+          child: Text(local ? 'Save' : 'Upload',
+              style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 13, fontWeight: FontWeight.w600)),
         );
         break;
       case IntegrationUploadState.queued:
