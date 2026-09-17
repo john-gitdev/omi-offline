@@ -1877,7 +1877,8 @@ Residuals:
 - The controller's `forgetFolderCopiesOf` calls are not unit-tested (no test constructs a `RecordingsController`); `forgetCopiesOf` itself is. Missing one only leaves a stale ledger entry.
 - The ledger is decoded once per change and cached (`_ledgerRaw`), because `hasDelivered` runs for every row on every repaint; it is still one JSON string pref rewritten on every copy, so its size tracks the number of recordings kept.
 - A recording without a `.meta` falls back to a filename upload key, which a rename changes — its copy would be orphaned and the recording copied again. Legacy-only.
-- Native behaviour assumed, not observed: that a provider accepts a dot-prefixed partial name, and that `renameDocument` returns the new URI. `uniqueName` checks for a clash itself rather than trusting a provider to de-duplicate on rename.
+- Native behaviour assumed, not observed: that a provider accepts a dot-prefixed partial name. `uniqueName` checks for a clash itself rather than trusting a provider to de-duplicate on rename. `renameDocument` returning null is treated as the failure its documentation says it is (Android 36 source: a caught provider exception the platform did not rethrow — a checked one other than FileNotFoundException). It used to be read as "same document", which after a copy recorded the hidden partial as the saved copy, for the next copy's partial cleanup to delete.
+- An operation that fails part-way is re-checked against the folder (`FolderExportChannel.run`), so a folder deleted or an SD card pulled mid-copy reports NO_ACCESS and pauses the lane instead of spending the recording's retries.
 
 ---
 
