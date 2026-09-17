@@ -200,7 +200,8 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
         () => Navigator.of(c).pop(false),
         () => Navigator.of(c).pop(true),
         'Delete ${n == 1 ? 'Recording' : 'Recordings'}',
-        'This will permanently delete $n recording${n == 1 ? '' : 's'}. This cannot be undone.',
+        'This will permanently delete $n recording${n == 1 ? '' : 's'}. This cannot be undone.'
+            '${FolderExportIntegration.deleteNotice(_prefs)}',
         confirmText: 'Delete',
       ),
     );
@@ -563,7 +564,7 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
         () => Navigator.of(c).pop(true),
         'Delete Day',
         'This will permanently delete everything for ${batch.dateString} — recordings, priority recordings, '
-            'markers and discards. This cannot be undone.',
+            'markers and discards. This cannot be undone.${FolderExportIntegration.deleteNotice(_prefs)}',
         confirmText: 'Delete',
       ),
     );
@@ -777,7 +778,8 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
         () => Navigator.of(c).pop(false),
         () => Navigator.of(c).pop(true),
         'Delete Conversation',
-        'This will permanently delete this conversation. This cannot be undone.',
+        'This will permanently delete this conversation. This cannot be undone.'
+            '${FolderExportIntegration.deleteNotice(_prefs)}',
         confirmText: 'Delete',
       ),
     );
