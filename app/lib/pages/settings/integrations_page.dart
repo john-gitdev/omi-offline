@@ -573,8 +573,8 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
               ),
               const SizedBox(height: 8),
               Text(
-                'Recordings are copied, named by when they were recorded (e.g. "2026-09-16 14.32.05.m4a"), and '
-                'stay on the phone too. A copy is renamed if the app corrects its recording\'s date. Once saved, '
+                'Recordings are copied, named by when they were recorded, in the format they are saved in '
+                '(e.g. "2026-09-16 14.32.05.wav", or .m4a with M4A selected), and stay on the phone too. A copy is renamed if the app corrects its recording\'s date. Once saved, '
                 'a copy is never deleted by the app, even when you delete the recording. Android does not allow '
                 'the top of internal storage or Download itself; make a folder inside one.',
                 style: TextStyle(color: Colors.grey.shade500, fontSize: 11, height: 1.3),
