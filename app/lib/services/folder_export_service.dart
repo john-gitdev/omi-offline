@@ -49,15 +49,11 @@ abstract class FolderExportBackend {
 
   /// Copies [sourcePath] into the folder as [name] — or `name (2)` and so on when that name
   /// is taken — and returns the copy's document URI. The copy is written under a hidden
-  /// name and renamed once complete. With [replaceUri], that earlier copy is deleted once
-  /// the new one is complete, before the rename, so the new copy takes its name.
-  Future<String> copyInto(String treeUri, String sourcePath, String name, String mimeType, {String? replaceUri});
+  /// name and renamed once complete. Nothing already in the folder is ever deleted.
+  Future<String> copyInto(String treeUri, String sourcePath, String name, String mimeType);
 
   /// Renames a copy, returning its new document URI (a rename can change it).
   Future<String> rename(String treeUri, String docUri, String name);
-
-  /// Deletes a copy. Succeeds when it is already gone.
-  Future<void> delete(String treeUri, String docUri);
 }
 
 class ChannelFolderExportBackend implements FolderExportBackend {
@@ -92,13 +88,12 @@ class ChannelFolderExportBackend implements FolderExportBackend {
   Future<bool> hasAccess(String treeUri) async => await _invoke<bool>('hasAccess', {'treeUri': treeUri}) ?? false;
 
   @override
-  Future<String> copyInto(String treeUri, String sourcePath, String name, String mimeType, {String? replaceUri}) async {
+  Future<String> copyInto(String treeUri, String sourcePath, String name, String mimeType) async {
     final uri = await _invoke<String>('copyInto', {
       'treeUri': treeUri,
       'sourcePath': sourcePath,
       'name': name,
       'mimeType': mimeType,
-      'replaceUri': replaceUri,
     });
     return uri!;
   }
@@ -108,7 +103,4 @@ class ChannelFolderExportBackend implements FolderExportBackend {
     final uri = await _invoke<String>('rename', {'treeUri': treeUri, 'docUri': docUri, 'name': name});
     return uri!;
   }
-
-  @override
-  Future<void> delete(String treeUri, String docUri) => _invoke<void>('delete', {'treeUri': treeUri, 'docUri': docUri});
 }
