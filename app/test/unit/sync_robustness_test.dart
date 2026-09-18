@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:omi/gen/pigeon_communicator.g.dart';
 import 'package:path/path.dart' as p;
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/backend/preferences.dart';
@@ -76,6 +77,8 @@ List<int> globalDeletedTimestamps = [];
 Set<int> globalRejectDeleteTimestamps = {};
 
 class MockDeviceConnection implements DeviceConnection {
+  Future<bool> Function()? onStop;
+  bool connected = true;
   final StreamController<List<int>> _controller = StreamController<List<int>>.broadcast();
   final _writeWaiters = <MapEntry<int, Completer<void>>>[];
   int _writesDone = 0;
@@ -165,7 +168,7 @@ class MockDeviceConnection implements DeviceConnection {
       listFilesUnanswered ? null : (files: files, complete: !listFilesTruncated);
 
   @override
-  Future<bool> stopStorageSync() async => true;
+  Future<bool> stopStorageSync() async => onStop == null ? true : await onStop!();
 
   @override
   Future<bool> sendKeepAlive() async => true;
@@ -218,7 +221,7 @@ class MockDeviceConnection implements DeviceConnection {
   Future<Stream<List<int>>> getBleStorageBytesStream() async => _controller.stream;
 
   @override
-  Future<bool> isConnected() async => true;
+  Future<bool> isConnected() async => connected;
 
   @override
   Future<StorageFileStats?> getStorageFileStats() async => StorageFileStats(
@@ -476,6 +479,227 @@ void main() {
     });
   });
 
+  group('Native download integrity', () {
+    const ts = 1789000000;
+    const channel = BasicMessageChannel<Object?>(
+      'dev.flutter.pigeon.omi_pigeon.BleHostApi.downloadStorageFile',
+      BleHostApi.pigeonChannelCodec,
+    );
+    final original = List<int>.generate(12, (i) => i + 1);
+    late MockDeviceConnection connection;
+    late SDCardWalSyncImpl native;
+    final requests = <int>[];
+    late Future<Object?> Function(List<Object?> args) receiver;
+
+    File bin() => File('${tempDir.path}/raw_segments/$ts/${ts}_0.bin');
+    Wal wal({int offset = 0, int version = 0, int strikes = 0}) => Wal(
+          device: 'test',
+          fileNum: 0,
+          walOffset: offset,
+          storageTotalBytes: 12,
+          timerStart: ts,
+          storage: WalStorage.sdcard,
+          nativeIntegrityVersion: version,
+          syncFailCount: strikes,
+        );
+    List<Object?> gap(int expected, int incoming) => [
+          'storage-integrity',
+          'Non-contiguous storage DATA: incoming=$incoming expected=$expected',
+          {'expectedOffset': expected, 'incomingOffset': incoming},
+        ];
+    Future<void> reconnect() async {
+      native = SDCardWalSyncImpl(MockWalSyncListener(),
+          connectionProvider: (_) async => connection, useNativeDownload: true);
+      await native.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+    }
+
+    Future<void> seed(Wal value, List<int> bytes) async {
+      await bin().parent.create(recursive: true);
+      await bin().writeAsBytes(bytes);
+      await WalFileManager.saveWals([value], deviceId: 'test');
+      await reconnect();
+    }
+
+    Future<void> run(bool batch) async {
+      if (batch) {
+        expect((await native.syncAll())!.isPartial, isTrue);
+      } else {
+        final value = (await native.getMissingWals()).first;
+        await expectLater(native.syncWal(wal: value),
+            throwsA(isA<PlatformException>().having((e) => e.code, 'code', 'storage-integrity')));
+        expect(value.status, WalStatus.miss);
+      }
+    }
+
+    setUp(() async {
+      requests.clear();
+      globalDeletedTimestamps = [];
+      globalRejectDeleteTimestamps = {};
+      connection = MockDeviceConnection()..files = [StorageFile(index: 0, timestamp: ts, size: 12)];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockDecodedMessageHandler<Object?>(
+        channel,
+        (message) async {
+          final args = (message! as List).cast<Object?>();
+          requests.add(args[2]! as int);
+          return receiver(args);
+        },
+      );
+      await reconnect();
+    });
+    tearDown(() async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockDecodedMessageHandler<Object?>(channel, null);
+      await connection.close();
+    });
+
+    for (final batch in [false, true]) {
+      test('${batch ? 'syncAll' : 'syncWal'} repeated gaps never spend poison budget, including reconnect', () async {
+        await seed(wal(offset: 4, version: 1, strikes: 4), original.sublist(0, 4));
+        // A second queued file must not cause an index-0 read under another identity.
+        connection.files.add(StorageFile(index: 1, timestamp: ts + 60, size: 12));
+        int stops = 0;
+        connection.onStop = () async {
+          stops++;
+          return true;
+        };
+        receiver = (args) async {
+          expect(args[3], ts);
+          expect(args[2], 4);
+          return gap(4, 8);
+        };
+        for (int attempt = 0; attempt < 7; attempt++) {
+          await run(batch);
+          expect(requests.length, attempt + 1, reason: 'one failed read per cycle; no skip or seek-ahead retry');
+          expect(stops, attempt + 1);
+          expect(globalDeletedTimestamps, isEmpty);
+          final saved = (await WalFileManager.loadWals()).firstWhere((w) => w.timerStart == ts);
+          expect(saved.walOffset, 4);
+          expect(saved.status, WalStatus.miss);
+          expect(saved.syncFailCount, 4);
+          expect(saved.nativeIntegrityVersion, 1);
+          expect(await bin().readAsBytes(), original.sublist(0, 4));
+          await reconnect();
+        }
+        // Finish only the retained head, from its contiguous prefix.
+        connection.files.removeLast();
+        receiver = (args) async {
+          expect(args[2], 4);
+          await File(args[4]! as String).writeAsBytes(original.sublist(4), mode: FileMode.append);
+          return [null];
+        };
+        final result =
+            batch ? await native.syncAll() : await native.syncWal(wal: (await native.getMissingWals()).first);
+        expect(result!.isPartial, isFalse);
+        expect(await bin().readAsBytes(), original);
+        expect(globalDeletedTimestamps, [ts]);
+      });
+
+      test('${batch ? 'syncAll' : 'syncWal'} failure publishes closed prefix before polling and awaits STOP', () async {
+        final stopEntered = Completer<void>();
+        final stopDone = Completer<bool>();
+        connection.onStop = () {
+          stopEntered.complete();
+          return stopDone.future;
+        };
+        receiver = (args) async {
+          await File(args[4]! as String).writeAsBytes(original.sublist(0, 4));
+          return gap(4, 8);
+        };
+        bool completed = false;
+        final pending = run(batch).then((_) => completed = true);
+        await stopEntered.future;
+        expect(completed, isFalse);
+        expect(native.isSyncing, isTrue);
+        expect(await native.syncAll(), isNull);
+        expect(requests, [0]);
+        stopDone.complete(true);
+        await pending;
+        final saved = (await WalFileManager.loadWals()).single;
+        expect(saved.walOffset, 4);
+        expect(saved.nativeIntegrityVersion, 1);
+        expect(saved.syncFailCount, 0);
+        expect(globalDeletedTimestamps, isEmpty);
+      });
+    }
+
+    for (final bookmark in [4, 8, 10, 12]) {
+      for (final batch in [false, true]) {
+        test('${batch ? 'syncAll' : 'syncWal'} legacy bookmark $bookmark re-fetches possibly padded bytes', () async {
+          final legacy = wal(offset: bookmark).toJson()..remove('nativeIntegrityVersion');
+          await seed(Wal.fromJson(legacy), [1, 2, 3, 4, 0, 0, 0, 0, 9, 10, 11, 12].sublist(0, bookmark));
+          receiver = (args) async {
+            expect(args[2], 0);
+            expect(await bin().length(), 0, reason: 'discard legacy prefix before trusting the new version');
+            await File(args[4]! as String).writeAsBytes(original);
+            return [null];
+          };
+          final result =
+              batch ? await native.syncAll() : await native.syncWal(wal: (await native.getMissingWals()).single);
+          expect(result!.isPartial, isFalse);
+          expect(await bin().readAsBytes(), original);
+          expect(globalDeletedTimestamps, [ts]);
+        });
+      }
+    }
+
+    test('failed STOP cannot mask integrity error at poison threshold', () async {
+      await seed(wal(offset: 4, version: 1, strikes: 4), original.sublist(0, 4));
+      receiver = (_) async => gap(4, 8);
+      connection.onStop = () async => throw StateError('STOP failed');
+      await run(true);
+      expect((await WalFileManager.loadWals()).single.syncFailCount, 4);
+      expect(globalDeletedTimestamps, isEmpty);
+    });
+
+    test('disconnect during failure cleanup keeps prefix for reconnect', () async {
+      receiver = (args) async {
+        await File(args[4]! as String).writeAsBytes(original.sublist(0, 4));
+        connection.connected = false;
+        return gap(4, 8);
+      };
+      await run(true);
+      expect((await WalFileManager.loadWals()).single.walOffset, 4);
+      expect(globalDeletedTimestamps, isEmpty);
+    });
+
+    test('cancellation during STOP preserves prefix without deletion', () async {
+      receiver = (args) async {
+        await File(args[4]! as String).writeAsBytes(original.sublist(0, 4));
+        return gap(4, 8);
+      };
+      connection.onStop = () async {
+        connection.onStop = null;
+        native.cancelSync();
+        return true;
+      };
+      await run(true);
+      expect((await WalFileManager.loadWals()).single.walOffset, 4);
+      expect(globalDeletedTimestamps, isEmpty);
+    });
+
+    test('native write rollback offset overrides a longer physical file', () async {
+      receiver = (args) async {
+        await File(args[4]! as String).writeAsBytes(original.sublist(0, 6));
+        return [
+          'storage-integrity',
+          'Storage write failed',
+          {'expectedOffset': 4}
+        ];
+      };
+      await run(true);
+      expect((await WalFileManager.loadWals()).single.walOffset, 4);
+      await reconnect();
+      receiver = (args) async {
+        expect(args[2], 4);
+        expect(await bin().length(), 4);
+        await File(args[4]! as String).writeAsBytes(original.sublist(4), mode: FileMode.append);
+        return [null];
+      };
+      expect((await native.syncAll())!.isPartial, isFalse);
+      expect(await bin().readAsBytes(), original);
+    });
+  });
+
   group('Framed BLE Protocol Dispatch', () {
     late MockDeviceConnection mockConn;
     late SDCardWalSyncImpl sync;
@@ -532,6 +756,45 @@ void main() {
       mockConn.add(eotPacket());
       await expectLater(syncFuture, completes);
     });
+
+    // Shared completion policy still accepts legitimate zero content. Integrity
+    // is established by offsets in the receiver, not by scanning payload bytes.
+    for (final batch in [false, true]) {
+      for (final sample in [
+        (name: 'correct', bytes: List<int>.generate(12, (i) => i + 1), complete: true),
+        (name: 'legitimate zero content', bytes: [1, 2, 3, 4, 0, 0, 0, 0, 9, 10, 11, 12], complete: true),
+        (name: 'missing tail', bytes: List<int>.generate(8, (i) => i + 1), complete: false),
+      ]) {
+        test('${batch ? 'syncAll' : 'syncWal'} completion policy: ${sample.name}', () async {
+          const ts = 1789000000;
+          final wal = Wal(
+            device: 'test',
+            fileNum: 0,
+            walOffset: 0,
+            storageTotalBytes: 12,
+            timerStart: ts,
+            storage: WalStorage.sdcard,
+          );
+          mockConn.files = [StorageFile(index: 0, timestamp: ts, size: 12)];
+          final run = batch ? sync.syncAll() : sync.syncWal(wal: wal);
+          await mockConn.waitForWrite(1).timeout(const Duration(seconds: 5));
+          mockConn.add(readAckPacket(0, ts));
+          mockConn.add(dataPacket(0, sample.bytes));
+          mockConn.add(eotPacket());
+          final response = await run;
+
+          final bin = File('${tempDir.path}/raw_segments/$ts/${ts}_0.bin');
+          expect(await bin.readAsBytes(), sample.bytes);
+          expect(response, isNotNull);
+          expect(response!.isPartial, !sample.complete);
+          expect(globalDeletedTimestamps, sample.complete ? [ts] : isEmpty);
+          if (!batch) {
+            expect(wal.walOffset, sample.bytes.length);
+            expect(wal.status, sample.complete ? WalStatus.synced : WalStatus.miss);
+          }
+        });
+      }
+    }
 
     test('a start ACK naming another file is ignored, and so is that file\'s stream', () async {
       // The firmware finished a slow setup for an EARLIER read after the app had moved on
