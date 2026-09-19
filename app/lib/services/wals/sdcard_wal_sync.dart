@@ -336,7 +336,19 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     for (final w in _wals) {
       byPath[w.relativeBinPath] = w;
     }
-    return byPath.values.where((w) => w.isIncompleteTransfer).map((w) => w.relativeBinPath).toSet();
+    return byPath.values
+        .where((w) {
+          // A pending legacy native prefix can contain padding even at full length.
+          // Protect it before a download reaches the migration gate: processing also
+          // runs after a failed listing, or with only persisted WALs and no device.
+          final needsMigration = _usesNativeDownload &&
+              w.storage == WalStorage.sdcard &&
+              w.status != WalStatus.synced &&
+              w.nativeIntegrityVersion != 1;
+          return w.isIncompleteTransfer || needsMigration;
+        })
+        .map((w) => w.relativeBinPath)
+        .toSet();
   }
 
   @override
@@ -487,35 +499,20 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         continue;
       }
 
-      // Match by timerStart (the file's Unix timestamp) rather than fileNum so that
-      // partial-resume bookmarks survive array-index shifts.
-      const int kMinValidEpochForMatch = 946684800;
-      final bool hasValidTimestamp = file.timestamp > kMinValidEpochForMatch;
-
-      final existing = hasValidTimestamp
-          ? _wals.firstWhereOrNull(
-              (w) => w.device == deviceId && w.timerStart == file.timestamp && w.storage == WalStorage.sdcard,
-            )
-          : _wals.firstWhereOrNull(
-              (w) =>
-                  w.device == deviceId &&
-                  w.sessionId == file.sessionId &&
-                  w.timerStart < kMinValidEpochForMatch &&
-                  w.storage == WalStorage.sdcard,
-            );
-
-      // Verify that if we found a match, the identity is actually the same.
-      // If the file on disk has a different timestamp than our saved bookmark,
-      // we must discard the bookmark because the SD card has been reset or rearranged.
-      bool isMatchValid = existing != null;
-      if (existing != null && hasValidTimestamp && existing.timerStart != file.timestamp) {
-        Logger.debug(
-            'SDCardWalSync: Discarding invalid bookmark for index ${file.index} (TS mismatch: ${existing.timerStart} vs ${file.timestamp})');
-        isMatchValid = false;
-      }
+      // Indices shift after deletion. Match the exact segment identity instead:
+      // one boot session can contain many distinct pre-UTC timestamps. Reusing
+      // another segment's integrity version would certify an unmigrated prefix.
+      final existing = _wals.firstWhereOrNull(
+        (w) =>
+            w.device == deviceId &&
+            w.timerStart == file.timestamp &&
+            w.sessionId == file.sessionId &&
+            w.storage == WalStorage.sdcard,
+      );
+      final isMatchValid = existing != null;
 
       final walOffset =
-          (isMatchValid && existing!.walOffset > 0 && existing.walOffset <= file.size) ? existing.walOffset : 0;
+          (isMatchValid && existing.walOffset > 0 && existing.walOffset <= file.size) ? existing.walOffset : 0;
 
       // A file we already received IN FULL that the device is STILL listing is one whose
       // CMD_DELETE_FILE did not take (rejected, timed out, or the ACK was lost). Carry the
@@ -533,7 +530,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       // so it stays `miss`. walOffset is 0 unless it carried over, so the `> 0` term also
       // leaves a 0-byte file as `miss`; re-reading one is free and duplicates nothing.
       final bool alreadyComplete =
-          isMatchValid && existing!.status == WalStatus.synced && walOffset > 0 && file.size <= walOffset;
+          isMatchValid && existing.status == WalStatus.synced && walOffset > 0 && file.size <= walOffset;
 
       // Trust the raw firmware timestamp. Never "invent" a UTC time here;
       // pre-sync files stay low (e.g. 1010) so the protocol remains honest.
@@ -549,7 +546,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         storage: WalStorage.sdcard,
         status: alreadyComplete ? WalStatus.synced : WalStatus.miss,
       );
-      if (isMatchValid && existing!.isSyncing) {
+      if (isMatchValid && existing.isSyncing) {
         wal.isSyncing = true;
         wal.syncStartedAt = existing.syncStartedAt;
       }
@@ -557,7 +554,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       // keeps reading short is eventually recognised as poison (see the completeness
       // guard in _syncAllLocked). Only meaningful when the identity actually matches.
       if (isMatchValid) {
-        wal.syncFailCount = existing!.syncFailCount;
+        wal.syncFailCount = existing.syncFailCount;
         wal.nativeIntegrityVersion = existing.nativeIntegrityVersion;
       }
       wals.add(wal);
@@ -595,7 +592,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     // and pre-time-sync segments key timerStart on uptime seconds, which restart at 0
     // every boot — so two bins recorded before the clock was ever set, in different
     // boots, can share an id while being different files (they differ by sessionId,
-    // which is why _buildWalsFromFilesLocked matches those on sessionId and
+    // which is why _buildWalsFromFilesLocked also matches sessionId and
     // incompleteBinRelPaths keys on relativeBinPath). Removing by id here evicts the
     // colliding sibling too, losing its resume offset and strike count: it is rebuilt
     // as `miss` at offset 0 and re-downloaded in full. relativeBinPath carries the

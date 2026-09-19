@@ -67,6 +67,17 @@ old prefix may already contain padding. Version 1 is set only after discarding
 the legacy prefix and follows the offset through WAL persistence and listing
 rebuilds. No scan for zeros is used: zeros can be legitimate content.
 
+Listing rebuilds reuse bookmarks only for the same device, timestamp and session
+ID, independent of a shifted file index. A boot session can contain multiple
+pre-clock-sync segments; one segment's integrity version cannot certify another.
+
+Pending, untrusted native SD-card bins are protected from ordinary processing and
+all source pruning even when their saved offsets equal their advertised lengths.
+This protection also applies before a successful listing or device attachment,
+using persisted WAL state. A failed sync must not expose the old bytes to
+processing before migration runs. Already-synced legacy files retain their
+existing exemption; local files and the desktop stream path are unchanged.
+
 Versioned prefixes retain normal resume reconciliation: bytes beyond the saved
 bookmark are truncated, and a missing/shorter file rewinds the bookmark. Ordinary
 disconnects still use conservative polled progress and may re-fetch valid bytes.
@@ -109,6 +120,12 @@ with mocked native replies, plus shared desktop-receiver completeness controls.
 They cover both sync entry points, repeated gaps beyond the poison threshold,
 reload/reconnect, STOP ordering/failure, cancellation, migration and correct
 resume before mocked deletion. Kotlin and Dart run as separate test boundaries.
+Migration regressions also cover distinct pre-UTC segments from the same boot,
+session collisions and shifted indices, plus processing protection after a
+failed listing or without a device. The disconnect regression observes an
+unanswered listing while disconnected, reloads the saved WAL after reconnect,
+and verifies byte-correct offset resume before deletion. Its connection lifecycle
+is mocked, not an Android BLE reconnect test.
 
 **Physical-device/hardware validation has not been performed.** These checks do
 not validate real BLE delivery, Android instrumentation, SD reclamation under
