@@ -1585,14 +1585,14 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         wal.isSyncing = false;
         listener.onWalUpdated();
         // Persist the partial offset so the next session resumes from where we stopped.
-        WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
+        final partialSave = WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
         anyPartial = true;
 
         // A gap is a transport failure, never evidence of an unreadable file.
         // Keep the head in place and defer to the next cycle (after STOP above),
         // including repeated failures beyond the poison-file threshold.
         if (_isStorageIntegrityError(e)) {
-          await WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
+          await partialSave;
           break;
         }
 

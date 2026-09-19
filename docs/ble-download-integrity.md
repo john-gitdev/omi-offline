@@ -104,8 +104,9 @@ not establish power-loss durability. The session monitor may delay completion
 while a disk write is blocked. WAL-save failures remain best-effort under the
 existing persistence conventions.
 
-Migration applies to the existing native-download branch, including iOS; the
-receiver implementation and native validation in this change are Android-specific.
+The supported receiver and migration path are Android-only. iOS is no longer
+built or supported; the retained iOS platform selector does not establish a
+working receiver or stream fallback.
 
 ## Validation boundaries
 
