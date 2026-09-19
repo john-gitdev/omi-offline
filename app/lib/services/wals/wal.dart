@@ -26,6 +26,9 @@ class Wal {
   // device-side file, and to eventually give up on a genuinely unreadable ("poison")
   // file so it doesn't block the head-of-line forever. Reset to 0 on a full transfer.
   int syncFailCount;
+  // 0 includes legacy native prefixes that may contain synthesized gap bytes.
+  // 1 is written only after starting a fresh contiguous native download.
+  int nativeIntegrityVersion;
   DateTime? syncStartedAt;
 
   Wal({
@@ -39,6 +42,7 @@ class Wal {
     this.status = WalStatus.miss,
     this.isSyncing = false,
     this.syncFailCount = 0,
+    this.nativeIntegrityVersion = 0,
   });
 
   // id is stable: keyed on timerStart (the file's Unix timestamp from firmware) so it
@@ -89,6 +93,7 @@ class Wal {
       'storage': storage.name,
       'status': status.name,
       'syncFailCount': syncFailCount,
+      'nativeIntegrityVersion': nativeIntegrityVersion,
     };
   }
 
@@ -107,6 +112,7 @@ class Wal {
       storage: WalStorage.values.firstWhere((e) => e.name == json['storage'], orElse: () => WalStorage.local),
       status: WalStatus.values.firstWhere((e) => e.name == json['status'], orElse: () => WalStatus.miss),
       syncFailCount: json['syncFailCount'] ?? 0,
+      nativeIntegrityVersion: json['nativeIntegrityVersion'] ?? 0,
     );
   }
 }

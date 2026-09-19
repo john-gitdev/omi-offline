@@ -98,6 +98,7 @@ void main() {
         'storage': 'sdcard',
         'status': 'synced',
         'syncFailCount': 0,
+        'nativeIntegrityVersion': 0,
       });
     });
 
@@ -112,6 +113,7 @@ void main() {
         'storage': 'sdcard',
         'status': 'synced',
         'syncFailCount': 3,
+        'nativeIntegrityVersion': 1,
       };
 
       final wal = Wal.fromJson(json);
@@ -125,6 +127,8 @@ void main() {
       expect(wal.storage, WalStorage.sdcard);
       expect(wal.status, WalStatus.synced);
       expect(wal.syncFailCount, 3);
+      expect(wal.nativeIntegrityVersion, 1);
+      expect(Wal.fromJson(wal.toJson()).nativeIntegrityVersion, 1);
     });
 
     test('fromJson handles missing fields with defaults', () {
@@ -141,6 +145,7 @@ void main() {
       expect(wal.storage, WalStorage.local);
       expect(wal.status, WalStatus.miss);
       expect(wal.syncFailCount, 0);
+      expect(wal.nativeIntegrityVersion, 0);
     });
 
     test('fromJsonList maps a list of JSON to Wals', () {

@@ -7,6 +7,7 @@ import 'package:omi/gen/pigeon_communicator.g.dart';
 
 import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/wal_file_manager.dart';
 
@@ -153,14 +154,20 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     Future<DeviceConnection?> Function(String deviceId)? connectionProvider,
     Duration inactivityTimeout = const Duration(seconds: 15),
     @visibleForTesting bool? reconcileResumeOffsets,
+    @visibleForTesting bool? useNativeDownload,
   })  : _connectionProvider = connectionProvider,
         _inactivityTimeout = inactivityTimeout,
-        _reconcileResumeOverride = reconcileResumeOffsets;
+        _reconcileResumeOverride = reconcileResumeOffsets,
+        _nativeDownloadOverride = useNativeDownload;
 
   /// Whether the native whole-file downloader handles transfers on this platform.
   /// Single source of truth: it picks the download path AND decides whether
   /// walOffset may be reconciled against the bin on disk, so the two can't drift.
   static bool get _platformUsesNativeDownload => Platform.isAndroid || Platform.isIOS;
+  final bool? _nativeDownloadOverride;
+  bool get _usesNativeDownload => _nativeDownloadOverride ?? _platformUsesNativeDownload;
+
+  bool _isStorageIntegrityError(Object e) => e is PlatformException && e.code == 'storage-integrity';
 
   /// Test-only override for [_shouldReconcileResume]. Tests run on the host VM,
   /// which is never Android/iOS, so without this the reconciliation — which only
@@ -177,7 +184,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   /// replay the gapped bytes and let the bin reach exactly its advertised length
   /// while still holding a hole, turning a *detected* incomplete transfer into a
   /// *silent* corruption — the very failure this reconciliation exists to prevent.
-  bool get _shouldReconcileResume => _reconcileResumeOverride ?? _platformUsesNativeDownload;
+  bool get _shouldReconcileResume => _reconcileResumeOverride ?? _usesNativeDownload;
 
   @override
   void cancelSync() {
@@ -329,7 +336,19 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     for (final w in _wals) {
       byPath[w.relativeBinPath] = w;
     }
-    return byPath.values.where((w) => w.isIncompleteTransfer).map((w) => w.relativeBinPath).toSet();
+    return byPath.values
+        .where((w) {
+          // A pending legacy native prefix can contain padding even at full length.
+          // Protect it before a download reaches the migration gate: processing also
+          // runs after a failed listing, or with only persisted WALs and no device.
+          final needsMigration = _usesNativeDownload &&
+              w.storage == WalStorage.sdcard &&
+              w.status != WalStatus.synced &&
+              w.nativeIntegrityVersion != 1;
+          return w.isIncompleteTransfer || needsMigration;
+        })
+        .map((w) => w.relativeBinPath)
+        .toSet();
   }
 
   @override
@@ -480,35 +499,20 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         continue;
       }
 
-      // Match by timerStart (the file's Unix timestamp) rather than fileNum so that
-      // partial-resume bookmarks survive array-index shifts.
-      const int kMinValidEpochForMatch = 946684800;
-      final bool hasValidTimestamp = file.timestamp > kMinValidEpochForMatch;
-
-      final existing = hasValidTimestamp
-          ? _wals.firstWhereOrNull(
-              (w) => w.device == deviceId && w.timerStart == file.timestamp && w.storage == WalStorage.sdcard,
-            )
-          : _wals.firstWhereOrNull(
-              (w) =>
-                  w.device == deviceId &&
-                  w.sessionId == file.sessionId &&
-                  w.timerStart < kMinValidEpochForMatch &&
-                  w.storage == WalStorage.sdcard,
-            );
-
-      // Verify that if we found a match, the identity is actually the same.
-      // If the file on disk has a different timestamp than our saved bookmark,
-      // we must discard the bookmark because the SD card has been reset or rearranged.
-      bool isMatchValid = existing != null;
-      if (existing != null && hasValidTimestamp && existing.timerStart != file.timestamp) {
-        Logger.debug(
-            'SDCardWalSync: Discarding invalid bookmark for index ${file.index} (TS mismatch: ${existing.timerStart} vs ${file.timestamp})');
-        isMatchValid = false;
-      }
+      // Indices shift after deletion. Match the exact segment identity instead:
+      // one boot session can contain many distinct pre-UTC timestamps. Reusing
+      // another segment's integrity version would certify an unmigrated prefix.
+      final existing = _wals.firstWhereOrNull(
+        (w) =>
+            w.device == deviceId &&
+            w.timerStart == file.timestamp &&
+            w.sessionId == file.sessionId &&
+            w.storage == WalStorage.sdcard,
+      );
+      final isMatchValid = existing != null;
 
       final walOffset =
-          (isMatchValid && existing!.walOffset > 0 && existing.walOffset <= file.size) ? existing.walOffset : 0;
+          (isMatchValid && existing.walOffset > 0 && existing.walOffset <= file.size) ? existing.walOffset : 0;
 
       // A file we already received IN FULL that the device is STILL listing is one whose
       // CMD_DELETE_FILE did not take (rejected, timed out, or the ACK was lost). Carry the
@@ -526,7 +530,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       // so it stays `miss`. walOffset is 0 unless it carried over, so the `> 0` term also
       // leaves a 0-byte file as `miss`; re-reading one is free and duplicates nothing.
       final bool alreadyComplete =
-          isMatchValid && existing!.status == WalStatus.synced && walOffset > 0 && file.size <= walOffset;
+          isMatchValid && existing.status == WalStatus.synced && walOffset > 0 && file.size <= walOffset;
 
       // Trust the raw firmware timestamp. Never "invent" a UTC time here;
       // pre-sync files stay low (e.g. 1010) so the protocol remains honest.
@@ -542,7 +546,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         storage: WalStorage.sdcard,
         status: alreadyComplete ? WalStatus.synced : WalStatus.miss,
       );
-      if (isMatchValid && existing!.isSyncing) {
+      if (isMatchValid && existing.isSyncing) {
         wal.isSyncing = true;
         wal.syncStartedAt = existing.syncStartedAt;
       }
@@ -550,7 +554,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       // keeps reading short is eventually recognised as poison (see the completeness
       // guard in _syncAllLocked). Only meaningful when the identity actually matches.
       if (isMatchValid) {
-        wal.syncFailCount = existing!.syncFailCount;
+        wal.syncFailCount = existing.syncFailCount;
+        wal.nativeIntegrityVersion = existing.nativeIntegrityVersion;
       }
       wals.add(wal);
     }
@@ -587,7 +592,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     // and pre-time-sync segments key timerStart on uptime seconds, which restart at 0
     // every boot — so two bins recorded before the clock was ever set, in different
     // boots, can share an id while being different files (they differ by sessionId,
-    // which is why _buildWalsFromFilesLocked matches those on sessionId and
+    // which is why _buildWalsFromFilesLocked also matches sessionId and
     // incompleteBinRelPaths keys on relativeBinPath). Removing by id here evicts the
     // colliding sibling too, losing its resume offset and strike count: it is rebuilt
     // as `miss` at offset 0 and re-downloaded in full. relativeBinPath carries the
@@ -727,6 +732,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   /// snapshot honest, and also sizes the disk-space reservation for what will
   /// really be fetched. No-op when nothing was downloaded yet.
   Future<void> _reconcileWalOffsetToDisk(Wal wal) async {
+    if (_usesNativeDownload && wal.nativeIntegrityVersion != 1) {
+      // A legacy pending prefix can have the right length and still contain holes.
+      // Re-fetch it once. The version is set only AFTER truncation in the reader.
+      wal.walOffset = 0;
+      return;
+    }
     if (!_shouldReconcileResume) return; // stream path: walOffset is a logical offset
     if (wal.walOffset <= 0) return;
     try {
@@ -746,7 +757,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     // Native whole-file download (writes straight to disk, no per-packet Dart hop).
     // Android and iOS both implement BleHostApi.downloadStorageFile; other platforms
     // fall through to the Dart notification-stream path below.
-    if (_platformUsesNativeDownload) {
+    if (_usesNativeDownload) {
       return await _readStorageBytesToFileLockedNative(connection, wal, callback,
           onProgress: onProgress, overrideFileNum: overrideFileNum);
     }
@@ -1019,6 +1030,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     final outputPath = '$folderPath/${timerStart}_${wal.sessionId ?? 0}.bin';
     final outputFile = File(outputPath);
 
+    if (wal.nativeIntegrityVersion != 1) {
+      await outputFile.writeAsBytes(const <int>[], flush: true);
+      offset = 0;
+      wal.walOffset = 0;
+      wal.nativeIntegrityVersion = 1;
+    }
+
     // Truncate-on-resume: same guard as the stream path.
     if (offset > 0) {
       offset = await _reconcileResumeOffset(outputFile, offset, wal);
@@ -1032,6 +1050,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     final hostApi = BleHostApi();
     Timer? pollTimer;
     int lastPolledSize = offset;
+    bool integrityFailed = false;
 
     pollTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (_isCancelled) {
@@ -1058,10 +1077,33 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         timerStart,
         outputPath,
       );
+    } on PlatformException catch (e) {
+      if (_isStorageIntegrityError(e)) {
+        integrityFailed = true;
+        // Native has closed the writer. Its accepted offset also excludes a
+        // partially failed write; polling/physical length alone cannot do that.
+        final details = e.details;
+        final expected = details is Map ? details['expectedOffset'] : null;
+        int safeOffset = 0;
+        try {
+          final size = await outputFile.length();
+          if (expected is int && expected >= 0) safeOffset = expected < size ? expected : size;
+        } catch (_) {}
+        _lastSegmentBoundaryOffset = safeOffset;
+        onProgress?.call(safeOffset);
+      }
+      rethrow;
     } finally {
       _activeDownloadPath = null;
       pollTimer.cancel();
-      await connection.stopStorageSync();
+      // Do not let a failed STOP replace the typed integrity error and charge
+      // the file's poison budget. No new read is started in this sync cycle.
+      try {
+        await connection.stopStorageSync();
+      } catch (e) {
+        if (!integrityFailed) rethrow;
+        Logger.warning('SDCardWalSync: STOP after native transfer failed: $e');
+      }
     }
 
     final finalSize = outputFile.existsSync() ? await outputFile.length() : offset;
@@ -1543,8 +1585,16 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         wal.isSyncing = false;
         listener.onWalUpdated();
         // Persist the partial offset so the next session resumes from where we stopped.
-        WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
+        final partialSave = WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
         anyPartial = true;
+
+        // A gap is a transport failure, never evidence of an unreadable file.
+        // Keep the head in place and defer to the next cycle (after STOP above),
+        // including repeated failures beyond the poison-file threshold.
+        if (_isStorageIntegrityError(e)) {
+          await partialSave;
+          break;
+        }
 
         if (_isCancelled) break;
 
@@ -1704,6 +1754,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     Wal wal, {
     IWalSyncProgressListener? progress,
   }) async {
+    // getMissingWals returns rebuilt objects. Persist THIS attempt's prefix and
+    // integrity version, including when the caller supplied a detached WAL.
+    _wals.removeWhere((w) => w.device == wal.device && w.relativeBinPath == wal.relativeBinPath);
+    _wals.add(wal);
     wal.isSyncing = true;
     wal.syncStartedAt = DateTime.now();
     listener.onWalUpdated();
@@ -1822,6 +1876,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       wal.isSyncing = false;
       wal.status = WalStatus.miss;
       listener.onWalUpdated();
+      await WalFileManager.saveWals(_wals, deviceId: wal.device).catchError((_) => Future.value(false));
       rethrow;
     }
 

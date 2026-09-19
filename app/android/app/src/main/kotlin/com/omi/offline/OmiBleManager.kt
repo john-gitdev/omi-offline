@@ -26,13 +26,6 @@ class OmiBleManager private constructor(private val application: Application) {
         private const val BOND_TIMEOUT_MS = 15000L
         private const val DISCOVERY_TIMEOUT_MS = 15000L
 
-        // Upper bound on a single storage-download protocol gap we will zero-pad.
-        // A legitimate gap is the span of BLE notifications dropped within one
-        // (<=5-min) bin transfer — at most a few MB. A larger value means a bad /
-        // desynced offset (firmware fault or corruption), so we fail the transfer
-        // (resume re-fetches) instead of allocating a giant zero buffer.
-        private const val MAX_PROTOCOL_GAP_BYTES = 8 * 1024 * 1024L
-
         @Volatile
         private var _instance: OmiBleManager? = null
 
@@ -1056,7 +1049,6 @@ class OmiBleManager private constructor(private val application: Application) {
                 gatt.writeCharacteristic(characteristic)
             }
             if (!success) {
-                activeDownloads.remove(addr)
                 session.complete(Result.failure(Exception("Could not start SD card read")))
             }
             if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) completeCommand()
@@ -1099,7 +1091,6 @@ class OmiBleManager private constructor(private val application: Application) {
         // Keep the "Transfer stalled" prefix: syncAll's retry loop matches on it
         // (sdcard_wal_sync.dart) to retry the file in place rather than fail the sync.
         private val timeoutRunnable = Runnable {
-            activeDownloads.remove(address)
             complete(Result.failure(Exception("Transfer stalled: ${timeoutMs() / 1000}s inactivity timeout")))
         }
 
@@ -1138,6 +1129,7 @@ class OmiBleManager private constructor(private val application: Application) {
             rearmTimeout()
         }
 
+        @Synchronized
         fun onPacket(value: ByteArray) {
             if (completed.get() || value.isEmpty()) return
 
@@ -1168,7 +1160,6 @@ class OmiBleManager private constructor(private val application: Application) {
                         val code = value[1].toInt() and 0xFF
                         if (code == 0) hasReceivedStartAck = true
                         else {
-                            activeDownloads.remove(address)
                             complete(Result.failure(Exception("Error ACK: $code")))
                         }
                     }
@@ -1186,34 +1177,22 @@ class OmiBleManager private constructor(private val application: Application) {
                     val payload = value.copyOfRange(5, value.size)
                     when {
                         incoming > expectedOffset -> {
-                            val gapLong = incoming - expectedOffset
-                            if (gapLong > MAX_PROTOCOL_GAP_BYTES) {
-                                // Implausible gap — treat as a desynced/corrupt offset and fail
-                                // rather than allocating up to ~4 GB of zeros. Resume re-fetches.
-                                activeDownloads.remove(address)
-                                complete(Result.failure(Exception("Protocol gap too large: incoming=$incoming expected=$expectedOffset gap=$gapLong")))
-                                return
-                            }
-                            val gap = gapLong.toInt()
-                            Log.w(TAG, "Protocol gap: incoming=$incoming expected=$expectedOffset. Padding with $gap zeros.")
-                            val zeros = ByteArray(gap)
-                            try { fos.write(zeros) } catch (e: Exception) { activeDownloads.remove(address); complete(Result.failure(e)); return }
-                            expectedOffset += gap
-
-                            try { fos.write(payload) } catch (e: Exception) { activeDownloads.remove(address); complete(Result.failure(e)) }
-                            expectedOffset += payload.size
+                            // Length must represent received, contiguous bytes. Never invent
+                            // coverage: Dart retains this prefix and retries on the next sync.
+                            complete(Result.failure(FlutterError(
+                                "storage-integrity",
+                                "Non-contiguous storage DATA: incoming=$incoming expected=$expectedOffset",
+                                mapOf("expectedOffset" to expectedOffset, "incomingOffset" to incoming)
+                            )))
                         }
                         incoming < expectedOffset -> {
-                            val skip = (expectedOffset - incoming).toInt()
+                            val skip = expectedOffset - incoming
                             if (skip < payload.size) {
-                                val tail = payload.copyOfRange(skip, payload.size)
-                                try { fos.write(tail) } catch (e: Exception) { activeDownloads.remove(address); complete(Result.failure(e)) }
-                                expectedOffset += tail.size
+                                appendPayload(payload.copyOfRange(skip.toInt(), payload.size))
                             }
                         }
                         else -> {
-                            try { fos.write(payload) } catch (e: Exception) { activeDownloads.remove(address); complete(Result.failure(e)) }
-                            expectedOffset += payload.size
+                            appendPayload(payload)
                         }
                     }
                 }
@@ -1228,8 +1207,7 @@ class OmiBleManager private constructor(private val application: Application) {
                         Log.w(TAG, "EOT before start ACK — stale, from an earlier transfer; ignored")
                         return
                     }
-                    activeDownloads.remove(address)
-                    // Flush, then finish through complete() like every other exit. This
+                    // Close through complete() like every other exit. This
                     // branch used to inline its own teardown — same CAS, same callback —
                     // which made complete() the funnel for FAILURES only, and left the
                     // successful transfer (the common case) skipping whatever complete()
@@ -1237,24 +1215,45 @@ class OmiBleManager private constructor(private val application: Application) {
                     // being harmless when priority restoration moved there, since the link
                     // would then stay at CONNECTION_PRIORITY_HIGH after every successful
                     // download and never return to the idle interval.
-                    try { fos.flush() } catch (_: Exception) {}
                     complete(Result.success(Unit))
                 }
             }
         }
 
+        private fun appendPayload(payload: ByteArray) {
+            try {
+                fos.write(payload)
+                expectedOffset += payload.size
+            } catch (e: Exception) {
+                // A failed write may have written some bytes. Keep only the last
+                // fully accepted packet; if rollback fails, require a fresh read.
+                try { fos.channel.truncate(expectedOffset) } catch (_: Exception) { expectedOffset = 0 }
+                complete(Result.failure(FlutterError(
+                    "storage-integrity", "Storage write failed: $e",
+                    mapOf("expectedOffset" to expectedOffset)
+                )))
+            }
+        }
+
+        // Binder DATA, main-thread timeout and disconnect must not close the stream
+        // or publish a result while a packet is being written.
+        @Synchronized
         fun complete(result: Result<Unit>) {
             if (!completed.compareAndSet(false, true)) return
+            activeDownloads.remove(address, this)
             mainHandler.removeCallbacks(timeoutRunnable)
-            try { fos.close() } catch (_: Exception) {}
+            var finalResult = result
+            try { fos.close() } catch (e: Exception) {
+                finalResult = Result.failure(FlutterError(
+                    "storage-integrity", "Storage close failed: $e",
+                    mapOf("expectedOffset" to 0L)
+                ))
+            }
             // The single funnel every session ends through, success or failure, guarded by
-            // the CAS above so it runs exactly once. Callers remove themselves from
-            // activeDownloads before completing, so this re-read sees the transfer gone and
-            // drops back to LOW_POWER. Deliberately not removing the entry here: a later
-            // session for the same address may already have replaced it, and evicting that
-            // would strand a live transfer at idle parameters.
+            // the CAS above so it runs exactly once. Conditional removal above cannot
+            // evict a replacement session for this address.
             applyConnectionPriority(address)
-            mainHandler.post { callback(result) }
+            mainHandler.post { callback(finalResult) }
         }
     }
 }
