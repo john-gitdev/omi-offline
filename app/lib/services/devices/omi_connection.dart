@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_connection.dart';
+import 'package:omi/services/devices/errors.dart';
 import 'package:omi/services/devices/device_crash_log.dart';
 import 'package:omi/services/devices/device_drop_stats.dart';
 import 'package:omi/services/devices/diag_log_record.dart';
@@ -907,8 +908,8 @@ class OmiDeviceConnection extends DeviceConnection {
     }
 
     try {
-      final stream =
-          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final stream = await transport.refreshCharacteristicStream(
+          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
       int? expectedTotalBytes;
 
       _listFilesSub = stream.listen((blePacket) {
@@ -1126,22 +1127,32 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<bool> performRotateFile() async {
+    bool commandAttempted = false;
     try {
       final completer = Completer<bool>();
-      final stream =
-          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final stream = await transport.refreshCharacteristicStream(
+          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
       final sub = stream.listen((data) {
-        if (!completer.isCompleted && data.length >= 2 && data[0] == 0x03) completer.complete(data[1] == 0);
+        if (commandAttempted && !completer.isCompleted && data.length >= 2 && data[0] == 0x03) {
+          completer.complete(data[1] == 0);
+        }
+      }, onDone: () {
+        if (!completer.isCompleted) completer.completeError(StateError('Disconnected before rotation confirmation'));
       });
-      await Future.delayed(_cccdCommandDelay);
-      await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x13]);
+      // Attach an error observer before the write/delay can yield to disconnect.
+      unawaited(completer.future.then<void>((_) {}, onError: (Object _) {}));
       try {
+        await Future.delayed(_cccdCommandDelay);
+        if (completer.isCompleted) return await completer.future;
+        commandAttempted = true;
+        await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x13]);
         return await completer.future.timeout(const Duration(seconds: 25));
       } finally {
         await sub.cancel();
       }
     } catch (e, stack) {
       Logger.error('performRotateFile error: $e\n$stack');
+      if (commandAttempted) throw StorageRotationUnconfirmedException(e);
       return false;
     }
   }

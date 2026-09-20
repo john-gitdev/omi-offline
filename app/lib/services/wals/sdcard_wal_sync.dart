@@ -1281,6 +1281,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     // offsets) is better than an empty one we have no evidence for.
     if (listed == null) {
       Logger.warning('SDCardWalSync: sync did not run — the device did not answer CMD_LIST_FILES');
+      _recoverStorageReplies();
       return null;
     }
     _wals = listed.wals;
@@ -1641,7 +1642,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             errStr.contains('Future not completed') ||
             errStr.contains('Stream closed without EOT') ||
             errStr.contains('Not found') ||
-            errStr.contains('Characteristic not available');
+            errStr.contains('Characteristic not available') ||
+            errStr.contains('notification-subscription');
         if (definiteTransportError) {
           // _connectionProvider != null only in tests, which have no real DeviceService.
           if (_connectionProvider == null) {
@@ -1905,6 +1907,15 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     return _claimFullSync(_rotateAndSyncInner(progress: progress));
   }
 
+  void _recoverStorageReplies() {
+    if (_isCancelled || _connectionProvider != null) return;
+    Logger.warning('SDCardWalSync: storage reply channel failed — recycling the managed connection');
+    unawaited(ServiceManager.instance().device.recycleConnection().catchError((Object e) {
+      Logger.warning('SDCardWalSync: connection recovery failed: $e');
+      return false;
+    }));
+  }
+
   Future<SyncLocalFilesResponse?> _rotateAndSyncInner({
     IWalSyncProgressListener? progress,
   }) async {
@@ -1939,7 +1950,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       bool rotated = false;
       for (int i = 0; i < 3; i++) {
         if (_isCancelled) return null;
-        rotated = await connection.rotateFile();
+        try {
+          rotated = await connection.rotateFile();
+        } on StorageRotationUnconfirmedException catch (e) {
+          Logger.warning('SDCardWalSync: $e — preserving drafts and deferring reconciliation; not rotating again');
+          _recoverStorageReplies();
+          return SyncLocalFilesResponse(newConversationIds: [], updatedConversationIds: [], isPartial: true);
+        }
         if (rotated) break;
         Logger.warning('Rotation failed, retrying in 2 seconds...');
         await Future.delayed(const Duration(seconds: 2));
@@ -1953,6 +1970,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       if (_isCancelled) return null;
 
       if (wals == null) {
+        _recoverStorageReplies();
         // The rotate DID land — the active bin is sealed and a fresh one started —
         // so this run reached the device whatever the listing then did. Returning
         // null would say the opposite: _runForcePipeline reads it as "nothing was

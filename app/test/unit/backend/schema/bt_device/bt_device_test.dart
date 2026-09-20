@@ -5,7 +5,7 @@ import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/devices/transports/device_transport.dart';
 
-class MockDeviceTransport implements DeviceTransport {
+class MockDeviceTransport extends DeviceTransport {
   @override
   Stream<DeviceTransportState> get connectionStateStream => const Stream.empty();
 

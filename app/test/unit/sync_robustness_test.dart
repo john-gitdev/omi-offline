@@ -253,8 +253,14 @@ class MockDeviceConnection implements DeviceConnection {
   Future<void> requestBond() async {}
   @override
   Future<void> unpair() async {}
+  int rotationCalls = 0;
+  bool rotationUnconfirmed = false;
   @override
-  Future<bool> rotateFile() async => true;
+  Future<bool> rotateFile() async {
+    rotationCalls++;
+    if (rotationUnconfirmed) throw StorageRotationUnconfirmedException(TimeoutException('ACK missing'));
+    return true;
+  }
   @override
   Future<int> getFeatures() async => 0;
   @override
@@ -1871,6 +1877,19 @@ void main() {
       expect(result, isNotNull, reason: 'the rotate landed — this run reached the device');
       expect(result!.isPartial, isTrue,
           reason: 'nothing was fetched, so the caller must drop force mode and keep its drafts');
+    });
+
+    test('unknown rotation outcome is partial without issuing a second rotation or deleting source', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      mockConn.rotationUnconfirmed = true;
+      globalDeletedTimestamps = [];
+      final result = await sync.rotateAndSync();
+      expect(result, isNotNull);
+      expect(result!.isPartial, isTrue, reason: 'preserve draft tails and the force-sync cooldown');
+      expect(mockConn.rotationCalls, 1);
+      expect(globalDeletedTimestamps, isEmpty);
+      expect(sync.isSyncing, isFalse);
+      expect(mockConn.isStorageBusy, isFalse);
     });
 
     // Entering in the same microtask is the case that used to run two download

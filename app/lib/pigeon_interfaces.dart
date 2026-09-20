@@ -78,6 +78,7 @@ abstract class BleHostApi {
   @SwiftFunction('writeCharacteristic(peripheralUuid:serviceUuid:characteristicUuid:data:)')
   void writeCharacteristic(String peripheralUuid, String serviceUuid, String characteristicUuid, Uint8List data);
 
+  @async
   @SwiftFunction('subscribeCharacteristic(peripheralUuid:serviceUuid:characteristicUuid:)')
   void subscribeCharacteristic(String peripheralUuid, String serviceUuid, String characteristicUuid);
 

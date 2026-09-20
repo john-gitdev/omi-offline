@@ -60,6 +60,9 @@ class NativeBleTransport extends DeviceTransport {
 
   /// Characteristic notification streams, keyed by "serviceUuid:charUuid" (lowercased).
   final Map<String, StreamController<List<int>>> _streamControllers = {};
+  final Map<String, Future<void>> _notificationSubscriptions = {};
+  final Set<String> _confirmedNotificationKeys = {};
+  int _notificationGeneration = 0;
 
   /// Discovered services from native.
   List<BleService> _services = [];
@@ -249,28 +252,44 @@ class NativeBleTransport extends DeviceTransport {
   @override
   Future<Stream<List<int>>> getCharacteristicStream(String serviceUuid, String characteristicUuid) async {
     final key = '${serviceUuid.toLowerCase()}:${characteristicUuid.toLowerCase()}';
-
-    if (!_streamControllers.containsKey(key)) {
-      _streamControllers[key] = StreamController<List<int>>.broadcast();
-      if (_hasCharacteristic(serviceUuid, characteristicUuid)) {
-        _subscribeCharacteristic(serviceUuid, characteristicUuid);
-      }
+    if (_state != DeviceTransportState.connected || !_hasCharacteristic(serviceUuid, characteristicUuid)) {
+      throw StateError('Characteristic not available: $characteristicUuid');
     }
-
-    return _streamControllers[key]!.stream;
+    final generation = _notificationGeneration;
+    final controller = _streamControllers.putIfAbsent(key, () => StreamController<List<int>>.broadcast());
+    final pending = _notificationSubscriptions.putIfAbsent(
+      key,
+      () => _hostApi.subscribeCharacteristic(_peripheralUuid, serviceUuid, characteristicUuid).timeout(_gattOpTimeout),
+    );
+    try {
+      await pending;
+      if (generation != _notificationGeneration || !identical(_streamControllers[key], controller)) {
+        throw StateError('Disconnected while enabling notifications');
+      }
+      if (_confirmedNotificationKeys.add(key)) {
+        Logger.debug('[NativeBleTransport] Notifications ready: $key generation=$generation');
+      }
+      return controller.stream;
+    } catch (e) {
+      if (identical(_notificationSubscriptions[key], pending)) _notificationSubscriptions.remove(key);
+      Logger.warning('[NativeBleTransport] Notification setup failed: $key generation=$generation: $e');
+      rethrow;
+    }
   }
 
-  void _subscribeCharacteristic(String serviceUuid, String characteristicUuid) {
-    try {
-      _hostApi.subscribeCharacteristic(_peripheralUuid, serviceUuid, characteristicUuid);
-    } catch (e) {
-      Logger.debug('[NativeBleTransport] Failed to subscribe $serviceUuid:$characteristicUuid: $e');
-    }
+  @override
+  Future<Stream<List<int>>> refreshCharacteristicStream(String serviceUuid, String characteristicUuid) {
+    final key = '${serviceUuid.toLowerCase()}:${characteristicUuid.toLowerCase()}';
+    // Join an in-flight restore; only completed subscriptions need revalidation.
+    if (_confirmedNotificationKeys.remove(key)) _notificationSubscriptions.remove(key);
+    return getCharacteristicStream(serviceUuid, characteristicUuid);
   }
 
   @override
   Future<void> unsubscribeCharacteristic(String serviceUuid, String characteristicUuid) async {
     final key = '${serviceUuid.toLowerCase()}:${characteristicUuid.toLowerCase()}';
+    _confirmedNotificationKeys.remove(key);
+    _notificationSubscriptions.remove(key);
     // Drop the controller first so a later getCharacteristicStream re-creates it
     // and re-issues the CCCD write. Closing it fires onDone on any live listener.
     // Also forget the key so an auto-reconnect (_resubscribeAfterReconnect) doesn't
@@ -366,6 +385,9 @@ class NativeBleTransport extends DeviceTransport {
   }
 
   void _closeAllStreams() {
+    _notificationGeneration++;
+    _confirmedNotificationKeys.clear();
+    _notificationSubscriptions.clear();
     for (final controller in _streamControllers.values) {
       controller.close();
     }
@@ -453,9 +475,9 @@ class NativeBleTransport extends DeviceTransport {
     } else {
       Logger.debug(
           '[NativeBleTransport] $_peripheralUuid: device ready (auto-reconnect path, ${services.length} services)');
-      _resubscribeAfterReconnect(services);
     }
     _updateState(DeviceTransportState.connected);
+    _resubscribeAfterReconnect(services);
   }
 
   bool _isResubscribing = false;
@@ -471,8 +493,9 @@ class NativeBleTransport extends DeviceTransport {
       for (final key in _activeSubscriptionKeys) {
         final parts = key.split(':');
         if (parts.length == 2) {
-          _streamControllers[key] = StreamController<List<int>>.broadcast();
-          _subscribeCharacteristic(parts[0], parts[1]);
+          unawaited(getCharacteristicStream(parts[0], parts[1]).then<void>((_) {}, onError: (Object e) {
+            Logger.warning('[NativeBleTransport] Notification restore failed for $key: $e');
+          }));
         }
       }
 

@@ -44,6 +44,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--java", default=shutil.which("java"))
     parser.add_argument("--kotlin-version", default="2.1.0", help="Compiler version in local Gradle cache")
+    parser.add_argument("--notifications", action="store_true", help="Test actual notification subscription methods")
     args = parser.parse_args()
     java = args.java
     if not java and os.environ.get("JAVA_HOME"):
@@ -79,9 +80,20 @@ def main():
     with tempfile.TemporaryDirectory(prefix="storage-session-compile-") as work:
         work = Path(work)
         generated = work / "OmiBleManager.kt"
-        generated.write_text(STUBS % (bridge, match.group(1)), encoding="utf-8")
+        if args.notifications:
+            subscription = source[source.index("    private class PendingSubscription"):source.index("    fun unsubscribeCharacteristic")]
+            cleanup = source[source.index("    private fun failPendingSubscriptions"):source.index("    fun cleanupPeripheral")]
+            descriptor = re.search(r"        override fun onDescriptorWrite\(.*?\n        }", source, re.S)
+            if not descriptor:
+                raise RuntimeError("Descriptor callback extraction seam changed")
+            template = (HERE / "NotificationSubscriptionStubs.kt").read_text(encoding="utf-8")
+            generated.write_text(template.replace("// PRODUCTION_SUBSCRIPTIONS", subscription)
+                                 .replace("// PRODUCTION_CLEANUP", cleanup)
+                                 .replace("// PRODUCTION_DESCRIPTOR", descriptor.group().replace("override fun", "fun", 1)), encoding="utf-8")
+        else:
+            generated.write_text(STUBS % (bridge, match.group(1)), encoding="utf-8")
         output = work / "tests.jar"
-        tests = HERE / "StorageDownloadSessionTest.kt"
+        tests = HERE / ("NotificationSubscriptionTest.kt" if args.notifications else "StorageDownloadSessionTest.kt")
         if kotlinc:
             subprocess.run([kotlinc, str(generated), str(tests), "-include-runtime", "-d", str(output)], check=True)
             runtime = str(output)
@@ -96,7 +108,7 @@ def main():
                             "-no-stdlib", "-no-reflect", "-classpath", classpath,
                             str(generated), str(tests), "-d", str(output)], check=True)
             runtime = os.pathsep.join([str(output), *libs])
-        subprocess.run([java, "-cp", runtime, "StorageDownloadSessionTestKt"], check=True)
+        subprocess.run([java, "-cp", runtime, tests.stem + "Kt"], check=True)
 
 
 if __name__ == "__main__":

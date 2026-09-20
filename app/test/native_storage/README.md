@@ -45,3 +45,15 @@ flutter test --no-pub test/unit/sync_robustness_test.dart
 
 These are separate native and Dart tests, not an instrumented BLE-to-firmware
 run. Device deletion is mocked in Flutter and source-traced through firmware.
+
+Notification recovery uses the same compiler runner:
+
+```text
+python app/test/native_storage/run.py --notifications --java <path-to-java>
+```
+
+It extracts production subscription setup, disconnect cleanup and the descriptor
+callback. Twelve cases exercise descriptor confirmation, missing resources,
+registration/write rejection, callback failure, cleanup, retry, stale GATT and
+preceding-operation callbacks, and both Android descriptor API paths. Android
+objects and queue scheduling are simulated; the test does not exercise a radio.

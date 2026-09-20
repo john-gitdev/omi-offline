@@ -575,16 +575,59 @@ class OmiBleManager private constructor(private val application: Application) {
         if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) completion(Result.success(Unit))
     }
 
-    fun subscribeCharacteristic(address: String, serviceUuid: String, charUuid: String) {
+    private class PendingSubscription(val gatt: BluetoothGatt, val callback: (Result<Unit>) -> Unit) {
+        @Volatile var issued = false
+    }
+    private val pendingSubscriptions = ConcurrentHashMap<String, PendingSubscription>()
+
+    fun subscribeCharacteristic(address: String, serviceUuid: String, charUuid: String, completion: (Result<Unit>) -> Unit) {
         val addr = address.uppercase()
-        val gatt = connectedGatts[addr] ?: return
-        val characteristic = findCharacteristic(gatt, serviceUuid, charUuid) ?: return
+        val gatt = connectedGatts[addr]
+        val characteristic = findCharacteristic(gatt, serviceUuid, charUuid)
+        fun failure(reason: String) = Result.failure<Unit>(FlutterError("notification-subscription", reason, null))
+        if (gatt == null || characteristic == null) {
+            completion(failure("Not connected or characteristic not found"))
+            return
+        }
         val descriptor = characteristic.getDescriptor(CCCD_UUID)
+        if (descriptor == null) {
+            completion(failure("Notification descriptor not found"))
+            return
+        }
+        val key = "$addr:$serviceUuid:$charUuid".lowercase()
+        val pending = PendingSubscription(gatt, completion)
+        if (pendingSubscriptions.putIfAbsent(key, pending) != null) {
+            completion(failure("Notification subscription already pending"))
+            return
+        }
         enqueueCommand("subscribe $serviceUuid:$charUuid") {
-            gatt.setCharacteristicNotification(characteristic, true)
-            if (descriptor != null) {
-                writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-            } else completeCommand()
+            fun reject(reason: String) {
+                if (pendingSubscriptions.remove(key, pending)) pending.callback(failure(reason))
+                completeCommand()
+            }
+            if (connectedGatts[addr] !== gatt) {
+                reject("Connection changed before notification setup")
+                return@enqueueCommand
+            }
+            try {
+                if (!gatt.setCharacteristicNotification(characteristic, true)) {
+                    reject("Android rejected local notification registration")
+                    return@enqueueCommand
+                }
+                // A preceding unsubscribe can still have its descriptor callback pending.
+                // Only the descriptor write issued by this queued command may confirm us.
+                pending.issued = true
+                val accepted = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                    gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) == BluetoothStatusCodes.SUCCESS
+                } else {
+                    @Suppress("DEPRECATION")
+                    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    gatt.writeDescriptor(descriptor)
+                }
+                if (!accepted) reject("Android rejected notification descriptor write")
+            } catch (e: Exception) {
+                reject("Notification setup threw: ${e.message}")
+            }
         }
     }
 
@@ -863,8 +906,18 @@ class OmiBleManager private constructor(private val application: Application) {
         }
     }
 
+    private fun failPendingSubscriptions(address: String) {
+        val addr = address.uppercase()
+        pendingSubscriptions.entries.toList().filter { it.key.startsWith("${addr.lowercase()}:") }.forEach { (key, pending) ->
+            if (pendingSubscriptions.remove(key, pending)) {
+                pending.callback(Result.failure(FlutterError("notification-subscription", "Disconnected during notification setup", null)))
+            }
+        }
+    }
+
     fun cleanupPeripheral(address: String) {
         val addr = address.uppercase()
+        failPendingSubscriptions(addr)
         servicesDiscoveredFor.remove(addr)
         discoveryTimeouts.remove(addr)?.let { mainHandler.removeCallbacks(it) }
         stopRssiKeepAlive()
@@ -974,7 +1027,19 @@ class OmiBleManager private constructor(private val application: Application) {
             writeCompletions.remove(key)?.invoke(res)
             completeCommand()
         }
-        override fun onDescriptorWrite(gatt: BluetoothGatt, desc: BluetoothGattDescriptor, status: Int) { completeCommand() }
+        override fun onDescriptorWrite(gatt: BluetoothGatt, desc: BluetoothGattDescriptor, status: Int) {
+            val addr = gatt.device.address.uppercase()
+            if (connectedGatts[addr] !== gatt) return
+            val char = desc.characteristic
+            val key = "$addr:${char.service.uuid}:${char.uuid}".lowercase()
+            val pending = pendingSubscriptions[key]
+            if (desc.uuid == CCCD_UUID && pending != null && pending.gatt === gatt && pending.issued && pendingSubscriptions.remove(key, pending)) {
+                Log.i(TAG, "Notification setup $key gatt=${gatt.hashCode()} status=$status")
+                pending.callback(if (status == BluetoothGatt.GATT_SUCCESS) Result.success(Unit)
+                    else Result.failure(FlutterError("notification-subscription", "Notification descriptor failed: $status", null)))
+            }
+            completeCommand()
+        }
     }
 
     // ── Native storage file download ──
@@ -1001,10 +1066,6 @@ class OmiBleManager private constructor(private val application: Application) {
             callback(Result.failure(Exception("Storage characteristic not found")))
             return
         }
-
-        // Subscribe to notifications so the binder-thread callback fires.
-        // Goes through the GATT queue so it completes before CMD_READ_FILE.
-        subscribeCharacteristic(addr, STORAGE_SERVICE_UUID.toString(), STORAGE_CHAR_UUID.toString())
 
         // Register session BEFORE enqueuing CMD_READ_FILE so the start-ACK (0x03 0x00)
         // is never missed if the write callback and the notification race.
@@ -1033,25 +1094,32 @@ class OmiBleManager private constructor(private val application: Application) {
         else
             BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
 
-        enqueueCommand("CMD_READ_FILE idx=$fileIndex off=$offset ts=$timerStart") {
-            // From here on an ACK can be this read's. Set BEFORE the write so the start ACK
-            // cannot beat it; see StorageDownloadSession.readIssued for why the ordering is
-            // airtight.
-            session.readIssued = true
-            val success = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                gatt.writeCharacteristic(characteristic, cmd, writeType) == android.bluetooth.BluetoothStatusCodes.SUCCESS
-            } else {
-                @Suppress("DEPRECATION")
-                characteristic.value = cmd
-                @Suppress("DEPRECATION")
-                characteristic.writeType = writeType
-                @Suppress("DEPRECATION")
-                gatt.writeCharacteristic(characteristic)
+        subscribeCharacteristic(addr, STORAGE_SERVICE_UUID.toString(), STORAGE_CHAR_UUID.toString()) { subscribed ->
+            if (subscribed.isFailure) {
+                session.complete(Result.failure(subscribed.exceptionOrNull()!!))
+            } else if (activeDownloads[addr] === session) enqueueCommand("CMD_READ_FILE idx=$fileIndex off=$offset ts=$timerStart") {
+                // A subscription can finish after the download was cancelled or timed out.
+                if (activeDownloads[addr] !== session || connectedGatts[addr] !== gatt) {
+                    completeCommand()
+                    return@enqueueCommand
+                }
+                // Set before writing so an immediate start ACK cannot beat registration.
+                session.readIssued = true
+                val success = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                    gatt.writeCharacteristic(characteristic, cmd, writeType) == BluetoothStatusCodes.SUCCESS
+                } else {
+                    @Suppress("DEPRECATION")
+                    characteristic.value = cmd
+                    @Suppress("DEPRECATION")
+                    characteristic.writeType = writeType
+                    @Suppress("DEPRECATION")
+                    gatt.writeCharacteristic(characteristic)
+                }
+                if (!success) {
+                    session.complete(Result.failure(Exception("Could not start SD card read")))
+                }
+                if (!success || writeType == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) completeCommand()
             }
-            if (!success) {
-                session.complete(Result.failure(Exception("Could not start SD card read")))
-            }
-            if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) completeCommand()
         }
     }
 

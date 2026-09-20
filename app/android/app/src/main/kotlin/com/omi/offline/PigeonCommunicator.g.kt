@@ -208,7 +208,7 @@ interface BleHostApi {
   fun requestBond(uuid: String, callback: (Result<Boolean>) -> Unit)
   fun readCharacteristic(peripheralUuid: String, serviceUuid: String, characteristicUuid: String, callback: (Result<ByteArray>) -> Unit)
   fun writeCharacteristic(peripheralUuid: String, serviceUuid: String, characteristicUuid: String, data: ByteArray, callback: (Result<Unit>) -> Unit)
-  fun subscribeCharacteristic(peripheralUuid: String, serviceUuid: String, characteristicUuid: String)
+  fun subscribeCharacteristic(peripheralUuid: String, serviceUuid: String, characteristicUuid: String, callback: (Result<Unit>) -> Unit)
   fun unsubscribeCharacteristic(peripheralUuid: String, serviceUuid: String, characteristicUuid: String)
   fun getBluetoothState(): String
   fun isPeripheralConnected(uuid: String): Boolean
@@ -487,13 +487,14 @@ interface BleHostApi {
             val peripheralUuidArg = args[0] as String
             val serviceUuidArg = args[1] as String
             val characteristicUuidArg = args[2] as String
-            val wrapped: List<Any?> = try {
-              api.subscribeCharacteristic(peripheralUuidArg, serviceUuidArg, characteristicUuidArg)
-              listOf(null)
-            } catch (exception: Throwable) {
-              PigeonCommunicatorPigeonUtils.wrapError(exception)
+            api.subscribeCharacteristic(peripheralUuidArg, serviceUuidArg, characteristicUuidArg) { result: Result<Unit> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(PigeonCommunicatorPigeonUtils.wrapError(error))
+              } else {
+                reply.reply(PigeonCommunicatorPigeonUtils.wrapResult(null))
+              }
             }
-            reply.reply(wrapped)
           }
         } else {
           channel.setMessageHandler(null)
