@@ -55,7 +55,9 @@ fun main() {
         check(f.results.size == 2 && f.results.last().isSuccess)
     }
     case("preceding descriptor callback cannot confirm a queued subscription") {
-        val f = Fixture(); f.subscribe(); f.reply()
+        val f = Fixture()
+        f.manager.enqueueCommand("preceding unsubscribe") {}
+        f.manager.issue(); f.subscribe(); f.reply()
         check(f.results.isEmpty())
         f.manager.issue(); f.reply(); check(f.results.single().isSuccess)
     }
@@ -72,6 +74,50 @@ fun main() {
     }
     case("registration exceptions are surfaced") {
         val f = Fixture(); f.gatt.throwRegistration = true; f.subscribe(); f.manager.issue(); f.failure()
+    }
+    case("wrong service or characteristic fails lookup") {
+        for ((service, char) in listOf(CHAR to CHAR, SERVICE to SERVICE)) {
+            val f = Fixture()
+            f.manager.subscribeCharacteristic(ADDRESS, service, char) { f.results.add(it) }
+            f.failure(); check(f.gatt.writes == 0)
+        }
+        check(Fixture().gatt.characteristic.getDescriptor(java.util.UUID.randomUUID()) == null)
+    }
+    case("missing callback tears down the link and releases the real command queue") {
+        val f = Fixture(); f.subscribe(); f.manager.issue()
+        var staleCommandRan = false
+        f.manager.enqueueCommand("queued old write") { staleCommandRan = true }
+        check(f.manager.mainHandler.posted.isEmpty())
+        f.manager.mainHandler.expire(); f.failure()
+        check(f.gatt.closed && !staleCommandRan)
+        check(f.manager.connectionListener!!.disconnects == 1)
+        val replacement = BluetoothGatt(Device(ADDRESS))
+        f.manager.connectedGatts[ADDRESS] = replacement
+        f.subscribe(); f.manager.issue(); f.reply()
+        check(f.results.size == 1 && f.manager.completedCommands == 0)
+        f.reply(connection = replacement)
+        check(f.results.size == 2 && f.results.last().isSuccess)
+        check(f.manager.completedCommands == 1)
+    }
+    case("queue wait is bounded even behind a different stalled operation") {
+        val f = Fixture(); f.manager.enqueueCommand("stalled read") {}; f.manager.issue()
+        f.subscribe(); check(f.gatt.writes == 0)
+        f.manager.mainHandler.expire(); f.failure(); check(f.gatt.closed)
+        f.manager.enqueueCommand("new link command") {}; f.manager.issue()
+    }
+    case("successful confirmation cancels the watchdog") {
+        val f = Fixture(); f.subscribe(); f.manager.issue(); f.reply()
+        f.manager.mainHandler.expire()
+        check(!f.gatt.closed && f.results.size == 1)
+    }
+    case("stale cleanup cannot clear replacement services or pending command") {
+        val f = Fixture(); val replacement = BluetoothGatt(Device(ADDRESS))
+        f.manager.connectedGatts[ADDRESS] = replacement
+        f.manager.servicesDiscoveredFor.add(ADDRESS)
+        f.subscribe(); f.manager.issue()
+        check(!f.manager.cleanupPeripheral(ADDRESS, f.gatt))
+        check(ADDRESS in f.manager.servicesDiscoveredFor && f.results.isEmpty())
+        f.reply(connection = replacement); check(f.results.single().isSuccess)
     }
     println("$passed notification subscription tests passed")
 }

@@ -40,6 +40,46 @@ class OmiBleManager {
 """
 
 
+def section(source, start, end, name):
+    if source.count(start) != 1 or source.count(end) != 1 or source.index(start) >= source.index(end):
+        raise RuntimeError(f"{name} seam changed; review the harness")
+    return source[source.index(start):source.index(end)]
+
+
+def replace_seam(template, marker, source):
+    if template.count(marker) != 1:
+        raise RuntimeError(f"{marker} template seam changed; review the harness")
+    return template.replace(marker, source, 1)
+
+
+def notification_source(source, template):
+    sections = {
+        "SUBSCRIPTIONS": section(source, "    private class PendingSubscription", "    fun unsubscribeCharacteristic", "Subscription"),
+        "CLEANUP": section(source, "    private fun failPendingSubscriptions", "    private fun createGattCallback", "Cleanup"),
+        "QUEUE": section(source, "    @Synchronized private fun resetCommandPipeline", "    private fun findCharacteristic", "Command queue"),
+    }
+    descriptors = re.findall(r"        override fun onDescriptorWrite\(.*?\n        }", source, re.S)
+    if len(descriptors) != 1:
+        raise RuntimeError("Descriptor callback seam changed; review the harness")
+    sections["DESCRIPTOR"] = descriptors[0].replace("override fun", "fun", 1)
+    for name, body in sections.items():
+        template = replace_seam(template, f"// PRODUCTION_{name}", body)
+    return template
+
+
+def storage_source(source, pigeon):
+    # This inner class is the last member. Fail if that seam moves.
+    matches = re.findall(r"(    inner class StorageDownloadSession\(.*\n    })\s*\n}\s*$", source, re.S)
+    if len(matches) != 1:
+        raise RuntimeError("Production session extraction seam changed; review the harness")
+    utils = section(pigeon, "private object PigeonCommunicatorPigeonUtils", "/**\n * Error class", "Pigeon utils")
+    errors = re.findall(r"class FlutterError \(.*?\) : Throwable\(\)", pigeon, re.S)
+    if len(errors) != 1:
+        raise RuntimeError("Pigeon FlutterError extraction seam changed; review the harness")
+    bridge = utils.replace("private object", "object", 1) + errors[0]
+    return STUBS % (bridge, matches[0])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--java", default=shutil.which("java"))
@@ -53,20 +93,6 @@ def main():
         parser.error("Supply --java PATH or set JAVA_HOME / PATH to a JDK")
 
     source = SOURCE.read_text(encoding="utf-8")
-    # This inner class is the last member. Fail if that seam moves, rather than
-    # silently executing a copied/reimplemented packet receiver.
-    match = re.search(r"(    inner class StorageDownloadSession\(.*\n    })\s*\n}\s*$", source, re.S)
-    if not match:
-        raise RuntimeError("Production session extraction seam changed; review the harness")
-
-    pigeon = SOURCE.with_name("PigeonCommunicator.g.kt").read_text(encoding="utf-8")
-    # Execute the generated error envelope too; do not substitute an invented mapping.
-    utils = pigeon[pigeon.index("private object PigeonCommunicatorPigeonUtils"):pigeon.index("/**")]
-    error = re.search(r"class FlutterError \(.*?\) : Throwable\(\)", pigeon, re.S)
-    if not error:
-        raise RuntimeError("Pigeon FlutterError extraction seam changed")
-    bridge = utils.replace("private object", "object", 1) + error.group()
-
     cache = Path(os.environ.get("GRADLE_USER_HOME", Path.home() / ".gradle")) / "caches/modules-2/files-2.1"
 
     def jar(group, name, version=None):
@@ -81,17 +107,11 @@ def main():
         work = Path(work)
         generated = work / "OmiBleManager.kt"
         if args.notifications:
-            subscription = source[source.index("    private class PendingSubscription"):source.index("    fun unsubscribeCharacteristic")]
-            cleanup = source[source.index("    private fun failPendingSubscriptions"):source.index("    fun cleanupPeripheral")]
-            descriptor = re.search(r"        override fun onDescriptorWrite\(.*?\n        }", source, re.S)
-            if not descriptor:
-                raise RuntimeError("Descriptor callback extraction seam changed")
             template = (HERE / "NotificationSubscriptionStubs.kt").read_text(encoding="utf-8")
-            generated.write_text(template.replace("// PRODUCTION_SUBSCRIPTIONS", subscription)
-                                 .replace("// PRODUCTION_CLEANUP", cleanup)
-                                 .replace("// PRODUCTION_DESCRIPTOR", descriptor.group().replace("override fun", "fun", 1)), encoding="utf-8")
+            generated.write_text(notification_source(source, template), encoding="utf-8")
         else:
-            generated.write_text(STUBS % (bridge, match.group(1)), encoding="utf-8")
+            pigeon = SOURCE.with_name("PigeonCommunicator.g.kt").read_text(encoding="utf-8")
+            generated.write_text(storage_source(source, pigeon), encoding="utf-8")
         output = work / "tests.jar"
         tests = HERE / ("NotificationSubscriptionTest.kt" if args.notifications else "StorageDownloadSessionTest.kt")
         if kotlinc:

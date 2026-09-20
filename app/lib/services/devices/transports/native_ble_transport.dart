@@ -158,8 +158,8 @@ class NativeBleTransport extends DeviceTransport {
 
   @override
   Future<void> disconnect() async {
-    if (_state == DeviceTransportState.disconnected) return;
-
+    // Explicit teardown also cancels reconnect intent while already disconnected.
+    _activeSubscriptionKeys.clear();
     _updateState(DeviceTransportState.disconnecting);
 
     // Unsubscribe all active streams
@@ -167,7 +167,7 @@ class NativeBleTransport extends DeviceTransport {
       final parts = key.split(':');
       if (parts.length == 2) {
         try {
-          _hostApi.unsubscribeCharacteristic(_peripheralUuid, parts[0], parts[1]);
+          await _hostApi.unsubscribeCharacteristic(_peripheralUuid, parts[0], parts[1]);
         } catch (_) {}
       }
     }
@@ -259,7 +259,10 @@ class NativeBleTransport extends DeviceTransport {
     final controller = _streamControllers.putIfAbsent(key, () => StreamController<List<int>>.broadcast());
     final pending = _notificationSubscriptions.putIfAbsent(
       key,
-      () => _hostApi.subscribeCharacteristic(_peripheralUuid, serviceUuid, characteristicUuid).timeout(_gattOpTimeout),
+      // Native bounds both queue wait and descriptor confirmation, tearing down
+      // the GATT on expiry. Keep its actual future until it settles; a separate
+      // Dart timeout must not abandon an outstanding native subscription.
+      () => _hostApi.subscribeCharacteristic(_peripheralUuid, serviceUuid, characteristicUuid),
     );
     try {
       await pending;
@@ -271,7 +274,15 @@ class NativeBleTransport extends DeviceTransport {
       }
       return controller.stream;
     } catch (e) {
-      if (identical(_notificationSubscriptions[key], pending)) _notificationSubscriptions.remove(key);
+      if (identical(_notificationSubscriptions[key], pending)) {
+        _notificationSubscriptions.remove(key);
+        _confirmedNotificationKeys.remove(key);
+        if (identical(_streamControllers[key], controller) && !controller.hasListener) {
+          _streamControllers.remove(key);
+          _activeSubscriptionKeys.remove(key);
+          unawaited(controller.close());
+        }
+      }
       Logger.warning('[NativeBleTransport] Notification setup failed: $key generation=$generation: $e');
       rethrow;
     }
@@ -367,6 +378,7 @@ class NativeBleTransport extends DeviceTransport {
       await _hostApi.unmanageDevice(_peripheralUuid);
     } catch (_) {}
     _closeAllStreams();
+    _activeSubscriptionKeys.clear();
     await _connectionStateController.close();
   }
 
@@ -424,8 +436,13 @@ class NativeBleTransport extends DeviceTransport {
         '[NativeBleTransport] $_peripheralUuid: disconnected (error=$error isConnecting=$isConnecting state=$_state)');
 
     // Remember active subscriptions before closing streams
-    _activeSubscriptionKeys.clear();
-    _activeSubscriptionKeys.addAll(_streamControllers.keys);
+    if (_state == DeviceTransportState.disconnecting) {
+      _activeSubscriptionKeys.clear();
+    } else if (_streamControllers.isNotEmpty) {
+      _activeSubscriptionKeys
+        ..clear()
+        ..addAll(_streamControllers.keys);
+    }
 
     _closeAllStreams();
     _services = [];
@@ -490,11 +507,17 @@ class NativeBleTransport extends DeviceTransport {
       _services = services;
 
       // Re-create stream controllers and re-subscribe to previously active characteristics
-      for (final key in _activeSubscriptionKeys) {
+      final generation = _notificationGeneration;
+      for (final key in _activeSubscriptionKeys.toList()) {
         final parts = key.split(':');
         if (parts.length == 2) {
           unawaited(getCharacteristicStream(parts[0], parts[1]).then<void>((_) {}, onError: (Object e) {
             Logger.warning('[NativeBleTransport] Notification restore failed for $key: $e');
+            if (generation != _notificationGeneration || _state != DeviceTransportState.connected) return;
+            // Keep Android in charge of reconnect; report the unusable transport
+            // immediately so consumers stop issuing storage commands on it.
+            unawaited(softDisconnect());
+            _handleConnectionState(false, 'notification_restore_failed');
           }));
         }
       }

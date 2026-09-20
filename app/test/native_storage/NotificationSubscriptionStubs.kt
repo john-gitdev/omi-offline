@@ -1,6 +1,7 @@
 @file:Suppress("UNUSED_PARAMETER", "UNUSED_VARIABLE")
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 
 object android {
     object os {
@@ -17,7 +18,7 @@ class Device(val address: String)
 class Service(val uuid: UUID)
 class BluetoothGattCharacteristic(val service: Service, val uuid: UUID) {
     var descriptor: BluetoothGattDescriptor? = BluetoothGattDescriptor(this)
-    fun getDescriptor(uuid: UUID) = descriptor
+    fun getDescriptor(uuid: UUID) = descriptor?.takeIf { it.uuid == uuid }
 }
 class BluetoothGattDescriptor(val characteristic: BluetoothGattCharacteristic) {
     val uuid: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
@@ -33,6 +34,9 @@ class BluetoothGatt(val device: Device) {
     var descriptorAccepted = true
     var throwRegistration = false
     var writes = 0
+    var closed = false
+    fun disconnect() {}
+    fun close() { closed = true }
     fun setCharacteristicNotification(characteristic: BluetoothGattCharacteristic, enabled: Boolean): Boolean {
         if (throwRegistration) throw IllegalStateException("registration failed")
         return localAccepted
@@ -43,22 +47,54 @@ class BluetoothGatt(val device: Device) {
     }
     fun writeDescriptor(descriptor: BluetoothGattDescriptor): Boolean = writeDescriptor(descriptor, descriptor.value) == 0
 }
+class TestHandler {
+    val posted = mutableListOf<Runnable>()
+    val delayed = mutableListOf<Runnable>()
+    fun post(task: Runnable) { posted.add(task) }
+    fun postDelayed(task: Runnable, delay: Long) { delayed.add(task) }
+    fun removeCallbacks(task: Runnable) { posted.remove(task); delayed.remove(task) }
+    fun issue() { check(posted.isNotEmpty()) { "No command ready; queue still blocked" }; posted.removeAt(0).run() }
+    fun expire() { delayed.toList().forEach { if (delayed.remove(it)) it.run() } }
+}
+class ConnectionListener {
+    var disconnects = 0
+    fun onGattDisconnected(address: String, hash: Int, status: Int) { disconnects++ }
+}
+class Download { fun complete(result: Result<Unit>) {} }
 class OmiBleManager {
     companion object {
         private const val TAG = "test"
         private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
     }
     val connectedGatts = ConcurrentHashMap<String, BluetoothGatt>()
-    val queue = mutableListOf<() -> Unit>()
+    private class GattCommand(val label: String, val run: Runnable)
+    private val gattQueue = ConcurrentLinkedQueue<GattCommand>()
+    private var isProcessingCommand = false
+    val mainHandler = TestHandler()
+    val connectionListener: ConnectionListener? = ConnectionListener()
+    val servicesDiscoveredFor = mutableSetOf<String>()
+    val discoveryTimeouts = mutableMapOf<String, Runnable>()
+    val readCompletions = ConcurrentHashMap<String, (Result<Unit>) -> Unit>()
+    val writeCompletions = ConcurrentHashMap<String, (Result<Unit>) -> Unit>()
+    val activeDownloads = ConcurrentHashMap<String, Download>()
     var completedCommands = 0
-    private fun findCharacteristic(gatt: BluetoothGatt?, service: String, char: String) = gatt?.characteristic
-    private fun enqueueCommand(label: String, action: () -> Unit) { queue.add(action) }
-    private fun completeCommand() { completedCommands++ }
-    fun issue() { queue.removeAt(0).invoke() }
+    private fun beginCommandTiming(label: String) {}
+    private fun endCommandTiming(outcome: String) { if (outcome == "recovered") completedCommands++ }
+    private fun stopRssiKeepAlive() {}
+    private fun stopStorageKeepAlive() {}
+    private fun findCharacteristic(gatt: BluetoothGatt?, service: String, char: String) =
+        gatt?.characteristic?.takeIf { it.service.uuid == UUID.fromString(service) && it.uuid == UUID.fromString(char) }
+    fun issue() = mainHandler.issue()
     fun disconnect(address: String) {
-        failPendingSubscriptions(address)
+        cleanupPeripheral(address)
         connectedGatts.remove(address.uppercase())
     }
+    fun closeGatt(address: String) {
+        val gatt = connectedGatts.remove(address.uppercase())
+        cleanupPeripheral(address)
+        gatt?.close()
+    }
+    // PRODUCTION_QUEUE
     // PRODUCTION_SUBSCRIPTIONS
     // PRODUCTION_CLEANUP
     // PRODUCTION_DESCRIPTOR

@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices/errors.dart';
 import 'package:omi/services/devices/omi_connection.dart';
+import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/devices/transports/device_transport.dart';
 
 class _RotationTransport extends DeviceTransport {
@@ -12,6 +13,13 @@ class _RotationTransport extends DeviceTransport {
   int writes = 0;
   bool failSubscription = false;
   bool failWrite = false;
+  int refreshes = 0;
+
+  @override
+  Future<Stream<List<int>>> refreshCharacteristicStream(String service, String characteristic) async {
+    refreshes++;
+    return getCharacteristicStream(service, characteristic);
+  }
 
   @override
   Future<Stream<List<int>>> getCharacteristicStream(String service, String characteristic) async {
@@ -37,7 +45,8 @@ void main() {
 
   setUp(() {
     transport = _RotationTransport();
-    connection = OmiDeviceConnection(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50), transport);
+    connection = OmiDeviceConnection(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50), transport,
+        rotationConfirmationTimeout: const Duration(milliseconds: 50));
   });
   tearDown(() async {
     await transport.packets.close();
@@ -91,5 +100,15 @@ void main() {
   test('a failed write is conservatively unknown', () async {
     transport.failWrite = true;
     await expectLater(connection.performRotateFile(), throwsA(isA<StorageRotationUnconfirmedException>()));
+  });
+
+  test('standalone delete, stop, clear and byte-stream acquisition revalidate notifications', () async {
+    transport.failSubscription = true;
+    expect(await connection.performDeleteFile(StorageFile(index: 0, timestamp: 1, size: 100)), isFalse);
+    expect(await connection.performStopStorageSync(), isFalse);
+    expect(await connection.performClearStorage(), isFalse);
+    await expectLater(connection.getBleStorageBytesStream(), throwsStateError);
+    expect(transport.refreshes, 4);
+    expect(transport.writes, 0, reason: 'failed readiness must not issue storage commands');
   });
 }

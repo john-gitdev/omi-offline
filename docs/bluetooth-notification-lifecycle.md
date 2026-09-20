@@ -10,14 +10,28 @@ registration rejection, descriptor rejection/failure and disconnect are errors.
 Queued subscriptions cannot be confirmed by the descriptor callback of an
 earlier operation or a previous GATT.
 
+Native bounds subscription queue wait and descriptor confirmation with a watchdog.
+Expiry fails pending operations, closes that GATT and resets its command queue,
+then reports disconnection through the existing native reconnect policy. It never
+advances past a missing descriptor callback on the same link: Android does not
+tag descriptor acknowledgments with a request ID. Teardown and delayed callbacks
+check GATT identity before touching replacement connection state.
+
 `NativeBleTransport` waits for that result before exposing a characteristic stream.
 Concurrent callers join the pending subscription. Failures invalidate readiness
-so another caller can retry. Disconnect clears readiness and closes the old
+so another caller can retry. Dart retains the actual native future until it
+settles; it does not independently time out and abandon native subscription state.
+Disconnect clears readiness and closes the old
 streams. Both explicit and native reconnect paths restore notifications;
 completion from an earlier connection cannot confirm a replacement subscription.
 Callers still need to attach to the replacement stream after disconnect.
+Explicit teardown forgets subscription intent and unmanages even an already-lost
+link. A failed reconnect restore reports an unusable transport and requests a
+soft disconnect, leaving native in charge of reconnect. Failed subscriptions
+without listeners are discarded; a failed refresh preserves existing listeners.
 
-Storage listing and rotation revalidate notifications through
+Storage listing, rotation, deletion, stop, clear and byte-stream acquisition
+revalidate notifications through
 `refreshCharacteristicStream`, while retaining listeners already attached on the
 current connection. Native downloads also wait for subscription confirmation
 before issuing READ. A delayed confirmation cannot start a cancelled download.

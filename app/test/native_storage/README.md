@@ -53,7 +53,15 @@ python app/test/native_storage/run.py --notifications --java <path-to-java>
 ```
 
 It extracts production subscription setup, disconnect cleanup and the descriptor
-callback. Twelve cases exercise descriptor confirmation, missing resources,
+callback. Seventeen cases exercise descriptor confirmation, missing resources,
 registration/write rejection, callback failure, cleanup, retry, stale GATT and
 preceding-operation callbacks, and both Android descriptor API paths. Android
-objects and queue scheduling are simulated; the test does not exercise a radio.
+objects and handler scheduling are simulated; the test does not exercise a radio.
+
+## Extraction guards
+
+`python -m unittest discover -s app/test/native_storage -p test_extraction.py`
+checks missing, duplicated and reordered extraction boundaries and template
+placeholders. Notification mode extracts the production serialized command queue
+and cleanup code as well as subscription handling. The handler and Android objects
+remain simulated; these tests do not establish physical BLE behavior.

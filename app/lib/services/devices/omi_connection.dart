@@ -121,7 +121,9 @@ class OmiDeviceConnection extends DeviceConnection {
   // stacks without the 2s penalty of the full listFiles settle delay.
   static const _cccdCommandDelay = Duration(milliseconds: 500);
 
-  OmiDeviceConnection(super.device, super.transport);
+  final Duration rotationConfirmationTimeout;
+
+  OmiDeviceConnection(super.device, super.transport, {this.rotationConfirmationTimeout = const Duration(seconds: 25)});
 
   @override
   Future<void> acquireStorageLock([String owner = 'unknown']) async {
@@ -469,7 +471,8 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<Stream<List<int>>> getBleStorageBytesStream() async {
-    return await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+    return await transport.refreshCharacteristicStream(
+        storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
   }
 
   @override
@@ -1017,8 +1020,8 @@ class OmiDeviceConnection extends DeviceConnection {
     // Record which one actually happened.
     try {
       final completer = Completer<bool>();
-      final stream =
-          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final stream = await transport.refreshCharacteristicStream(
+          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
       final sub = stream.listen((data) {
         if (completer.isCompleted) return;
         if (data.isNotEmpty && data[0] == 0x03) {
@@ -1106,8 +1109,8 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<bool> performStopStorageSync() async {
     try {
       final completer = Completer<bool>();
-      final stream =
-          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final stream = await transport.refreshCharacteristicStream(
+          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
       final sub = stream.listen((data) {
         if (!completer.isCompleted && data.isNotEmpty && data[0] == 0x03) {
           completer.complete(data.length < 2 || data[1] == 0);
@@ -1146,7 +1149,7 @@ class OmiDeviceConnection extends DeviceConnection {
         if (completer.isCompleted) return await completer.future;
         commandAttempted = true;
         await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x13]);
-        return await completer.future.timeout(const Duration(seconds: 25));
+        return await completer.future.timeout(rotationConfirmationTimeout);
       } finally {
         await sub.cancel();
       }
@@ -1161,8 +1164,8 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<bool> performClearStorage() async {
     try {
       final completer = Completer<bool>();
-      final stream =
-          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final stream = await transport.refreshCharacteristicStream(
+          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
       final sub = stream.listen((data) {
         if (!completer.isCompleted && data.isNotEmpty && data[0] == 0x03) {
           completer.complete(data.length < 2 || data[1] == 0);

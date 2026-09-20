@@ -95,12 +95,20 @@ class MockDeviceConnection implements DeviceConnection {
     return c.future;
   }
 
+  bool _storageBusy = false;
   @override
-  bool get isStorageBusy => false;
+  bool get isStorageBusy => _storageBusy;
   @override
-  Future<void> acquireStorageLock([String owner = 'unknown']) async {}
+  Future<void> acquireStorageLock([String owner = 'unknown']) async {
+    if (_storageBusy) throw StateError('Storage lock already held');
+    _storageBusy = true;
+  }
+
   @override
-  void releaseStorageLock() {}
+  void releaseStorageLock() {
+    if (!_storageBusy) throw StateError('Storage lock not held');
+    _storageBusy = false;
+  }
 
   @override
   Future<bool> writeToStorage(int numFile, int command, int offset, {int? timestamp}) async {
@@ -261,6 +269,7 @@ class MockDeviceConnection implements DeviceConnection {
     if (rotationUnconfirmed) throw StorageRotationUnconfirmedException(TimeoutException('ACK missing'));
     return true;
   }
+
   @override
   Future<int> getFeatures() async => 0;
   @override
@@ -556,6 +565,37 @@ void main() {
     });
 
     for (final batch in [false, true]) {
+      test('${batch ? 'syncAll' : 'syncWal'} notification failures preserve prefix and deletion budget', () async {
+        await seed(wal(offset: 4, version: 1, strikes: 4), original.sublist(0, 4));
+        receiver = (_) async => ['notification-subscription', 'Disconnected during notification setup', null];
+        for (int attempt = 0; attempt < 3; attempt++) {
+          if (batch) {
+            expect((await native.syncAll())!.isPartial, isTrue);
+          } else {
+            await expectLater(native.syncWal(wal: (await native.getMissingWals()).first),
+                throwsA(isA<PlatformException>().having((e) => e.code, 'code', 'notification-subscription')));
+          }
+          expect(globalDeletedTimestamps, isEmpty);
+          expect(await bin().readAsBytes(), original.sublist(0, 4));
+          final saved = (await WalFileManager.loadWals()).single;
+          expect(saved.walOffset, 4);
+          expect(saved.syncFailCount, 4);
+          expect(saved.status, WalStatus.miss);
+          expect(connection.isStorageBusy, isFalse);
+          await reconnect();
+        }
+        receiver = (args) async {
+          expect(args[2], 4);
+          await File(args[4]! as String).writeAsBytes(original.sublist(4), mode: FileMode.append);
+          return [null];
+        };
+        final result =
+            batch ? await native.syncAll() : await native.syncWal(wal: (await native.getMissingWals()).first);
+        expect(result!.isPartial, isFalse);
+        expect(await bin().readAsBytes(), original);
+        expect(globalDeletedTimestamps, [ts]);
+      });
+
       test('${batch ? 'syncAll' : 'syncWal'} repeated gaps never spend poison budget, including reconnect', () async {
         await seed(wal(offset: 4, version: 1, strikes: 4), original.sublist(0, 4));
         // A second queued file must not cause an index-0 read under another identity.
