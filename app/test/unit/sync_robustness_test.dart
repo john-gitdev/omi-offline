@@ -263,9 +263,11 @@ class MockDeviceConnection implements DeviceConnection {
   Future<void> unpair() async {}
   int rotationCalls = 0;
   bool rotationUnconfirmed = false;
+  bool rotationNotStarted = false;
   @override
   Future<bool> rotateFile() async {
     rotationCalls++;
+    if (rotationNotStarted) throw StorageRotationNotStartedException(StateError('Disconnected before write'));
     if (rotationUnconfirmed) throw StorageRotationUnconfirmedException(TimeoutException('ACK missing'));
     return true;
   }
@@ -1926,6 +1928,18 @@ void main() {
       final result = await sync.rotateAndSync();
       expect(result, isNotNull);
       expect(result!.isPartial, isTrue, reason: 'preserve draft tails and the force-sync cooldown');
+      expect(mockConn.rotationCalls, 1);
+      expect(globalDeletedTimestamps, isEmpty);
+      expect(sync.isSyncing, isFalse);
+      expect(mockConn.isStorageBusy, isFalse);
+    });
+
+    test('rotation not started is skipped without retries or deleting source', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      mockConn.rotationNotStarted = true;
+      globalDeletedTimestamps = [];
+      final result = await sync.rotateAndSync();
+      expect(result, isNull, reason: 'preserve drafts and return the unused force-sync cooldown');
       expect(mockConn.rotationCalls, 1);
       expect(globalDeletedTimestamps, isEmpty);
       expect(sync.isSyncing, isFalse);
