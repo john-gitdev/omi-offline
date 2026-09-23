@@ -1150,8 +1150,6 @@ class OmiDeviceConnection extends DeviceConnection {
     }
   }
 
-  @override
-
   /// STOP goes out whatever state notifications are in: it is what makes the firmware
   /// stop streaming and release its read handle, and no caller acts on the result —
   /// the ACK only tells us how long to wait before the next command.
