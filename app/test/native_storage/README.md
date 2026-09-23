@@ -52,10 +52,15 @@ Notification recovery uses the same compiler runner:
 python app/test/native_storage/run.py --notifications --java <path-to-java>
 ```
 
-It extracts production subscription setup, disconnect cleanup and the descriptor
-callback. Seventeen cases exercise descriptor confirmation, missing resources,
+It extracts production subscription setup and unsubscribe, the storage keep-alive,
+disconnect cleanup, and the descriptor and characteristic-write callbacks.
+Twenty-seven cases exercise descriptor confirmation, missing resources,
 registration/write rejection, callback failure, cleanup, retry, stale GATT and
-preceding-operation callbacks, and both Android descriptor API paths. Android
+preceding-operation callbacks, unsubscribe ordering, both Android descriptor API
+paths, the marker on a failure native caused by its own teardown, and the queued
+keep-alive: it waits behind an operation in flight, only its own callback retires
+it, one beat waits at a time, a teardown that discards it does not silence the next
+link, and it stands down for a transfer that started while it waited. Android
 objects and handler scheduling are simulated; the test does not exercise a radio.
 
 ## Extraction guards
