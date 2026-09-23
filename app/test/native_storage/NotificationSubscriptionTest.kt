@@ -222,5 +222,34 @@ fun main() {
         refused.failure()
         check((refused.results.single().exceptionOrNull() as FlutterError).details == null)
     }
+    // An encrypted CCCD write on an unbonded link waits for the user to answer Android's
+    // pairing prompt. The watchdog must not pull that prompt — pairing ends on its own —
+    // but a stack stuck in BONDING must still not hold the queue forever.
+    case("a subscription waiting on a pairing prompt is not torn down") {
+        val f = Fixture(); f.subscribe(); f.manager.issue()
+        f.gatt.device.bondState = BluetoothDevice.BOND_BONDING
+        repeat(3) { f.manager.mainHandler.expire() } // 30 s of prompt
+        check(!f.gatt.closed && f.results.isEmpty() && f.manager.connectionListener!!.disconnects == 0)
+        f.gatt.device.bondState = BluetoothDevice.BOND_BONDED
+        f.reply()
+        check(f.results.single().isSuccess)
+    }
+    case("a declined pairing still fails the subscription, so the reconnect asks again") {
+        val f = Fixture(); f.subscribe(); f.manager.issue()
+        f.gatt.device.bondState = BluetoothDevice.BOND_BONDING
+        f.manager.mainHandler.expire()
+        f.gatt.device.bondState = BluetoothDevice.BOND_NONE
+        f.reply(status = 5) // insufficient authentication
+        f.failure()
+        check((f.results.single().exceptionOrNull() as FlutterError).details == null) { "must read as a refusal" }
+    }
+    case("a pairing that never ends is still bounded") {
+        val f = Fixture(); f.subscribe(); f.manager.issue()
+        f.gatt.device.bondState = BluetoothDevice.BOND_BONDING
+        repeat(6) { f.manager.mainHandler.expire() } // 60 s
+        check(!f.gatt.closed)
+        f.manager.mainHandler.expire()
+        check(f.gatt.closed); f.failure()
+    }
     println("$passed notification subscription tests passed")
 }
