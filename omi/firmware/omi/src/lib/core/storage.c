@@ -23,7 +23,7 @@
 /* Framed packet types (firmware → app) */
 #define PACKET_DATA 0x01  /* [0x01][offset:4LE][payload] */
 #define PACKET_EOT  0x02  /* [0x02] — end of file */
-#define PACKET_ACK  0x03  /* [0x03][result:1] — command response */
+#define PACKET_ACK  0x03  /* [0x03][result:1][command:1] — command response; see storage_send_ack */
 
 LOG_MODULE_REGISTER(storage, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -63,6 +63,12 @@ static uint32_t current_read_offset = 0;
 
 #define MAX_HEARTBEAT_FRAMES 100
 #define HEARTBEAT 50
+
+/* parse_storage_command() results that are not a status byte to ACK with. 0xFF: the
+ * storage thread sends the response itself (list/read/delete/rotate/...). NO_RESPONSE:
+ * nothing is sent at all — only HEARTBEAT, whose ACK nothing ever waited for and which
+ * was the most common way for one command's ACK to be taken for another's. */
+#define NO_RESPONSE 0xFE
 
 /* Retry storage_notify up to N times on -ENOMEM, yielding between attempts.
  *
@@ -175,6 +181,19 @@ static int storage_notify(struct bt_conn *conn, const void *data, uint16_t len)
     }
 
     return bt_gatt_notify(conn, &storage_service.attrs[STORAGE_WRITE_NOTIFY_ATTR_IDX], data, len);
+}
+
+/* Every command ACK except CMD_READ_FILE's start ACK: [PACKET_ACK][result][command],
+ * since oo-3.1.5. Before that it was the same two bytes whatever it answered, and the
+ * app could not tell one command's ACK from another's: the keep-alive's "OK" landing
+ * while a slow CMD_ROTATE_FILE was still sealing its file read as the rotation having
+ * succeeded, and if the rotation then failed the app went on as if the file were sealed.
+ * Older apps read only bytes 0-1, so the third byte costs them nothing. CMD_READ_FILE
+ * keeps its own six-byte [ACK][result][ts:4 LE] start ACK, told apart by length. */
+static void storage_send_ack(struct bt_conn *conn, uint8_t command, uint8_t result)
+{
+    uint8_t ack[3] = {PACKET_ACK, result, command};
+    STORAGE_NOTIFY(conn, ack, sizeof(ack));
 }
 
 static void storage_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value)
@@ -335,8 +354,7 @@ static int send_file_list_response(struct bt_conn *conn)
      * failed listing and retries) rather than as an empty card. */
     if (max_payload < 5 + 16) {
         LOG_WRN("CMD_LIST_FILES: ATT MTU %u too small for a list entry — asking the app to retry", mtu);
-        uint8_t ack[2] = {PACKET_ACK, STORAGE_NOT_READY};
-        STORAGE_NOTIFY(conn, ack, sizeof(ack));
+        storage_send_ack(conn, CMD_LIST_FILES, STORAGE_NOT_READY);
         return 0;
     }
     /* Both are >= 1 from here: max_payload >= 21 makes (max_payload - 5) / 16 >= 1,
@@ -645,8 +663,12 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
     }
 
     if (command == HEARTBEAT) {
+        /* Its whole job is transport_mark_activity() in the write handler, which already
+         * ran. Answered, its ACK was indistinguishable from whatever command the app was
+         * actually waiting on — and the native keep-alive sends it every 10 s, including
+         * while a slow rotation or delete is still being serviced. Nothing waits for it. */
         heartbeat_count = 0;
-        return 0;
+        return NO_RESPONSE;
     }
 
     /* Accept only multi-file protocol commands above. */
@@ -663,9 +685,9 @@ static ssize_t storage_write_handler(struct bt_conn *conn,
     transport_mark_activity();
 
     if (len < 1) {
-        uint8_t ack[2] = {PACKET_ACK, INVALID_COMMAND};
         LOG_WRN("storage write with empty payload");
-        storage_notify(conn, ack, sizeof(ack));
+        /* No command byte to name; 0x00 is not an opcode. */
+        storage_send_ack(conn, 0x00, INVALID_COMMAND);
         return len;
     }
 
@@ -673,10 +695,10 @@ static ssize_t storage_write_handler(struct bt_conn *conn,
 
     uint8_t result = parse_storage_command((void *)buf, len, conn);
 
-    /* 0xFF means the storage thread will send its own response (list/delete) */
-    if (result != 0xFF) {
-        uint8_t ack[2] = {PACKET_ACK, result};
-        STORAGE_NOTIFY(conn, ack, sizeof(ack));
+    /* 0xFF means the storage thread will send its own response (list/delete);
+     * NO_RESPONSE means nothing is sent at all (HEARTBEAT). */
+    if (result != 0xFF && result != NO_RESPONSE) {
+        storage_send_ack(conn, ((const uint8_t *) buf)[0], result);
     }
 
     return len;
@@ -730,8 +752,7 @@ static void write_to_gatt(struct bt_conn *conn)
             LOG_ERR("Failed to read audio data: %d", r);
             atomic_clear(&remaining_length);
             /* Notify app so it aborts immediately instead of waiting for timeout. */
-            uint8_t err_ack[2] = {PACKET_ACK, FILE_NOT_FOUND};
-            STORAGE_NOTIFY(conn, err_ack, sizeof(err_ack));
+            storage_send_ack(conn, CMD_READ_FILE, FILE_NOT_FOUND);
             return;
         }
         uint32_t bytes_read = (uint32_t)r;
@@ -852,7 +873,7 @@ void storage_write(void)
                  * for (0 from an app that sent none), so the app can tell this read's ACK
                  * from a late one meant for an earlier read — the ACK was otherwise the
                  * same two bytes for every read. Older apps read only bytes 0-1. Every
-                 * other ACK stays two bytes. */
+                 * other ACK is three bytes and names its command (storage_send_ack). */
                 uint8_t ack[6] = {PACKET_ACK,
                                   result,
                                   (uint8_t) expected_ts,
@@ -904,8 +925,7 @@ void storage_write(void)
             if (!sd_is_boot_ready()) {
                 LOG_WRN("CMD_LIST_FILES: SD card still busy after 10s, aborting");
                 if (conn) {
-                    uint8_t ack[2] = {PACKET_ACK, STORAGE_NOT_READY};
-                    STORAGE_NOTIFY(conn, ack, sizeof(ack));
+                    storage_send_ack(conn, CMD_LIST_FILES, STORAGE_NOT_READY);
                 }
                 /* The put at the bottom of the loop is the only one; skipping it here
                  * leaked the ref get_current_connection() took at the top. With
@@ -993,8 +1013,7 @@ void storage_write(void)
             }
 
             if (conn) {
-                uint8_t ack[2] = {PACKET_ACK, result};
-                STORAGE_NOTIFY(conn, ack, sizeof(ack));
+                storage_send_ack(conn, CMD_DELETE_FILE, result);
             }
             LOG_INF("Delete file[%d] (ts=%u) result: %d", idx, expected_ts, result);
         }
@@ -1002,9 +1021,7 @@ void storage_write(void)
 
             int ret = clear_audio_directory();
             if (conn) {
-                uint8_t result = (ret >= 0) ? 0 : 1;
-                uint8_t ack[2] = {PACKET_ACK, result};
-                STORAGE_NOTIFY(conn, ack, sizeof(ack));
+                storage_send_ack(conn, CMD_CLEAR_STORAGE, (ret >= 0) ? 0 : 1);
             }
             LOG_INF("CMD_CLEAR_STORAGE: SD card wiped, ret=%d", ret);
         }
@@ -1016,9 +1033,7 @@ void storage_write(void)
              * The app can safely call CMD_LIST_FILES immediately after the ACK. */
             int ret = create_new_audio_file(ROTATE_REASON_APP_CMD);
             if (conn) {
-                uint8_t result = (ret >= 0) ? 0 : 1;
-                uint8_t ack[2] = {PACKET_ACK, result};
-                STORAGE_NOTIFY(conn, ack, sizeof(ack));
+                storage_send_ack(conn, CMD_ROTATE_FILE, (ret >= 0) ? 0 : 1);
                 LOG_INF("CMD_ROTATE_FILE: new file created, ret=%d", ret);
             }
         }
@@ -1031,8 +1046,7 @@ void storage_write(void)
              * + worker state, so boot-readiness is the wrong gate here — it would
              * skip the flush in the on-but-not-yet-boot-ready window. */
             if (conn) {
-                uint8_t ack[2] = {PACKET_ACK, 0};
-                STORAGE_NOTIFY(conn, ack, sizeof(ack));
+                storage_send_ack(conn, CMD_REBOOT, 0);
             }
             LOG_INF("CMD_REBOOT: rebooting now");
 #ifdef CONFIG_LSM6DSL
@@ -1055,8 +1069,7 @@ void storage_write(void)
              * turnoff_all() has its own settle delays, so beyond letting the ACK
              * flush there's no extra sleep needed. */
             if (conn) {
-                uint8_t ack[2] = {PACKET_ACK, 0};
-                STORAGE_NOTIFY(conn, ack, sizeof(ack));
+                storage_send_ack(conn, CMD_POWER_OFF, 0);
             }
             LOG_INF("CMD_POWER_OFF: powering off now");
             k_msleep(500);
