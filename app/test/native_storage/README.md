@@ -16,9 +16,9 @@ The runner uses `kotlinc` on PATH or cached Gradle compiler dependencies
 (Kotlin 2.1.0 by default, overridable with `--kotlin-version`). Extraction fails
 if the production seam changes instead of silently testing a copied receiver.
 
-The 19 cases cover contiguous bytes, duplicates/overlap, gaps (including the
+The 20 cases cover contiguous bytes, duplicates/overlap, gaps (including the
 maximum unsigned wire offset), late packets/EOT, repeated failures and correct
-resume, legitimate zeros, legacy and timestamped ACKs, conditional session
+resume, legitimate zeros, legacy, timestamped and command-naming ACKs, conditional session
 removal, partial-write rollback, close failure, and serialization of a write
 against completion. I/O-failure tests replace the writer with a fault-injecting
 FileOutputStream subclass; production error handling still runs unchanged.
