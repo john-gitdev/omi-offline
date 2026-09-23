@@ -1132,12 +1132,25 @@ class OmiDeviceConnection extends DeviceConnection {
   }
 
   @override
+
+  /// STOP goes out whatever state notifications are in: it is what makes the firmware
+  /// stop streaming and release its read handle, and no caller acts on the result —
+  /// the ACK only tells us how long to wait before the next command.
+  ///
+  /// So it reuses the subscription the connection already has rather than re-validating
+  /// it the way the other storage commands do (refreshCharacteristicStream). That is a
+  /// CCCD write, and STOP is sent after every file and on every cancel, often while the
+  /// transfer is still streaming at full rate — the pattern performGetDropStatsListener
+  /// records as Error 133 on Android. And when the re-validation failed, STOP was never
+  /// written at all, so a cancel ran on until the file's EOT.
+  @override
   Future<bool> performStopStorageSync() async {
+    final completer = Completer<bool>();
+    StreamSubscription<List<int>>? sub;
     try {
-      final completer = Completer<bool>();
-      final stream = await transport.refreshCharacteristicStream(
-          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
-      final sub = stream.listen((data) {
+      final stream =
+          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      sub = stream.listen((data) {
         if (!completer.isCompleted && data.isNotEmpty && data[0] == 0x03) {
           completer.complete(data.length < 2 || data[1] == 0);
         }
@@ -1146,14 +1159,18 @@ class OmiDeviceConnection extends DeviceConnection {
       }, onError: (Object _) {
         if (!completer.isCompleted) completer.complete(false);
       });
-      try {
-        await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x03]);
-        return await completer.future.timeout(const Duration(seconds: 5));
-      } finally {
-        await sub.cancel();
-      }
+    } catch (e) {
+      Logger.debug('OmiDeviceConnection: sending STOP without a reply listener: $e');
+    }
+    try {
+      await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x03]);
+      // Sent, but with nothing listening there is no ACK to wait for.
+      if (sub == null) return false;
+      return await completer.future.timeout(const Duration(seconds: 5));
     } catch (_) {
       return false;
+    } finally {
+      await sub?.cancel();
     }
   }
 
