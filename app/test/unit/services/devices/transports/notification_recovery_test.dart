@@ -205,6 +205,24 @@ void main() {
     await listener.cancel();
   });
 
+  test('a restore failed by native\'s own teardown leaves the link to native', () async {
+    await connect();
+    await stream();
+    final states = <DeviceTransportState>[];
+    final listener = transport.connectionStateStream.listen(states.add);
+    BleBridge.instance.onPeripheralDisconnected(address, 'link_loss');
+    subscribe =
+        () async => <Object?>['notification-subscription', 'Disconnected during notification setup', 'link-closed'];
+    BleBridge.instance.onDeviceReady(address, [
+      BleService(uuid: service, characteristicUuids: [characteristic])
+    ]);
+    await Future<void>.delayed(Duration.zero);
+    expect(disconnects, 0,
+        reason: 'a late disconnectPeripheral would drop whatever link native has since put in place');
+    expect(states.last, DeviceTransportState.connected, reason: 'native\'s own disconnect event moves the transport');
+    await listener.cancel();
+  });
+
   test('explicit teardown after auto reconnect forgets prior subscription intent', () async {
     await connect();
     await stream();
