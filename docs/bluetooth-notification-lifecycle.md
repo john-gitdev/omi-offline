@@ -36,18 +36,39 @@ revalidate notifications through
 current connection. Native downloads also wait for subscription confirmation
 before issuing READ. A delayed confirmation cannot start a cancelled download.
 
-An unanswered listing ends that sync as skipped and requests recovery through
-`DeviceService.recycleConnection()`, using the existing managed connection
-ownership. It preserves WAL offsets and source files. Notification setup failure
-during a download is a transport error and cannot spend a file's poison budget.
+An unanswered listing ends that sync as skipped and preserves WAL offsets and
+source files. Whether it also reconnects (`DeviceService.recycleConnection()`)
+depends on why nothing usable came back:
 
-Rotation is a state-changing command. A write/confirmation failure after issuing
+- The device replied and refused: `STORAGE_NOT_READY` (the SD card is not
+  mounted, or has failed), a malformed reply, or an EOT without a count. Its
+  replies are arriving, so a reconnect cannot help and none is requested
+  (`DeviceConnection.lastListingHeardDevice`).
+- The link is already down. Native owns that reconnect; forcing a Dart connect
+  would hold DeviceService's mutex for up to the 75 s connect backstop.
+- Silence on a live link, which is what a stale subscription looks like. One
+  reconnect, then none until the device is heard from again. A reconnect that did
+  not help will not help twice, and in the background each one is adopted as a
+  due sync (the failed run recorded a skip), which fails and reconnects again.
+
+Notification setup failure during a download is a transport error. It recycles
+the link on every occurrence and cannot spend a file's poison budget.
+
+Rotation is a state-changing command. A failure before its write is certain not
+to have rotated (`StorageRotationNotStartedException`): the run is skipped and
+hands the force-sync cooldown back. A write/confirmation failure after issuing
 it has an unknown outcome, represented by
 `StorageRotationUnconfirmedException`. The WAL layer returns a partial result,
-preserves drafts and the force-sync cooldown, requests connection recovery, and
-does not send another rotation in that run. A subsequent ordinary sync lists
-the device's actual closed files and reconciles the backlog.
+preserves drafts and the force-sync cooldown, and does not send another rotation
+in that run. A subsequent ordinary sync lists the device's actual closed files
+and reconciles the backlog. Both request connection recovery under the rules
+above; an acknowledged rotation counts as hearing from the device.
 
 This does not change storage packet formats, firmware, or the one-device model.
 An ACK received before the rotation write is ignored. The existing firmware's
-untagged command acknowledgments remain a compatibility constraint.
+untagged command acknowledgments remain a compatibility constraint: the native
+storage keep-alive (paused only while a download is active) is acknowledged with
+the same two bytes, so one landing between the rotation write and the real ACK is
+taken as the rotation's. Fixing that needs the firmware to put something in the
+ACK that identifies the request, as `CMD_READ_FILE`'s already does by echoing the
+file timestamp.
