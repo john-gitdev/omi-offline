@@ -144,5 +144,83 @@ fun main() {
         check(f.gatt.writtenValues == listOf(listOf<Byte>(0, 0), listOf<Byte>(1, 0)))
         android.os.Build.VERSION.SDK_INT = 33
     }
+
+    // The storage keep-alive used to bypass the queue, and Android refuses whatever is issued
+    // while a write is still waiting for its callback. Queued, it runs only between
+    // operations, and only its own callback retires it.
+    fun Fixture.beat() {
+        if (manager.storageKeepAliveRunnable == null) manager.startStorageKeepAlive(ADDRESS)
+        manager.storageKeepAliveRunnable!!.run()
+    }
+    case("keep-alive waits behind an operation in flight") {
+        val f = Fixture()
+        f.subscribe(); f.manager.issue() // CCCD write in flight
+        f.beat()
+        check(f.manager.mainHandler.posted.isEmpty()) { "keep-alive issued over an operation in flight" }
+        check(f.gatt.characteristicWrites.isEmpty())
+        f.reply(); check(f.results.single().isSuccess)
+        f.manager.issue()
+        check(f.gatt.characteristicWrites == listOf(listOf<Byte>(0x32)))
+    }
+    case("keep-alive callback retires only the keep-alive") {
+        val f = Fixture()
+        f.beat(); f.manager.issue() // beat in flight
+        var queuedWriteCompleted = false
+        // A Dart write to the same characteristic registers its completion when it is queued.
+        f.manager.writeCompletions["$ADDRESS:$SERVICE:$CHAR".lowercase()] = { queuedWriteCompleted = true }
+        f.manager.onCharacteristicWrite(f.gatt, f.gatt.characteristic, 0)
+        check(!queuedWriteCompleted) { "the beat's callback completed a write that was never sent" }
+        check(f.manager.completedCommands == 1)
+        var next = false
+        f.manager.enqueueCommand("next") { next = true }; f.manager.issue(); check(next)
+    }
+    case("only one keep-alive waits in the queue") {
+        val f = Fixture()
+        f.subscribe(); f.manager.issue()
+        f.beat(); f.beat(); f.beat()
+        f.reply(); f.manager.issue()
+        f.manager.onCharacteristicWrite(f.gatt, f.gatt.characteristic, 0)
+        check(f.gatt.characteristicWrites.size == 1)
+        check(f.manager.mainHandler.posted.isEmpty())
+    }
+    case("a keep-alive discarded by teardown does not silence the next link") {
+        val f = Fixture()
+        f.subscribe(); f.manager.issue()
+        f.beat() // waits behind the subscription
+        f.manager.closeGatt(ADDRESS) // teardown clears the queue, beat included
+        val replacement = BluetoothGatt(Device(ADDRESS))
+        f.manager.connectedGatts[ADDRESS] = replacement
+        f.beat(); f.manager.issue()
+        check(replacement.characteristicWrites.size == 1) { "the ticker still believed a beat was queued" }
+    }
+    case("a rejected keep-alive does not wedge the queue") {
+        val f = Fixture(); f.gatt.characteristicWriteResult = 1
+        f.beat(); f.manager.issue()
+        var next = false
+        f.manager.enqueueCommand("next") { next = true }; f.manager.issue(); check(next)
+    }
+    case("a keep-alive that finds a transfer started stands down") {
+        val f = Fixture()
+        f.subscribe(); f.manager.issue()
+        f.beat()
+        f.manager.activeDownloads[ADDRESS] = Download() // a transfer began while it waited
+        f.reply(); f.manager.issue()
+        check(f.gatt.characteristicWrites.isEmpty())
+        var next = false
+        f.manager.enqueueCommand("next") { next = true }; f.manager.issue(); check(next)
+    }
+    // Dart must not act on a failure native caused by tearing the link down itself — native
+    // owns that reconnect — but must still act on one where the link is up and the Omi
+    // refused. Only the first carries the marker.
+    case("a subscription failed by native's own teardown says so; a refusal does not") {
+        val closed = Fixture(); closed.subscribe(); closed.manager.issue()
+        closed.manager.closeGatt(ADDRESS)
+        closed.failure()
+        check((closed.results.single().exceptionOrNull() as FlutterError).details == "link-closed")
+
+        val refused = Fixture(); refused.subscribe(); refused.manager.issue(); refused.reply(status = 5)
+        refused.failure()
+        check((refused.results.single().exceptionOrNull() as FlutterError).details == null)
+    }
     println("$passed notification subscription tests passed")
 }
