@@ -70,13 +70,13 @@ void main() {
     final pending = connection.performRotateFile();
     await Future<void>.delayed(Duration.zero);
     await transport.packets.close();
-    expect(await pending, isFalse);
+    await expectLater(pending, throwsA(isA<StorageRotationNotStartedException>()));
     expect(transport.writes, 0);
   });
 
   test('failed notification setup does not issue a rotation', () async {
     transport.failSubscription = true;
-    expect(await connection.performRotateFile(), isFalse);
+    await expectLater(connection.performRotateFile(), throwsA(isA<StorageRotationNotStartedException>()));
     expect(transport.writes, 0);
   });
 
@@ -100,6 +100,78 @@ void main() {
   test('a failed write is conservatively unknown', () async {
     transport.failWrite = true;
     await expectLater(connection.performRotateFile(), throwsA(isA<StorageRotationUnconfirmedException>()));
+  });
+
+  test('disconnected rotation facade reports not started without a command', () async {
+    await expectLater(connection.rotateFile(), throwsA(isA<StorageRotationNotStartedException>()));
+    expect(transport.writes, 0);
+  });
+
+  test('explicit rotation rejection remains false rather than unknown', () async {
+    final pending = connection.performRotateFile();
+    await transport.issued.future;
+    transport.packets.add([3, 1]);
+    expect(await pending, isFalse);
+  });
+
+  for (final command in ['delete', 'stop', 'clear']) {
+    Future<bool> run() => switch (command) {
+          'delete' => connection.performDeleteFile(StorageFile(index: 0, timestamp: 1, size: 100)),
+          'stop' => connection.performStopStorageSync(),
+          _ => connection.performClearStorage(),
+        };
+
+    test('$command fails promptly when its reply stream closes', () async {
+      final pending = run();
+      await transport.issued.future;
+      await transport.packets.close();
+      expect(await pending.timeout(const Duration(milliseconds: 200)), isFalse);
+      expect(transport.packets.hasListener, isFalse);
+    });
+
+    test('$command fails promptly on a stream error', () async {
+      final pending = run();
+      await transport.issued.future;
+      transport.packets.addError(StateError('link failed'));
+      expect(await pending.timeout(const Duration(milliseconds: 200)), isFalse);
+      expect(transport.packets.hasListener, isFalse);
+    });
+
+    test('$command cancels its listener after a failed write', () async {
+      transport.failWrite = true;
+      expect(await run(), isFalse);
+      expect(transport.packets.hasListener, isFalse);
+    });
+
+    test('$command still succeeds with a real ACK', () async {
+      final pending = run();
+      await transport.issued.future;
+      transport.packets.add([3, 0]);
+      expect(await pending, isTrue);
+    });
+  }
+
+  test('listing ends as unanswered immediately when its stream closes', () async {
+    final pending = connection.performListFiles();
+    await transport.issued.future;
+    await transport.packets.close();
+    expect(await pending.timeout(const Duration(milliseconds: 200)), isNull);
+  });
+
+  test('listing does not send after disconnect during notification settle', () async {
+    final pending = connection.performListFiles();
+    await Future<void>.delayed(Duration.zero);
+    await transport.packets.close();
+    expect(await pending, isNull);
+    expect(transport.writes, 0);
+  });
+
+  test('delete does not send after disconnect during notification settle', () async {
+    final pending = connection.performDeleteFile(StorageFile(index: 0, timestamp: 1, size: 100));
+    await Future<void>.delayed(Duration.zero);
+    await transport.packets.close();
+    expect(await pending, isFalse);
+    expect(transport.writes, 0);
   });
 
   test('standalone delete, stop, clear and byte-stream acquisition revalidate notifications', () async {
