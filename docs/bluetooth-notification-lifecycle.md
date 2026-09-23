@@ -30,11 +30,17 @@ link. A failed reconnect restore reports an unusable transport and requests a
 soft disconnect, leaving native in charge of reconnect. Failed subscriptions
 without listeners are discarded; a failed refresh preserves existing listeners.
 
-Storage listing, rotation, deletion, stop, clear and byte-stream acquisition
+Storage listing, rotation, deletion, clear and byte-stream acquisition
 revalidate notifications through
 `refreshCharacteristicStream`, while retaining listeners already attached on the
 current connection. Native downloads also wait for subscription confirmation
 before issuing READ. A delayed confirmation cannot start a cancelled download.
+
+STOP is the exception. It ends a transfer — after every file and on every cancel,
+often while notifications are still streaming — so it reuses the connection's
+existing subscription instead of writing a CCCD into that stream, and it is sent
+even when no subscription can be had. Its ACK only bounds how long the caller
+waits before the next command; no caller acts on STOP's result.
 
 An unanswered listing ends that sync as skipped and preserves WAL offsets and
 source files. Whether it also reconnects (`DeviceService.recycleConnection()`)
