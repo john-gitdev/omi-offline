@@ -889,6 +889,7 @@ class OmiDeviceConnection extends DeviceConnection {
     await _listFilesSub?.cancel();
     _listFilesSub = null;
     final int gen = ++_listFilesGeneration;
+    lastListingHeardDevice = false;
     final currentCompleter = Completer<StorageListing?>();
     unawaited(currentCompleter.future.then<void>((_) {}, onError: (Object _) {}));
     final buffer = <int>[];
@@ -918,6 +919,10 @@ class OmiDeviceConnection extends DeviceConnection {
 
       _listFilesSub = stream.listen((blePacket) {
         if (isStale() || blePacket.isEmpty) return;
+        // Any packet at all — even a refusal, even a stray keep-alive ACK — proves
+        // notifications are reaching us, which is the question the sync layer asks of
+        // a failed listing before it reconnects. See lastListingHeardDevice.
+        lastListingHeardDevice = true;
 
         // PACKET_ACK (0x03) is just an acknowledgement that the command was received.
         // The actual data follows in PACKET_DATA (0x01) packets.
