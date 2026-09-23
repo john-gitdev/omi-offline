@@ -166,6 +166,31 @@ void main() {
     expect(transport.writes, 0);
   });
 
+  // Both of these are null listings. Only the silent one is a reason to reconnect: the
+  // refusal arrived over the very notifications a reconnect would be trying to repair.
+  test('a refused listing is null but records that the device was heard', () async {
+    final pending = connection.performListFiles();
+    await transport.issued.future;
+    transport.packets.add([3, 9]); // PACKET_ACK, STORAGE_NOT_READY
+    expect(await pending, isNull);
+    expect(connection.lastListingHeardDevice, isTrue);
+  });
+
+  test('a listing that ends in silence records that nothing was heard', () async {
+    final pending = connection.performListFiles();
+    await transport.issued.future;
+    await transport.packets.close();
+    expect(await pending, isNull);
+    expect(connection.lastListingHeardDevice, isFalse);
+  });
+
+  test('a listing that could not subscribe records that nothing was heard', () async {
+    connection.lastListingHeardDevice = true; // left over from an earlier, answered listing
+    transport.failSubscription = true;
+    expect(await connection.performListFiles(), isNull);
+    expect(connection.lastListingHeardDevice, isFalse);
+  });
+
   test('delete does not send after disconnect during notification settle', () async {
     final pending = connection.performDeleteFile(StorageFile(index: 0, timestamp: 1, size: 100));
     await Future<void>.delayed(Duration.zero);
