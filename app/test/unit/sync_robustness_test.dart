@@ -1079,6 +1079,39 @@ void main() {
       expect(await bin.readAsBytes(), List<int>.filled(10, 0xAA));
     });
 
+    test('an ACK naming another command cannot start this read', () async {
+      // oo-3.1.5 names the command in every ACK but the read's own six-byte one. A late
+      // delete's OK is the same shape of mistake as the late read ACK above.
+      const ts = 1789000000;
+      final syncFuture = sync.syncWal(
+        wal: Wal(
+          device: 'test-device',
+          fileNum: 1,
+          walOffset: 0,
+          storageTotalBytes: 10,
+          timerStart: ts,
+          storage: WalStorage.sdcard,
+        ),
+      );
+      await pump();
+      mockConn.add([0x03, 0x00, 0x12]);
+      await pump();
+      mockConn.add(dataPacket(0, List<int>.filled(10, 0xDD)));
+      await pump();
+      mockConn.add(eotPacket());
+      await pump();
+
+      mockConn.add([0x03, 0x00, 0x11]);
+      await pump();
+      mockConn.add(dataPacket(0, List<int>.filled(10, 0xAA)));
+      await pump();
+      mockConn.add(eotPacket());
+      await syncFuture;
+
+      final bin = File('${tempDir.path}/raw_segments/$ts/${ts}_0.bin');
+      expect(await bin.readAsBytes(), List<int>.filled(10, 0xAA));
+    });
+
     test('syncWal does NOT delete a device file on an incomplete (short) transfer', () async {
       globalDeletedTimestamps = [];
       final syncFuture = sync.syncWal(wal: makeWal(totalBytes: 1000));
