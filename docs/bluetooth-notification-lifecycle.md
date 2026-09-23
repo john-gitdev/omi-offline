@@ -17,6 +17,16 @@ advances past a missing descriptor callback on the same link: Android does not
 tag descriptor acknowledgments with a request ID. Teardown and delayed callbacks
 check GATT identity before touching replacement connection state.
 
+Every characteristic and descriptor read or write goes through that command
+queue, the native storage keep-alive included. Android refuses a read, write or descriptor write issued
+while any write — write-without-response too — is still waiting for its callback,
+and the keep-alive used to bypass the queue: every 10 s, whatever the queue issued
+in that window (up to a connection interval) was rejected as busy, and a rejected
+CCCD write now fails its subscription. Queued, the keep-alive runs between
+operations and only its own callback retires it. It can be delayed behind other
+commands, but a delay long enough for the firmware's 60 s idle-disconnect means a
+lost callback, and dropping that link is the recovery.
+
 `NativeBleTransport` waits for that result before exposing a characteristic stream.
 Concurrent callers join the pending subscription. Failures invalidate readiness
 so another caller can retry. Dart retains the actual native future until it
@@ -27,8 +37,12 @@ completion from an earlier connection cannot confirm a replacement subscription.
 Callers still need to attach to the replacement stream after disconnect.
 Explicit teardown forgets subscription intent and unmanages even an already-lost
 link. A failed reconnect restore reports an unusable transport and requests a
-soft disconnect, leaving native in charge of reconnect. Failed subscriptions
-without listeners are discarded; a failed refresh preserves existing listeners.
+soft disconnect, leaving native in charge of reconnect — unless native failed the
+subscription by tearing the link down itself (details `link-closed`). Native is
+already reconnecting then and its disconnect event follows, and a soft disconnect
+sent late — from an isolate Android had frozen — would drop whatever fresh link
+native's retry had made in the meantime. Failed subscriptions without listeners
+are discarded; a failed refresh preserves existing listeners.
 
 Storage listing, rotation, clear and byte-stream acquisition revalidate
 notifications through `refreshCharacteristicStream`, while retaining listeners
