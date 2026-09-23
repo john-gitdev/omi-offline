@@ -440,12 +440,12 @@ class OmiDeviceConnection extends DeviceConnection {
     _listFilesGeneration++;
     final sub = _listFilesSub;
     _listFilesSub = null;
-    await sub?.cancel();
-    await performStopStorageSync();
     _timeoutTimer?.cancel();
     _timeoutTimer = null;
     _cccdRetryTimer?.cancel();
     _cccdRetryTimer = null;
+    await sub?.cancel();
+    await performStopStorageSync();
   }
 
   @override
@@ -890,6 +890,7 @@ class OmiDeviceConnection extends DeviceConnection {
     _listFilesSub = null;
     final int gen = ++_listFilesGeneration;
     final currentCompleter = Completer<StorageListing?>();
+    unawaited(currentCompleter.future.then<void>((_) {}, onError: (Object _) {}));
     final buffer = <int>[];
     bool isStale() => gen != _listFilesGeneration;
 
@@ -981,10 +982,16 @@ class OmiDeviceConnection extends DeviceConnection {
         if (expectedTotalBytes != null && buffer.length >= expectedTotalBytes!) {
           _parseAndSuccess(buffer, success);
         }
+      }, onDone: () {
+        if (!isStale()) success(null);
+      }, onError: (Object _) {
+        if (!isStale()) success(null);
       });
 
       await Future.delayed(_cccdSettleDelay);
+      if (currentCompleter.isCompleted) return await currentCompleter.future;
       await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x10]);
+      if (currentCompleter.isCompleted) return await currentCompleter.future;
       // 20s, not 120s: listFiles runs while holding the shared _storageMutex, so a
       // non-responsive listing pins the lock — starving syncAll (which skips when the
       // lock is busy) and refreshStorageStats (10s acquire timeout) for the whole
@@ -1006,6 +1013,15 @@ class OmiDeviceConnection extends DeviceConnection {
       Logger.warning('OmiDeviceConnection: CMD_LIST_FILES did not answer ($e) — '
           'reporting no answer, not an empty card');
       return null;
+    } finally {
+      if (!isStale()) {
+        _listFilesGeneration++;
+        _timeoutTimer?.cancel();
+        _cccdRetryTimer?.cancel();
+        final sub = _listFilesSub;
+        _listFilesSub = null;
+        await sub?.cancel();
+      }
     }
   }
 
@@ -1022,9 +1038,10 @@ class OmiDeviceConnection extends DeviceConnection {
       final completer = Completer<bool>();
       final stream = await transport.refreshCharacteristicStream(
           storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      bool commandAttempted = false;
       final sub = stream.listen((data) {
         if (completer.isCompleted) return;
-        if (data.isNotEmpty && data[0] == 0x03) {
+        if (commandAttempted && data.isNotEmpty && data[0] == 0x03) {
           final int result = data.length < 2 ? 0 : data[1];
           if (result != 0) {
             Logger.error('OmiConnection: CMD_DELETE_FILE index=${file.index} ts=$timestamp '
@@ -1032,22 +1049,26 @@ class OmiDeviceConnection extends DeviceConnection {
           }
           completer.complete(result == 0);
         }
+      }, onDone: () {
+        if (!completer.isCompleted) completer.complete(false);
+      }, onError: (Object _) {
+        if (!completer.isCompleted) completer.complete(false);
       });
-      await Future.delayed(_cccdCommandDelay);
-
-      final List<int> cmd = [0x12, file.index & 0xFF];
-      if (timestamp != null) {
-        cmd.addAll([
-          timestamp & 0xFF,
-          (timestamp >> 8) & 0xFF,
-          (timestamp >> 16) & 0xFF,
-          (timestamp >> 24) & 0xFF,
-        ]);
-      }
-
-      await transport.writeCharacteristic(
-          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, Uint8List.fromList(cmd));
       try {
+        await Future.delayed(_cccdCommandDelay);
+        if (completer.isCompleted) return await completer.future;
+        final List<int> cmd = [0x12, file.index & 0xFF];
+        if (timestamp != null) {
+          cmd.addAll([
+            timestamp & 0xFF,
+            (timestamp >> 8) & 0xFF,
+            (timestamp >> 16) & 0xFF,
+            (timestamp >> 24) & 0xFF,
+          ]);
+        }
+        commandAttempted = true;
+        await transport.writeCharacteristic(
+            storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, Uint8List.fromList(cmd));
         return await completer.future.timeout(const Duration(seconds: 35));
       } on TimeoutException {
         // No ACK at all. The firmware's own wait is 30 s, so it should have answered
@@ -1115,10 +1136,13 @@ class OmiDeviceConnection extends DeviceConnection {
         if (!completer.isCompleted && data.isNotEmpty && data[0] == 0x03) {
           completer.complete(data.length < 2 || data[1] == 0);
         }
+      }, onDone: () {
+        if (!completer.isCompleted) completer.complete(false);
+      }, onError: (Object _) {
+        if (!completer.isCompleted) completer.complete(false);
       });
-
-      await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x03]);
       try {
+        await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x03]);
         return await completer.future.timeout(const Duration(seconds: 5));
       } finally {
         await sub.cancel();
@@ -1156,7 +1180,7 @@ class OmiDeviceConnection extends DeviceConnection {
     } catch (e, stack) {
       Logger.error('performRotateFile error: $e\n$stack');
       if (commandAttempted) throw StorageRotationUnconfirmedException(e);
-      return false;
+      throw StorageRotationNotStartedException(e);
     }
   }
 
@@ -1170,9 +1194,13 @@ class OmiDeviceConnection extends DeviceConnection {
         if (!completer.isCompleted && data.isNotEmpty && data[0] == 0x03) {
           completer.complete(data.length < 2 || data[1] == 0);
         }
+      }, onDone: () {
+        if (!completer.isCompleted) completer.complete(false);
+      }, onError: (Object _) {
+        if (!completer.isCompleted) completer.complete(false);
       });
-      await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x14]);
       try {
+        await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x14]);
         return await completer.future.timeout(const Duration(seconds: 65));
       } finally {
         await sub.cancel();
