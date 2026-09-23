@@ -1952,6 +1952,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         if (_isCancelled) return null;
         try {
           rotated = await connection.rotateFile();
+        } on StorageRotationNotStartedException catch (e) {
+          Logger.warning('SDCardWalSync: $e — recovering the link; no rotation to retry or reconcile');
+          _recoverStorageReplies();
+          // No command was sent. The controller treats null as skipped, preserves
+          // drafts and returns the force-sync cooldown to the user.
+          return null;
         } on StorageRotationUnconfirmedException catch (e) {
           Logger.warning('SDCardWalSync: $e — preserving drafts and deferring reconciliation; not rotating again');
           _recoverStorageReplies();
