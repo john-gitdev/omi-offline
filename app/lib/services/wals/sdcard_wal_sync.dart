@@ -30,6 +30,20 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   final Future<DeviceConnection?> Function(String deviceId)? _connectionProvider;
 
+  /// Test-only replacement for DeviceService.recycleConnection. Without it every
+  /// recycle this class asks for is untestable: tests inject [_connectionProvider]
+  /// and have no real DeviceService, so the default is withheld whenever they do.
+  final Future<bool> Function()? _recycleConnectionOverride;
+
+  Future<bool> Function()? get _recycleConnection =>
+      _recycleConnectionOverride ??
+      (_connectionProvider == null ? () => ServiceManager.instance().device.recycleConnection() : null);
+
+  /// Whether a silent storage reply channel may still earn a reconnect. See
+  /// [_recoverStorageReplies]; cleared by the recovery it licenses, re-armed by any
+  /// reply from the device. In memory on purpose: a new process is a new link anyway.
+  bool _storageRecoveryArmed = true;
+
   final Duration _inactivityTimeout;
 
   StreamSubscription? _storageStream;
@@ -155,7 +169,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     Duration inactivityTimeout = const Duration(seconds: 15),
     @visibleForTesting bool? reconcileResumeOffsets,
     @visibleForTesting bool? useNativeDownload,
+    @visibleForTesting Future<bool> Function()? recycleConnection,
   })  : _connectionProvider = connectionProvider,
+        _recycleConnectionOverride = recycleConnection,
         _inactivityTimeout = inactivityTimeout,
         _reconcileResumeOverride = reconcileResumeOffsets,
         _nativeDownloadOverride = useNativeDownload;
@@ -1281,9 +1297,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     // offsets) is better than an empty one we have no evidence for.
     if (listed == null) {
       Logger.warning('SDCardWalSync: sync did not run — the device did not answer CMD_LIST_FILES');
-      _recoverStorageReplies();
+      await _recoverAfterFailedListing(connection);
       return null;
     }
+    _noteStorageReplyHeard();
     _wals = listed.wals;
     // A listing the device could not deliver in full names only a prefix of the
     // card, so whatever this run fetches, it did not fetch everything. That is the
@@ -1645,11 +1662,17 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             errStr.contains('Characteristic not available') ||
             errStr.contains('notification-subscription');
         if (definiteTransportError) {
-          // _connectionProvider != null only in tests, which have no real DeviceService.
-          if (_connectionProvider == null) {
+          // A plain recycle, not _recoverStorageReplies: a transfer that dies mid-file is
+          // the wedged-GATT signature and is recovered every time. Routing it through that
+          // method's once-per-episode limit would change nothing anyway — a transfer only
+          // starts after a listing the device answered, which re-arms it — and this path
+          // cannot feed the reconnect-and-adopt loop the limit exists to break: the run it
+          // ends reports as having run, so no skip is recorded for _handleDeviceConnected.
+          final recycle = _recycleConnection;
+          if (recycle != null) {
             Logger.warning('SDCardWalSync: transfer failed with a transport-wedge signal ($e) — '
                 'recycling connection, not charging file ts=${wal.timerStart}');
-            unawaited(ServiceManager.instance().device.recycleConnection());
+            unawaited(recycle());
           }
           break;
         }
@@ -1907,13 +1930,58 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     return _claimFullSync(_rotateAndSyncInner(progress: progress));
   }
 
-  void _recoverStorageReplies() {
-    if (_isCancelled || _connectionProvider != null) return;
-    Logger.warning('SDCardWalSync: storage reply channel failed — recycling the managed connection');
-    unawaited(ServiceManager.instance().device.recycleConnection().catchError((Object e) {
+  /// Reconnect once because a storage command heard nothing back.
+  ///
+  /// The failure this exists for is a stale notification subscription — the link is up,
+  /// commands go out, and no reply ever reaches us (seen after Bluetooth was toggled
+  /// mid-download). A fresh GATT cures that, and nothing short of one does.
+  ///
+  /// Two limits, and both are load-bearing:
+  ///
+  /// * Only while the link is up. A link that is already down is native's to bring back;
+  ///   recycling it forces a Dart connect that holds DeviceService's mutex for up to the
+  ///   75 s connect backstop, stalling every ensureConnection caller behind it.
+  /// * Only once per failure episode. If the reconnect did not help, another will not
+  ///   either — a hung storage thread is not a stale subscription — and each one is
+  ///   worse than useless in the background: the failed run records a skip, so
+  ///   _handleDeviceConnected adopts the returning link as a sync that is due, which fails
+  ///   and reconnects again, around the clock. Any reply from the device re-arms it
+  ///   ([_noteStorageReplyHeard]).
+  ///
+  /// A device that answered and refused (STORAGE_NOT_READY: the SD card is not mounted,
+  /// or has failed) never reaches here — see [_recoverAfterFailedListing].
+  Future<void> _recoverStorageReplies(DeviceConnection connection, String reason) async {
+    final recycle = _recycleConnection;
+    if (_isCancelled || recycle == null) return;
+    if (!_storageRecoveryArmed) {
+      Logger.warning('SDCardWalSync: $reason — already reconnected once for this without a reply since; '
+          'not reconnecting again');
+      return;
+    }
+    if (!await connection.isConnected()) {
+      Logger.warning('SDCardWalSync: $reason — the link is already down; leaving reconnection to native');
+      return;
+    }
+    _storageRecoveryArmed = false;
+    Logger.warning('SDCardWalSync: $reason — recycling the connection');
+    unawaited(recycle().catchError((Object e) {
       Logger.warning('SDCardWalSync: connection recovery failed: $e');
       return false;
     }));
+  }
+
+  /// The device answered a storage command, so its reply channel works.
+  void _noteStorageReplyHeard() => _storageRecoveryArmed = true;
+
+  /// A listing that came back null: reconnect only if nothing came back at all.
+  Future<void> _recoverAfterFailedListing(DeviceConnection connection) async {
+    if (connection.lastListingHeardDevice) {
+      Logger.warning('SDCardWalSync: the device answered CMD_LIST_FILES but refused it — its replies are '
+          'arriving, so a reconnect would not help; not reconnecting');
+      _noteStorageReplyHeard();
+      return;
+    }
+    await _recoverStorageReplies(connection, 'CMD_LIST_FILES got no reply at all');
   }
 
   Future<SyncLocalFilesResponse?> _rotateAndSyncInner({
@@ -1953,16 +2021,18 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         try {
           rotated = await connection.rotateFile();
         } on StorageRotationNotStartedException catch (e) {
-          Logger.warning('SDCardWalSync: $e — recovering the link; no rotation to retry or reconcile');
-          _recoverStorageReplies();
+          Logger.warning('SDCardWalSync: $e — no rotation to retry or reconcile');
+          await _recoverStorageReplies(connection, 'rotation could not start');
           // No command was sent. The controller treats null as skipped, preserves
           // drafts and returns the force-sync cooldown to the user.
           return null;
         } on StorageRotationUnconfirmedException catch (e) {
           Logger.warning('SDCardWalSync: $e — preserving drafts and deferring reconciliation; not rotating again');
-          _recoverStorageReplies();
+          await _recoverStorageReplies(connection, 'rotation got no acknowledgement');
           return SyncLocalFilesResponse(newConversationIds: [], updatedConversationIds: [], isPartial: true);
         }
+        // Returned normally = an ACK arrived, success or refusal alike.
+        _noteStorageReplyHeard();
         if (rotated) break;
         Logger.warning('Rotation failed, retrying in 2 seconds...');
         await Future.delayed(const Duration(seconds: 2));
@@ -1976,7 +2046,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       if (_isCancelled) return null;
 
       if (wals == null) {
-        _recoverStorageReplies();
+        await _recoverAfterFailedListing(connection);
         // The rotate DID land — the active bin is sealed and a fresh one started —
         // so this run reached the device whatever the listing then did. Returning
         // null would say the opposite: _runForcePipeline reads it as "nothing was
