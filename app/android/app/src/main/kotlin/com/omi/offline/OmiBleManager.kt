@@ -61,6 +61,10 @@ class OmiBleManager private constructor(private val application: Application) {
         }
 
         private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+
+        // Details of a subscription failure native caused by tearing the link down itself.
+        // Must match NativeBleTransport._linkClosedByNative.
+        private const val LINK_CLOSED_BY_NATIVE = "link-closed"
     }
 
     interface BleConnectionListener {
@@ -689,13 +693,28 @@ class OmiBleManager private constructor(private val application: Application) {
     }
 
     // Sends 0x32 (KEEP_ALIVE) to the storage characteristic on [storageKeepAliveInterval]
-    // (10 s) using WRITE_NO_RESPONSE so it bypasses the GATT command queue. Resets the
-    // firmware's idle-disconnect timer (transport.c IDLE_DISCONNECT_TIMEOUT_MS, 60 s)
-    // across an idle connection; it is skipped while a transfer is active, since the
-    // firmware exempts those from the idle check anyway (see the runnable below). Bypassing
-    // the queue is what lets it beat during other GATT work — and the reason it must stand
-    // down for a transfer, whose stream shares this characteristic. See the interval's own
-    // comment for why all three constants move together.
+    // (10 s) to reset the firmware's idle-disconnect timer (transport.c
+    // IDLE_DISCONNECT_TIMEOUT_MS, 60 s) across an idle connection; it is skipped while a
+    // transfer is active, since the firmware exempts those from the idle check anyway (see
+    // the runnable below). See the interval's own comment for why the constants move
+    // together.
+    //
+    // It goes through the GATT command queue like every other operation. It used to bypass
+    // it, and Android refuses a read, write or descriptor write issued while any write —
+    // write-without-response included — is still waiting for its onCharacteristicWrite,
+    // which can take a connection interval (100-200 ms on an idle link). So every 10 s,
+    // whatever the queue issued in that window was rejected as busy. Once notification
+    // setup became confirmed that stopped being harmless: a rejected CCCD write fails the
+    // subscription, and a download's failed subscription recycles the link mid-sync.
+    //
+    // Queued, a beat can wait behind other commands, but not for anything like the ~50 s
+    // it would take the firmware to idle-drop the link. Commands finish in a connection
+    // event or two; the ones that can hold the queue longer are bounded (a subscription at
+    // 10 s, discovery at 15 s); a link still pairing gets the firmware's longer
+    // PAIRING_GRACE_MS; and storage commands waiting in the queue mark activity themselves
+    // when they run. A queue stalled long enough to miss five beats has lost a callback —
+    // the connected-but-dead state — and the firmware dropping that link is the recovery,
+    // not a regression. Dart's own foreground keep-alive has always gone through the queue.
     fun startStorageKeepAlive(address: String) {
         stopStorageKeepAlive()
         val addr = address.uppercase()
@@ -707,8 +726,8 @@ class OmiBleManager private constructor(private val application: Application) {
                 // never inherited. Safe because the firmware exempts an active transfer from
                 // its idle-disconnect entirely (transport.c storage_transfer_active()), so
                 // nothing needs to beat here; the transfer's own traffic is the liveness.
-                // Two reasons it must not: this write bypasses gattQueue, so it races the
-                // read stream it shares a characteristic with; and firmware before oo-3.1.5
+                // Two reasons it must not: it writes to the characteristic the read stream
+                // is using, and would race that stream; and firmware before oo-3.1.5
                 // ACKs it on that same characteristic, which is what used to keep
                 // StorageDownloadSession's inactivity watchdog permanently re-armed (oo-3.1.5
                 // sends no reply to it at all). Keep reposting so the beat resumes the moment
@@ -726,22 +745,54 @@ class OmiBleManager private constructor(private val application: Application) {
         storageKeepAliveRunnable = null
     }
 
+    // A beat is waiting in the queue. Main thread only (the ticker and the queued command
+    // both run there); cleared by [resetCommandPipeline], which discards the command.
+    private var keepAliveQueued = false
+
+    // The beat is the operation in flight, so the next onCharacteristicWrite is its own.
+    // Written on main, read on the binder thread that delivers the callback.
+    @Volatile private var keepAliveInFlight = false
+
     private fun sendStorageKeepAliveNoResponse(address: String) {
         val addr = address.uppercase()
         val gatt = connectedGatts[addr] ?: return
         val characteristic = gatt.getService(STORAGE_SERVICE_UUID)?.getCharacteristic(STORAGE_CHAR_UUID) ?: return
-        val data = ByteArray(1) { 0x32 }
-        try {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                gatt.writeCharacteristic(characteristic, data, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
-            } else {
-                @Suppress("DEPRECATION")
-                characteristic.value = data
-                characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                gatt.writeCharacteristic(characteristic)
+        // One beat at a time: a queue slow enough to still hold the last one gains nothing
+        // from a second.
+        if (keepAliveQueued) return
+        keepAliveQueued = true
+        enqueueCommand("storage keep-alive") {
+            keepAliveQueued = false
+            // A transfer may have started, or the link changed, while this waited its turn.
+            if (connectedGatts[addr] !== gatt || activeDownloads.containsKey(addr)) {
+                completeCommand()
+                return@enqueueCommand
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "sendStorageKeepAliveNoResponse failed for $addr: ${e.message}")
+            val data = ByteArray(1) { 0x32 }
+            keepAliveInFlight = true
+            val accepted = try {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                    gatt.writeCharacteristic(characteristic, data, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) ==
+                        BluetoothStatusCodes.SUCCESS
+                } else {
+                    @Suppress("DEPRECATION")
+                    characteristic.value = data
+                    @Suppress("DEPRECATION")
+                    characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                    @Suppress("DEPRECATION")
+                    gatt.writeCharacteristic(characteristic)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "sendStorageKeepAliveNoResponse failed for $addr: ${e.message}")
+                false
+            }
+            // Accepted, it completes on its own onCharacteristicWrite, like every write:
+            // Android reports a write-without-response there too, and holds the next
+            // operation off as busy until it has.
+            if (!accepted) {
+                keepAliveInFlight = false
+                completeCommand()
+            }
         }
     }
 
@@ -864,6 +915,10 @@ class OmiBleManager private constructor(private val application: Application) {
         gattQueue.peek()?.let { mainHandler.removeCallbacks(it.run) }
         gattQueue.clear()
         isProcessingCommand = false
+        // A beat discarded with the queue must not leave the ticker believing one is still
+        // waiting, or no keep-alive is ever sent on the next link.
+        keepAliveQueued = false
+        keepAliveInFlight = false
     }
 
     @Synchronized fun enqueueCommand(label: String, command: Runnable) {
@@ -912,12 +967,19 @@ class OmiBleManager private constructor(private val application: Application) {
         }
     }
 
+    // Every caller is a teardown native itself is carrying out — a disconnect it is about to
+    // report, its own subscription watchdog, a replaced or closed GATT — so it also owns the
+    // reconnect. The details tell Dart so (NativeBleTransport._resubscribeAfterReconnect):
+    // acting on this failure there would drop "the current link" late, and if that isolate
+    // was frozen long enough, the link it dropped would be the fresh one native's retry had
+    // already put in place.
     private fun failPendingSubscriptions(address: String, gatt: BluetoothGatt? = null) {
         val addr = address.uppercase()
         pendingSubscriptions.entries.toList().filter { it.key.startsWith("${addr.lowercase()}:") }.forEach { (key, pending) ->
             if ((gatt == null || pending.gatt === gatt) && pendingSubscriptions.remove(key, pending)) {
                 pending.timeout?.let { mainHandler.removeCallbacks(it) }
-                pending.callback(Result.failure(FlutterError("notification-subscription", "Disconnected during notification setup", null)))
+                pending.callback(Result.failure(FlutterError(
+                    "notification-subscription", "Disconnected during notification setup", LINK_CLOSED_BY_NATIVE)))
             }
         }
     }
@@ -1042,6 +1104,16 @@ class OmiBleManager private constructor(private val application: Application) {
         }
         override fun onCharacteristicWrite(gatt: BluetoothGatt, char: BluetoothGattCharacteristic, status: Int) {
             if (connectedGatts[gatt.device.address.uppercase()] !== gatt) return
+            // The queue has one operation in flight, so while that is the keep-alive this
+            // callback is the keep-alive's. It has no completion of its own, and a Dart write
+            // to the same characteristic queued behind it has already registered one under
+            // this key — the generic path below would report that write done before it was
+            // even sent.
+            if (keepAliveInFlight) {
+                keepAliveInFlight = false
+                completeCommand()
+                return
+            }
             val key = "${gatt.device.address.uppercase()}:${char.service.uuid}:${char.uuid}".lowercase()
             val res = if (status == BluetoothGatt.GATT_SUCCESS) Result.success(Unit) else Result.failure(Exception("Error $status"))
             writeCompletions.remove(key)?.invoke(res)
