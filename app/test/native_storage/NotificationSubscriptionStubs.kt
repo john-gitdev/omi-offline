@@ -13,7 +13,10 @@ object android {
 }
 object BluetoothStatusCodes { const val SUCCESS = 0 }
 class FlutterError(val code: String, override val message: String?, val details: Any?) : Throwable()
-object Log { fun i(tag: String, message: String) {} }
+object Log {
+    fun i(tag: String, message: String) {}
+    fun e(tag: String, message: String) {}
+}
 class Device(val address: String)
 class Service(val uuid: UUID)
 class BluetoothGattCharacteristic(val service: Service, val uuid: UUID) {
@@ -23,7 +26,10 @@ class BluetoothGattCharacteristic(val service: Service, val uuid: UUID) {
 class BluetoothGattDescriptor(val characteristic: BluetoothGattCharacteristic) {
     val uuid: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
     var value: ByteArray = byteArrayOf()
-    companion object { val ENABLE_NOTIFICATION_VALUE = byteArrayOf(1, 0) }
+    companion object {
+        val ENABLE_NOTIFICATION_VALUE = byteArrayOf(1, 0)
+        val DISABLE_NOTIFICATION_VALUE = byteArrayOf(0, 0)
+    }
 }
 class BluetoothGatt(val device: Device) {
     companion object { const val GATT_SUCCESS = 0 }
@@ -34,6 +40,7 @@ class BluetoothGatt(val device: Device) {
     var descriptorAccepted = true
     var throwRegistration = false
     var writes = 0
+    val writtenValues = mutableListOf<List<Byte>>()
     var closed = false
     fun disconnect() {}
     fun close() { closed = true }
@@ -43,6 +50,7 @@ class BluetoothGatt(val device: Device) {
     }
     fun writeDescriptor(descriptor: BluetoothGattDescriptor, value: ByteArray): Int {
         writes++
+        writtenValues.add(value.toList())
         return if (descriptorAccepted) 0 else 1
     }
     fun writeDescriptor(descriptor: BluetoothGattDescriptor): Boolean = writeDescriptor(descriptor, descriptor.value) == 0
@@ -96,6 +104,7 @@ class OmiBleManager {
     }
     // PRODUCTION_QUEUE
     // PRODUCTION_SUBSCRIPTIONS
+    // PRODUCTION_WRITE_HELPER
     // PRODUCTION_CLEANUP
     // PRODUCTION_DESCRIPTOR
 }
