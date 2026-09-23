@@ -938,6 +938,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
           case 0x03:
             if (value.length < 2) return;
+            // oo-3.1.5+ names the command in every other ACK ([0x03][result][cmd]); one naming
+            // anything but CMD_READ_FILE belongs to another command and says nothing about
+            // this read. Same rule as OmiBleManager's native path.
+            if (value.length == 3 && value[2] != 0x11) return;
             // oo-3.1.4+ echoes the requested timestamp ([0x03][result][ts:4 LE]); one that
             // names another file is a late ACK for an earlier read and must not open this
             // download to that file's stream. Same rule as OmiBleManager's native path.
