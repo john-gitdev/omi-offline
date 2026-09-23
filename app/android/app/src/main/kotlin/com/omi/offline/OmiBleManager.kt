@@ -581,8 +581,21 @@ class OmiBleManager private constructor(private val application: Application) {
     private class PendingSubscription(val gatt: BluetoothGatt, val callback: (Result<Unit>) -> Unit) {
         @Volatile var issued = false
         var timeout: Runnable? = null
+        // Main thread only (the watchdog runs there). See [expireSubscription].
+        var waitedForPairingMs = 0L
     }
     private val pendingSubscriptions = ConcurrentHashMap<String, PendingSubscription>()
+
+    // Covers queue wait as well as the descriptor callback; see [subscribeCharacteristic].
+    private val subscriptionTimeoutMs = 10_000L
+
+    // How long a subscription may keep waiting on a pairing prompt. Twice the Bluetooth
+    // spec's 30 s pairing (SMP) timeout, which both the phone and the Omi enforce, so it
+    // never cuts a real prompt short; it exists only for a stack that never leaves BONDING.
+    private val pairingWaitCapMs = 60_000L
+
+    private fun isBonding(gatt: BluetoothGatt): Boolean =
+        try { gatt.device.bondState == BluetoothDevice.BOND_BONDING } catch (e: SecurityException) { false }
 
     private fun expireSubscription(key: String, pending: PendingSubscription) {
         val gatt = pending.gatt
@@ -591,6 +604,23 @@ class OmiBleManager private constructor(private val application: Application) {
             if (pendingSubscriptions[key] !== pending) return
             if (connectedGatts[addr] !== gatt) {
                 failPendingSubscriptions(addr, gatt)
+                return
+            }
+            // The storage, mute and recording-state CCCDs need an encrypted link. On one
+            // that is not bonded, the write makes Android start pairing, and its callback
+            // waits for the user to answer the pairing prompt — a system dialog, or a
+            // notification when the app is not on screen. Tearing the link down here pulled
+            // that prompt after 10 s. Pairing ends on its own (bonded, declined, or the 30 s
+            // pairing timeout), and when it does the write completes and resolves this
+            // subscription, so keep waiting while Android reports the Omi as bonding.
+            //
+            // A declined pairing is deliberately not special-cased: the write fails, the link
+            // is dropped, and the reconnect asks again. Someone re-pairing after a firmware
+            // update, which wipes the bond on both sides, needs to be asked again.
+            if (isBonding(gatt) && pending.waitedForPairingMs < pairingWaitCapMs) {
+                pending.waitedForPairingMs += subscriptionTimeoutMs
+                Log.i(TAG, "Notification setup $key waiting on pairing (${pending.waitedForPairingMs} ms)")
+                mainHandler.postDelayed(pending.timeout!!, subscriptionTimeoutMs)
                 return
             }
             // A descriptor callback carries no request ID. Advancing this queue on the
@@ -626,7 +656,7 @@ class OmiBleManager private constructor(private val application: Application) {
         }
         // Include queue wait: a prior missing callback must not strand this future.
         pending.timeout = Runnable { expireSubscription(key, pending) }
-        mainHandler.postDelayed(pending.timeout!!, 10_000L)
+        mainHandler.postDelayed(pending.timeout!!, subscriptionTimeoutMs)
         enqueueCommand("subscribe $serviceUuid:$charUuid") {
             fun reject(reason: String) {
                 if (pendingSubscriptions.remove(key, pending)) {
