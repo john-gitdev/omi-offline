@@ -17,6 +17,17 @@ advances past a missing descriptor callback on the same link: Android does not
 tag descriptor acknowledgments with a request ID. Teardown and delayed callbacks
 check GATT identity before touching replacement connection state.
 
+The one wait the watchdog does not cut short is a pairing prompt. The storage,
+mute and recording-state CCCDs need an encrypted link; on one that is not bonded
+the write makes Android start pairing, and its callback waits for the user to
+answer — a system dialog, or a notification when the app is not on screen. While
+Android reports the Omi as bonding, the watchdog keeps re-arming instead of closing
+the link, up to 60 s: pairing ends on its own (bonded, declined, or the Bluetooth
+spec's 30 s pairing timeout, enforced on both sides) and the write then resolves
+the subscription. A declined pairing is not special-cased: the subscription fails,
+the link drops and the reconnect asks again, which is what someone re-pairing after
+a firmware update needs.
+
 Every characteristic and descriptor read or write goes through that command
 queue, the native storage keep-alive included. Android refuses a read, write or descriptor write issued
 while any write — write-without-response too — is still waiting for its callback,
