@@ -115,15 +115,29 @@ class OmiDeviceConnection extends DeviceConnection {
   @override
   bool get isStorageBusy => _storageMutex.isLocked;
 
-  // 2s for the initial listFiles subscription (CCCD descriptor write is slow on first subscribe).
-  static const _cccdSettleDelay = Duration(milliseconds: 2000);
-  // 500ms for subsequent commands (delete, rotate) — enough for CCCD writes on slow BLE
-  // stacks without the 2s penalty of the full listFiles settle delay.
-  static const _cccdCommandDelay = Duration(milliseconds: 500);
+  // Pauses before a listing and before a delete/rotate. They were 2 s and 500 ms, sized to
+  // let a fire-and-forget CCCD write land before the command went out. That reason is
+  // gone: every storage command now waits for Android to confirm notifications first
+  // (NativeBleTransport.getCharacteristicStream). Cut rather than removed until a device
+  // run confirms nothing else leaned on the old spacing — see
+  // docs/bluetooth-notification-lifecycle.md for what to check. The delete pause is paid
+  // once per synced file, which is where most of the old cost was.
+  static const _listSettleDelay = Duration(milliseconds: 250);
+  static const _commandSettleDelay = Duration(milliseconds: 100);
 
   final Duration rotationConfirmationTimeout;
 
   OmiDeviceConnection(super.device, super.transport, {this.rotationConfirmationTimeout = const Duration(seconds: 25)});
+
+  /// Whether [data] is the storage ACK that answers [command].
+  ///
+  /// Firmware oo-3.1.5+ names the command: `[0x03, result, command]`. Older firmware sent
+  /// the same two bytes for every command — and for the keep-alive, which it also
+  /// answered — so a two-byte ACK is still accepted, and can still be another command's;
+  /// only the newer firmware closes that. The six-byte CMD_READ_FILE start ACK
+  /// (`[0x03, result, ts:4 LE]`) never matches any other command.
+  static bool _isStorageAckFor(List<int> data, int command) =>
+      data.length >= 2 && data[0] == 0x03 && (data.length == 2 || (data.length == 3 && data[2] == command));
 
   @override
   Future<void> acquireStorageLock([String owner = 'unknown']) async {
@@ -927,7 +941,7 @@ class OmiDeviceConnection extends DeviceConnection {
         // PACKET_ACK (0x03) is just an acknowledgement that the command was received.
         // The actual data follows in PACKET_DATA (0x01) packets.
         if (blePacket[0] == 0x03) {
-          if (blePacket.length >= 2 && blePacket[1] == 9) {
+          if (_isStorageAckFor(blePacket, 0x10) && blePacket[1] == 9) {
             Logger.warning('OmiDeviceConnection: CMD_LIST_FILES returned STORAGE_NOT_READY');
             fail('STORAGE_NOT_READY');
           } else {
@@ -993,7 +1007,7 @@ class OmiDeviceConnection extends DeviceConnection {
         if (!isStale()) success(null);
       });
 
-      await Future.delayed(_cccdSettleDelay);
+      await Future.delayed(_listSettleDelay);
       if (currentCompleter.isCompleted) return await currentCompleter.future;
       await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x10]);
       if (currentCompleter.isCompleted) return await currentCompleter.future;
@@ -1041,13 +1055,18 @@ class OmiDeviceConnection extends DeviceConnection {
     // Record which one actually happened.
     try {
       final completer = Completer<bool>();
-      final stream = await transport.refreshCharacteristicStream(
-          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      // Reuses the connection's subscription rather than re-validating it
+      // (refreshCharacteristicStream): that is one more CCCD round trip on every synced
+      // file, and it buys nothing here. A sync only deletes after a listing that did
+      // re-validate and was answered, and the native download before each delete has just
+      // re-subscribed and carried the file's data over the same characteristic.
+      final stream =
+          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
       bool commandAttempted = false;
       final sub = stream.listen((data) {
         if (completer.isCompleted) return;
-        if (commandAttempted && data.isNotEmpty && data[0] == 0x03) {
-          final int result = data.length < 2 ? 0 : data[1];
+        if (commandAttempted && _isStorageAckFor(data, 0x12)) {
+          final int result = data[1];
           if (result != 0) {
             Logger.error('OmiConnection: CMD_DELETE_FILE index=${file.index} ts=$timestamp '
                 'ACKed failure result=$result');
@@ -1060,7 +1079,7 @@ class OmiDeviceConnection extends DeviceConnection {
         if (!completer.isCompleted) completer.complete(false);
       });
       try {
-        await Future.delayed(_cccdCommandDelay);
+        await Future.delayed(_commandSettleDelay);
         if (completer.isCompleted) return await completer.future;
         final List<int> cmd = [0x12, file.index & 0xFF];
         if (timestamp != null) {
@@ -1138,7 +1157,7 @@ class OmiDeviceConnection extends DeviceConnection {
   /// the ACK only tells us how long to wait before the next command.
   ///
   /// So it reuses the subscription the connection already has rather than re-validating
-  /// it the way the other storage commands do (refreshCharacteristicStream). That is a
+  /// it the way listing, rotation and clear do (refreshCharacteristicStream). That is a
   /// CCCD write, and STOP is sent after every file and on every cancel, often while the
   /// transfer is still streaming at full rate — the pattern performGetDropStatsListener
   /// records as Error 133 on Android. And when the re-validation failed, STOP was never
@@ -1151,8 +1170,8 @@ class OmiDeviceConnection extends DeviceConnection {
       final stream =
           await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
       sub = stream.listen((data) {
-        if (!completer.isCompleted && data.isNotEmpty && data[0] == 0x03) {
-          completer.complete(data.length < 2 || data[1] == 0);
+        if (!completer.isCompleted && _isStorageAckFor(data, 0x03)) {
+          completer.complete(data[1] == 0);
         }
       }, onDone: () {
         if (!completer.isCompleted) completer.complete(false);
@@ -1182,7 +1201,10 @@ class OmiDeviceConnection extends DeviceConnection {
       final stream = await transport.refreshCharacteristicStream(
           storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
       final sub = stream.listen((data) {
-        if (commandAttempted && !completer.isCompleted && data.length >= 2 && data[0] == 0x03) {
+        // On oo-3.1.5+ only an ACK naming 0x13 counts. On older firmware the native
+        // keep-alive's two-byte "OK" can still land here while a slow rotation is being
+        // sealed and read as its success — see _isStorageAckFor.
+        if (commandAttempted && !completer.isCompleted && _isStorageAckFor(data, 0x13)) {
           completer.complete(data[1] == 0);
         }
       }, onDone: () {
@@ -1191,7 +1213,7 @@ class OmiDeviceConnection extends DeviceConnection {
       // Attach an error observer before the write/delay can yield to disconnect.
       unawaited(completer.future.then<void>((_) {}, onError: (Object _) {}));
       try {
-        await Future.delayed(_cccdCommandDelay);
+        await Future.delayed(_commandSettleDelay);
         if (completer.isCompleted) return await completer.future;
         commandAttempted = true;
         await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x13]);
@@ -1213,8 +1235,8 @@ class OmiDeviceConnection extends DeviceConnection {
       final stream = await transport.refreshCharacteristicStream(
           storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
       final sub = stream.listen((data) {
-        if (!completer.isCompleted && data.isNotEmpty && data[0] == 0x03) {
-          completer.complete(data.length < 2 || data[1] == 0);
+        if (!completer.isCompleted && _isStorageAckFor(data, 0x14)) {
+          completer.complete(data[1] == 0);
         }
       }, onDone: () {
         if (!completer.isCompleted) completer.complete(false);
