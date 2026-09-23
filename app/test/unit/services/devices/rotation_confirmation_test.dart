@@ -199,13 +199,28 @@ void main() {
     expect(transport.writes, 0);
   });
 
-  test('standalone delete, stop, clear and byte-stream acquisition revalidate notifications', () async {
+  test('standalone delete, clear and byte-stream acquisition revalidate notifications', () async {
     transport.failSubscription = true;
     expect(await connection.performDeleteFile(StorageFile(index: 0, timestamp: 1, size: 100)), isFalse);
-    expect(await connection.performStopStorageSync(), isFalse);
     expect(await connection.performClearStorage(), isFalse);
     await expectLater(connection.getBleStorageBytesStream(), throwsStateError);
-    expect(transport.refreshes, 4);
+    expect(transport.refreshes, 3);
     expect(transport.writes, 0, reason: 'failed readiness must not issue storage commands');
+  });
+
+  // STOP is the exception: it is what ends a transfer, so it must not depend on a
+  // notification re-check that can fail — or that writes a CCCD into a live stream.
+  test('STOP is sent even when notifications cannot be confirmed', () async {
+    transport.failSubscription = true;
+    expect(await connection.performStopStorageSync(), isFalse, reason: 'sent, but nothing could hear the ACK');
+    expect(transport.writes, 1, reason: 'a cancel must still reach the firmware');
+  });
+
+  test('STOP reuses the existing subscription instead of re-validating it', () async {
+    final pending = connection.performStopStorageSync();
+    await transport.issued.future;
+    transport.packets.add([3, 0]);
+    expect(await pending, isTrue);
+    expect(transport.refreshes, 0, reason: 'no CCCD write into a stream that may still be running');
   });
 }
