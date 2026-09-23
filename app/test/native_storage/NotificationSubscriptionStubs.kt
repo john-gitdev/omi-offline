@@ -18,7 +18,12 @@ object Log {
     fun e(tag: String, message: String) {}
     fun w(tag: String, message: String) {}
 }
-class Device(val address: String)
+object BluetoothDevice {
+    const val BOND_NONE = 10
+    const val BOND_BONDING = 11
+    const val BOND_BONDED = 12
+}
+class Device(val address: String) { var bondState = BluetoothDevice.BOND_NONE }
 class Service(val uuid: UUID)
 class BluetoothGattCharacteristic(val service: Service, val uuid: UUID) {
     companion object { const val WRITE_TYPE_NO_RESPONSE = 1 }
