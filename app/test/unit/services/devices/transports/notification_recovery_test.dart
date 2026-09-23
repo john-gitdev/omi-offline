@@ -238,6 +238,36 @@ void main() {
     expect(subscriptions, 3);
   });
 
+  for (final failed in [false, true]) {
+    test('explicit unsubscribe supersedes a pending restore (${failed ? 'failure' : 'success'})', () async {
+      await connect();
+      await stream();
+      BleBridge.instance.onPeripheralDisconnected(address, 'link_loss');
+      final oldNative = Completer<Object?>();
+      subscribe = () => oldNative.future;
+      await connect();
+      await transport.unsubscribeCharacteristic(service, characteristic);
+      // A diagnostics-page teardown can remove the old controller before its
+      // descriptor reply arrives. No physical disconnect is involved here.
+      oldNative.complete(failed ? <Object?>['notification-subscription', 'old failure', null] : <Object?>[null]);
+      await Future<void>.delayed(Duration.zero);
+      expect(disconnects, 0);
+      subscribe = () async => <Object?>[null];
+      await stream();
+      expect(subscriptions, 3);
+      expect(disconnects, 0);
+    });
+  }
+
+  test('a genuinely unavailable restored characteristic still requests recovery', () async {
+    await connect();
+    await stream();
+    BleBridge.instance.onPeripheralDisconnected(address, 'link_loss');
+    BleBridge.instance.onDeviceReady(address, [BleService(uuid: service, characteristicUuids: [])]);
+    await Future<void>.delayed(Duration.zero);
+    expect(disconnects, 1, reason: 'do not suppress all StateErrors as superseded requests');
+  });
+
   test('explicit teardown during link loss still unmanages and clears restore intent', () async {
     await connect();
     await stream();
