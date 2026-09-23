@@ -56,10 +56,11 @@ fun main() {
     }
     case("preceding descriptor callback cannot confirm a queued subscription") {
         val f = Fixture()
-        f.manager.enqueueCommand("preceding unsubscribe") {}
+        f.manager.unsubscribeCharacteristic(ADDRESS, SERVICE, CHAR)
         f.manager.issue(); f.subscribe(); f.reply()
         check(f.results.isEmpty())
         f.manager.issue(); f.reply(); check(f.results.single().isSuccess)
+        check(f.gatt.writtenValues == listOf(listOf<Byte>(0, 0), listOf<Byte>(1, 0)))
     }
     case("an unsuccessful subscription can be retried") {
         val f = Fixture(); f.gatt.localAccepted = false; f.subscribe(); f.manager.issue(); f.failure()
@@ -118,6 +119,30 @@ fun main() {
         check(!f.manager.cleanupPeripheral(ADDRESS, f.gatt))
         check(ADDRESS in f.manager.servicesDiscoveredFor && f.results.isEmpty())
         f.reply(connection = replacement); check(f.results.single().isSuccess)
+    }
+    case("unsubscribe rejected descriptor advances to queued subscription") {
+        val f = Fixture(); f.gatt.descriptorAccepted = false
+        f.manager.unsubscribeCharacteristic(ADDRESS, SERVICE, CHAR); f.subscribe()
+        f.manager.issue(); check(f.manager.completedCommands == 1)
+        f.gatt.descriptorAccepted = true
+        f.manager.issue(); f.reply(); check(f.results.single().isSuccess)
+    }
+    case("unsubscribe without a descriptor does not wedge the queue") {
+        val f = Fixture(); f.gatt.characteristic.descriptor = null
+        f.manager.unsubscribeCharacteristic(ADDRESS, SERVICE, CHAR); f.manager.issue()
+        check(f.manager.completedCommands == 1)
+        var next = false
+        f.manager.enqueueCommand("next") { next = true }; f.manager.issue(); check(next)
+    }
+    case("legacy Android unsubscribe waits for callback before next subscription") {
+        android.os.Build.VERSION.SDK_INT = 32
+        val f = Fixture(); f.manager.unsubscribeCharacteristic(ADDRESS, SERVICE, CHAR)
+        f.manager.issue(); f.subscribe()
+        check(f.manager.mainHandler.posted.isEmpty())
+        f.reply(); f.manager.issue(); f.reply()
+        check(f.results.single().isSuccess)
+        check(f.gatt.writtenValues == listOf(listOf<Byte>(0, 0), listOf<Byte>(1, 0)))
+        android.os.Build.VERSION.SDK_INT = 33
     }
     println("$passed notification subscription tests passed")
 }
