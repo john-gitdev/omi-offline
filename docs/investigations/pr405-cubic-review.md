@@ -1,7 +1,10 @@
 # PR 405: Cubic reachability review
 
-Reviewed all 14 inline findings on head `c9415ede`. IDs below identify the GitHub
-review comments (`https://github.com/john-gitdev/omi-offline/pull/405#discussion_r<ID>`).
+Reviewed all 14 inline findings Cubic raised on head `c9415ede` (its first pass).
+The dispositions describe the fixes as they landed afterwards, in `a1a12516` and
+later commits, so read each row as "reported at `c9415ede`, resolved since" rather
+than as a description of that head. IDs below identify the GitHub review comments
+(`https://github.com/john-gitdev/omi-offline/pull/405#discussion_r<ID>`).
 All findings were traced to their callers and consequences; related reports share
 one fix where they describe the same fault.
 
