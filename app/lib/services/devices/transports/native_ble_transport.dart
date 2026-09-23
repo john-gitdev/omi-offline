@@ -6,6 +6,13 @@ import 'package:omi/services/bridges/ble_bridge.dart';
 import 'package:omi/utils/logger.dart';
 import 'device_transport.dart';
 
+/// The waiting caller's subscription no longer applies: an explicit unsubscribe replaced its
+/// intent, or the link it was issued on is gone and a newer connection generation owns
+/// recovery. Neither is evidence against the current link, so a restore must not act on it.
+class _NotificationSubscriptionSuperseded extends StateError {
+  _NotificationSubscriptionSuperseded() : super('Notification subscription superseded');
+}
+
 /// BLE transport backed by native platform APIs via Pigeon.
 /// Uses the intent-based manageDevice/unmanageDevice API.
 /// Native owns the connection lifecycle (retry, reconnect, bonding).
@@ -61,6 +68,7 @@ class NativeBleTransport extends DeviceTransport {
   /// Characteristic notification streams, keyed by "serviceUuid:charUuid" (lowercased).
   final Map<String, StreamController<List<int>>> _streamControllers = {};
   final Map<String, Future<void>> _notificationSubscriptions = {};
+  final Map<String, int> _notificationRevisions = {};
   final Set<String> _confirmedNotificationKeys = {};
   int _notificationGeneration = 0;
 
@@ -257,6 +265,7 @@ class NativeBleTransport extends DeviceTransport {
     }
     final generation = _notificationGeneration;
     final controller = _streamControllers.putIfAbsent(key, () => StreamController<List<int>>.broadcast());
+    final revision = _notificationRevisions[key] ?? 0;
     final pending = _notificationSubscriptions.putIfAbsent(
       key,
       // Native bounds both queue wait and descriptor confirmation, tearing down
@@ -266,14 +275,19 @@ class NativeBleTransport extends DeviceTransport {
     );
     try {
       await pending;
-      if (generation != _notificationGeneration || !identical(_streamControllers[key], controller)) {
-        throw StateError('Disconnected while enabling notifications');
+      if (generation != _notificationGeneration ||
+          revision != (_notificationRevisions[key] ?? 0) ||
+          !identical(_streamControllers[key], controller)) {
+        throw _NotificationSubscriptionSuperseded();
       }
       if (_confirmedNotificationKeys.add(key)) {
         Logger.debug('[NativeBleTransport] Notifications ready: $key generation=$generation');
       }
       return controller.stream;
     } catch (e) {
+      if (generation != _notificationGeneration || revision != (_notificationRevisions[key] ?? 0)) {
+        throw _NotificationSubscriptionSuperseded();
+      }
       if (identical(_notificationSubscriptions[key], pending)) {
         _notificationSubscriptions.remove(key);
         _confirmedNotificationKeys.remove(key);
@@ -299,6 +313,7 @@ class NativeBleTransport extends DeviceTransport {
   @override
   Future<void> unsubscribeCharacteristic(String serviceUuid, String characteristicUuid) async {
     final key = '${serviceUuid.toLowerCase()}:${characteristicUuid.toLowerCase()}';
+    _notificationRevisions[key] = (_notificationRevisions[key] ?? 0) + 1;
     _confirmedNotificationKeys.remove(key);
     _notificationSubscriptions.remove(key);
     // Drop the controller first so a later getCharacteristicStream re-creates it
@@ -398,6 +413,7 @@ class NativeBleTransport extends DeviceTransport {
 
   void _closeAllStreams() {
     _notificationGeneration++;
+    _notificationRevisions.clear();
     _confirmedNotificationKeys.clear();
     _notificationSubscriptions.clear();
     for (final controller in _streamControllers.values) {
@@ -513,6 +529,7 @@ class NativeBleTransport extends DeviceTransport {
         if (parts.length == 2) {
           unawaited(getCharacteristicStream(parts[0], parts[1]).then<void>((_) {}, onError: (Object e) {
             Logger.warning('[NativeBleTransport] Notification restore failed for $key: $e');
+            if (e is _NotificationSubscriptionSuperseded) return;
             if (generation != _notificationGeneration || _state != DeviceTransportState.connected) return;
             // Keep Android in charge of reconnect; report the unusable transport
             // immediately so consumers stop issuing storage commands on it.
