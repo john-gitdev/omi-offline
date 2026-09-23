@@ -282,7 +282,7 @@ abstract class DeviceConnection {
 
   Future<bool> rotateFile() async {
     if (await isConnected()) return performRotateFile();
-    return false;
+    throw StorageRotationNotStartedException(StateError('Device disconnected before rotation'));
   }
 
   Future<bool> writeToStorage(int fileNum, int command, int offset, {int? timestamp}) async {
