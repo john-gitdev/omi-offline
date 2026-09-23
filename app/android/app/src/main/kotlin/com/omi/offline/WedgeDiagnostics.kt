@@ -542,10 +542,11 @@ object WedgeDiagnostics {
      * completed the link — rather than an outright rejection.
      *
      * [BluetoothAdapter.getProfileConnectionState] rather than a profile proxy because it is
-     * synchronous: this snapshot runs on a GATT binder thread inside the disconnect path and must
-     * not wait on a service binding. The price is that it reports only *whether* a profile has a
-     * link, never to which device — [btAudioDevices] names the connected endpoints, and
-     * [scoActive] / [audioActive] say whether any of them was actually carrying audio.
+     * synchronous: this snapshot runs on the main thread inside the disconnect path (OmiBleManager
+     * posts onConnectionStateChange there) and must not wait on a service binding. The price is
+     * that it reports only *whether* a profile has a link, never to which device —
+     * [btAudioDevices] names the connected endpoints, and [scoActive] / [audioActive] say whether
+     * any of them was actually carrying audio.
      */
     private fun connectedClassicProfiles(adapter: BluetoothAdapter?): JSONArray {
         val out = JSONArray()
@@ -665,9 +666,11 @@ object WedgeDiagnostics {
      * affirmative verdict, stop it from ever looking again.
      *
      * Early returns post to the main thread rather than calling back inline: [captureWedge]
-     * runs on whatever thread the disconnect arrived on — a GATT binder thread, in the common
-     * case — and a callback whose thread depends on which branch it took is a trap for the
-     * next caller. They also log their verdict before returning: an outage record that holds a
+     * runs on whatever thread its caller is on — main today, since OmiBleManager posts
+     * onConnectionStateChange there and every other route into handleRetryLogic is a main-thread
+     * timer, but that is the caller's property, not this function's — and a callback whose
+     * thread depends on which branch it took is a trap for the next caller. They also log their
+     * verdict before returning: an outage record that holds a
      * `ble_wedge` with no `ble_wedge_scan_probe` after it cannot be told apart from one where
      * the process died mid-probe, and "we never got to look, and here is why" is a finding.
      */
