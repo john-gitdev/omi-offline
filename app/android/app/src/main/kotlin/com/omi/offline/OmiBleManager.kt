@@ -708,10 +708,11 @@ class OmiBleManager private constructor(private val application: Application) {
                 // its idle-disconnect entirely (transport.c storage_transfer_active()), so
                 // nothing needs to beat here; the transfer's own traffic is the liveness.
                 // Two reasons it must not: this write bypasses gattQueue, so it races the
-                // read stream it shares a characteristic with; and the firmware ACKs it on
-                // that same characteristic, which is what used to keep StorageDownload-
-                // Session's inactivity watchdog permanently re-armed. Keep reposting so the
-                // beat resumes the moment the transfer ends.
+                // read stream it shares a characteristic with; and firmware before oo-3.1.5
+                // ACKs it on that same characteristic, which is what used to keep
+                // StorageDownloadSession's inactivity watchdog permanently re-armed (oo-3.1.5
+                // sends no reply to it at all). Keep reposting so the beat resumes the moment
+                // the transfer ends.
                 if (!activeDownloads.containsKey(addr)) sendStorageKeepAliveNoResponse(addr)
                 mainHandler.postDelayed(this, storageKeepAliveInterval)
             }
@@ -1226,6 +1227,10 @@ class OmiBleManager private constructor(private val application: Application) {
                     // Ignored until this read is issued — see readIssued. That covers an error
                     // ACK too: before the command exists, no ACK can be about it.
                     if (!readIssued) return
+                    // oo-3.1.5+ names the command in every other ACK: [0x03][result][cmd]. One
+                    // naming anything but CMD_READ_FILE (0x11) is another command's — a late
+                    // delete or STOP — and says nothing about this read.
+                    if (value.size == 3 && (value[2].toInt() and 0xFF) != 0x11) return
                     // oo-3.1.4+ echoes the requested timestamp: [0x03][result][ts:4 LE]. A
                     // mismatch is a late ACK for an EARLIER read — the firmware finishing a
                     // slow setup after this app gave up on it and moved on, perhaps to another
