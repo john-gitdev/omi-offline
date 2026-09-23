@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter/services.dart';
 import 'package:omi/gen/pigeon_communicator.g.dart';
 import 'package:omi/services/bridges/ble_bridge.dart';
 import 'package:omi/utils/logger.dart';
@@ -12,6 +13,11 @@ import 'device_transport.dart';
 class _NotificationSubscriptionSuperseded extends StateError {
   _NotificationSubscriptionSuperseded() : super('Notification subscription superseded');
 }
+
+/// The `details` of a subscription failure native caused by tearing the link down itself
+/// (OmiBleManager.failPendingSubscriptions / LINK_CLOSED_BY_NATIVE). Native owns that
+/// reconnect, and its disconnect event is queued right behind the failure.
+const _linkClosedByNative = 'link-closed';
 
 /// BLE transport backed by native platform APIs via Pigeon.
 /// Uses the intent-based manageDevice/unmanageDevice API.
@@ -530,6 +536,12 @@ class NativeBleTransport extends DeviceTransport {
           unawaited(getCharacteristicStream(parts[0], parts[1]).then<void>((_) {}, onError: (Object e) {
             Logger.warning('[NativeBleTransport] Notification restore failed for $key: $e');
             if (e is _NotificationSubscriptionSuperseded) return;
+            // Native tore this link down itself and is already reconnecting; its disconnect
+            // event follows this failure and moves the transport. Acting here instead would
+            // drop "the current link" late — and if this isolate was frozen long enough for
+            // native's retry to have connected again, disconnectPeripheral would drop that
+            // fresh link rather than the dead one.
+            if (e is PlatformException && e.details == _linkClosedByNative) return;
             if (generation != _notificationGeneration || _state != DeviceTransportState.connected) return;
             // Keep Android in charge of reconnect; report the unusable transport
             // immediately so consumers stop issuing storage commands on it.
