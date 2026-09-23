@@ -30,17 +30,35 @@ link. A failed reconnect restore reports an unusable transport and requests a
 soft disconnect, leaving native in charge of reconnect. Failed subscriptions
 without listeners are discarded; a failed refresh preserves existing listeners.
 
-Storage listing, rotation, deletion, clear and byte-stream acquisition
-revalidate notifications through
-`refreshCharacteristicStream`, while retaining listeners already attached on the
-current connection. Native downloads also wait for subscription confirmation
-before issuing READ. A delayed confirmation cannot start a cancelled download.
+Storage listing, rotation, clear and byte-stream acquisition revalidate
+notifications through `refreshCharacteristicStream`, while retaining listeners
+already attached on the current connection. Native downloads also wait for
+subscription confirmation before issuing READ. A delayed confirmation cannot start
+a cancelled download.
 
-STOP is the exception. It ends a transfer — after every file and on every cancel,
-often while notifications are still streaming — so it reuses the connection's
-existing subscription instead of writing a CCCD into that stream, and it is sent
-even when no subscription can be had. Its ACK only bounds how long the caller
-waits before the next command; no caller acts on STOP's result.
+Deletion and STOP reuse the connection's existing subscription instead
+(`getCharacteristicStream`). Both run once per synced file, and neither needs the
+re-check: a sync only deletes after a listing that did revalidate and was
+answered, and the native download before each delete has just re-subscribed and
+carried the file over the same characteristic. STOP ends a transfer — after every
+file and on every cancel, often while notifications are still streaming — so it
+also must not write a CCCD into that stream, and it is sent even when no
+subscription can be had. Its ACK only bounds how long the caller waits before the
+next command; no caller acts on STOP's result.
+
+The pauses before a listing (250 ms) and before a delete or rotation (100 ms)
+were 2 s and 500 ms, sized for a CCCD write the app used not to wait for. They
+are cut rather than removed until a device run shows nothing else depended on
+the spacing. What to check, with a backlog of ten or more files:
+
+- The first listing after a cold connect and after a reconnect answers first
+  time — no `CMD_LIST_FILES did not answer` or `STORAGE_NOT_READY`.
+- Every delete is acknowledged with success — no `ACKed failure` and no 35 s
+  `timed out ... deletion state on the device is UNKNOWN` — and the files are gone
+  from the Omi afterwards.
+- A Force Sync's rotation is confirmed and the listing after it includes the file
+  it sealed.
+- Total sync time for the backlog, against the same backlog on the old build.
 
 An unanswered listing ends that sync as skipped and preserves WAL offsets and
 source files. Whether it also reconnects (`DeviceService.recycleConnection()`)
@@ -70,11 +88,15 @@ in that run. A subsequent ordinary sync lists the device's actual closed files
 and reconciles the backlog. Both request connection recovery under the rules
 above; an acknowledged rotation counts as hearing from the device.
 
-This does not change storage packet formats, firmware, or the one-device model.
-An ACK received before the rotation write is ignored. The existing firmware's
-untagged command acknowledgments remain a compatibility constraint: the native
-storage keep-alive (paused only while a download is active) is acknowledged with
-the same two bytes, so one landing between the rotation write and the real ACK is
-taken as the rotation's. Fixing that needs the firmware to put something in the
-ACK that identifies the request, as `CMD_READ_FILE`'s already does by echoing the
-file timestamp.
+An ACK received before the rotation write is ignored. From firmware oo-3.1.5 every
+ACK but `CMD_READ_FILE`'s names the command it answers (`[0x03, result, command]`)
+and the keep-alive is not answered at all, so the app matches each ACK to its own
+command (`OmiDeviceConnection._isStorageAckFor`). On older firmware every ACK is the
+same two bytes and still accepted, so the old residual stands there: the native
+storage keep-alive (every 10 s, paused only while a download is active) is answered
+with that same "OK", and one landing while a slow rotation is still sealing its file
+reads as the rotation having succeeded. That matters only if the rotation then
+fails — the app lists as though the file were sealed, and a Force Sync finalizes a
+conversation whose end is still in it.
+
+This does not change the one-device model.
