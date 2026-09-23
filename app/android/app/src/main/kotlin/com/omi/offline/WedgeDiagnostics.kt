@@ -542,8 +542,10 @@ object WedgeDiagnostics {
      * completed the link — rather than an outright rejection.
      *
      * [BluetoothAdapter.getProfileConnectionState] rather than a profile proxy because it is
-     * synchronous: this snapshot runs on the main thread inside the disconnect path (OmiBleManager
-     * posts onConnectionStateChange there) and must not wait on a service binding. The price is
+     * synchronous: this snapshot runs inside GATT callbacks and must not wait on a service
+     * binding — on the main thread for an outage ([captureWedge], reached from the disconnect path,
+     * which OmiBleManager posts there) and on a GATT binder thread for a recovery
+     * ([captureRecovery], from onGattServicesDiscovered). The price is
      * that it reports only *whether* a profile has a link, never to which device —
      * [btAudioDevices] names the connected endpoints, and [scoActive] / [audioActive] say whether
      * any of them was actually carrying audio.
