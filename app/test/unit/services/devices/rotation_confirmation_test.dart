@@ -114,6 +114,27 @@ void main() {
     expect(await pending, isFalse);
   });
 
+  // oo-3.1.5 names the command in every ACK. The one a rotation used to be fooled by was
+  // the keep-alive's — older firmware answered it with the same two bytes, mid-rotation —
+  // and a late ACK from any other command is the same mistake.
+  test('an ACK naming another command can neither confirm nor refuse a rotation', () async {
+    final pending = connection.performRotateFile();
+    final checked = expectLater(pending, throwsA(isA<StorageRotationUnconfirmedException>()));
+    await transport.issued.future;
+    transport.packets.add([3, 0, 0x12]); // a late delete's OK
+    transport.packets.add([3, 1, 0x03]); // a STOP's refusal
+    transport.packets.add([3, 0, 123, 0, 0, 0]); // a read's six-byte start ACK
+    await checked; // nothing that answers 0x13 arrived, so it times out as unknown
+  });
+
+  test('an ACK naming the rotation confirms it', () async {
+    final pending = connection.performRotateFile();
+    await transport.issued.future;
+    transport.packets.add([3, 0, 0x12]);
+    transport.packets.add([3, 0, 0x13]);
+    expect(await pending, isTrue);
+  });
+
   for (final command in ['delete', 'stop', 'clear']) {
     Future<bool> run() => switch (command) {
           'delete' => connection.performDeleteFile(StorageFile(index: 0, timestamp: 1, size: 100)),
@@ -149,7 +170,26 @@ void main() {
       transport.packets.add([3, 0]);
       expect(await pending, isTrue);
     });
+
+    test('$command ignores an ACK naming another command', () async {
+      final own = switch (command) { 'delete' => 0x12, 'stop' => 0x03, _ => 0x14 };
+      final pending = run();
+      await transport.issued.future;
+      transport.packets.add([3, 0, 0x13]); // another command's OK
+      transport.packets.add([3, 1, own]); // its own refusal
+      expect(await pending, isFalse, reason: 'only the ACK that names it answers it');
+    });
   }
+
+  test('a refusal naming another command is not a listing refusal', () async {
+    final pending = connection.performListFiles();
+    await transport.issued.future;
+    transport.packets.add([3, 9, 0x13]);
+    transport.packets.add([1, 0, 0, 0, 0]); // an empty card
+    final listing = await pending;
+    expect(listing, isNotNull, reason: 'the STORAGE_NOT_READY named another command');
+    expect(listing!.files, isEmpty);
+  });
 
   test('listing ends as unanswered immediately when its stream closes', () async {
     final pending = connection.performListFiles();
@@ -199,13 +239,28 @@ void main() {
     expect(transport.writes, 0);
   });
 
-  test('standalone delete, clear and byte-stream acquisition revalidate notifications', () async {
+  test('clear and byte-stream acquisition revalidate notifications', () async {
     transport.failSubscription = true;
-    expect(await connection.performDeleteFile(StorageFile(index: 0, timestamp: 1, size: 100)), isFalse);
     expect(await connection.performClearStorage(), isFalse);
     await expectLater(connection.getBleStorageBytesStream(), throwsStateError);
-    expect(transport.refreshes, 3);
+    expect(transport.refreshes, 2);
     expect(transport.writes, 0, reason: 'failed readiness must not issue storage commands');
+  });
+
+  // Delete runs once per synced file, always after a listing that re-validated and a
+  // download that just carried data over the same characteristic.
+  test('delete reuses the existing subscription instead of re-validating it', () async {
+    final pending = connection.performDeleteFile(StorageFile(index: 0, timestamp: 1, size: 100));
+    await transport.issued.future;
+    transport.packets.add([3, 0, 0x12]);
+    expect(await pending, isTrue);
+    expect(transport.refreshes, 0);
+  });
+
+  test('delete without a subscription sends nothing', () async {
+    transport.failSubscription = true;
+    expect(await connection.performDeleteFile(StorageFile(index: 0, timestamp: 1, size: 100)), isFalse);
+    expect(transport.writes, 0, reason: 'with no way to hear the ACK, the outcome would be unknowable');
   });
 
   // STOP is the exception: it is what ends a transfer, so it must not depend on a
