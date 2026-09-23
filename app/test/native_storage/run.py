@@ -58,11 +58,16 @@ def notification_source(source, template):
         "WRITE_HELPER": section(source, '    @Suppress("DEPRECATION")\n    private fun writeDescriptorCompat', "    private fun failPendingSubscriptions", "Descriptor write"),
         "CLEANUP": section(source, "    private fun failPendingSubscriptions", "    private fun createGattCallback", "Cleanup"),
         "QUEUE": section(source, "    @Synchronized private fun resetCommandPipeline", "    private fun findCharacteristic", "Command queue"),
+        "KEEPALIVE": section(source, "    fun startStorageKeepAlive", "    fun getBluetoothState", "Storage keep-alive"),
     }
     descriptors = re.findall(r"        override fun onDescriptorWrite\(.*?\n        }", source, re.S)
     if len(descriptors) != 1:
         raise RuntimeError("Descriptor callback seam changed; review the harness")
     sections["DESCRIPTOR"] = descriptors[0].replace("override fun", "fun", 1)
+    writes = re.findall(r"        override fun onCharacteristicWrite\(.*?\n        }", source, re.S)
+    if len(writes) != 1:
+        raise RuntimeError("Characteristic-write callback seam changed; review the harness")
+    sections["CHAR_WRITE"] = writes[0].replace("override fun", "fun", 1)
     for name, body in sections.items():
         template = replace_seam(template, f"// PRODUCTION_{name}", body)
     return template
