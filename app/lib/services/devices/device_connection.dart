@@ -212,10 +212,26 @@ abstract class DeviceConnection {
   ///
   /// Callers that only want "what is on the device right now" and have nothing
   /// riding on the difference say `?? const []` and keep the old behaviour.
+  ///
+  /// A `null` is split once more by [lastListingHeardDevice].
   Future<StorageListing?> listFiles() async {
+    lastListingHeardDevice = false;
     if (await isConnected()) return performListFiles();
     return null;
   }
+
+  /// Whether the most recent [listFiles] received anything at all from the device.
+  ///
+  /// Only meaningful after a `null` listing, where it separates two failures that
+  /// want opposite responses. `false` is silence: nothing came back on the reply
+  /// channel, which is what a stale notification subscription looks like and what a
+  /// reconnect can cure. `true` is the device answering and refusing —
+  /// STORAGE_NOT_READY (the SD card is not mounted, or has failed), a malformed
+  /// reply, an EOT with no count. The reply channel demonstrably works there, so a
+  /// reconnect changes nothing. Reset by every [listFiles]; set by the implementation
+  /// on any packet that arrives while that listing is listening — a stray one counts
+  /// too, since the question is only whether notifications are reaching us.
+  bool lastListingHeardDevice = false;
 
   Future<bool> deleteFile(StorageFile file) async {
     if (await isConnected()) return performDeleteFile(file, timestamp: file.timestamp);
@@ -282,7 +298,7 @@ abstract class DeviceConnection {
 
   Future<bool> rotateFile() async {
     if (await isConnected()) return performRotateFile();
-    return false;
+    throw StorageRotationNotStartedException(StateError('Device disconnected before rotation'));
   }
 
   Future<bool> writeToStorage(int fileNum, int command, int offset, {int? timestamp}) async {

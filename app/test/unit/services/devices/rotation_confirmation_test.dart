@@ -1,0 +1,281 @@
+import 'dart:async';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:omi/backend/schema/bt_device/bt_device.dart';
+import 'package:omi/services/devices/errors.dart';
+import 'package:omi/services/devices/omi_connection.dart';
+import 'package:omi/services/devices/storage_file.dart';
+import 'package:omi/services/devices/transports/device_transport.dart';
+
+class _RotationTransport extends DeviceTransport {
+  final packets = StreamController<List<int>>.broadcast();
+  final issued = Completer<void>();
+  int writes = 0;
+  bool failSubscription = false;
+  bool failWrite = false;
+  int refreshes = 0;
+
+  @override
+  Future<Stream<List<int>>> refreshCharacteristicStream(String service, String characteristic) async {
+    refreshes++;
+    return getCharacteristicStream(service, characteristic);
+  }
+
+  @override
+  Future<Stream<List<int>>> getCharacteristicStream(String service, String characteristic) async {
+    if (failSubscription) throw StateError('subscription rejected');
+    return packets.stream;
+  }
+
+  @override
+  Future<void> writeCharacteristic(String service, String characteristic, List<int> bytes) async {
+    writes++;
+    if (!issued.isCompleted) issued.complete();
+    if (failWrite) throw StateError('write outcome unknown');
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  late _RotationTransport transport;
+  late OmiDeviceConnection connection;
+
+  setUp(() {
+    transport = _RotationTransport();
+    connection = OmiDeviceConnection(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50), transport,
+        rotationConfirmationTimeout: const Duration(milliseconds: 50));
+  });
+  tearDown(() async {
+    await transport.packets.close();
+  });
+
+  test('rotation confirmation timeout reports unknown after exactly one command', () async {
+    await expectLater(connection.performRotateFile(), throwsA(isA<StorageRotationUnconfirmedException>()));
+    expect(transport.writes, 1);
+  });
+
+  test('disconnect after issuing rotation reports unknown immediately', () async {
+    final pending = connection.performRotateFile();
+    final checked = expectLater(pending, throwsA(isA<StorageRotationUnconfirmedException>()));
+    await transport.issued.future;
+    await transport.packets.close();
+    await checked;
+    expect(transport.writes, 1);
+  });
+
+  test('disconnect before issuing rotation sends no command', () async {
+    final pending = connection.performRotateFile();
+    await Future<void>.delayed(Duration.zero);
+    await transport.packets.close();
+    await expectLater(pending, throwsA(isA<StorageRotationNotStartedException>()));
+    expect(transport.writes, 0);
+  });
+
+  test('failed notification setup does not issue a rotation', () async {
+    transport.failSubscription = true;
+    await expectLater(connection.performRotateFile(), throwsA(isA<StorageRotationNotStartedException>()));
+    expect(transport.writes, 0);
+  });
+
+  test('an ACK before the command cannot confirm rotation', () async {
+    final pending = connection.performRotateFile();
+    final checked = expectLater(pending, throwsA(isA<StorageRotationUnconfirmedException>()));
+    await Future<void>.delayed(Duration.zero);
+    transport.packets.add([3, 0]);
+    await transport.issued.future;
+    await transport.packets.close();
+    await checked;
+  });
+
+  test('a confirmed rotation succeeds', () async {
+    final pending = connection.performRotateFile();
+    await transport.issued.future;
+    transport.packets.add([3, 0]);
+    expect(await pending, isTrue);
+  });
+
+  test('a failed write is conservatively unknown', () async {
+    transport.failWrite = true;
+    await expectLater(connection.performRotateFile(), throwsA(isA<StorageRotationUnconfirmedException>()));
+  });
+
+  test('disconnected rotation facade reports not started without a command', () async {
+    await expectLater(connection.rotateFile(), throwsA(isA<StorageRotationNotStartedException>()));
+    expect(transport.writes, 0);
+  });
+
+  test('explicit rotation rejection remains false rather than unknown', () async {
+    final pending = connection.performRotateFile();
+    await transport.issued.future;
+    transport.packets.add([3, 1]);
+    expect(await pending, isFalse);
+  });
+
+  // oo-3.1.5 names the command in every ACK. The one a rotation used to be fooled by was
+  // the keep-alive's — older firmware answered it with the same two bytes, mid-rotation —
+  // and a late ACK from any other command is the same mistake.
+  test('an ACK naming another command can neither confirm nor refuse a rotation', () async {
+    final pending = connection.performRotateFile();
+    final checked = expectLater(pending, throwsA(isA<StorageRotationUnconfirmedException>()));
+    await transport.issued.future;
+    transport.packets.add([3, 0, 0x12]); // a late delete's OK
+    transport.packets.add([3, 1, 0x03]); // a STOP's refusal
+    transport.packets.add([3, 0, 123, 0, 0, 0]); // a read's six-byte start ACK
+    await checked; // nothing that answers 0x13 arrived, so it times out as unknown
+  });
+
+  test('an ACK naming the rotation confirms it', () async {
+    final pending = connection.performRotateFile();
+    await transport.issued.future;
+    transport.packets.add([3, 0, 0x12]);
+    transport.packets.add([3, 0, 0x13]);
+    expect(await pending, isTrue);
+  });
+
+  for (final command in ['delete', 'stop', 'clear']) {
+    Future<bool> run() => switch (command) {
+          'delete' => connection.performDeleteFile(StorageFile(index: 0, timestamp: 1, size: 100)),
+          'stop' => connection.performStopStorageSync(),
+          _ => connection.performClearStorage(),
+        };
+
+    test('$command fails promptly when its reply stream closes', () async {
+      final pending = run();
+      await transport.issued.future;
+      await transport.packets.close();
+      expect(await pending.timeout(const Duration(milliseconds: 200)), isFalse);
+      expect(transport.packets.hasListener, isFalse);
+    });
+
+    test('$command fails promptly on a stream error', () async {
+      final pending = run();
+      await transport.issued.future;
+      transport.packets.addError(StateError('link failed'));
+      expect(await pending.timeout(const Duration(milliseconds: 200)), isFalse);
+      expect(transport.packets.hasListener, isFalse);
+    });
+
+    test('$command cancels its listener after a failed write', () async {
+      transport.failWrite = true;
+      expect(await run(), isFalse);
+      expect(transport.packets.hasListener, isFalse);
+    });
+
+    test('$command still succeeds with a real ACK', () async {
+      final pending = run();
+      await transport.issued.future;
+      transport.packets.add([3, 0]);
+      expect(await pending, isTrue);
+    });
+
+    test('$command ignores an ACK naming another command', () async {
+      final own = switch (command) { 'delete' => 0x12, 'stop' => 0x03, _ => 0x14 };
+      final pending = run();
+      await transport.issued.future;
+      transport.packets.add([3, 0, 0x13]); // another command's OK
+      transport.packets.add([3, 1, own]); // its own refusal
+      expect(await pending, isFalse, reason: 'only the ACK that names it answers it');
+    });
+  }
+
+  test('a refusal naming another command is not a listing refusal', () async {
+    final pending = connection.performListFiles();
+    await transport.issued.future;
+    transport.packets.add([3, 9, 0x13]);
+    transport.packets.add([1, 0, 0, 0, 0]); // an empty card
+    final listing = await pending;
+    expect(listing, isNotNull, reason: 'the STORAGE_NOT_READY named another command');
+    expect(listing!.files, isEmpty);
+  });
+
+  test('listing ends as unanswered immediately when its stream closes', () async {
+    final pending = connection.performListFiles();
+    await transport.issued.future;
+    await transport.packets.close();
+    expect(await pending.timeout(const Duration(milliseconds: 200)), isNull);
+  });
+
+  test('listing does not send after disconnect during notification settle', () async {
+    final pending = connection.performListFiles();
+    await Future<void>.delayed(Duration.zero);
+    await transport.packets.close();
+    expect(await pending, isNull);
+    expect(transport.writes, 0);
+  });
+
+  // Both of these are null listings. Only the silent one is a reason to reconnect: the
+  // refusal arrived over the very notifications a reconnect would be trying to repair.
+  test('a refused listing is null but records that the device was heard', () async {
+    final pending = connection.performListFiles();
+    await transport.issued.future;
+    transport.packets.add([3, 9]); // PACKET_ACK, STORAGE_NOT_READY
+    expect(await pending, isNull);
+    expect(connection.lastListingHeardDevice, isTrue);
+  });
+
+  test('a listing that ends in silence records that nothing was heard', () async {
+    final pending = connection.performListFiles();
+    await transport.issued.future;
+    await transport.packets.close();
+    expect(await pending, isNull);
+    expect(connection.lastListingHeardDevice, isFalse);
+  });
+
+  test('a listing that could not subscribe records that nothing was heard', () async {
+    connection.lastListingHeardDevice = true; // left over from an earlier, answered listing
+    transport.failSubscription = true;
+    expect(await connection.performListFiles(), isNull);
+    expect(connection.lastListingHeardDevice, isFalse);
+  });
+
+  test('delete does not send after disconnect during notification settle', () async {
+    final pending = connection.performDeleteFile(StorageFile(index: 0, timestamp: 1, size: 100));
+    await Future<void>.delayed(Duration.zero);
+    await transport.packets.close();
+    expect(await pending, isFalse);
+    expect(transport.writes, 0);
+  });
+
+  test('clear and byte-stream acquisition revalidate notifications', () async {
+    transport.failSubscription = true;
+    expect(await connection.performClearStorage(), isFalse);
+    await expectLater(connection.getBleStorageBytesStream(), throwsStateError);
+    expect(transport.refreshes, 2);
+    expect(transport.writes, 0, reason: 'failed readiness must not issue storage commands');
+  });
+
+  // Delete runs once per synced file, always after a listing that re-validated and a
+  // download that just carried data over the same characteristic.
+  test('delete reuses the existing subscription instead of re-validating it', () async {
+    final pending = connection.performDeleteFile(StorageFile(index: 0, timestamp: 1, size: 100));
+    await transport.issued.future;
+    transport.packets.add([3, 0, 0x12]);
+    expect(await pending, isTrue);
+    expect(transport.refreshes, 0);
+  });
+
+  test('delete without a subscription sends nothing', () async {
+    transport.failSubscription = true;
+    expect(await connection.performDeleteFile(StorageFile(index: 0, timestamp: 1, size: 100)), isFalse);
+    expect(transport.writes, 0, reason: 'with no way to hear the ACK, the outcome would be unknowable');
+  });
+
+  // STOP is the exception: it is what ends a transfer, so it must not depend on a
+  // notification re-check that can fail — or that writes a CCCD into a live stream.
+  test('STOP is sent even when notifications cannot be confirmed', () async {
+    transport.failSubscription = true;
+    expect(await connection.performStopStorageSync(), isFalse, reason: 'sent, but nothing could hear the ACK');
+    expect(transport.writes, 1, reason: 'a cancel must still reach the firmware');
+  });
+
+  test('STOP reuses the existing subscription instead of re-validating it', () async {
+    final pending = connection.performStopStorageSync();
+    await transport.issued.future;
+    transport.packets.add([3, 0]);
+    expect(await pending, isTrue);
+    expect(transport.refreshes, 0, reason: 'no CCCD write into a stream that may still be running');
+  });
+}

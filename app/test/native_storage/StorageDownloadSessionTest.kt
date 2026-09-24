@@ -140,6 +140,16 @@ fun main() {
                 ack(); chunk(0, 12); eot(); expect(original, true)
             }
         }
+        test("an ACK naming another command can neither start nor fail this read") { file ->
+            Download(file).apply {
+                session.onPacket(byteArrayOf(3, 0, 0x12)) // a late delete's OK (oo-3.1.5 form)
+                chunk(0, 12); eot(); check(results.isEmpty())
+                session.onPacket(byteArrayOf(3, 7, 0x03)) // another command's failure
+                check(results.isEmpty())
+                session.onPacket(byteArrayOf(3, 0, 0x11)) // this read's own, three-byte form
+                chunk(0, 12); eot(); expect(original, true)
+            }
+        }
         test("an old session completion cannot remove its replacement") { file ->
             val old = Download(file)
             val next = old.manager.StorageDownloadSession("device", 0, File(file.parent, "next.bin").path, 123) {}

@@ -40,10 +40,57 @@ class OmiBleManager {
 """
 
 
+def section(source, start, end, name):
+    if source.count(start) != 1 or source.count(end) != 1 or source.index(start) >= source.index(end):
+        raise RuntimeError(f"{name} seam changed; review the harness")
+    return source[source.index(start):source.index(end)]
+
+
+def replace_seam(template, marker, source):
+    if template.count(marker) != 1:
+        raise RuntimeError(f"{marker} template seam changed; review the harness")
+    return template.replace(marker, source, 1)
+
+
+def notification_source(source, template):
+    sections = {
+        "SUBSCRIPTIONS": section(source, "    private class PendingSubscription", "    fun startRssiKeepAlive", "Subscription"),
+        "WRITE_HELPER": section(source, '    @Suppress("DEPRECATION")\n    private fun writeDescriptorCompat', "    private fun failPendingSubscriptions", "Descriptor write"),
+        "CLEANUP": section(source, "    private fun failPendingSubscriptions", "    private fun createGattCallback", "Cleanup"),
+        "QUEUE": section(source, "    @Synchronized private fun resetCommandPipeline", "    private fun findCharacteristic", "Command queue"),
+        "KEEPALIVE": section(source, "    fun startStorageKeepAlive", "    fun getBluetoothState", "Storage keep-alive"),
+    }
+    descriptors = re.findall(r"        override fun onDescriptorWrite\(.*?\n        }", source, re.S)
+    if len(descriptors) != 1:
+        raise RuntimeError("Descriptor callback seam changed; review the harness")
+    sections["DESCRIPTOR"] = descriptors[0].replace("override fun", "fun", 1)
+    writes = re.findall(r"        override fun onCharacteristicWrite\(.*?\n        }", source, re.S)
+    if len(writes) != 1:
+        raise RuntimeError("Characteristic-write callback seam changed; review the harness")
+    sections["CHAR_WRITE"] = writes[0].replace("override fun", "fun", 1)
+    for name, body in sections.items():
+        template = replace_seam(template, f"// PRODUCTION_{name}", body)
+    return template
+
+
+def storage_source(source, pigeon):
+    # This inner class is the last member. Fail if that seam moves.
+    matches = re.findall(r"(    inner class StorageDownloadSession\(.*\n    })\s*\n}\s*$", source, re.S)
+    if len(matches) != 1:
+        raise RuntimeError("Production session extraction seam changed; review the harness")
+    utils = section(pigeon, "private object PigeonCommunicatorPigeonUtils", "/**\n * Error class", "Pigeon utils")
+    errors = re.findall(r"class FlutterError \(.*?\) : Throwable\(\)", pigeon, re.S)
+    if len(errors) != 1:
+        raise RuntimeError("Pigeon FlutterError extraction seam changed; review the harness")
+    bridge = utils.replace("private object", "object", 1) + errors[0]
+    return STUBS % (bridge, matches[0])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--java", default=shutil.which("java"))
     parser.add_argument("--kotlin-version", default="2.1.0", help="Compiler version in local Gradle cache")
+    parser.add_argument("--notifications", action="store_true", help="Test actual notification subscription methods")
     args = parser.parse_args()
     java = args.java
     if not java and os.environ.get("JAVA_HOME"):
@@ -52,20 +99,6 @@ def main():
         parser.error("Supply --java PATH or set JAVA_HOME / PATH to a JDK")
 
     source = SOURCE.read_text(encoding="utf-8")
-    # This inner class is the last member. Fail if that seam moves, rather than
-    # silently executing a copied/reimplemented packet receiver.
-    match = re.search(r"(    inner class StorageDownloadSession\(.*\n    })\s*\n}\s*$", source, re.S)
-    if not match:
-        raise RuntimeError("Production session extraction seam changed; review the harness")
-
-    pigeon = SOURCE.with_name("PigeonCommunicator.g.kt").read_text(encoding="utf-8")
-    # Execute the generated error envelope too; do not substitute an invented mapping.
-    utils = pigeon[pigeon.index("private object PigeonCommunicatorPigeonUtils"):pigeon.index("/**")]
-    error = re.search(r"class FlutterError \(.*?\) : Throwable\(\)", pigeon, re.S)
-    if not error:
-        raise RuntimeError("Pigeon FlutterError extraction seam changed")
-    bridge = utils.replace("private object", "object", 1) + error.group()
-
     cache = Path(os.environ.get("GRADLE_USER_HOME", Path.home() / ".gradle")) / "caches/modules-2/files-2.1"
 
     def jar(group, name, version=None):
@@ -79,9 +112,14 @@ def main():
     with tempfile.TemporaryDirectory(prefix="storage-session-compile-") as work:
         work = Path(work)
         generated = work / "OmiBleManager.kt"
-        generated.write_text(STUBS % (bridge, match.group(1)), encoding="utf-8")
+        if args.notifications:
+            template = (HERE / "NotificationSubscriptionStubs.kt").read_text(encoding="utf-8")
+            generated.write_text(notification_source(source, template), encoding="utf-8")
+        else:
+            pigeon = SOURCE.with_name("PigeonCommunicator.g.kt").read_text(encoding="utf-8")
+            generated.write_text(storage_source(source, pigeon), encoding="utf-8")
         output = work / "tests.jar"
-        tests = HERE / "StorageDownloadSessionTest.kt"
+        tests = HERE / ("NotificationSubscriptionTest.kt" if args.notifications else "StorageDownloadSessionTest.kt")
         if kotlinc:
             subprocess.run([kotlinc, str(generated), str(tests), "-include-runtime", "-d", str(output)], check=True)
             runtime = str(output)
@@ -96,7 +134,7 @@ def main():
                             "-no-stdlib", "-no-reflect", "-classpath", classpath,
                             str(generated), str(tests), "-d", str(output)], check=True)
             runtime = os.pathsep.join([str(output), *libs])
-        subprocess.run([java, "-cp", runtime, "StorageDownloadSessionTestKt"], check=True)
+        subprocess.run([java, "-cp", runtime, tests.stem + "Kt"], check=True)
 
 
 if __name__ == "__main__":

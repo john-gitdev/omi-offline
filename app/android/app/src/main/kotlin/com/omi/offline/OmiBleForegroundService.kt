@@ -365,7 +365,8 @@ class OmiBleForegroundService : Service() {
     // recovery is cancelled. Only one Omi is managed and the recovery alarm is a single
     // app-wide PendingIntent, so this is service-level, not per-device. Touched only on the
     // main thread: the alarm broadcast is delivered there, and the handleRetryLogic handoff
-    // (a binder thread) posts its schedule call to `handler`, so there's no cross-thread race.
+    // posts its schedule call to `handler` (handleRetryLogic itself runs on main too, since
+    // OmiBleManager posts onConnectionStateChange there), so there's no cross-thread race.
     private var recoveryProbeAttempts = 0
 
     // ── Single-notification / persistent mode ──
@@ -400,8 +401,10 @@ class OmiBleForegroundService : Service() {
 
         override fun onGattConnected(address: String, gatt: BluetoothGatt) {
             val addr = address.uppercase()
-            // Fires on the binder thread pool, not main. Hold syncLock so writes to
-            // managed.* are visible to readers on other threads (manageDevice, retry runnable).
+            // Runs on main: OmiBleManager posts onConnectionStateChange to mainHandler, so this
+            // no longer races manageDevice or the retry runnable, which are on main as well.
+            // syncLock is still held because onGattServicesDiscovered runs on a GATT binder
+            // thread and takes it for the same ManagedDevice.
             synchronized(syncLock) {
                 val managed = managedDevices[addr] ?: return
 
@@ -720,9 +723,10 @@ class OmiBleForegroundService : Service() {
         if (existing != null && bleManager.isPeripheralConnected(addr)) {
             // Link up, discovery still in flight. Return rather than falling through: the
             // reconnect logic below only holds off while currentGattHash/pendingReconnect are
-            // set, and currentGattHash is set by onGattConnected — which runs on the binder
-            // thread AFTER OmiBleManager records the gatt, so a manageDevice landing between
-            // the two would read a null hash and tear down a link that is coming up fine.
+            // set, and currentGattHash is set by onGattConnected — which runs in a main-thread
+            // post that OmiBleManager queues from the binder-thread connection callback, so a
+            // manageDevice landing between the link coming up and that post would read a null
+            // hash and tear down a link that is coming up fine.
             // Nothing to do here anyway: onServicesDiscovered fires the ready on its own, and
             // if discovery never lands, DISCOVERY_TIMEOUT_MS (15 s, inside Dart's 30 s ready
             // timeout) drops the link into the normal disconnect/retry path.
@@ -736,9 +740,12 @@ class OmiBleForegroundService : Service() {
 
         if (existing != null) {
             // The guard (currentGattHash / pendingReconnect) and the kick must be atomic
-            // relative to onGattConnected (binder thread) and the retry runnable (main),
-            // both of which mutate these fields. Without the lock, we can read stale nulls
-            // and spawn a duplicate connect on top of an in-flight one.
+            // relative to onGattConnected and the retry runnable, both of which mutate these
+            // fields, or we can read stale nulls and spawn a duplicate connect on top of an
+            // in-flight one. All three run on main now (OmiBleManager posts
+            // onConnectionStateChange there), which makes that so by itself; the lock stays
+            // because onGattServicesDiscovered, on a GATT binder thread, reads requiresBond
+            // and writes retryCount, both touched below.
             synchronized(syncLock) {
                 if (bond && !existing.requiresBond) existing.requiresBond = true
                 // An attempt is already on the radio: join it. Dart's device-ready completer
@@ -859,8 +866,8 @@ class OmiBleForegroundService : Service() {
     private fun scheduleRecoveryProbe(reset: Boolean) {
         if (reset) recoveryProbeAttempts = 0
         // Re-validate on the main thread before every arm. The reset=true call is posted from the
-        // failure-AUTONOMOUS_RETRY_STOP_AFTER handoff (a binder thread), so a user-disconnect /
-        // BT-off / Manual-Only cancellation can land between the post and here; recoveryWanted()
+        // failure-AUTONOMOUS_RETRY_STOP_AFTER handoff, so a user-disconnect / BT-off /
+        // Manual-Only cancellation can land between the post and here; recoveryWanted()
         // keeps that cancellation final instead of letting the in-flight sixth failure re-arm a wake.
         if (!recoveryWanted()) { cancelRecoveryProbe(); return }
         val intervalMs = autoSyncIntervalMinutes() * 60_000L
@@ -1132,9 +1139,9 @@ class OmiBleForegroundService : Service() {
         // -1 is our own timeout backstop and 0 is a clean disconnect; neither is a failure
         // code worth surfacing, so an all-timeout outage keeps this null (itself the signal).
         // Written under syncLock — the same lock onGattServicesDiscovered clears it under and
-        // handleRetryLogic snapshots it under — so a disconnect callback on one binder thread
-        // can't clobber a recovery that just reset it to null on another (both run off the
-        // GATT binder pool).
+        // handleRetryLogic snapshots it under — so this disconnect path, on main (OmiBleManager
+        // posts onConnectionStateChange there), can't clobber a recovery that
+        // onGattServicesDiscovered just reset to null on a GATT binder thread.
         if (managed != null && status != -1 && status != 0) {
             synchronized(syncLock) {
                 managed.lastRealGattStatus = status
@@ -1247,9 +1254,9 @@ class OmiBleForegroundService : Service() {
         val runnable = buildReconnectRunnable(addr, managed)
 
         // These counters are read and cleared under syncLock by onGattServicesDiscovered, on a
-        // different binder thread, so the writes take the lock too. The probe is started after
-        // the lock is released: it kicks off an LE scan and posts to the main thread, and none
-        // of that belongs under a lock this hot.
+        // GATT binder thread (this runs on main), so the writes take the lock too. The probe
+        // is started after the lock is released: it kicks off an LE scan and posts to the
+        // main thread, and none of that belongs under a lock this hot.
         //
         // pendingReconnect is installed in this same block. manageDevice treats "currentGattHash
         // and pendingReconnect both null" as "nobody is handling this device" and kicks off its
@@ -1464,7 +1471,9 @@ class OmiBleForegroundService : Service() {
             // reconnect, so `== AUTONOMOUS_RETRY_STOP_AFTER` fires here just once; the later
             // failures the recovery loop itself produces (7, 8, …) fall through without restarting
             // the backoff (which would otherwise pin it at the 2 min floor forever). Posted to the
-            // main handler — we're on a binder thread and recoveryProbeAttempts lives there.
+            // main handler, where recoveryProbeAttempts lives. This path already runs on main
+            // (OmiBleManager posts onConnectionStateChange there), so the post is no longer a
+            // thread hop; it only defers the arm, which scheduleRecoveryProbe re-validates.
             if (failures == AUTONOMOUS_RETRY_STOP_AFTER) {
                 handler.post { scheduleRecoveryProbe(reset = true) }
             }
@@ -1522,8 +1531,10 @@ class OmiBleForegroundService : Service() {
         val managed = managedDevices[addr] ?: return
 
         managed.stabilityTimerRunnable?.let { handler.removeCallbacks(it) }
-        // Main thread. handleRetryLogic increments retryCount on a binder thread, and
-        // handleDisconnection cancels this runnable — but only after it may already be running.
+        // Main thread, as are handleRetryLogic and handleDisconnection (OmiBleManager posts
+        // onConnectionStateChange there), so this can fire before them but never concurrently.
+        // The lock is for onGattServicesDiscovered, which also writes retryCount, on a GATT
+        // binder thread.
         val runnable = Runnable {
             synchronized(syncLock) { managed.retryCount = 0 }
         }

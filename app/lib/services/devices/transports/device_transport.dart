@@ -21,6 +21,10 @@ abstract class DeviceTransport {
 
   Future<Stream<List<int>>> getCharacteristicStream(String serviceUuid, String characteristicUuid);
 
+  /// Revalidate notification delivery before a storage command starts a new run.
+  Future<Stream<List<int>>> refreshCharacteristicStream(String serviceUuid, String characteristicUuid) =>
+      getCharacteristicStream(serviceUuid, characteristicUuid);
+
   /// Tear down a single characteristic subscription: write CCCD=0 on the device
   /// and drop the local stream controller so the next getCharacteristicStream
   /// re-subscribes cleanly. No-op by default; only the BLE transport implements it.

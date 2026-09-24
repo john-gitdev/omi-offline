@@ -95,12 +95,20 @@ class MockDeviceConnection implements DeviceConnection {
     return c.future;
   }
 
+  bool _storageBusy = false;
   @override
-  bool get isStorageBusy => false;
+  bool get isStorageBusy => _storageBusy;
   @override
-  Future<void> acquireStorageLock([String owner = 'unknown']) async {}
+  Future<void> acquireStorageLock([String owner = 'unknown']) async {
+    if (_storageBusy) throw StateError('Storage lock already held');
+    _storageBusy = true;
+  }
+
   @override
-  void releaseStorageLock() {}
+  void releaseStorageLock() {
+    if (!_storageBusy) throw StateError('Storage lock not held');
+    _storageBusy = false;
+  }
 
   @override
   Future<bool> writeToStorage(int numFile, int command, int offset, {int? timestamp}) async {
@@ -164,9 +172,21 @@ class MockDeviceConnection implements DeviceConnection {
   /// files than it sent. The entries present are valid; the run is partial.
   bool listFilesTruncated = false;
 
+  /// With [listFilesUnanswered]: the device did send something back — it refused the
+  /// listing (STORAGE_NOT_READY) — rather than staying silent. See
+  /// [DeviceConnection.lastListingHeardDevice].
+  bool listFilesRefused = false;
+
   @override
-  Future<StorageListing?> listFiles() async =>
-      !await isConnected() || listFilesUnanswered ? null : (files: files, complete: !listFilesTruncated);
+  bool lastListingHeardDevice = false;
+
+  @override
+  Future<StorageListing?> listFiles() async {
+    lastListingHeardDevice = false;
+    if (!await isConnected()) return null;
+    lastListingHeardDevice = !listFilesUnanswered || listFilesRefused;
+    return listFilesUnanswered ? null : (files: files, complete: !listFilesTruncated);
+  }
 
   @override
   Future<bool> stopStorageSync() async => !await isConnected() ? false : (onStop == null ? true : await onStop!());
@@ -253,8 +273,17 @@ class MockDeviceConnection implements DeviceConnection {
   Future<void> requestBond() async {}
   @override
   Future<void> unpair() async {}
+  int rotationCalls = 0;
+  bool rotationUnconfirmed = false;
+  bool rotationNotStarted = false;
   @override
-  Future<bool> rotateFile() async => true;
+  Future<bool> rotateFile() async {
+    rotationCalls++;
+    if (rotationNotStarted) throw StorageRotationNotStartedException(StateError('Disconnected before write'));
+    if (rotationUnconfirmed) throw StorageRotationUnconfirmedException(TimeoutException('ACK missing'));
+    return true;
+  }
+
   @override
   Future<int> getFeatures() async => 0;
   @override
@@ -486,6 +515,7 @@ void main() {
     late MockDeviceConnection connection;
     late SDCardWalSyncImpl native;
     final requests = <int>[];
+    var recycles = 0;
     late Future<Object?> Function(List<Object?> args) receiver;
 
     File bin() => File('${tempDir.path}/raw_segments/$ts/${ts}_0.bin');
@@ -506,7 +536,12 @@ void main() {
         ];
     Future<void> reconnect() async {
       native = SDCardWalSyncImpl(MockWalSyncListener(),
-          connectionProvider: (_) async => connection, useNativeDownload: true);
+          connectionProvider: (_) async => connection,
+          useNativeDownload: true,
+          recycleConnection: () async {
+            recycles++;
+            return true;
+          });
       await native.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
     }
 
@@ -530,6 +565,7 @@ void main() {
 
     setUp(() async {
       requests.clear();
+      recycles = 0;
       globalDeletedTimestamps = [];
       globalRejectDeleteTimestamps = {};
       connection = MockDeviceConnection()..files = [StorageFile(index: 0, timestamp: ts, size: 12)];
@@ -549,7 +585,52 @@ void main() {
       await connection.close();
     });
 
+    // The mid-transfer recycle is the wedged-GATT recovery and fires on every run. It
+    // reached DeviceService directly before, so nothing could observe it; this pins that
+    // routing it through the injectable hook kept it firing. (Each run's answered listing
+    // would re-arm the listing recovery's once-per-episode limit anyway, so no test can
+    // tell a gated transfer path from an ungated one — that is not what this checks.)
+    test('a transfer failure recycles on every run', () async {
+      await seed(wal(offset: 4, version: 1), original.sublist(0, 4));
+      receiver = (_) async => ['notification-subscription', 'Disconnected during notification setup', null];
+      for (int attempt = 0; attempt < 3; attempt++) {
+        expect((await native.syncAll())!.isPartial, isTrue);
+      }
+      expect(recycles, 3);
+    });
+
     for (final batch in [false, true]) {
+      test('${batch ? 'syncAll' : 'syncWal'} notification failures preserve prefix and deletion budget', () async {
+        await seed(wal(offset: 4, version: 1, strikes: 4), original.sublist(0, 4));
+        receiver = (_) async => ['notification-subscription', 'Disconnected during notification setup', null];
+        for (int attempt = 0; attempt < 3; attempt++) {
+          if (batch) {
+            expect((await native.syncAll())!.isPartial, isTrue);
+          } else {
+            await expectLater(native.syncWal(wal: (await native.getMissingWals()).first),
+                throwsA(isA<PlatformException>().having((e) => e.code, 'code', 'notification-subscription')));
+          }
+          expect(globalDeletedTimestamps, isEmpty);
+          expect(await bin().readAsBytes(), original.sublist(0, 4));
+          final saved = (await WalFileManager.loadWals()).single;
+          expect(saved.walOffset, 4);
+          expect(saved.syncFailCount, 4);
+          expect(saved.status, WalStatus.miss);
+          expect(connection.isStorageBusy, isFalse);
+          await reconnect();
+        }
+        receiver = (args) async {
+          expect(args[2], 4);
+          await File(args[4]! as String).writeAsBytes(original.sublist(4), mode: FileMode.append);
+          return [null];
+        };
+        final result =
+            batch ? await native.syncAll() : await native.syncWal(wal: (await native.getMissingWals()).first);
+        expect(result!.isPartial, isFalse);
+        expect(await bin().readAsBytes(), original);
+        expect(globalDeletedTimestamps, [ts]);
+      });
+
       test('${batch ? 'syncAll' : 'syncWal'} repeated gaps never spend poison budget, including reconnect', () async {
         await seed(wal(offset: 4, version: 1, strikes: 4), original.sublist(0, 4));
         // A second queued file must not cause an index-0 read under another identity.
@@ -995,6 +1076,39 @@ void main() {
       // Had the other file's ACK been taken, its EOT would have completed this download
       // with 0xDD and locked the stream, and this read's own bytes would never land.
       final bin = File('${tempDir.path}/raw_segments/$ownTs/${ownTs}_0.bin');
+      expect(await bin.readAsBytes(), List<int>.filled(10, 0xAA));
+    });
+
+    test('an ACK naming another command cannot start this read', () async {
+      // oo-3.1.5 names the command in every ACK but the read's own six-byte one. A late
+      // delete's OK is the same shape of mistake as the late read ACK above.
+      const ts = 1789000000;
+      final syncFuture = sync.syncWal(
+        wal: Wal(
+          device: 'test-device',
+          fileNum: 1,
+          walOffset: 0,
+          storageTotalBytes: 10,
+          timerStart: ts,
+          storage: WalStorage.sdcard,
+        ),
+      );
+      await pump();
+      mockConn.add([0x03, 0x00, 0x12]);
+      await pump();
+      mockConn.add(dataPacket(0, List<int>.filled(10, 0xDD)));
+      await pump();
+      mockConn.add(eotPacket());
+      await pump();
+
+      mockConn.add([0x03, 0x00, 0x11]);
+      await pump();
+      mockConn.add(dataPacket(0, List<int>.filled(10, 0xAA)));
+      await pump();
+      mockConn.add(eotPacket());
+      await syncFuture;
+
+      final bin = File('${tempDir.path}/raw_segments/$ts/${ts}_0.bin');
       expect(await bin.readAsBytes(), List<int>.filled(10, 0xAA));
     });
 
@@ -1873,6 +1987,31 @@ void main() {
           reason: 'nothing was fetched, so the caller must drop force mode and keep its drafts');
     });
 
+    test('unknown rotation outcome is partial without issuing a second rotation or deleting source', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      mockConn.rotationUnconfirmed = true;
+      globalDeletedTimestamps = [];
+      final result = await sync.rotateAndSync();
+      expect(result, isNotNull);
+      expect(result!.isPartial, isTrue, reason: 'preserve draft tails and the force-sync cooldown');
+      expect(mockConn.rotationCalls, 1);
+      expect(globalDeletedTimestamps, isEmpty);
+      expect(sync.isSyncing, isFalse);
+      expect(mockConn.isStorageBusy, isFalse);
+    });
+
+    test('rotation not started is skipped without retries or deleting source', () async {
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      mockConn.rotationNotStarted = true;
+      globalDeletedTimestamps = [];
+      final result = await sync.rotateAndSync();
+      expect(result, isNull, reason: 'preserve drafts and return the unused force-sync cooldown');
+      expect(mockConn.rotationCalls, 1);
+      expect(globalDeletedTimestamps, isEmpty);
+      expect(sync.isSyncing, isFalse);
+      expect(mockConn.isStorageBusy, isFalse);
+    });
+
     // Entering in the same microtask is the case that used to run two download
     // loops against the same index-0 queue: the old guard set `_isSyncing`
     // several awaits deep, so neither call saw the other.
@@ -1989,6 +2128,129 @@ void main() {
       unawaited(sync.deviceReady.then((_) => readyAgain = true));
       await Future.delayed(Duration.zero);
       expect(readyAgain, isFalse);
+    });
+  });
+
+  // A silent reply channel is what a stale notification subscription looks like after
+  // Bluetooth is toggled mid-download, and a fresh GATT cures it. Nothing else that makes
+  // a storage command come back empty-handed is cured by reconnecting — and reconnecting
+  // for it in the background is a loop: the failed run records a skip, so
+  // _handleDeviceConnected adopts the returning link as a due sync, which fails and
+  // reconnects again. (That adoption half lives in DeviceProvider, which no test here
+  // constructs; these pin the half that feeds it.)
+  group('a failed storage reply reconnects once, and only when that can help', () {
+    late MockDeviceConnection mockConn;
+    late SDCardWalSyncImpl sync;
+    var recycles = 0;
+
+    setUp(() async {
+      globalRejectDeleteTimestamps = {};
+      globalDeletedTimestamps = [];
+      recycles = 0;
+      mockConn = MockDeviceConnection();
+      sync = SDCardWalSyncImpl(
+        MockWalSyncListener(),
+        connectionProvider: (_) async => mockConn,
+        inactivityTimeout: const Duration(seconds: 1),
+        recycleConnection: () async {
+          recycles++;
+          return true;
+        },
+      );
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+    });
+
+    tearDown(() async {
+      sync.cancelSync();
+      await mockConn.close();
+    });
+
+    test('a listing that heard nothing on a live link reconnects', () async {
+      mockConn.listFilesUnanswered = true;
+      expect(await sync.syncAll(), isNull);
+      expect(recycles, 1);
+    });
+
+    test('a listing the device refused does not reconnect — its replies are arriving', () async {
+      mockConn.listFilesUnanswered = true;
+      mockConn.listFilesRefused = true; // STORAGE_NOT_READY: SD card not mounted, or failed
+      expect(await sync.syncAll(), isNull, reason: 'still a skip — nothing was listed');
+      expect(recycles, 0);
+    });
+
+    test('a listing that failed because the link dropped leaves reconnection to native', () async {
+      mockConn.listFilesUnanswered = true;
+      mockConn.connected = false;
+      expect(await sync.syncAll(), isNull);
+      expect(recycles, 0, reason: 'a forced connect would hold the DeviceService mutex for up to 75 s');
+    });
+
+    test('silence a reconnect did not cure is not reconnected for again', () async {
+      mockConn.listFilesUnanswered = true;
+      for (var i = 0; i < 4; i++) {
+        expect(await sync.syncAll(), isNull);
+      }
+      expect(recycles, 1, reason: 'each extra reconnect is adopted as another due sync, around the clock');
+    });
+
+    test('any reply from the device re-arms it', () async {
+      mockConn.listFilesUnanswered = true;
+      await sync.syncAll();
+      expect(recycles, 1);
+
+      mockConn.listFilesRefused = true; // the device answers again, if only to refuse
+      await sync.syncAll();
+      mockConn.listFilesRefused = false; // and later goes silent: a new episode
+      await sync.syncAll();
+      expect(recycles, 2);
+
+      mockConn.listFilesUnanswered = false;
+      mockConn.files = [];
+      expect(await sync.syncAll(), isNotNull);
+      mockConn.listFilesUnanswered = true;
+      await sync.syncAll();
+      expect(recycles, 3, reason: 'a successful listing re-arms it too');
+    });
+
+    test('a rotation with no acknowledgement reconnects, once', () async {
+      mockConn.rotationUnconfirmed = true;
+      await sync.rotateAndSync();
+      await sync.rotateAndSync();
+      expect(recycles, 1);
+    });
+
+    test('a rotation that could not start on a live link reconnects', () async {
+      mockConn.rotationNotStarted = true;
+      expect(await sync.rotateAndSync(), isNull);
+      expect(recycles, 1);
+    });
+
+    test('an acknowledged rotation followed by a refused listing does not reconnect', () async {
+      mockConn.listFilesUnanswered = true;
+      mockConn.listFilesRefused = true;
+      final result = await sync.rotateAndSync();
+      expect(result?.isPartial, isTrue);
+      expect(recycles, 0);
+    });
+
+    test('an acknowledged rotation re-arms it', () async {
+      mockConn.listFilesUnanswered = true;
+      await sync.syncAll();
+      expect(recycles, 1);
+      await sync.syncAll();
+      expect(recycles, 1, reason: 'still the same silent episode');
+
+      // Force Sync: the rotation is acknowledged — the device is answering again — and
+      // the listing after it is silent once more. That is a new episode.
+      await sync.rotateAndSync();
+      expect(recycles, 2);
+    });
+
+    test('an acknowledged rotation followed by a silent listing reconnects', () async {
+      mockConn.listFilesUnanswered = true;
+      final result = await sync.rotateAndSync();
+      expect(result?.isPartial, isTrue);
+      expect(recycles, 1);
     });
   });
 
